@@ -1,0 +1,47 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Script flags (idempotent execution tracking)
+flags/
+
+# Runtime data
+/data_active/
+/data_static/
+
+# Nginx proxy runtime
+vm/docker-services/https-proxy-services/nginx-proxy/certs/*
+!vm/docker-services/https-proxy-services/nginx-proxy/certs/.gitkeep
+vm/docker-services/https-proxy-services/nginx-proxy/conf.d/*
+!vm/docker-services/https-proxy-services/nginx-proxy/conf.d/.gitkeep
+
+# Docker
+docker-compose.override.yml
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/

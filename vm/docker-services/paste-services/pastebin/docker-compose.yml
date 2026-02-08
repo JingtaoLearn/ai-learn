@@ -1,0 +1,22 @@
+services:
+  pastebin:
+    # https://hub.docker.com/r/mkaczanowski/pastebin
+    image: mkaczanowski/pastebin
+    command: --address 0.0.0.0 --port 8000 --uri https://paste.${S_DOMAIN} --db /data/pastebin.db
+    volumes:
+      - ${S_CONTAINER_FOLDER_STATIC}/pastebin:/data:rw
+    restart: always
+    container_name: pastebin
+
+  pastebin-nginx:
+    image: nginx:stable
+    restart: always
+    depends_on:
+      - pastebin
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:rw
+    environment:
+      - VIRTUAL_HOST=paste.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=paste.${S_DOMAIN}
+    container_name: nginx-pastebin
