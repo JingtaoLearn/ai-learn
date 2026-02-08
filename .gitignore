@@ -10,6 +10,7 @@ Thumbs.db
 
 # Secrets
 .env
+.env.*
 !.env.example
 
 # Script flags (idempotent execution tracking)

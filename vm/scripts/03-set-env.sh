@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Set server environment variables in /etc/environment.
 #
 # Usage:

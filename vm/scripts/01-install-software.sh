@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Install essential system tools on a fresh Ubuntu server.
 #
 # Usage:

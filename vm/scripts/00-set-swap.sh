@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Configure swap space on the server.
 #
 # Azure VMs:  uses waagent.conf (ResourceDisk swap)

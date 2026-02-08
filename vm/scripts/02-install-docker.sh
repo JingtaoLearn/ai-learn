@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Install Docker CE and Docker Compose V2 plugin on Ubuntu.
 #
 # Usage:
