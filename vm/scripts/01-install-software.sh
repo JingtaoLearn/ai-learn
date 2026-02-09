@@ -15,6 +15,8 @@ if check_flag "${FLAG_NAME}"; then
   exit 0
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+
 apt-get update
 apt-get install -y \
   htop \
