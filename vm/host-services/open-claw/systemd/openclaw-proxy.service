@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenClaw OpenAI-compat Proxy
+Before=openclaw-gateway.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node %h/.openclaw/openai-compat-proxy.js
+Environment=UPSTREAM_URL=https://maestro.us.jingtao.fun
+Environment=PROXY_PORT=19999
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
