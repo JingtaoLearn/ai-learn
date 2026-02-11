@@ -12,6 +12,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+.github-token
+*-token
+*.token
 
 # Script flags (idempotent execution tracking)
 flags/

@@ -24,12 +24,15 @@ apt-get install -y \
   vim \
   tree \
   git \
+  gh \
   net-tools \
   iperf3 \
   ca-certificates \
   curl \
   gnupg \
-  lsb-release
+  lsb-release \
+  python3-pip \
+  pipx
 
 set_flag "${FLAG_NAME}"
 echo "Done. System tools installed."
