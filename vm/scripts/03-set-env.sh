@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     --machine-type)        S_MACHINE_TYPE="$2"; shift 2 ;;
     --active-folder)       S_CONTAINER_FOLDER_ACTIVE="$2"; shift 2 ;;
     --static-folder)       S_CONTAINER_FOLDER_STATIC="$2"; shift 2 ;;
-    --llm-api-url)   S_LLM_API_URL="$2"; shift 2 ;;
+    --llm-api-url)         S_LLM_API_URL="$2"; shift 2 ;;
     *)                     echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
