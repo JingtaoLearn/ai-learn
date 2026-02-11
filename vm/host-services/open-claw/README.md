@@ -4,14 +4,24 @@ Self-hosted AI agent framework. Runs directly on the VM host (not in Docker).
 
 ## Architecture
 
-Open Claw consists of two systemd user services:
+Open Claw consists of two systemd user services that connect to Router-Maestro for LLM access:
 
-1. **openclaw-proxy** (port 19999) — OpenAI-compatible reverse proxy that flattens multimodal content arrays into plain strings before forwarding to the upstream API (`maestro.us.jingtao.fun`).
+1. **openclaw-proxy** (port 19999) — OpenAI-compatible reverse proxy that flattens multimodal content arrays into plain strings before forwarding to Router-Maestro (`maestro.us.jingtao.fun`).
 2. **openclaw-gateway** (port 18789) — The main Open Claw gateway that serves agent requests. Routes model calls through the local proxy.
 
 ```
-Client → Gateway (:18789) → Proxy (:19999) → maestro.us.jingtao.fun
+OpenClaw → Gateway (:18789) → Proxy (:19999) → Router-Maestro → GitHub Copilot → LLMs
 ```
+
+### Router-Maestro Integration
+
+[Router-Maestro](https://maestro.us.jingtao.fun) is a lightweight OpenAI-compatible proxy that provides access to multiple LLM providers, including **GitHub Copilot**. This setup enables OpenClaw to use:
+
+- **GPT-5.2** and GPT-5.2-codex (via GitHub Copilot)
+- **Claude models** (Opus 4.6, Sonnet 4.5, Haiku 4.5)
+- Other GPT-5.x, GPT-4.x, and Gemini models
+
+All models use the same `OPENCLAW_API_KEY` authentication token, eliminating the need for separate API keys per provider.
 
 ## Prerequisites
 
@@ -25,6 +35,27 @@ npm install -g openclaw
 ```
 
 ## Configuration
+
+### Maximum Permissions Configuration
+
+The `openclaw.json` file is configured with **maximum permissions** for full functionality. This includes:
+
+**Tools Enabled:**
+- `exec`, `process` - Command execution and process management
+- `read`, `write`, `edit`, `apply_patch` - File system operations
+- `browser` - Browser control (requires separate setup)
+- `web`, `web_fetch`, `web_search` - Web access and search
+- `memory` - Memory and embedding search
+- `cron` - Scheduled task execution
+
+**Security Features:**
+- `sandbox.mode: "off"` - No sandboxing for maximum flexibility
+- `elevated.enabled: true` - Allows privileged command execution
+- `gateway.bind: "loopback"` - Restricts gateway to localhost only (recommended)
+- `logging.redactSensitive: "tools"` - Redacts sensitive data in logs
+- `discovery.mdns.mode: "minimal"` - Limits information disclosure
+
+⚠️ **Security Warning:** This configuration grants extensive system access. Only use in trusted environments.
 
 ### Environment Variables
 
@@ -61,6 +92,37 @@ The script will:
 - Create symlinks from system locations to repo files
 - Reload systemd and enable/start both services
 
+## Testing GPT-5.2 Integration
+
+To verify that OpenClaw can access GPT-5.2 through Router-Maestro:
+
+```bash
+# Run comprehensive integration test
+./test-gpt52.sh
+
+# List available models
+openclaw models list --all | grep "maestro/gpt-5"
+
+# Test a specific model directly
+curl -s -X POST http://127.0.0.1:19999/api/openai/v1/chat/completions \
+  -H "Authorization: Bearer ${OPENCLAW_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.2","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' \
+  | jq -r '.choices[0].message.content'
+```
+
+### Available GPT-5.2 Models
+
+| Model | Description | Context | Provider |
+|-------|-------------|---------|----------|
+| `maestro/gpt-5.2` | GPT-5.2 (via GitHub Copilot) | 200k | github-copilot |
+| `maestro/gpt-5.2-codex` | GPT-5.2 Codex (via GitHub Copilot) | 200k | github-copilot |
+| `maestro/claude-opus-4.6` | Claude Opus 4.6 (default) | 200k | github-copilot |
+| `maestro/claude-sonnet-4.5` | Claude Sonnet 4.5 (fallback) | 200k | github-copilot |
+| `maestro/claude-haiku-4.5` | Claude Haiku 4.5 | 200k | github-copilot |
+
+**Note:** All models are accessed through a single authentication key via Router-Maestro. No additional proxy layer is needed.
+
 ## Useful Commands
 
 ```bash
@@ -70,6 +132,7 @@ systemctl --user status openclaw-gateway openclaw-proxy
 # View logs
 journalctl --user -u openclaw-gateway -f
 journalctl --user -u openclaw-proxy -f
+tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 
 # Restart services
 systemctl --user restart openclaw-proxy
@@ -81,6 +144,76 @@ openclaw gateway install   # regenerates gateway service file
 
 # Enable lingering (services persist after logout)
 sudo loginctl enable-linger "$USER"
+
+# Security validation
+openclaw doctor --fix              # validate and fix configuration issues
+openclaw security audit --deep     # deep security audit
+chmod 700 ~/.openclaw              # secure directory permissions
+chmod 600 ~/.openclaw/openclaw.json # secure config file
+
+# Channel management
+openclaw channels status
+openclaw channels list
+openclaw status --deep
+
+# Test sending WhatsApp message
+openclaw message send --channel whatsapp --target +1234567890 --message "Hello"
+```
+
+## WhatsApp Channel
+
+### Setup
+
+1. Enable the WhatsApp plugin:
+```bash
+openclaw plugins enable whatsapp
+systemctl --user restart openclaw-gateway
+```
+
+2. Add WhatsApp channel:
+```bash
+openclaw channels add --channel whatsapp --name "WhatsApp"
+```
+
+3. Link your WhatsApp account (scan QR code with your phone):
+```bash
+openclaw channels login --channel whatsapp --verbose
+```
+
+### Troubleshooting
+
+**Issue**: Not receiving messages
+
+The WhatsApp channel uses a "pairing" DM policy by default. Messages from unknown senders will be blocked. To change this:
+
+1. Check current config:
+```bash
+openclaw config get channels.whatsapp.accounts.default.dmPolicy
+```
+
+2. Allow all DMs (open mode - **not recommended for production**):
+```bash
+openclaw config set channels.whatsapp.accounts.default.dmPolicy open
+systemctl --user restart openclaw-gateway
+```
+
+3. Or manage allowlist:
+```bash
+# List pairing requests
+openclaw pairing list whatsapp
+
+# Approve a sender
+openclaw pairing approve whatsapp <code>
+```
+
+**Issue**: Connection keeps dropping
+
+If you see "Connection Terminated" errors in logs, restart the gateway:
+```bash
+systemctl --user restart openclaw-gateway
+# Wait a few seconds for WhatsApp to reconnect
+sleep 5
+openclaw status
 ```
 
 ## File Overview

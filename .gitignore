@@ -48,3 +48,14 @@ venv/
 
 # Node
 node_modules/
+
+# Claude Code personal settings
+.claude/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test projects
+vm/docker-services/web-apps/universe-viz/

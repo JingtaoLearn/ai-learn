@@ -54,6 +54,35 @@ All files, comments, variable names, commit messages, and documentation must be 
 - Each service should have a `README.md` with installation and configuration instructions
 - Store configuration files and deployment scripts alongside the README
 
+#### OpenClaw Configuration
+
+OpenClaw is configured with **maximum permissions** for full functionality:
+
+**Tools enabled:** `exec`, `process`, `read`, `write`, `edit`, `apply_patch`, `browser`, `web`, `web_fetch`, `web_search`, `memory`, `cron`
+
+**Security settings:**
+- `sandbox.mode: "off"` — No sandboxing for maximum flexibility
+- `elevated.enabled: true` — Allows privileged command execution
+- `gateway.bind: "loopback"` — Restricts gateway to localhost only (recommended)
+- `logging.redactSensitive: "tools"` — Redacts sensitive data in logs
+
+**Required environment variables:**
+- `OPENCLAW_API_KEY` — API key for upstream model provider
+- `OPENCLAW_GATEWAY_TOKEN` — Authentication token for gateway access
+
+**Configuration files:**
+- `vm/host-services/open-claw/openclaw.json` — Main configuration (symlinked to `~/.openclaw/openclaw.json`)
+- `vm/host-services/open-claw/SECURITY.md` — Security guide and best practices
+- `vm/host-services/open-claw/README.md` — Installation and usage documentation
+
+**Security considerations:**
+- This configuration grants extensive system access
+- Only use in trusted environments
+- Keep `gateway.bind: "loopback"` to prevent external access
+- Use strong random tokens (64+ characters)
+- Secure file permissions: `chmod 700 ~/.openclaw && chmod 600 ~/.openclaw/openclaw.json`
+- Review `SECURITY.md` for detailed security implications and hardening steps
+
 ### Environment Variables
 
 - **Never** commit `.env` files containing real secrets
