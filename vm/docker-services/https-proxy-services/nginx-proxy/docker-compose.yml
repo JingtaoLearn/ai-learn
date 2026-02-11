@@ -19,6 +19,7 @@ services:
     container_name: nginx-proxy-acme
     environment:
       - DEFAULT_EMAIL=${S_EMAIL}
+      - NGINX_PROXY_CONTAINER=nginx-proxy
     restart: always
     volumes:
       - ./conf.d:/etc/nginx/conf.d

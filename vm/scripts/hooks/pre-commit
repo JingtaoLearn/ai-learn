@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook: Sync OpenClaw config and scan for secrets with Gitleaks
+
+SYSTEM_CONFIG="$HOME/.openclaw/openclaw.json"
+REPO_CONFIG="vm/host-services/open-claw/openclaw.json"
+
+# ==================== Auto-sync OpenClaw Config ====================
+
+if [[ -f "$SYSTEM_CONFIG" ]] && git diff --cached --name-only | grep -q "$REPO_CONFIG\|^$"; then
+  echo "🔄 Syncing OpenClaw config from system to repo..."
+  cp "$SYSTEM_CONFIG" "$REPO_CONFIG"
+
+  # Re-stage if it was already staged
+  if git diff --cached --name-only | grep -q "$REPO_CONFIG"; then
+    git add "$REPO_CONFIG"
+    echo "✅ OpenClaw config synced and re-staged"
+  fi
+fi
+
+# ==================== Gitleaks Secret Scanning ====================
+
+echo ""
+echo "🔍 Scanning for secrets with Gitleaks..."
+
+# Run gitleaks on staged files
+if gitleaks protect --staged --verbose --redact 2>&1 | tee /tmp/gitleaks-output.txt; then
+  echo "✅ No secrets detected by Gitleaks"
+else
+  echo ""
+  echo "❌ SECRETS DETECTED!"
+  echo ""
+  echo "Gitleaks found potential secrets in your staged files."
+  echo "Please review the findings above and:"
+  echo "  1. Remove the secrets from your code"
+  echo "  2. Use environment variables instead: \${VARIABLE_NAME}"
+  echo "  3. Add false positives to .gitleaksignore if needed"
+  echo ""
+  echo "To bypass this check (NOT recommended):"
+  echo "  git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "✅ All pre-commit checks passed!"
