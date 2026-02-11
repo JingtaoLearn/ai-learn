@@ -1,30 +1,47 @@
 {
-  "gateway": {
-    "mode": "local",
-    "bind": "lan",
-    "port": 18789,
-    "auth": {
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
-    },
-    "remote": {
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
-    }
+  "meta": {
+    "lastTouchedVersion": "2026.2.9",
+    "lastTouchedAt": "2026-02-11T09:28:27.962Z"
   },
-  "agents": {
-    "defaults": {
-      "workspace": "/home/jingtao/.openclaw/workspace",
-      "maxConcurrent": 4,
-      "model": {
-        "primary": "maestro/claude-opus-4.6"
-      },
-      "subagents": {
-        "maxConcurrent": 8
+  "wizard": {
+    "lastRunAt": "2026-02-11T09:28:27.949Z",
+    "lastRunVersion": "2026.2.9",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "openai-codex:default": {
+        "provider": "openai-codex",
+        "mode": "oauth"
       }
     }
   },
   "models": {
     "mode": "merge",
     "providers": {
+      "openai-codex": {
+        "baseUrl": "https://api.openai.com/v1",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 16384
+          }
+        ]
+      },
       "maestro": {
         "baseUrl": "http://127.0.0.1:19999/api/openai/v1",
         "apiKey": "${OPENCLAW_API_KEY}",
@@ -34,7 +51,15 @@
             "id": "claude-opus-4.6",
             "name": "Claude Opus 4.6",
             "reasoning": true,
-            "input": ["text"],
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
             "contextWindow": 200000,
             "maxTokens": 16384
           },
@@ -42,7 +67,15 @@
             "id": "claude-sonnet-4.5",
             "name": "Claude Sonnet 4.5",
             "reasoning": true,
-            "input": ["text"],
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
             "contextWindow": 200000,
             "maxTokens": 16384
           },
@@ -50,16 +83,122 @@
             "id": "claude-haiku-4.5",
             "name": "Claude Haiku 4.5",
             "reasoning": false,
-            "input": ["text"],
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
             "contextWindow": 200000,
             "maxTokens": 8192
+          },
+          {
+            "id": "gpt-5.2",
+            "name": "GPT-5.2",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 16384
+          },
+          {
+            "id": "gpt-5.2-codex",
+            "name": "GPT-5.2 Codex",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 16384
           }
         ]
       }
     }
   },
-  "meta": {
-    "lastTouchedVersion": "2026.2.6-3",
-    "lastTouchedAt": "2026-02-09T11:46:13.330Z"
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai-codex/gpt-5.3-codex",
+        "fallbacks": [
+          "maestro/claude-opus-4.6",
+          "maestro/claude-sonnet-4.5"
+        ]
+      },
+      "workspace": "/home/jingtao/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      },
+      "models": {
+        "openai-codex/gpt-5.3-codex": {}
+      }
+    }
+  },
+  "tools": {
+    "allow": [
+      "exec",
+      "process",
+      "read",
+      "write",
+      "edit",
+      "apply_patch",
+      "browser",
+      "web",
+      "web_fetch",
+      "web_search",
+      "memory",
+      "cron"
+    ],
+    "deny": []
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "remote": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "plugins": {
+    "slots": {
+      "memory": "memory-core"
+    },
+    "entries": {
+      "whatsapp": {
+        "enabled": false
+      }
+    }
   }
 }

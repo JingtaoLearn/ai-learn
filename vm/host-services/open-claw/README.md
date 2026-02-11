@@ -4,24 +4,32 @@ Self-hosted AI agent framework. Runs directly on the VM host (not in Docker).
 
 ## Architecture
 
-Open Claw consists of two systemd user services that connect to Router-Maestro for LLM access:
+Open Claw uses two model providers and two systemd user services:
 
-1. **openclaw-proxy** (port 19999) — OpenAI-compatible reverse proxy that flattens multimodal content arrays into plain strings before forwarding to the upstream LLM API (`S_LLM_API_URL`).
-2. **openclaw-gateway** (port 18789) — The main Open Claw gateway that serves agent requests. Routes model calls through the local proxy.
+### Model Providers
+
+1. **openai-codex** (primary) — Direct connection to OpenAI API via OAuth (ChatGPT Plus account). Provides GPT-5.3 Codex as the default agent model.
+2. **maestro** (fallback) — Routes through a local OpenAI-compatible proxy to an upstream LLM API (`S_LLM_API_URL`), providing access to Claude models via GitHub Copilot.
+
+### Services
+
+1. **openclaw-proxy** (port 19999) — OpenAI-compatible reverse proxy that flattens multimodal content arrays into plain strings before forwarding to the upstream LLM API. Only used by the maestro provider.
+2. **openclaw-gateway** (port 18789) — The main Open Claw gateway that serves agent requests.
 
 ```
-OpenClaw → Gateway (:18789) → Proxy (:19999) → LLM API (S_LLM_API_URL) → LLMs
+                    ┌─→ OpenAI API (openai-codex, OAuth)  ← PRIMARY
+OpenClaw Gateway ──┤
+                    └─→ Proxy (:19999) → LLM API (maestro) ← FALLBACK
 ```
 
-### LLM API Integration
+### Model Routing
 
-The upstream LLM API (configured via `S_LLM_API_URL`) is a lightweight OpenAI-compatible proxy that provides access to multiple LLM providers, including **GitHub Copilot**. This setup enables OpenClaw to use:
-
-- **GPT-5.2** and GPT-5.2-codex (via GitHub Copilot)
-- **Claude models** (Opus 4.6, Sonnet 4.5, Haiku 4.5)
-- Other GPT-5.x, GPT-4.x, and Gemini models
-
-All models use the same `OPENCLAW_API_KEY` authentication token, eliminating the need for separate API keys per provider.
+| Model | Provider | Auth | Role |
+|-------|----------|------|------|
+| `openai-codex/gpt-5.3-codex` | OpenAI API | OAuth (ChatGPT Plus) | Primary |
+| `maestro/claude-opus-4.6` | Upstream LLM API | API Key | Fallback 1 |
+| `maestro/claude-sonnet-4.5` | Upstream LLM API | API Key | Fallback 2 |
+| `maestro/claude-haiku-4.5` | Upstream LLM API | API Key | Available |
 
 ## Prerequisites
 
@@ -63,9 +71,11 @@ The following environment variables must be set (e.g., in `/etc/environment` via
 
 | Variable | Description |
 |---|---|
-| `S_LLM_API_URL` | Upstream LLM API URL (set via `vm/scripts/03-set-env.sh --llm-api-url`) |
-| `OPENCLAW_API_KEY` | API key for the upstream model provider |
+| `S_LLM_API_URL` | Upstream LLM API URL for maestro provider (set via `vm/scripts/03-set-env.sh --llm-api-url`) |
+| `OPENCLAW_API_KEY` | API key for the maestro upstream model provider |
 | `OPENCLAW_GATEWAY_TOKEN` | Authentication token for gateway access (used in `openclaw.json`) |
+
+**Note:** The `openai-codex` provider uses OAuth authentication (ChatGPT Plus account) instead of API keys. Run `openclaw configure --section model` to complete OAuth login.
 
 ### Symlinks
 
@@ -92,36 +102,44 @@ The script will:
 - Create symlinks from system locations to repo files
 - Reload systemd and enable/start both services
 
-## Testing GPT-5.2 Integration
+## Testing Model Integration
 
-To verify that OpenClaw can access GPT-5.2 through Router-Maestro:
+### OpenAI Codex (Primary)
+
+After OAuth login, verify the primary provider:
 
 ```bash
-# Run comprehensive integration test
-./test-gpt52.sh
+# Check auth status and quota
+openclaw channels list
 
 # List available models
-openclaw models list --all | grep "maestro/gpt-5"
+openclaw models list --all | grep "openai-codex"
+```
 
-# Test a specific model directly
+### Maestro Fallback
+
+To verify that OpenClaw can access Claude models through the maestro proxy:
+
+```bash
+# Test the proxy directly
 curl -s -X POST http://127.0.0.1:19999/api/openai/v1/chat/completions \
   -H "Authorization: Bearer ${OPENCLAW_API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gpt-5.2","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' \
+  -d '{"model":"claude-opus-4.6","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}' \
   | jq -r '.choices[0].message.content'
+
+# List maestro models
+openclaw models list --all | grep "maestro/"
 ```
 
-### Available GPT-5.2 Models
+### Available Models
 
-| Model | Description | Context | Provider |
-|-------|-------------|---------|----------|
-| `maestro/gpt-5.2` | GPT-5.2 (via GitHub Copilot) | 200k | github-copilot |
-| `maestro/gpt-5.2-codex` | GPT-5.2 Codex (via GitHub Copilot) | 200k | github-copilot |
-| `maestro/claude-opus-4.6` | Claude Opus 4.6 (default) | 200k | github-copilot |
-| `maestro/claude-sonnet-4.5` | Claude Sonnet 4.5 (fallback) | 200k | github-copilot |
-| `maestro/claude-haiku-4.5` | Claude Haiku 4.5 | 200k | github-copilot |
-
-**Note:** All models are accessed through a single authentication key via the upstream LLM API. No additional proxy layer is needed.
+| Model | Provider | Context | Role |
+|-------|----------|---------|------|
+| `openai-codex/gpt-5.3-codex` | OpenAI API (OAuth) | 200k | Primary |
+| `maestro/claude-opus-4.6` | Upstream LLM API | 200k | Fallback |
+| `maestro/claude-sonnet-4.5` | Upstream LLM API | 200k | Fallback |
+| `maestro/claude-haiku-4.5` | Upstream LLM API | 200k | Available |
 
 ## Useful Commands
 

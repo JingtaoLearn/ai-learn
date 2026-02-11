@@ -56,6 +56,10 @@ All files, comments, variable names, commit messages, and documentation must be 
 
 #### OpenClaw Configuration
 
+OpenClaw uses two model providers:
+- **openai-codex** (primary) — Direct OpenAI API via OAuth (ChatGPT Plus account), using GPT-5.3 Codex
+- **maestro** (fallback) — Local proxy to upstream LLM API, providing Claude models via GitHub Copilot
+
 OpenClaw is configured with **maximum permissions** for full functionality:
 
 **Tools enabled:** `exec`, `process`, `read`, `write`, `edit`, `apply_patch`, `browser`, `web`, `web_fetch`, `web_search`, `memory`, `cron`
@@ -67,8 +71,12 @@ OpenClaw is configured with **maximum permissions** for full functionality:
 - `logging.redactSensitive: "tools"` — Redacts sensitive data in logs
 
 **Required environment variables:**
-- `OPENCLAW_API_KEY` — API key for upstream model provider
+- `OPENCLAW_API_KEY` — API key for maestro upstream model provider
 - `OPENCLAW_GATEWAY_TOKEN` — Authentication token for gateway access
+
+**OAuth authentication:**
+- The `openai-codex` provider uses OAuth (ChatGPT Plus account) instead of API keys
+- Run `openclaw configure --section model` to complete OAuth login
 
 **Configuration files:**
 - `vm/host-services/open-claw/openclaw.json` — Main configuration (symlinked to `~/.openclaw/openclaw.json`)
