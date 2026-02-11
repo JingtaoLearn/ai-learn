@@ -8,8 +8,13 @@
 const http = require('http');
 const https = require('https');
 
-const UPSTREAM = process.env.UPSTREAM_URL || 'https://maestro.us.jingtao.fun';
+const UPSTREAM = process.env.S_LLM_API_URL || '';
 const PORT = parseInt(process.env.PROXY_PORT || '19999', 10);
+
+if (!UPSTREAM) {
+  console.error('[proxy] S_LLM_API_URL is not set. Exiting.');
+  process.exit(1);
+}
 
 function flattenContent(messages) {
   if (!Array.isArray(messages)) return messages;
