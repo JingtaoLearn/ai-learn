@@ -15,6 +15,8 @@ if check_flag "${FLAG_NAME}"; then
   exit 0
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+
 apt-get update
 apt-get install -y \
   htop \
@@ -22,12 +24,15 @@ apt-get install -y \
   vim \
   tree \
   git \
+  gh \
   net-tools \
   iperf3 \
   ca-certificates \
   curl \
   gnupg \
-  lsb-release
+  lsb-release \
+  python3-pip \
+  pipx
 
 set_flag "${FLAG_NAME}"
 echo "Done. System tools installed."

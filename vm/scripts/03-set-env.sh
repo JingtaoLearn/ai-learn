@@ -5,7 +5,8 @@ set -euo pipefail
 # Usage:
 #   sudo bash 03-set-env.sh --domain example.com --email admin@example.com
 #   sudo bash 03-set-env.sh --domain example.com --email admin@example.com \
-#     --machine-type cloud --active-folder /data_active --static-folder /data_static
+#     --machine-type cloud --active-folder /data_active --static-folder /data_static \
+#     --llm-api-url https://your-upstream.example.com
 
 source "$(dirname "$0")/lib/common.sh"
 require_root
@@ -23,15 +24,17 @@ S_EMAIL=""
 S_MACHINE_TYPE="cloud"
 S_CONTAINER_FOLDER_ACTIVE="/data_active"
 S_CONTAINER_FOLDER_STATIC="/data_static"
+S_LLM_API_URL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --domain)        S_DOMAIN="$2"; shift 2 ;;
-    --email)         S_EMAIL="$2"; shift 2 ;;
-    --machine-type)  S_MACHINE_TYPE="$2"; shift 2 ;;
-    --active-folder) S_CONTAINER_FOLDER_ACTIVE="$2"; shift 2 ;;
-    --static-folder) S_CONTAINER_FOLDER_STATIC="$2"; shift 2 ;;
-    *)               echo "Unknown option: $1" >&2; exit 1 ;;
+    --domain)              S_DOMAIN="$2"; shift 2 ;;
+    --email)               S_EMAIL="$2"; shift 2 ;;
+    --machine-type)        S_MACHINE_TYPE="$2"; shift 2 ;;
+    --active-folder)       S_CONTAINER_FOLDER_ACTIVE="$2"; shift 2 ;;
+    --static-folder)       S_CONTAINER_FOLDER_STATIC="$2"; shift 2 ;;
+    --llm-api-url)         S_LLM_API_URL="$2"; shift 2 ;;
+    *)                     echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
@@ -52,6 +55,7 @@ S_EMAIL=${S_EMAIL}
 S_MACHINE_TYPE=${S_MACHINE_TYPE}
 S_CONTAINER_FOLDER_ACTIVE=${S_CONTAINER_FOLDER_ACTIVE}
 S_CONTAINER_FOLDER_STATIC=${S_CONTAINER_FOLDER_STATIC}
+S_LLM_API_URL=${S_LLM_API_URL}
 EOF
 
 set_flag "${FLAG_NAME}"

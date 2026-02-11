@@ -12,6 +12,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+.github-token
+*-token
+*.token
 
 # Script flags (idempotent execution tracking)
 flags/
@@ -45,3 +48,14 @@ venv/
 
 # Node
 node_modules/
+
+# Claude Code personal settings
+.claude/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test projects
+vm/docker-services/web-apps/universe-viz/
