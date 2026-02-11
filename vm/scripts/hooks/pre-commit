@@ -20,17 +20,13 @@ if [[ -f "$SYSTEM_CONFIG" ]] && git diff --cached --name-only | grep -q "$REPO_C
     sed -i "s|${OPENCLAW_GATEWAY_TOKEN}|\${OPENCLAW_GATEWAY_TOKEN}|g" "$REPO_CONFIG"
   fi
 
-  # Strip runtime-only fields (meta, wizard, cost, models allowlist)
+  # Strip runtime-only fields (meta, wizard)
   python3 -c "
 import json
 with open('$REPO_CONFIG') as f:
     cfg = json.load(f)
 cfg.pop('meta', None)
 cfg.pop('wizard', None)
-for prov in cfg.get('models', {}).get('providers', {}).values():
-    for m in prov.get('models', []):
-        m.pop('cost', None)
-cfg.get('agents', {}).get('defaults', {}).pop('models', None)
 with open('$REPO_CONFIG', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
