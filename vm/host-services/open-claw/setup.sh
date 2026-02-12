@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # --- Validate environment variables ---
 
 missing=()
-for var in OPENCLAW_API_KEY OPENCLAW_GATEWAY_TOKEN; do
+for var in S_LITELLM_API_KEY OPENCLAW_GATEWAY_TOKEN; do
   if [[ -z "${!var:-}" ]]; then
     missing+=("$var")
   fi

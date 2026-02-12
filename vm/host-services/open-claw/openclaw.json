@@ -1,6 +1,10 @@
 {
   "auth": {
     "profiles": {
+      "litellm:default": {
+        "provider": "litellm",
+        "mode": "api_key"
+      },
       "openai-codex:default": {
         "provider": "openai-codex",
         "mode": "oauth"
@@ -8,52 +12,45 @@
     }
   },
   "models": {
-    "mode": "merge",
     "providers": {
-      "maestro-anthropic": {
-        "baseUrl": "https://maestro.us.jingtao.fun/api/anthropic",
-        "apiKey": "${OPENCLAW_API_KEY}",
-        "api": "anthropic-messages",
+      "litellm": {
+        "baseUrl": "https://litellm.us.jingtao.fun/",
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "api": "openai-completions",
         "models": [
           {
-            "id": "github-copilot/claude-opus-4.6-fast",
-            "name": "Claude Opus 4.6 (fast mode)",
+            "id": "claude-opus-4.6-fast",
+            "name": "Claude Opus 4.6 Fast",
             "reasoning": true,
             "input": [
-              "text"
+              "text",
+              "image"
             ],
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            },
             "contextWindow": 200000,
-            "maxTokens": 16384
+            "maxTokens": 64000
           },
           {
-            "id": "github-copilot/claude-sonnet-4.5",
+            "id": "claude-sonnet-4.5",
             "name": "Claude Sonnet 4.5",
             "reasoning": true,
             "input": [
-              "text"
+              "text",
+              "image"
             ],
+            "cost": {
+              "input": 3,
+              "output": 15,
+              "cacheRead": 0.3,
+              "cacheWrite": 3.75
+            },
             "contextWindow": 200000,
-            "maxTokens": 16384
-          },
-          {
-            "id": "github-copilot/claude-haiku-4.5",
-            "name": "Claude Haiku 4.5",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "contextWindow": 200000,
-            "maxTokens": 8192
-          },
-          {
-            "id": "github-copilot/claude-opus-4.6",
-            "name": "Claude Opus 4.6",
-            "reasoning": true,
-            "input": [
-              "text"
-            ],
-            "contextWindow": 200000,
-            "maxTokens": 16384
+            "maxTokens": 64000
           }
         ]
       },
@@ -66,8 +63,15 @@
             "name": "GPT-5.3 Codex",
             "reasoning": true,
             "input": [
-              "text"
+              "text",
+              "image"
             ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
             "contextWindow": 200000,
             "maxTokens": 16384
           }
@@ -78,11 +82,18 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "maestro-anthropic/github-copilot/claude-opus-4.6-fast",
+        "primary": "litellm/claude-opus-4.6-fast",
         "fallbacks": [
-          "maestro-anthropic/github-copilot/claude-sonnet-4.5",
+          "openai-codex/gpt-5.2",
+          "openai-codex/gpt-5.2-codex",
           "openai-codex/gpt-5.3-codex"
         ]
+      },
+      "models": {
+        "litellm/claude-opus-4.6-fast": {},
+        "openai-codex/gpt-5.2": {},
+        "openai-codex/gpt-5.2-codex": {},
+        "openai-codex/gpt-5.3-codex": {}
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "compaction": {
@@ -126,10 +137,20 @@
     "mode": "local",
     "bind": "loopback",
     "auth": {
+      "mode": "token",
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
     },
     "remote": {
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
     }
   },
   "plugins": {

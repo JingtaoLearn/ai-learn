@@ -203,7 +203,7 @@ tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 
 2. **Rotate all credentials:**
    - Generate new `OPENCLAW_GATEWAY_TOKEN`
-   - Update `OPENCLAW_API_KEY`
+   - Update `S_LITELLM_API_KEY`
    - Regenerate channel credentials (WhatsApp, Telegram, etc.)
 
 3. **Audit logs:**

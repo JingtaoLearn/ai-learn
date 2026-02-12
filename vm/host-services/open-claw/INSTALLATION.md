@@ -58,7 +58,7 @@ Set required environment variables in `/etc/environment`:
 sudo vim /etc/environment
 
 # Add these lines:
-OPENCLAW_API_KEY="your-maestro-api-key"
+S_LITELLM_API_KEY="your-litellm-api-key"
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token"
 ```
 

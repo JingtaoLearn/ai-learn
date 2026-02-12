@@ -93,7 +93,7 @@ grep "agent model" /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 openclaw models list --all
 
 # Filter by provider
-openclaw models list --all | grep "maestro-anthropic"
+openclaw models list --all | grep "litellm"
 openclaw models list --all | grep "openai-codex"
 ```
 
@@ -103,16 +103,15 @@ openclaw models list --all | grep "openai-codex"
 # Check which model is being used
 journalctl --user -u openclaw-gateway --since "1 minute ago" | grep "agent model"
 
-# Test maestro-anthropic API directly
-curl -s -X POST https://maestro.us.jingtao.fun/api/anthropic/v1/messages \
-  -H "x-api-key: ${OPENCLAW_API_KEY}" \
+# Test LiteLLM API directly
+curl -s -X POST https://litellm.us.jingtao.fun/v1/chat/completions \
+  -H "Authorization: Bearer ${S_LITELLM_API_KEY}" \
   -H "Content-Type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "github-copilot/claude-opus-4.6-fast",
+    "model": "claude-sonnet-4.5",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 50
-  }' | jq -r '.content[0].text'
+  }' | jq -r '.choices[0].message.content'
 ```
 
 ## Channel Management
@@ -296,7 +295,7 @@ journalctl --user -u openclaw-gateway -n 50
 ```
 
 **Common issues:**
-- Missing environment variables: Check `OPENCLAW_API_KEY` and `OPENCLAW_GATEWAY_TOKEN`
+- Missing environment variables: Check `S_LITELLM_API_KEY` and `OPENCLAW_GATEWAY_TOKEN`
 - Port already in use: Check if port 18789 is available
 - Configuration error: Run `openclaw doctor --fix`
 
@@ -309,7 +308,7 @@ openclaw models list --all
 ```
 
 **Common issues:**
-- maestro-anthropic: Verify `OPENCLAW_API_KEY` is set correctly
+- litellm: Verify `S_LITELLM_API_KEY` is set correctly
 - openai-codex: Re-run OAuth: `openclaw configure --section model`
 - Network connectivity: Test API endpoints directly
 

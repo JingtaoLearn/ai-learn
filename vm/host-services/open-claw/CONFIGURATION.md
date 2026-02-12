@@ -12,6 +12,66 @@ The configuration file is stored at `~/.openclaw/openclaw.json` and symlinked to
 
 Edits in either location are reflected in both.
 
+## Model Providers
+
+OpenClaw uses the `litellm` provider to connect directly to a LiteLLM proxy. See [MODELS.md](MODELS.md) for full architecture details.
+
+```json
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "litellm": {
+        "baseUrl": "https://litellm.us.jingtao.fun/",
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "api": "openai-completions",
+        "models": [...]
+      },
+      "openai-codex": {
+        "baseUrl": "https://api.openai.com/v1",
+        "api": "openai-completions",
+        "models": [...]
+      }
+    }
+  }
+}
+```
+
+### litellm Provider Settings
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `baseUrl` | `https://litellm.us.jingtao.fun/` | LiteLLM proxy endpoint |
+| `apiKey` | `${S_LITELLM_API_KEY}` | API key for LiteLLM proxy authentication |
+| `api` | `openai-completions` | OpenAI-compatible API format |
+| `models` | `[...]` | Explicitly defined model catalog with metadata |
+
+### openai-codex Provider Settings
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `baseUrl` | `https://api.openai.com/v1` | Direct OpenAI API endpoint |
+| `api` | `openai-completions` | API format |
+| Authentication | OAuth | Via ChatGPT Plus subscription, no API key needed |
+
+### Model Fallback Chain
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "litellm/claude-opus-4.6-fast",
+        "fallbacks": [
+          "litellm/claude-sonnet-4.5",
+          "openai-codex/gpt-5.3-codex"
+        ]
+      }
+    }
+  }
+}
+```
+
 ## Maximum Permissions Configuration
 
 OpenClaw is configured with **maximum permissions** for full system access. This is intentional for development and learning environments.
@@ -74,8 +134,8 @@ All available tools are enabled in the configuration:
 These must be set in `/etc/environment` or your shell profile:
 
 ```bash
-# Maestro Anthropic API authentication
-OPENCLAW_API_KEY="your-maestro-api-key-here"
+# API key for LiteLLM proxy authentication
+S_LITELLM_API_KEY="your-api-key-here"
 
 # Gateway authentication token
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
@@ -83,7 +143,7 @@ OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
 
 | Variable | Purpose | Used By |
 |----------|---------|---------|
-| `OPENCLAW_API_KEY` | Authenticate with Maestro Anthropic API | maestro-anthropic provider |
+| `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider |
 | `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
 
 ### Generating Secure Tokens
@@ -96,77 +156,79 @@ openssl rand -hex 32
 openssl rand -base64 24
 ```
 
-## Configuration Sections
-
-### Model Providers
-
-Model providers are configured in the `providers` section:
+## Gateway Settings
 
 ```json
 {
-  "providers": {
-    "maestro-anthropic": {
-      "type": "anthropic",
-      "endpoint": "https://maestro.us.jingtao.fun/api/anthropic",
-      "apiKey": "${OPENCLAW_API_KEY}"
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
     },
-    "openai-codex": {
-      "type": "openai",
-      "auth": "oauth"
+    "remote": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
     }
   }
 }
 ```
 
-See [MODELS.md](MODELS.md) for detailed provider configuration.
-
-### Gateway Settings
-
-```json
-{
-  "gateway": {
-    "bind": "loopback",
-    "port": 18789,
-    "token": "${OPENCLAW_GATEWAY_TOKEN}"
-  }
-}
-```
-
 | Setting | Description |
 |---------|-------------|
+| `port` | Gateway listening port (18789) |
+| `mode` | Gateway mode (`"local"` for single-machine) |
 | `bind` | Network interface (`"loopback"` = 127.0.0.1 only) |
-| `port` | Gateway listening port |
-| `token` | Authentication token for gateway access |
+| `auth.token` | Authentication token for local gateway access |
+| `remote.token` | Authentication token for remote gateway access |
 
-### Logging Configuration
+## Agent Settings
 
 ```json
 {
-  "logging": {
-    "level": "info",
-    "file": "/tmp/openclaw/openclaw-{date}.log",
-    "redactSensitive": "tools"
+  "agents": {
+    "defaults": {
+      "workspace": "/home/jingtao/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    }
   }
 }
 ```
 
 | Setting | Description |
 |---------|-------------|
-| `level` | Log level: `debug`, `info`, `warn`, `error` |
-| `file` | Log file path (supports `{date}` placeholder) |
-| `redactSensitive` | What to redact: `none`, `tools`, `all` |
+| `workspace` | Default agent workspace directory |
+| `compaction.mode` | Context compaction strategy (`"safeguard"`) |
+| `maxConcurrent` | Maximum concurrent agents |
+| `subagents.maxConcurrent` | Maximum concurrent subagents per agent |
 
-## File Permissions
+## Plugins
 
-Secure your configuration with proper permissions:
-
-```bash
-# Secure directory
-chmod 700 ~/.openclaw
-
-# Secure config file
-chmod 600 ~/.openclaw/openclaw.json
+```json
+{
+  "plugins": {
+    "slots": {
+      "memory": "memory-core"
+    },
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      }
+    }
+  }
+}
 ```
+
+| Plugin | Description |
+|--------|-------------|
+| `memory-core` | Memory and embedding search plugin |
+| `whatsapp` | WhatsApp integration entry point |
 
 ## Validation
 
@@ -183,9 +245,21 @@ openclaw security audit --deep
 openclaw config show
 ```
 
+## File Permissions
+
+Secure your configuration with proper permissions:
+
+```bash
+# Secure directory
+chmod 700 ~/.openclaw
+
+# Secure config file
+chmod 600 ~/.openclaw/openclaw.json
+```
+
 ## Next Steps
 
-- **Model Setup**: See [MODELS.md](MODELS.md) for provider authentication
+- **Model Setup**: See [MODELS.md](MODELS.md) for provider architecture
 - **Security**: See [SECURITY.md](SECURITY.md) for security considerations
 - **Usage**: See [USAGE.md](USAGE.md) for common commands
 
