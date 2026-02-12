@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>待办清单</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+    .container {
+      width: 100%;
+      max-width: 480px;
+      align-self: flex-start;
+    }
+    h1 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 24px;
+      font-size: 28px;
+      font-weight: 600;
+    }
+    .input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .input-row input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-row input:focus { border-color: #4a90d9; }
+    .input-row button {
+      padding: 10px 20px;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+    .input-row button:hover { background: #357abd; }
+    ul { list-style: none; }
+    li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #fff;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      transition: opacity 0.2s;
+    }
+    li.done { opacity: 0.55; }
+    li.done .text { text-decoration: line-through; color: #999; }
+    li .text {
+      flex: 1;
+      font-size: 15px;
+      color: #333;
+      cursor: pointer;
+      word-break: break-word;
+    }
+    li .del {
+      background: none;
+      border: none;
+      color: #ccc;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 0 4px;
+      transition: color 0.2s;
+    }
+    li .del:hover { color: #e55; }
+    li .edit-input {
+      flex: 1;
+      font-size: 15px;
+      padding: 2px 6px;
+      border: 2px solid #4a90d9;
+      border-radius: 4px;
+      outline: none;
+      word-break: break-word;
+    }
+    .empty {
+      text-align: center;
+      color: #aaa;
+      padding: 32px 0;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>待办清单</h1>
+    <div class="input-row">
+      <input id="input" type="text" placeholder="添加新待办..." autofocus>
+      <button onclick="addTodo()">添加</button>
+    </div>
+    <ul id="list"></ul>
+  </div>
+  <script>
+    const KEY = 'todo-list';
+    let todos = JSON.parse(localStorage.getItem(KEY) || '[]');
+
+    function save() { localStorage.setItem(KEY, JSON.stringify(todos)); }
+
+    function render() {
+      const list = document.getElementById('list');
+      if (!todos.length) {
+        list.innerHTML = '<div class="empty">暂无待办事项</div>';
+        return;
+      }
+      list.innerHTML = todos.map((t, i) => `
+        <li class="${t.done ? 'done' : ''}">
+          <span class="text" onclick="toggle(${i})" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          <button class="del" onclick="del(${i})">✕</button>
+        </li>
+      `).join('');
+    }
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function addTodo() {
+      const input = document.getElementById('input');
+      const text = input.value.trim();
+      if (!text) return;
+      todos.unshift({ text, done: false });
+      input.value = '';
+      save();
+      render();
+    }
+
+    function toggle(i) { todos[i].done = !todos[i].done; save(); render(); }
+    function del(i) { todos.splice(i, 1); save(); render(); }
+
+    function startEdit(i, event) {
+      event.stopPropagation();
+      const li = document.querySelectorAll('#list li')[i];
+      const span = li.querySelector('.text');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'edit-input';
+      input.value = todos[i].text;
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+
+      let saved = false;
+      function saveEdit() {
+        if (saved) return;
+        saved = true;
+        const newText = input.value.trim();
+        if (newText && newText !== todos[i].text) {
+          todos[i].text = newText;
+          save();
+        }
+        render();
+      }
+
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') saveEdit();
+        if (e.key === 'Escape') { saved = true; render(); }
+      });
+      input.addEventListener('blur', saveEdit);
+    }
+
+    document.getElementById('input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') addTodo();
+    });
+
+    render();
+  </script>
+</body>
+</html>
