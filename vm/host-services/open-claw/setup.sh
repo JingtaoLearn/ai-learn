@@ -2,9 +2,14 @@
 set -euo pipefail
 
 # Setup script for Open Claw host service.
-# Creates symlinks from system locations to repo files and enables systemd services.
+# Validates environment, installs git hooks, and enables systemd services.
+#
+# NOTE: openclaw.example.json in this directory is a reference copy only.
+# The actual config lives at ~/.openclaw/openclaw.json and is managed by
+# the openclaw CLI (openclaw config / openclaw configure).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- Validate environment variables ---
 
@@ -22,58 +27,27 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# --- Helper: create symlink with backup ---
+# --- Install git hooks ---
 
-link_file() {
-  local src="$1"   # repo file (link target)
-  local dst="$2"   # system location (link name)
+echo "Installing git hooks..."
+HOOK_SRC="$REPO_ROOT/vm/scripts/hooks/pre-commit"
+HOOK_DST="$REPO_ROOT/.git/hooks/pre-commit"
 
-  mkdir -p "$(dirname "$dst")"
+if [[ -f "$HOOK_SRC" ]]; then
+  cp "$HOOK_SRC" "$HOOK_DST"
+  chmod +x "$HOOK_DST"
+  echo "  [ok] pre-commit hook installed"
+else
+  echo "  [skip] pre-commit hook source not found at $HOOK_SRC"
+fi
 
-  if [[ -L "$dst" ]]; then
-    local current_target
-    current_target="$(readlink -f "$dst")"
-    if [[ "$current_target" == "$src" ]]; then
-      echo "  [ok]   $dst -> $src (already linked)"
-      return
-    fi
-    echo "  [link] $dst -> $src (was -> $current_target)"
-    rm "$dst"
-  elif [[ -e "$dst" ]]; then
-    local backup="${dst}.bak.$(date +%Y%m%d%H%M%S)"
-    echo "  [bak]  $dst -> $backup"
-    mv "$dst" "$backup"
-    echo "  [link] $dst -> $src"
-  else
-    echo "  [link] $dst -> $src"
-  fi
-
-  ln -s "$src" "$dst"
-}
-
-# --- Create symlinks ---
-
-echo "Creating symlinks..."
-
-link_file "$SCRIPT_DIR/openclaw.json" \
-          "$HOME/.openclaw/openclaw.json"
-
-link_file "$SCRIPT_DIR/openai-compat-proxy.js" \
-          "$HOME/.openclaw/openai-compat-proxy.js"
-
-link_file "$SCRIPT_DIR/systemd/openclaw-proxy.service" \
-          "$HOME/.config/systemd/user/openclaw-proxy.service"
-
-# --- Reload and enable systemd services ---
+# --- Enable systemd services ---
 
 echo ""
 echo "Reloading systemd user daemon..."
 systemctl --user daemon-reload
 
-echo "Enabling and starting services..."
-systemctl --user enable --now openclaw-proxy.service
-
-# Gateway service is managed by openclaw CLI — only start if it exists
+# Gateway service is managed by openclaw CLI
 if systemctl --user list-unit-files openclaw-gateway.service &>/dev/null; then
   systemctl --user enable --now openclaw-gateway.service
   echo "  [ok] openclaw-gateway enabled and started"
@@ -83,4 +57,5 @@ fi
 
 echo ""
 echo "Done. Check status with:"
-echo "  systemctl --user status openclaw-gateway openclaw-proxy"
+echo "  openclaw status"
+echo "  systemctl --user status openclaw-gateway"
