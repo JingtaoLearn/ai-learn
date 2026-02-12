@@ -163,6 +163,25 @@ openclaw channels status
 openclaw status --deep
 ```
 
+## Known Issues
+
+### "missing" Tag Display
+
+When running `openclaw models list`, maestro-anthropic models show a "missing" tag even though they are fully functional.
+
+**This is expected behavior for custom API endpoints.**
+
+**Root Cause:** `maestro-anthropic` is a custom provider not in OpenClaw's built-in registry. See [MISSING-TAG-ANALYSIS.md](MISSING-TAG-ANALYSIS.md) for complete technical details.
+
+**Verification:**
+```bash
+# Models work normally
+openclaw agent --to +number --message "test" --local
+
+# Logs confirm usage
+journalctl --user -u openclaw-gateway -n 20 | grep "agent model"
+```
+
 ## Troubleshooting
 
 ### maestro-anthropic Issues
