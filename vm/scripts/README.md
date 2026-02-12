@@ -50,6 +50,23 @@ router-maestro --version
 
 `lib/common.sh` provides shared functions used by all scripts:
 
-- `require_root` — exit if not running as root
-- `check_flag <name>` — check if a step has already been executed
-- `set_flag <name>` — mark a step as completed
+- `require_root` - Exit if not running as root
+- `check_flag <name>` - Check if a step has already been executed
+- `set_flag <name>` - Mark a step as completed
+
+## Script Conventions
+
+- **Shebang**: `#!/usr/bin/env bash`
+- **Safety**: All scripts use `set -euo pipefail`
+- **Idempotency**: Flag-based execution prevents double-runs
+- **Numbering**: Prefix indicates execution order (00, 01, 02, etc.)
+
+## Next Steps
+
+After running initialization scripts:
+1. Deploy Docker services: [../docker-services/](../docker-services/)
+2. Configure host services: [../host-services/](../host-services/)
+
+---
+
+[← Back to VM Infrastructure](../)

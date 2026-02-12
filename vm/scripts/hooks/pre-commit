@@ -12,10 +12,30 @@ if [[ -f "$SYSTEM_CONFIG" ]] && git diff --cached --name-only | grep -q "$REPO_C
   echo "🔄 Syncing OpenClaw config from system to repo..."
   cp "$SYSTEM_CONFIG" "$REPO_CONFIG"
 
+  # Sanitize: replace expanded secrets with env var placeholders
+  if [[ -n "${OPENCLAW_API_KEY:-}" ]]; then
+    sed -i "s|${OPENCLAW_API_KEY}|\${OPENCLAW_API_KEY}|g" "$REPO_CONFIG"
+  fi
+  if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
+    sed -i "s|${OPENCLAW_GATEWAY_TOKEN}|\${OPENCLAW_GATEWAY_TOKEN}|g" "$REPO_CONFIG"
+  fi
+
+  # Strip runtime-only fields (meta, wizard)
+  python3 -c "
+import json
+with open('$REPO_CONFIG') as f:
+    cfg = json.load(f)
+cfg.pop('meta', None)
+cfg.pop('wizard', None)
+with open('$REPO_CONFIG', 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+" 2>/dev/null || echo "⚠️  Python cleanup skipped"
+
   # Re-stage if it was already staged
   if git diff --cached --name-only | grep -q "$REPO_CONFIG"; then
     git add "$REPO_CONFIG"
-    echo "✅ OpenClaw config synced and re-staged"
+    echo "✅ OpenClaw config synced, sanitized, and re-staged"
   fi
 fi
 
