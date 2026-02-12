@@ -1,0 +1,14 @@
+services:
+  share-board:
+    build: ./
+    environment:
+      - VIRTUAL_HOST=board.${S_DOMAIN}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=board.${S_DOMAIN}
+      - LETSENCRYPT_EMAIL=${S_EMAIL}
+      - BASE_URL=https://board.${S_DOMAIN}
+      - DATA_DIR=/app/data
+    volumes:
+      - ${S_CONTAINER_FOLDER_STATIC}/share-board:/app/data
+    restart: always
+    container_name: share-board
