@@ -161,6 +161,22 @@
     "entries": {
       "whatsapp": {
         "enabled": true
+      },
+      "discord": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "discord": {
+      "name": "Discord",
+      "enabled": true,
+      "token": "${S_DISCORD_BOT_TOKEN}",
+      "groupPolicy": "open",
+      "guilds": {
+        "*": {
+          "requireMention": false
+        }
       }
     }
   }
