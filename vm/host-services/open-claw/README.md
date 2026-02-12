@@ -55,10 +55,12 @@ open-claw/
 ├── SECURITY.md                            # Security considerations
 ├── USAGE.md                               # Usage guide and commands
 ├── setup.sh                               # Setup script (symlinks + services)
-├── openclaw.json                          # Gateway config (symlinked to ~/.openclaw/)
+├── openclaw.example.json                  # Example config (reference only, not used by OpenClaw)
 └── systemd/
     └── openclaw-gateway.service.example   # Gateway service template
 ```
+
+> **Note:** `openclaw.example.json` is a **sanitized example** of the configuration for reference purposes. The actual configuration used by OpenClaw lives at `~/.openclaw/openclaw.json`. Sensitive values (API keys, tokens) are replaced with `${ENV_VAR}` placeholders in the example.
 
 ## Key Features
 

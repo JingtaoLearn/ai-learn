@@ -1,4 +1,5 @@
 {
+  "_comment": "EXAMPLE CONFIG - For reference only. Actual config is at ~/.openclaw/openclaw.json. Sensitive values use ${ENV_VAR} placeholders.",
   "auth": {
     "profiles": {
       "litellm:default": {

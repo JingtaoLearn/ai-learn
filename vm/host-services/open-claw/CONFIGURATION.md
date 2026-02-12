@@ -4,13 +4,15 @@ Detailed explanation of `openclaw.json` settings and environment variables.
 
 ## Configuration File Location
 
-The configuration file is stored at `~/.openclaw/openclaw.json` and symlinked to this repository for version control:
+The actual configuration file used by OpenClaw is located at:
 
 ```
-~/.openclaw/openclaw.json ←→ vm/host-services/open-claw/openclaw.json
+~/.openclaw/openclaw.json
 ```
 
-Edits in either location are reflected in both.
+The file `openclaw.example.json` in this directory is a **sanitized reference copy** — it shows the configuration structure with placeholder values (e.g., `${S_LITELLM_API_KEY}`) instead of real secrets. It is **not** used by OpenClaw directly.
+
+To modify OpenClaw's configuration, edit `~/.openclaw/openclaw.json` directly or use `openclaw config`.
 
 ## Model Providers
 
