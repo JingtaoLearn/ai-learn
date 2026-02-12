@@ -7,5 +7,11 @@ services:
       - VIRTUAL_HOST=todo.${S_DOMAIN}
       - VIRTUAL_PORT=80
       - LETSENCRYPT_HOST=todo.${S_DOMAIN}
+      - DB_PATH=/data/todos.db
+    volumes:
+      - todo-data:/data
     expose:
       - "80"
+
+volumes:
+  todo-data:

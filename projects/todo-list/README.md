@@ -1,49 +1,75 @@
 # Todo List
 
-最简单的待办清单应用 — 单页 HTML，Docker 部署。
+A simple todo list application with backend data persistence.
 
-## 功能
+## Features
 
-- 添加待办事项（输入框 + 回车）
-- 标记完成（点击文字切换划线状态）
-- 删除待办
-- 数据持久化（localStorage）
+- Add, edit (double-click), and delete todos
+- Mark todos as completed
+- Filter by status (All / Active / Completed)
+- Dark/light theme toggle
+- Data persisted in SQLite database (survives browser/device changes)
+- Cross-browser and cross-device access to the same data
 
-## 技术栈
+## Tech Stack
 
-- 纯 HTML/CSS/JS，无依赖
-- Docker：nginx:alpine 托管静态文件
-- 通过 nginx-proxy 反向代理 + ACME 自动 HTTPS
+- **Frontend**: Pure HTML/CSS/JS, no dependencies
+- **Backend**: Node.js + Express + better-sqlite3
+- **Docker**: node:20-alpine with volume-mounted SQLite database
+- **HTTPS**: Via nginx-proxy reverse proxy + ACME auto-cert
 
-## 部署
+## Deployment
 
 ```bash
 cd projects/todo-list
 docker compose up -d --build
 ```
 
-部署后通过 nginx-proxy 自动反代，访问：**https://todo.${S_DOMAIN}**（如 `https://todo.ai.jingtao.fun`）
+Accessible at: **https://todo.${S_DOMAIN}** (e.g. `https://todo.ai.jingtao.fun`)
 
-### 环境变量（docker-compose.yml）
+### Environment Variables (docker-compose.yml)
 
-域名通过 `S_DOMAIN` 环境变量配置（需在系统环境中设置，如 `S_DOMAIN=ai.jingtao.fun`）。
+Domain is configured via the `S_DOMAIN` environment variable (set in system environment, e.g. `S_DOMAIN=ai.jingtao.fun`).
 
-| 变量 | 值 | 说明 |
-|------|-----|------|
-| `VIRTUAL_HOST` | `todo.${S_DOMAIN}` | nginx-proxy 反代域名 |
-| `VIRTUAL_PORT` | `80` | 容器内服务端口 |
-| `LETSENCRYPT_HOST` | `todo.${S_DOMAIN}` | ACME 自动签发 HTTPS 证书 |
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `VIRTUAL_HOST` | `todo.${S_DOMAIN}` | nginx-proxy reverse proxy domain |
+| `VIRTUAL_PORT` | `80` | Container service port |
+| `LETSENCRYPT_HOST` | `todo.${S_DOMAIN}` | ACME auto HTTPS certificate |
+| `DB_PATH` | `/data/todos.db` | SQLite database file path |
 
-## 文件结构
+### Data Persistence
+
+Todo data is stored in a SQLite database mounted as a Docker volume (`todo-data`). Data survives container restarts and rebuilds.
+
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/todos` | List all todos |
+| `POST` | `/api/todos` | Create a todo (`{ "text": "..." }`) |
+| `PUT` | `/api/todos/:id` | Update a todo (`{ "text": "...", "done": true/false }`) |
+| `DELETE` | `/api/todos/:id` | Delete a todo |
+
+## File Structure
 
 ```
 todo-list/
-├── README.md              # 本文件
-├── index.html             # 应用页面（HTML + CSS + JS）
-├── Dockerfile             # nginx:alpine + 静态文件
-└── docker-compose.yml     # Docker Compose 部署配置
+├── README.md              # This file
+├── server.js              # Express backend with SQLite
+├── package.json           # Node.js dependencies
+├── public/
+│   └── index.html         # Frontend (HTML + CSS + JS)
+├── Dockerfile             # node:20-alpine + app
+└── docker-compose.yml     # Docker Compose deployment config
 ```
 
-## 本地预览
+## Local Development
 
-直接用浏览器打开 `index.html` 即可，无需服务器。
+```bash
+cd projects/todo-list
+npm install
+node server.js
+```
+
+Then open http://localhost:80 in your browser.

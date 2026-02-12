@@ -2,3 +2,5 @@ README.md
 .git
 .gitignore
 .dockerignore
+node_modules
+data
