@@ -16,63 +16,7 @@ To modify OpenClaw's configuration, edit `~/.openclaw/openclaw.json` directly or
 
 ## Model Providers
 
-OpenClaw uses the `litellm` provider to connect directly to a LiteLLM proxy. See [MODELS.md](MODELS.md) for full architecture details.
-
-```json
-{
-  "models": {
-    "mode": "merge",
-    "providers": {
-      "litellm": {
-        "baseUrl": "https://litellm.us.jingtao.fun/",
-        "apiKey": "${S_LITELLM_API_KEY}",
-        "api": "openai-completions",
-        "models": [...]
-      },
-      "openai-codex": {
-        "baseUrl": "https://api.openai.com/v1",
-        "api": "openai-completions",
-        "models": [...]
-      }
-    }
-  }
-}
-```
-
-### litellm Provider Settings
-
-| Setting | Value | Description |
-|---------|-------|-------------|
-| `baseUrl` | `https://litellm.us.jingtao.fun/` | LiteLLM proxy endpoint |
-| `apiKey` | `${S_LITELLM_API_KEY}` | API key for LiteLLM proxy authentication |
-| `api` | `openai-completions` | OpenAI-compatible API format |
-| `models` | `[...]` | Explicitly defined model catalog with metadata |
-
-### openai-codex Provider Settings
-
-| Setting | Value | Description |
-|---------|-------|-------------|
-| `baseUrl` | `https://api.openai.com/v1` | Direct OpenAI API endpoint |
-| `api` | `openai-completions` | API format |
-| Authentication | OAuth | Via ChatGPT Plus subscription, no API key needed |
-
-### Model Fallback Chain
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "litellm/claude-opus-4.6-fast",
-        "fallbacks": [
-          "litellm/claude-sonnet-4.5",
-          "openai-codex/gpt-5.3-codex"
-        ]
-      }
-    }
-  }
-}
-```
+See [MODELS.md](MODELS.md) for detailed provider architecture, model catalog, and setup instructions.
 
 ## Maximum Permissions Configuration
 
@@ -167,7 +111,12 @@ openssl rand -base64 24
     "mode": "local",
     "bind": "loopback",
     "auth": {
+      "mode": "token",
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
     },
     "remote": {
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
@@ -181,7 +130,9 @@ openssl rand -base64 24
 | `port` | Gateway listening port (18789) |
 | `mode` | Gateway mode (`"local"` for single-machine) |
 | `bind` | Network interface (`"loopback"` = 127.0.0.1 only) |
+| `auth.mode` | Authentication mode (`"token"`) |
 | `auth.token` | Authentication token for local gateway access |
+| `tailscale.mode` | Tailscale integration (`"off"` = disabled) |
 | `remote.token` | Authentication token for remote gateway access |
 
 ## Agent Settings
@@ -190,6 +141,14 @@ openssl rand -base64 24
 {
   "agents": {
     "defaults": {
+      "model": {
+        "primary": "litellm/claude-opus-4.6-fast",
+        "fallbacks": [
+          "openai-codex/gpt-5.2",
+          "openai-codex/gpt-5.2-codex",
+          "openai-codex/gpt-5.3-codex"
+        ]
+      },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
@@ -205,6 +164,8 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
+| `model.primary` | Primary model (`litellm/claude-opus-4.6-fast`) |
+| `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
 | `maxConcurrent` | Maximum concurrent agents |
@@ -221,6 +182,9 @@ openssl rand -base64 24
     "entries": {
       "whatsapp": {
         "enabled": true
+      },
+      "discord": {
+        "enabled": true
       }
     }
   }
@@ -230,7 +194,35 @@ openssl rand -base64 24
 | Plugin | Description |
 |--------|-------------|
 | `memory-core` | Memory and embedding search plugin |
-| `whatsapp` | WhatsApp integration entry point |
+| `whatsapp` | WhatsApp messaging integration |
+| `discord` | Discord messaging integration |
+
+## Channels
+
+```json
+{
+  "channels": {
+    "discord": {
+      "name": "Discord",
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "groupPolicy": "open",
+      "guilds": {
+        "*": {
+          "requireMention": false
+        }
+      }
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable the channel |
+| `token` | Bot token for Discord |
+| `groupPolicy` | Guild access policy (`"open"` or `"allowlist"`) |
+| `guilds.*.requireMention` | Whether bot must be @mentioned to respond |
 
 ## Validation
 

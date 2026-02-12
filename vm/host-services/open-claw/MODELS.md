@@ -4,31 +4,34 @@ Configuration and setup for LLM model providers in OpenClaw.
 
 ## Provider Architecture
 
-OpenClaw uses the `litellm` provider to connect directly to a LiteLLM proxy (hosted at `litellm.us.jingtao.fun`), which routes requests to the upstream LLM backends.
+OpenClaw uses two providers:
+
+- **litellm** — connects to a LiteLLM proxy (`litellm.us.jingtao.fun`), which routes to upstream LLM backends (GitHub Copilot / Anthropic API)
+- **openai-codex** — connects directly to OpenAI API via OAuth (ChatGPT Plus subscription)
 
 ```
-OpenClaw (litellm/claude-opus-4.6-fast)
-    ↓ OpenAI-compatible API
-LiteLLM Proxy (litellm.us.jingtao.fun)
-    ↓ Routes to backend providers
-GitHub Copilot / Anthropic API
+OpenClaw Gateway (18789)
+    ├─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
+    │       ↓
+    │   GitHub Copilot / Anthropic API
+    │
+    └─→ OpenAI API (openai-codex, OAuth)         ← FALLBACK
 ```
 
-**Fallback chain:**
+**Fallback chain (as configured):**
 
 ```
-Primary:    litellm      → Claude Opus 4.6 Fast
-Fallback 1: litellm      → Claude Sonnet 4.5
-Fallback 2: openai-codex → GPT-5.3 Codex (OAuth)
+Primary:    litellm/claude-opus-4.6-fast
+Fallback 1: openai-codex/gpt-5.2
+Fallback 2: openai-codex/gpt-5.2-codex
+Fallback 3: openai-codex/gpt-5.3-codex
 ```
 
 ## Provider Configuration
 
 ### litellm (Primary)
 
-Connects directly to the LiteLLM proxy using the OpenAI-completions API format.
-
-**In `openclaw.json`:**
+Connects to the LiteLLM proxy using the OpenAI-completions API format.
 
 ```json
 {
@@ -67,7 +70,7 @@ Connects directly to the LiteLLM proxy using the OpenAI-completions API format.
 | Model Ref | Context | Input | Role |
 |-----------|---------|-------|------|
 | `litellm/claude-opus-4.6-fast` | 200k | text+image | Primary |
-| `litellm/claude-sonnet-4.5` | 200k | text+image | Fallback 1 |
+| `litellm/claude-sonnet-4.5` | 200k | text+image | Available (not in fallback chain) |
 
 ### openai-codex (Fallback)
 
@@ -79,7 +82,16 @@ Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus acco
     "openai-codex": {
       "baseUrl": "https://api.openai.com/v1",
       "api": "openai-completions",
-      "models": [...]
+      "models": [
+        {
+          "id": "gpt-5.3-codex",
+          "name": "GPT-5.3 Codex",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 200000,
+          "maxTokens": 16384
+        }
+      ]
     }
   }
 }
@@ -89,7 +101,9 @@ Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus acco
 
 | Model Ref | Context | Role |
 |-----------|---------|------|
-| `openai-codex/gpt-5.3-codex` | 200k | Fallback 2 |
+| `openai-codex/gpt-5.2` | — | Fallback 1 |
+| `openai-codex/gpt-5.2-codex` | — | Fallback 2 |
+| `openai-codex/gpt-5.3-codex` | 200k | Fallback 3 |
 
 ## Services
 

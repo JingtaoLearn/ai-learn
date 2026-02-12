@@ -6,8 +6,7 @@ Self-hosted AI agent framework with multi-model support. Runs directly on the VM
 
 OpenClaw provides an AI agent gateway with access to multiple LLM providers:
 - **Primary**: Claude Opus 4.6 Fast via LiteLLM proxy
-- **Fallback**: Claude Sonnet 4.5 via LiteLLM proxy
-- **Fallback**: GPT-5.3 Codex via OpenAI API (OAuth)
+- **Fallback**: GPT-5.2 / GPT-5.2-codex / GPT-5.3 Codex via OpenAI API (OAuth)
 
 The system runs as a systemd user service:
 - **openclaw-gateway** (port 18789) - Main agent gateway

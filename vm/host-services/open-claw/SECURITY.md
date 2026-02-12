@@ -81,7 +81,7 @@ This OpenClaw instance is configured with **maximum permissions** to provide ful
 
 ### Allowing Specific Users
 
-To grant elevated permissions to specific users, update `openclaw.json`:
+To grant elevated permissions to specific users, update `~/.openclaw/openclaw.json`:
 
 ```json
 {
