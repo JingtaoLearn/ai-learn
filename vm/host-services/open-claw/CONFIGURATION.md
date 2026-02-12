@@ -85,12 +85,16 @@ S_LITELLM_API_KEY="your-api-key-here"
 
 # Gateway authentication token
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
+
+# Discord bot token
+S_DISCORD_BOT_TOKEN="your-discord-bot-token-here"
 ```
 
 | Variable | Purpose | Used By |
 |----------|---------|---------|
 | `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider |
 | `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
+| `S_DISCORD_BOT_TOKEN` | Discord bot authentication | channels.discord config |
 
 ### Generating Secure Tokens
 
@@ -205,7 +209,7 @@ openssl rand -base64 24
     "discord": {
       "name": "Discord",
       "enabled": true,
-      "token": "${DISCORD_BOT_TOKEN}",
+      "token": "${S_DISCORD_BOT_TOKEN}",
       "groupPolicy": "open",
       "guilds": {
         "*": {
