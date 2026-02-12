@@ -19,24 +19,34 @@ Examples:
 
 ## Workflow
 
-### 1. Start a new feature
+**Prefer worktrees** over `git checkout` for branch switching. Worktrees let you work on multiple branches simultaneously without stashing or losing context.
 
-From an up-to-date `main` branch, create a feature branch:
+### 1. Start a new feature (with worktree)
+
+From the main repository, create a worktree with a new feature branch:
 
 ```bash
-git checkout main
-git pull
-git checkout -b feat/YYYYMMDD-feature-name
+cd ~/ai-learn
+git pull  # ensure main is up to date
+git worktree add ../ai-learn-<short-name> -b feat/YYYYMMDD-feature-name main
 ```
+
+This creates a new directory `~/ai-learn-<short-name>` checked out to the new branch, while `~/ai-learn` stays on its current branch undisturbed.
+
+**Naming convention for worktree directories:** `ai-learn-<short-name>` (sibling to the main repo).
 
 ### 2. Develop and commit
 
-Commit with clear messages in imperative mood:
+Work in the worktree directory:
 
 ```bash
+cd ~/ai-learn-<short-name>
+# make changes...
 git add <files>
 git commit -m "Add git workflow skill"
 ```
+
+Commit with clear messages in imperative mood.
 
 ### 3. Push and create a Pull Request
 
@@ -52,15 +62,43 @@ Before creating the PR, review all commits on the branch (`git log main..HEAD`) 
 
 ### 4. After PR is merged
 
-Switch back to `main`, pull latest, and clean up:
+Remove the worktree and clean up:
 
 ```bash
-git checkout main
-git pull
+cd ~/ai-learn
+git worktree remove ../ai-learn-<short-name>
 git branch -d feat/YYYYMMDD-feature-name
+git pull  # update main
 ```
 
 The remote branch is automatically deleted on merge (GitHub setting).
+
+### Worktree quick reference
+
+```bash
+git worktree list                          # list all worktrees
+git worktree add <path> -b <branch> main   # create worktree with new branch
+git worktree add <path> <existing-branch>  # create worktree for existing branch
+git worktree remove <path>                 # remove a worktree
+git worktree prune                         # clean up stale references
+```
+
+**Rules:**
+- A branch can only be checked out in one worktree at a time
+- Always `remove` worktrees when done (don't just `rm -rf`)
+- Worktrees share the same `.git` — commits are visible across all worktrees
+
+### Fallback: classic checkout (no worktree)
+
+If worktrees are impractical (e.g., simple one-off fix on same directory):
+
+```bash
+git checkout main && git pull
+git checkout -b feat/YYYYMMDD-feature-name
+# ... work, commit, push, PR ...
+git checkout main && git pull
+git branch -d feat/YYYYMMDD-feature-name
+```
 
 ## Git Hooks
 
