@@ -1,11 +1,11 @@
 services:
   todo-app:
     build: .
-    container_name: todo-app-issue11
+    container_name: todo-app
     restart: always
     environment:
-      - VIRTUAL_HOST=todo-issue11.${S_DOMAIN}
+      - VIRTUAL_HOST=todo.${S_DOMAIN}
       - VIRTUAL_PORT=80
-      - LETSENCRYPT_HOST=todo-issue11.${S_DOMAIN}
+      - LETSENCRYPT_HOST=todo.${S_DOMAIN}
     expose:
       - "80"
