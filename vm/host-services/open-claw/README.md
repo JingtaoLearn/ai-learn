@@ -25,14 +25,18 @@ The system runs as a systemd user service:
 # 1. Install OpenClaw
 npm install -g openclaw
 
-# 2. Set up configuration and services
-./setup.sh
+# 2. Run initial setup wizard
+openclaw configure
 
 # 3. Configure OAuth for OpenAI Codex (fallback provider)
 openclaw configure --section model
 
-# 4. Check status
-openclaw models list
+# 4. Install and start gateway service
+openclaw gateway install
+systemctl --user enable --now openclaw-gateway
+
+# 5. Check status
+openclaw status
 ```
 
 ## Architecture
@@ -53,7 +57,6 @@ open-claw/
 ├── MODELS.md                              # Model providers and routing
 ├── SECURITY.md                            # Security considerations
 ├── USAGE.md                               # Usage guide and commands
-├── setup.sh                               # Setup script (symlinks + services)
 ├── openclaw.example.json                  # Example config (reference only, not used by OpenClaw)
 └── systemd/
     └── openclaw-gateway.service.example   # Gateway service template

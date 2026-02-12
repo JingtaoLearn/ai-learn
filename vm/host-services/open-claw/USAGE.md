@@ -224,14 +224,17 @@ systemctl --user restart openclaw-gateway
 # 1. Install OpenClaw
 npm install -g openclaw
 
-# 2. Run setup script
-cd vm/host-services/open-claw
-./setup.sh
+# 2. Run initial setup
+openclaw configure
 
-# 3. Configure OAuth for OpenAI Codex (fallback provider)
+# 3. Install and start gateway
+openclaw gateway install
+systemctl --user enable --now openclaw-gateway
+
+# 4. Configure OAuth for OpenAI Codex (fallback provider)
 openclaw configure --section model
 
-# 4. Enable lingering
+# 5. Enable lingering
 sudo loginctl enable-linger "$USER"
 
 # 5. Check status
