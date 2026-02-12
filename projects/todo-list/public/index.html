@@ -422,11 +422,25 @@
   </div>
 
   <script>
-    const KEY = 'todo-list';
-    let todos = JSON.parse(localStorage.getItem(KEY) || '[]');
+    let todos = [];
     let currentFilter = 'all';
 
-    // Theme management
+    // API helpers
+    async function api(path, options = {}) {
+      const res = await fetch('/api' + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    async function loadTodos() {
+      todos = await api('/todos');
+      render();
+    }
+
+    // Theme management (stays in localStorage - per-browser preference)
     function getPreferredTheme() {
       const saved = localStorage.getItem('todo-theme');
       if (saved) return saved;
@@ -452,9 +466,7 @@
       }
     });
 
-    // Data
-    function save() { localStorage.setItem(KEY, JSON.stringify(todos)); }
-
+    // Stats and rendering
     function updateStats() {
       const total = todos.length;
       const done = todos.filter(t => t.done).length;
@@ -515,40 +527,46 @@
     }
 
     // Actions
-    function addTodo() {
+    async function addTodo() {
       const input = document.getElementById('input');
       const text = input.value.trim();
       if (!text) return;
-      todos.unshift({ text, done: false });
       input.value = '';
-      save();
+      const todo = await api('/todos', {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+      todos.unshift(todo);
       render();
     }
 
-    function toggle(i) {
-      todos[i].done = !todos[i].done;
-      save();
+    async function toggle(i) {
+      const todo = todos[i];
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ done: !todo.done }),
+      });
+      todos[i] = updated;
       render();
     }
 
-    function del(i) {
-      // Find the visible item index for animation
+    async function del(i) {
+      const todo = todos[i];
       const filtered = getFiltered();
-      const todoItem = todos[i];
-      const visibleIndex = filtered.indexOf(todoItem);
+      const visibleIndex = filtered.indexOf(todo);
       const items = document.querySelectorAll('#list li');
+
+      async function doDelete() {
+        await api('/todos/' + todo.id, { method: 'DELETE' });
+        todos.splice(i, 1);
+        render();
+      }
 
       if (visibleIndex >= 0 && items[visibleIndex]) {
         items[visibleIndex].classList.add('removing');
-        setTimeout(() => {
-          todos.splice(i, 1);
-          save();
-          render();
-        }, 280);
+        setTimeout(doDelete, 280);
       } else {
-        todos.splice(i, 1);
-        save();
-        render();
+        doDelete();
       }
     }
 
@@ -581,13 +599,16 @@
       input.select();
 
       let saved = false;
-      function saveEdit() {
+      async function saveEdit() {
         if (saved) return;
         saved = true;
         const newText = input.value.trim();
         if (newText && newText !== todos[i].text) {
-          todos[i].text = newText;
-          save();
+          const updated = await api('/todos/' + todos[i].id, {
+            method: 'PUT',
+            body: JSON.stringify({ text: newText }),
+          });
+          todos[i] = updated;
         }
         render();
       }
@@ -604,7 +625,8 @@
       if (e.key === 'Enter') addTodo();
     });
 
-    render();
+    // Initial load from API
+    loadTodos();
   </script>
 </body>
 </html>
