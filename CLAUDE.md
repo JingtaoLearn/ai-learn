@@ -1,150 +1,243 @@
 # CLAUDE.md
 
-## Repository Overview
+Instructions for Claude Code when working with this repository.
 
-ai-learn is a learning-oriented infrastructure repository under the JingtaoLearn GitHub organization. It manages server provisioning scripts, Docker-based services, host-deployed services, projects, and skill artifacts.
+## Repository Context
 
-This repository is AI-driven — primarily developed and maintained by Claude Code. All files must be written in English.
+**ai-learn** is a learning-oriented infrastructure repository managing server provisioning, Docker services, host services, self-developed projects, and reusable skills. This repository is AI-driven and maintained primarily by Claude Code.
+
+**Key principle**: All files must be written in **English** (code, comments, docs, commit messages).
 
 ## Repository Structure
 
 ```
 ai-learn/
 ├── vm/                  Server infrastructure
-│   ├── scripts/         Server initialization scripts (numbered for execution order)
-│   ├── docker-services/ Docker Compose services (two-level: category/service/)
-│   └── host-services/   Services deployed directly on VM host
-├── projects/            Standalone projects
-├── skills/              Reusable knowledge, scripts, templates
-└── docs/                Documentation (mirrors folder structure above)
+│   ├── scripts/         Numbered initialization scripts (00-, 01-, 02-...)
+│   ├── docker-services/ Pre-built image services (category/service/)
+│   └── host-services/   Services deployed directly on host
+├── projects/            Self-developed projects with custom builds
+└── skills/              Claude Code skills (symlinked to ~/.claude/skills/)
 ```
 
-## Conventions
-
-### Language
-
-All files, comments, variable names, commit messages, and documentation must be in **English**.
+## Coding Conventions
 
 ### Shell Scripts
 
+**Required patterns:**
 - Shebang: `#!/usr/bin/env bash`
-- Always use: `set -euo pipefail`
-- Source shared library: `source "$(dirname "$0")/lib/common.sh"`
-- Use flag-based idempotent execution (see `vm/scripts/lib/common.sh`)
-- Scripts requiring root must verify with `require_root`
-- Numbered prefixes indicate execution order: `00-`, `01-`, `02-`, `03-`
+- Safety: `set -euo pipefail`
+- Shared library: `source "$(dirname "$0")/lib/common.sh"`
+- Idempotency: Use flag-based execution (see `vm/scripts/lib/common.sh`)
+- Root check: Call `require_root` for scripts needing root
+- Naming: Numbered prefix for execution order (`00-`, `01-`, `02-`)
 
-### Docker Services
+**Reference**: `vm/scripts/lib/common.sh` for shared functions
 
-- Directory pattern: `vm/docker-services/<category>/<service-name>/`
-- Each service **must** have a `docker-compose.yml`
-- Optional supporting files: `nginx.conf`, `Dockerfile`, helper scripts, `README.md`
-- Use environment variables for domain, email, and paths:
-  - `S_DOMAIN` — Base domain
-  - `S_EMAIL` — Admin email for certificates
-  - `S_CONTAINER_FOLDER_ACTIVE` — Mount path for active/runtime data
-  - `S_CONTAINER_FOLDER_STATIC` — Mount path for persistent/static data
-- Services integrating with nginx-proxy must set `VIRTUAL_HOST`, `VIRTUAL_PORT`, and `LETSENCRYPT_HOST`
-- Use `docker compose` (V2 plugin syntax) in all scripts and documentation
-- Do **not** include the deprecated `version:` field in docker-compose.yml
+### Docker Services (Pre-built Images)
+
+**Purpose**: Deploy services using **existing Docker images** from public registries
+
+**Directory pattern**: `vm/docker-services/<category>/<service-name>/`
+
+**Required files:**
+- `docker-compose.yml` (mandatory)
+- `README.md` (recommended)
+
+**Environment variables** (use these in docker-compose.yml):
+- `S_DOMAIN` - Base domain
+- `S_EMAIL` - Admin email for SSL certificates
+- `S_CONTAINER_FOLDER_ACTIVE` - Mount path for runtime data
+- `S_CONTAINER_FOLDER_STATIC` - Mount path for persistent data
+
+**nginx-proxy integration** (for HTTPS services):
+```yaml
+environment:
+  VIRTUAL_HOST: myservice.${S_DOMAIN}
+  VIRTUAL_PORT: 80
+  LETSENCRYPT_HOST: myservice.${S_DOMAIN}
+  LETSENCRYPT_EMAIL: ${S_EMAIL}
+```
+
+**Rules:**
+- Use `docker compose` (V2 plugin syntax), not `docker-compose`
+- Do NOT include deprecated `version:` field in docker-compose.yml
+- Use pre-built images only (no custom Dockerfiles here)
+
+**Reference**: `vm/docker-services/README.md` for service catalog
+
+### Projects (Self-developed Applications)
+
+**Purpose**: Self-developed projects with **source code and custom Dockerfiles**
+
+**Directory pattern**: `projects/<project-name>/`
+
+**Key difference from docker-services**:
+| Aspect | docker-services | projects |
+|--------|----------------|----------|
+| Images | Pre-built public images | Custom-built via Dockerfile |
+| Source | Not included | Full source code included |
+| Build | `image: existing/image` | `build: ./` |
+
+**Required files:**
+- Source code in appropriate structure
+- `Dockerfile` for custom build
+- `docker-compose.yml` for deployment
+- `README.md` with project documentation
+
+**Integration**: Projects also use nginx-proxy for HTTPS (same pattern as docker-services)
+
+**Reference**: `projects/README.md` for guidelines
 
 ### Host Services
 
-- Directory pattern: `vm/host-services/<service-name>/`
-- Each service should have a `README.md` with installation and configuration instructions
-- Store configuration files and deployment scripts alongside the README
+**Purpose**: Services requiring direct host access (systemd, privileged operations)
 
-#### OpenClaw Configuration
+**Directory pattern**: `vm/host-services/<service-name>/`
 
-OpenClaw uses two model providers:
-- **openai-codex** (primary) — Direct OpenAI API via OAuth (ChatGPT Plus account), using GPT-5.3 Codex
-- **maestro** (fallback) — Local proxy to upstream LLM API, providing Claude models via GitHub Copilot
+**Required files:**
+- `README.md` with installation and configuration instructions
+- Configuration files and setup scripts
 
-OpenClaw is configured with **maximum permissions** for full functionality:
+**When to use**:
+- Service needs direct system access
+- Service manages system resources (systemd, networking)
+- Performance requires native execution
 
-**Tools enabled:** `exec`, `process`, `read`, `write`, `edit`, `apply_patch`, `browser`, `web`, `web_fetch`, `web_search`, `memory`, `cron`
+**Example**: OpenClaw (AI agent with full system permissions)
 
-**Security settings:**
-- `sandbox.mode: "off"` — No sandboxing for maximum flexibility
-- `elevated.enabled: true` — Allows privileged command execution
-- `gateway.bind: "loopback"` — Restricts gateway to localhost only (recommended)
-- `logging.redactSensitive: "tools"` — Redacts sensitive data in logs
-
-**Required environment variables:**
-- `OPENCLAW_API_KEY` — API key for maestro upstream model provider
-- `OPENCLAW_GATEWAY_TOKEN` — Authentication token for gateway access
-
-**OAuth authentication:**
-- The `openai-codex` provider uses OAuth (ChatGPT Plus account) instead of API keys
-- Run `openclaw configure --section model` to complete OAuth login
-
-**Configuration files:**
-- `vm/host-services/open-claw/openclaw.json` — Main configuration (symlinked to `~/.openclaw/openclaw.json`)
-- `vm/host-services/open-claw/SECURITY.md` — Security guide and best practices
-- `vm/host-services/open-claw/README.md` — Installation and usage documentation
-
-**Security considerations:**
-- This configuration grants extensive system access
-- Only use in trusted environments
-- Keep `gateway.bind: "loopback"` to prevent external access
-- Use strong random tokens (64+ characters)
-- Secure file permissions: `chmod 700 ~/.openclaw && chmod 600 ~/.openclaw/openclaw.json`
-- Review `SECURITY.md` for detailed security implications and hardening steps
+**Reference**: `vm/host-services/README.md` for service list
 
 ### Environment Variables
 
-- **Never** commit `.env` files containing real secrets
-- Always provide `.env.example` with placeholder values
-- Server-level env vars are set in `/etc/environment` via `vm/scripts/03-set-env.sh`
+**Rules:**
+- NEVER commit `.env` files with real secrets
+- ALWAYS provide `.env.example` with placeholder values
+- Server-level vars go in `/etc/environment` via `vm/scripts/03-set-env.sh`
 
 ### Documentation
 
-- Every folder with meaningful content should have a `README.md`
-- Documentation in `docs/` mirrors the main folder structure
+**Rules:**
+- Every significant folder MUST have a `README.md`
+- Place README directly alongside the code it documents
+- Use relative links between documentation files
 - All documentation in English
+
+**Reference**: Root `README.md` for navigation structure
 
 ### Git Workflow
 
-- The `main` branch is protected — all changes go through Pull Requests
-- Use `.gitkeep` to preserve empty directories needed at runtime
-- Never commit: certificates, private keys, `.env` files with real values, runtime data
-- Commit message style: imperative mood, concise first line
+**Branch protection**:
+- `main` branch is protected
+- All changes via Pull Requests
 
-## How To: Add a New Docker Service
+**Commit conventions**:
+- Message style: Imperative mood, concise first line
+- Example: "Add docker service for pastebin" not "Added a pastebin service"
 
-1. Choose or create a category folder under `vm/docker-services/`
-2. Create service folder: `vm/docker-services/<category>/<service-name>/`
-3. Add `docker-compose.yml` using env vars for `S_DOMAIN`, `S_CONTAINER_FOLDER_*`
-4. If the service needs nginx-proxy integration, add `VIRTUAL_HOST` and `LETSENCRYPT_HOST`
-5. Add any supporting configs (`nginx.conf`, etc.)
-6. Add a `README.md` in the service folder with deployment instructions
-7. Update `vm/docker-services/README.md` service list
+**Never commit**:
+- Certificates, private keys
+- `.env` files with real values
+- Runtime data or logs
+- Large binaries
 
-## How To: Add a New Project
+**Use `.gitkeep`**: For empty directories needed at runtime
 
-1. Create folder: `projects/<project-name>/`
-2. Include a `README.md` with purpose, setup, and usage
-3. Add corresponding docs in `docs/projects/` if needed
+**Reference**: `skills/git-workflow/` for detailed workflow
 
-## How To: Add a New Skill
+## Adding New Components
 
-1. Create folder or file: `skills/<topic>/`
-2. Include clear descriptions and usage examples
-3. Skills should be self-contained and reusable
+### Adding a Docker Service
 
-## Common Commands
+1. Choose or create category: `vm/docker-services/<category>/`
+2. Create service directory: `vm/docker-services/<category>/<service-name>/`
+3. Add `docker-compose.yml` using `S_DOMAIN`, `S_EMAIL`, etc.
+4. For HTTPS: Add `VIRTUAL_HOST` and `LETSENCRYPT_HOST` variables
+5. Add supporting configs if needed
+6. Create `README.md` in service folder
+7. Update `vm/docker-services/README.md` service table
+
+**Remember**: Use pre-built images only, no custom Dockerfiles
+
+### Adding a Project
+
+1. Create directory: `projects/<project-name>/`
+2. Add source code in appropriate structure
+3. Create `Dockerfile` for custom build
+4. Create `docker-compose.yml` for deployment
+5. Add `README.md` with project documentation
+6. Update `projects/README.md` project table
+
+**Remember**: Projects contain source code and custom builds
+
+### Adding a Skill
+
+1. Create directory: `skills/<skill-name>/`
+2. Add `SKILL.md` with YAML frontmatter:
+   ```yaml
+   ---
+   name: skill-name
+   description: What this skill does and when to use it.
+   ---
+   ```
+3. Add optional directories: `scripts/`, `references/`, `assets/`
+4. Run `./skills/install-skills.sh` to symlink
+5. Update `skills/README.md` skills table
+
+**Reference**: `skills/README.md` for skill structure
+
+### Adding a Host Service
+
+1. Create directory: `vm/host-services/<service-name>/`
+2. Add comprehensive documentation (split into multiple files if complex)
+3. Include configuration files and setup scripts
+4. Use systemd user services when appropriate
+5. Update `vm/host-services/README.md` service table
+
+**Example**: See `vm/host-services/open-claw/` for multi-file documentation structure
+
+## Common Patterns
+
+### Multi-file Documentation
+
+For complex services, split documentation into focused files:
+- `README.md` - Overview and navigation
+- `INSTALLATION.md` - Installation steps
+- `CONFIGURATION.md` - Configuration reference
+- `USAGE.md` - Usage guide
+- `SECURITY.md` - Security considerations
+
+**Example**: `vm/host-services/open-claw/`
+
+### Service Management (systemd)
 
 ```bash
-# Start a docker service
+# User services (no sudo needed)
+systemctl --user status <service>
+systemctl --user start/stop/restart <service>
+journalctl --user -u <service> -f
+```
+
+### Docker Service Management
+
+```bash
 cd vm/docker-services/<category>/<service-name>
 docker compose up -d
-
-# Check service status
 docker compose ps
-
-# View logs
 docker compose logs -f
-
-# Reload nginx-proxy config
-./vm/docker-services/https-proxy-services/nginx-proxy/reload-conf.sh
+docker compose down
 ```
+
+## Important References
+
+**Detailed configurations and guides:**
+- OpenClaw configuration: `vm/host-services/open-claw/`
+- Environment setup: `vm/scripts/03-set-env.sh`
+- Script conventions: `vm/scripts/lib/common.sh`
+- Docker service patterns: `vm/docker-services/README.md`
+- Project guidelines: `projects/README.md`
+- Skills system: `skills/README.md`
+
+**User-facing documentation:**
+- Repository overview: `README.md`
+- Git workflow: `skills/git-workflow/SKILL.md`

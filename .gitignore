@@ -49,6 +49,11 @@ venv/
 # Node
 node_modules/
 
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+
 # Claude Code personal settings
 .claude/
 
