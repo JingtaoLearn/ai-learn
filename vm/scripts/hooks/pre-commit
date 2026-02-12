@@ -3,8 +3,12 @@ set -euo pipefail
 
 # Pre-commit hook: Sync OpenClaw config and scan for secrets with Gitleaks
 
+# Load environment variables (not available in non-login shells like git hooks)
+# shellcheck disable=SC1091
+[[ -f /etc/environment ]] && set -a && source /etc/environment && set +a
+
 SYSTEM_CONFIG="$HOME/.openclaw/openclaw.json"
-REPO_CONFIG="vm/host-services/open-claw/openclaw.json"
+REPO_CONFIG="vm/host-services/open-claw/openclaw.example.json"
 
 # ==================== Auto-sync OpenClaw Config ====================
 
@@ -13,22 +17,27 @@ if [[ -f "$SYSTEM_CONFIG" ]] && git diff --cached --name-only | grep -q "$REPO_C
   cp "$SYSTEM_CONFIG" "$REPO_CONFIG"
 
   # Sanitize: replace expanded secrets with env var placeholders
-  if [[ -n "${OPENCLAW_API_KEY:-}" ]]; then
-    sed -i "s|${OPENCLAW_API_KEY}|\${OPENCLAW_API_KEY}|g" "$REPO_CONFIG"
+  if [[ -n "${S_LITELLM_API_KEY:-}" ]]; then
+    sed -i "s|${S_LITELLM_API_KEY}|\${S_LITELLM_API_KEY}|g" "$REPO_CONFIG"
   fi
   if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
     sed -i "s|${OPENCLAW_GATEWAY_TOKEN}|\${OPENCLAW_GATEWAY_TOKEN}|g" "$REPO_CONFIG"
   fi
 
-  # Strip runtime-only fields (meta, wizard)
+  # Strip runtime-only fields (meta, wizard) and add example comment
   python3 -c "
-import json
+import json, collections
 with open('$REPO_CONFIG') as f:
     cfg = json.load(f)
 cfg.pop('meta', None)
 cfg.pop('wizard', None)
+cfg.pop('_comment', None)
+# Insert _comment at the top
+ordered = collections.OrderedDict()
+ordered['_comment'] = 'EXAMPLE CONFIG - For reference only. Actual config is at ~/.openclaw/openclaw.json. Sensitive values use \${ENV_VAR} placeholders.'
+ordered.update(cfg)
 with open('$REPO_CONFIG', 'w') as f:
-    json.dump(cfg, f, indent=2)
+    json.dump(ordered, f, indent=2)
     f.write('\n')
 " 2>/dev/null || echo "⚠️  Python cleanup skipped"
 

@@ -81,7 +81,7 @@ This OpenClaw instance is configured with **maximum permissions** to provide ful
 
 ### Allowing Specific Users
 
-To grant elevated permissions to specific users, update `openclaw.json`:
+To grant elevated permissions to specific users, update `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -167,7 +167,7 @@ npm update -g openclaw
 openclaw gateway install
 
 # Restart services
-systemctl --user restart openclaw-gateway openclaw-proxy
+systemctl --user restart openclaw-gateway
 ```
 
 ## Monitoring and Incident Response
@@ -177,9 +177,6 @@ systemctl --user restart openclaw-gateway openclaw-proxy
 ```bash
 # Watch gateway logs
 journalctl --user -u openclaw-gateway -f
-
-# Watch proxy logs
-journalctl --user -u openclaw-proxy -f
 
 # Check daily logs
 tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
@@ -198,12 +195,11 @@ tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 1. **Contain immediately:**
    ```bash
    systemctl --user stop openclaw-gateway
-   systemctl --user stop openclaw-proxy
    ```
 
 2. **Rotate all credentials:**
    - Generate new `OPENCLAW_GATEWAY_TOKEN`
-   - Update `OPENCLAW_API_KEY`
+   - Update `S_LITELLM_API_KEY`
    - Regenerate channel credentials (WhatsApp, Telegram, etc.)
 
 3. **Audit logs:**

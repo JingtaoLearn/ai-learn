@@ -7,9 +7,8 @@ Common commands, workflows, and troubleshooting for OpenClaw.
 ### Check Status
 
 ```bash
-# Check gateway and proxy status
+# Check gateway status
 systemctl --user status openclaw-gateway
-systemctl --user status openclaw-proxy
 
 # Check OpenClaw status
 openclaw status
@@ -21,21 +20,17 @@ openclaw status --deep
 ### Start/Stop Services
 
 ```bash
-# Start services
+# Start
 systemctl --user start openclaw-gateway
-systemctl --user start openclaw-proxy
 
-# Stop services
+# Stop
 systemctl --user stop openclaw-gateway
-systemctl --user stop openclaw-proxy
 
-# Restart services
+# Restart
 systemctl --user restart openclaw-gateway
-systemctl --user restart openclaw-proxy
 
 # Enable at boot
 systemctl --user enable openclaw-gateway
-systemctl --user enable openclaw-proxy
 ```
 
 ### Enable Lingering
@@ -61,16 +56,6 @@ journalctl --user -u openclaw-gateway --since "1 hour ago"
 journalctl --user -u openclaw-gateway | grep -i error
 ```
 
-### Proxy Logs
-
-```bash
-# Follow proxy logs
-journalctl --user -u openclaw-proxy -f
-
-# View recent proxy logs
-journalctl --user -u openclaw-proxy --since "1 hour ago"
-```
-
 ### Application Logs
 
 ```bash
@@ -93,7 +78,7 @@ grep "agent model" /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 openclaw models list --all
 
 # Filter by provider
-openclaw models list --all | grep "maestro-anthropic"
+openclaw models list --all | grep "litellm"
 openclaw models list --all | grep "openai-codex"
 ```
 
@@ -103,16 +88,15 @@ openclaw models list --all | grep "openai-codex"
 # Check which model is being used
 journalctl --user -u openclaw-gateway --since "1 minute ago" | grep "agent model"
 
-# Test maestro-anthropic API directly
-curl -s -X POST https://maestro.us.jingtao.fun/api/anthropic/v1/messages \
-  -H "x-api-key: ${OPENCLAW_API_KEY}" \
+# Test LiteLLM API directly
+curl -s -X POST https://litellm.us.jingtao.fun/v1/chat/completions \
+  -H "Authorization: Bearer ${S_LITELLM_API_KEY}" \
   -H "Content-Type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "github-copilot/claude-opus-4.6-fast",
+    "model": "claude-sonnet-4.5",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 50
-  }' | jq -r '.content[0].text'
+  }' | jq -r '.choices[0].message.content'
 ```
 
 ## Channel Management
@@ -228,8 +212,8 @@ openclaw --version
 # Regenerate gateway service file
 openclaw gateway install
 
-# Restart services
-systemctl --user restart openclaw-gateway openclaw-proxy
+# Restart service
+systemctl --user restart openclaw-gateway
 ```
 
 ## Common Workflows
@@ -240,14 +224,17 @@ systemctl --user restart openclaw-gateway openclaw-proxy
 # 1. Install OpenClaw
 npm install -g openclaw
 
-# 2. Run setup script
-cd vm/host-services/open-claw
-./setup.sh
+# 2. Run initial setup
+openclaw configure
 
-# 3. Configure OAuth
+# 3. Install and start gateway
+openclaw gateway install
+systemctl --user enable --now openclaw-gateway
+
+# 4. Configure OAuth for OpenAI Codex (fallback provider)
 openclaw configure --section model
 
-# 4. Enable lingering
+# 5. Enable lingering
 sudo loginctl enable-linger "$USER"
 
 # 5. Check status
@@ -283,7 +270,7 @@ openclaw doctor --fix
 openclaw models list --all
 
 # 5. Check environment variables
-env | grep OPENCLAW
+env | grep -E "S_LITELLM|OPENCLAW"
 ```
 
 ## Troubleshooting
@@ -296,7 +283,7 @@ journalctl --user -u openclaw-gateway -n 50
 ```
 
 **Common issues:**
-- Missing environment variables: Check `OPENCLAW_API_KEY` and `OPENCLAW_GATEWAY_TOKEN`
+- Missing environment variables: Check `S_LITELLM_API_KEY` and `OPENCLAW_GATEWAY_TOKEN`
 - Port already in use: Check if port 18789 is available
 - Configuration error: Run `openclaw doctor --fix`
 
@@ -309,7 +296,7 @@ openclaw models list --all
 ```
 
 **Common issues:**
-- maestro-anthropic: Verify `OPENCLAW_API_KEY` is set correctly
+- litellm: Verify `S_LITELLM_API_KEY` is set correctly
 - openai-codex: Re-run OAuth: `openclaw configure --section model`
 - Network connectivity: Test API endpoints directly
 
@@ -323,7 +310,7 @@ openssl rand -hex 32
 # Update environment variable
 sudo vim /etc/environment  # Update OPENCLAW_GATEWAY_TOKEN
 
-# Restart services
+# Restart service
 systemctl --user restart openclaw-gateway
 ```
 
@@ -344,7 +331,7 @@ du -sh /tmp/openclaw/
 **Solutions:**
 - Reduce logging level: `openclaw config set logging.level warn`
 - Clean old logs: `rm /tmp/openclaw/openclaw-*.log`
-- Restart services: `systemctl --user restart openclaw-gateway`
+- Restart service: `systemctl --user restart openclaw-gateway`
 
 ## Next Steps
 

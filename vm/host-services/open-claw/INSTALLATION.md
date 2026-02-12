@@ -58,7 +58,7 @@ Set required environment variables in `/etc/environment`:
 sudo vim /etc/environment
 
 # Add these lines:
-OPENCLAW_API_KEY="your-maestro-api-key"
+S_LITELLM_API_KEY="your-litellm-api-key"
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token"
 ```
 
@@ -70,21 +70,18 @@ To generate a secure random token:
 openssl rand -hex 32
 ```
 
-### 3. Run Setup Script
-
-The setup script creates symlinks and configures systemd services:
+### 3. Install and Start Gateway
 
 ```bash
-cd vm/host-services/open-claw
-./setup.sh
-```
+# Install gateway service
+openclaw gateway install
 
-The script will:
-1. Validate environment variables are set
-2. Back up existing configuration files
-3. Create symlinks from `~/.openclaw/` to repo files
-4. Install and enable the gateway service
-5. Optionally install the proxy service
+# Enable and start
+systemctl --user enable --now openclaw-gateway
+
+# Enable lingering so it runs after logout
+sudo loginctl enable-linger "$USER"
+```
 
 ### 4. Configure OAuth for OpenAI Codex
 

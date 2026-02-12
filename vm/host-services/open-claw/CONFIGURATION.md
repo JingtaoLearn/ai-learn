@@ -4,13 +4,19 @@ Detailed explanation of `openclaw.json` settings and environment variables.
 
 ## Configuration File Location
 
-The configuration file is stored at `~/.openclaw/openclaw.json` and symlinked to this repository for version control:
+The actual configuration file used by OpenClaw is located at:
 
 ```
-~/.openclaw/openclaw.json ←→ vm/host-services/open-claw/openclaw.json
+~/.openclaw/openclaw.json
 ```
 
-Edits in either location are reflected in both.
+The file `openclaw.example.json` in this directory is a **sanitized reference copy** — it shows the configuration structure with placeholder values (e.g., `${S_LITELLM_API_KEY}`) instead of real secrets. It is **not** used by OpenClaw directly.
+
+To modify OpenClaw's configuration, edit `~/.openclaw/openclaw.json` directly or use `openclaw config`.
+
+## Model Providers
+
+See [MODELS.md](MODELS.md) for detailed provider architecture, model catalog, and setup instructions.
 
 ## Maximum Permissions Configuration
 
@@ -74,8 +80,8 @@ All available tools are enabled in the configuration:
 These must be set in `/etc/environment` or your shell profile:
 
 ```bash
-# Maestro Anthropic API authentication
-OPENCLAW_API_KEY="your-maestro-api-key-here"
+# API key for LiteLLM proxy authentication
+S_LITELLM_API_KEY="your-api-key-here"
 
 # Gateway authentication token
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
@@ -83,7 +89,7 @@ OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
 
 | Variable | Purpose | Used By |
 |----------|---------|---------|
-| `OPENCLAW_API_KEY` | Authenticate with Maestro Anthropic API | maestro-anthropic provider |
+| `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider |
 | `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
 
 ### Generating Secure Tokens
@@ -96,77 +102,127 @@ openssl rand -hex 32
 openssl rand -base64 24
 ```
 
-## Configuration Sections
-
-### Model Providers
-
-Model providers are configured in the `providers` section:
+## Gateway Settings
 
 ```json
 {
-  "providers": {
-    "maestro-anthropic": {
-      "type": "anthropic",
-      "endpoint": "https://maestro.us.jingtao.fun/api/anthropic",
-      "apiKey": "${OPENCLAW_API_KEY}"
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
     },
-    "openai-codex": {
-      "type": "openai",
-      "auth": "oauth"
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "remote": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
     }
   }
 }
 ```
 
-See [MODELS.md](MODELS.md) for detailed provider configuration.
-
-### Gateway Settings
-
-```json
-{
-  "gateway": {
-    "bind": "loopback",
-    "port": 18789,
-    "token": "${OPENCLAW_GATEWAY_TOKEN}"
-  }
-}
-```
-
 | Setting | Description |
 |---------|-------------|
+| `port` | Gateway listening port (18789) |
+| `mode` | Gateway mode (`"local"` for single-machine) |
 | `bind` | Network interface (`"loopback"` = 127.0.0.1 only) |
-| `port` | Gateway listening port |
-| `token` | Authentication token for gateway access |
+| `auth.mode` | Authentication mode (`"token"`) |
+| `auth.token` | Authentication token for local gateway access |
+| `tailscale.mode` | Tailscale integration (`"off"` = disabled) |
+| `remote.token` | Authentication token for remote gateway access |
 
-### Logging Configuration
+## Agent Settings
 
 ```json
 {
-  "logging": {
-    "level": "info",
-    "file": "/tmp/openclaw/openclaw-{date}.log",
-    "redactSensitive": "tools"
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "litellm/claude-opus-4.6-fast",
+        "fallbacks": [
+          "openai-codex/gpt-5.2",
+          "openai-codex/gpt-5.2-codex",
+          "openai-codex/gpt-5.3-codex"
+        ]
+      },
+      "workspace": "/home/jingtao/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    }
   }
 }
 ```
 
 | Setting | Description |
 |---------|-------------|
-| `level` | Log level: `debug`, `info`, `warn`, `error` |
-| `file` | Log file path (supports `{date}` placeholder) |
-| `redactSensitive` | What to redact: `none`, `tools`, `all` |
+| `model.primary` | Primary model (`litellm/claude-opus-4.6-fast`) |
+| `model.fallbacks` | Fallback models in priority order |
+| `workspace` | Default agent workspace directory |
+| `compaction.mode` | Context compaction strategy (`"safeguard"`) |
+| `maxConcurrent` | Maximum concurrent agents |
+| `subagents.maxConcurrent` | Maximum concurrent subagents per agent |
 
-## File Permissions
+## Plugins
 
-Secure your configuration with proper permissions:
-
-```bash
-# Secure directory
-chmod 700 ~/.openclaw
-
-# Secure config file
-chmod 600 ~/.openclaw/openclaw.json
+```json
+{
+  "plugins": {
+    "slots": {
+      "memory": "memory-core"
+    },
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      },
+      "discord": {
+        "enabled": true
+      }
+    }
+  }
+}
 ```
+
+| Plugin | Description |
+|--------|-------------|
+| `memory-core` | Memory and embedding search plugin |
+| `whatsapp` | WhatsApp messaging integration |
+| `discord` | Discord messaging integration |
+
+## Channels
+
+```json
+{
+  "channels": {
+    "discord": {
+      "name": "Discord",
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "groupPolicy": "open",
+      "guilds": {
+        "*": {
+          "requireMention": false
+        }
+      }
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable the channel |
+| `token` | Bot token for Discord |
+| `groupPolicy` | Guild access policy (`"open"` or `"allowlist"`) |
+| `guilds.*.requireMention` | Whether bot must be @mentioned to respond |
 
 ## Validation
 
@@ -183,9 +239,21 @@ openclaw security audit --deep
 openclaw config show
 ```
 
+## File Permissions
+
+Secure your configuration with proper permissions:
+
+```bash
+# Secure directory
+chmod 700 ~/.openclaw
+
+# Secure config file
+chmod 600 ~/.openclaw/openclaw.json
+```
+
 ## Next Steps
 
-- **Model Setup**: See [MODELS.md](MODELS.md) for provider authentication
+- **Model Setup**: See [MODELS.md](MODELS.md) for provider architecture
 - **Security**: See [SECURITY.md](SECURITY.md) for security considerations
 - **Usage**: See [USAGE.md](USAGE.md) for common commands
 
