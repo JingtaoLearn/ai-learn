@@ -7,9 +7,8 @@ Common commands, workflows, and troubleshooting for OpenClaw.
 ### Check Status
 
 ```bash
-# Check gateway and proxy status
+# Check gateway status
 systemctl --user status openclaw-gateway
-systemctl --user status openclaw-proxy
 
 # Check OpenClaw status
 openclaw status
@@ -21,21 +20,17 @@ openclaw status --deep
 ### Start/Stop Services
 
 ```bash
-# Start services
+# Start
 systemctl --user start openclaw-gateway
-systemctl --user start openclaw-proxy
 
-# Stop services
+# Stop
 systemctl --user stop openclaw-gateway
-systemctl --user stop openclaw-proxy
 
-# Restart services
+# Restart
 systemctl --user restart openclaw-gateway
-systemctl --user restart openclaw-proxy
 
 # Enable at boot
 systemctl --user enable openclaw-gateway
-systemctl --user enable openclaw-proxy
 ```
 
 ### Enable Lingering
@@ -59,16 +54,6 @@ journalctl --user -u openclaw-gateway --since "1 hour ago"
 
 # Search for errors
 journalctl --user -u openclaw-gateway | grep -i error
-```
-
-### Proxy Logs
-
-```bash
-# Follow proxy logs
-journalctl --user -u openclaw-proxy -f
-
-# View recent proxy logs
-journalctl --user -u openclaw-proxy --since "1 hour ago"
 ```
 
 ### Application Logs
@@ -227,8 +212,8 @@ openclaw --version
 # Regenerate gateway service file
 openclaw gateway install
 
-# Restart services
-systemctl --user restart openclaw-gateway openclaw-proxy
+# Restart service
+systemctl --user restart openclaw-gateway
 ```
 
 ## Common Workflows
@@ -243,7 +228,7 @@ npm install -g openclaw
 cd vm/host-services/open-claw
 ./setup.sh
 
-# 3. Configure OAuth
+# 3. Configure OAuth for OpenAI Codex (fallback provider)
 openclaw configure --section model
 
 # 4. Enable lingering
@@ -282,7 +267,7 @@ openclaw doctor --fix
 openclaw models list --all
 
 # 5. Check environment variables
-env | grep OPENCLAW
+env | grep -E "S_LITELLM|OPENCLAW"
 ```
 
 ## Troubleshooting
@@ -322,7 +307,7 @@ openssl rand -hex 32
 # Update environment variable
 sudo vim /etc/environment  # Update OPENCLAW_GATEWAY_TOKEN
 
-# Restart services
+# Restart service
 systemctl --user restart openclaw-gateway
 ```
 
@@ -343,7 +328,7 @@ du -sh /tmp/openclaw/
 **Solutions:**
 - Reduce logging level: `openclaw config set logging.level warn`
 - Clean old logs: `rm /tmp/openclaw/openclaw-*.log`
-- Restart services: `systemctl --user restart openclaw-gateway`
+- Restart service: `systemctl --user restart openclaw-gateway`
 
 ## Next Steps
 
