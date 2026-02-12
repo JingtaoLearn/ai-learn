@@ -1,27 +1,27 @@
-# Share Board - 分享白板
+# Share Board
 
-## 核心需求
-一个用于分享的白板应用，像老师讲课一样使用。
+## Overview
+A whiteboard application for sharing visual content, similar to how a teacher uses a board during a lecture.
 
-### 功能要求
-1. **图片** - 可以在白板中放置图片（拖拽/上传）
-2. **文字** - 可以在白板中添加文字内容
-3. **手绘** - 能直接画线、圈圈、点点，自由绘制
-4. **分享链接** - 生成一个带 ID 的分享链接
-5. **无需鉴权** - 拿到链接的人直接能看，不需要登录
+### Features
+1. **Images** — Place images on the board (drag & drop / upload)
+2. **Text** — Add text content anywhere on the board
+3. **Freehand Drawing** — Draw lines, circles, dots — free-form sketching
+4. **Share Link** — Generate a shareable link with a unique ID
+5. **No Authentication** — Anyone with the link can view the board, no login required
 
-### 设计约束
-- 要好看，现代化 UI
-- 简单易用，不要过度复杂
-- 需要设计：技术栈、架构、数据存储方案、部署方案
+### Design Constraints
+- Modern, clean UI
+- Simple and easy to use — no unnecessary complexity
+- Requires: tech stack selection, architecture, data storage, and deployment design
 
-## 交付物
-请输出一份完整的技术设计文档 (DESIGN.md)，包括：
-1. 技术栈选择及理由
-2. 系统架构图（文字描述）
-3. 核心功能设计
-4. 数据模型设计
-5. API 设计
-6. 前端组件设计
-7. 部署方案
-8. 项目目录结构
+## Deliverables
+A complete technical design document (DESIGN.md) covering:
+1. Tech stack selection and rationale
+2. System architecture (text-based diagram)
+3. Core feature design
+4. Data model design
+5. API design
+6. Frontend component design
+7. Deployment plan
+8. Project directory structure
