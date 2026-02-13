@@ -19,9 +19,17 @@ db.exec(`
     text TEXT NOT NULL,
     done INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    priority TEXT NOT NULL DEFAULT 'medium'
   )
 `);
+
+// Migration: add priority column if it doesn't exist
+try {
+  db.exec(`ALTER TABLE todos ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'`);
+} catch (e) {
+  // Column already exists, ignore
+}
 
 // Middleware
 app.use(express.json());
@@ -29,40 +37,45 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // GET /api/todos - list all todos ordered by sort_order desc (newest first)
 app.get('/api/todos', (req, res) => {
-  const rows = db.prepare('SELECT id, text, done, sort_order FROM todos ORDER BY sort_order DESC, id DESC').all();
-  const todos = rows.map(r => ({ id: r.id, text: r.text, done: !!r.done }));
+  const rows = db.prepare('SELECT id, text, done, sort_order, priority FROM todos ORDER BY sort_order DESC, id DESC').all();
+  const todos = rows.map(r => ({ id: r.id, text: r.text, done: !!r.done, priority: r.priority }));
   res.json(todos);
 });
 
 // POST /api/todos - create a new todo
 app.post('/api/todos', (req, res) => {
-  const { text } = req.body;
+  const { text, priority } = req.body;
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Text is required' });
   }
+  const validPriorities = ['high', 'medium', 'low'];
+  const todoPriority = validPriorities.includes(priority) ? priority : 'medium';
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM todos').get();
   const nextOrder = maxOrder.max_order + 1;
-  const result = db.prepare('INSERT INTO todos (text, done, sort_order) VALUES (?, 0, ?)').run(text.trim(), nextOrder);
-  res.status(201).json({ id: result.lastInsertRowid, text: text.trim(), done: false });
+  const result = db.prepare('INSERT INTO todos (text, done, sort_order, priority) VALUES (?, 0, ?, ?)').run(text.trim(), nextOrder, todoPriority);
+  res.status(201).json({ id: result.lastInsertRowid, text: text.trim(), done: false, priority: todoPriority });
 });
 
 // PUT /api/todos/:id - update a todo (text and/or done status)
 app.put('/api/todos/:id', (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT id, text, done FROM todos WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, text, done, priority FROM todos WHERE id = ?').get(id);
   if (!existing) {
     return res.status(404).json({ error: 'Todo not found' });
   }
 
   const text = req.body.text !== undefined ? req.body.text : existing.text;
   const done = req.body.done !== undefined ? (req.body.done ? 1 : 0) : existing.done;
+  const validPriorities = ['high', 'medium', 'low'];
+  const priority = req.body.priority !== undefined && validPriorities.includes(req.body.priority)
+    ? req.body.priority : existing.priority;
 
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Text cannot be empty' });
   }
 
-  db.prepare('UPDATE todos SET text = ?, done = ? WHERE id = ?').run(text.trim(), done, id);
-  res.json({ id: Number(id), text: text.trim(), done: !!done });
+  db.prepare('UPDATE todos SET text = ?, done = ?, priority = ? WHERE id = ?').run(text.trim(), done, priority, id);
+  res.json({ id: Number(id), text: text.trim(), done: !!done, priority });
 });
 
 // DELETE /api/todos/:id - delete a todo
