@@ -347,6 +347,75 @@
       opacity: 0.6;
     }
 
+    /* Search bar */
+    .search-bar {
+      position: relative;
+      margin-bottom: 16px;
+    }
+
+    .search-bar input {
+      width: 100%;
+      padding: 10px 36px 10px 38px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-family: inherit;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .search-bar input::placeholder { color: var(--text-muted); }
+
+    .search-bar input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 14px;
+      pointer-events: none;
+      transition: color var(--transition);
+    }
+
+    .search-bar input:focus ~ .search-icon {
+      color: var(--accent);
+    }
+
+    .search-clear {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--transition);
+    }
+
+    .search-clear:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .search-bar.has-query .search-clear {
+      display: flex;
+    }
+
     /* Filter tabs */
     .filters {
       display: flex;
@@ -413,6 +482,11 @@
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
       <button onclick="addTodo()">Add</button>
     </div>
+    <div class="search-bar" id="search-bar">
+      <input id="search" type="text" placeholder="Search todos..." aria-label="Search todos">
+      <span class="search-icon">&#128269;</span>
+      <button class="search-clear" onclick="clearSearch()" title="Clear search (Esc)" aria-label="Clear search">&#10005;</button>
+    </div>
     <div class="filters">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
       <button class="filter-btn" data-filter="active" onclick="setFilter('active')">Active</button>
@@ -424,6 +498,7 @@
   <script>
     let todos = [];
     let currentFilter = 'all';
+    let searchQuery = '';
 
     // API helpers
     async function api(path, options = {}) {
@@ -483,9 +558,14 @@
     }
 
     function getFiltered() {
-      if (currentFilter === 'active') return todos.filter(t => !t.done);
-      if (currentFilter === 'done') return todos.filter(t => t.done);
-      return todos;
+      let result = todos;
+      if (currentFilter === 'active') result = result.filter(t => !t.done);
+      else if (currentFilter === 'done') result = result.filter(t => t.done);
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        result = result.filter(t => t.text.toLowerCase().includes(q));
+      }
+      return result;
     }
 
     function render() {
@@ -494,15 +574,21 @@
       updateStats();
 
       if (!filtered.length) {
-        const msgs = {
-          all: 'No todos yet. Add one above!',
-          active: 'No active todos. Great job!',
-          done: 'No completed todos yet.'
-        };
+        let msg;
+        if (searchQuery) {
+          msg = 'No todos match your search.';
+        } else {
+          const msgs = {
+            all: 'No todos yet. Add one above!',
+            active: 'No active todos. Great job!',
+            done: 'No completed todos yet.'
+          };
+          msg = msgs[currentFilter];
+        }
         list.innerHTML = `
           <div class="empty">
-            <div class="empty-icon">${currentFilter === 'active' ? '&#127881;' : '&#128221;'}</div>
-            ${msgs[currentFilter]}
+            <div class="empty-icon">${searchQuery ? '&#128270;' : (currentFilter === 'active' ? '&#127881;' : '&#128221;')}</div>
+            ${msg}
           </div>`;
         return;
       }
@@ -624,6 +710,27 @@
     document.getElementById('input').addEventListener('keydown', e => {
       if (e.key === 'Enter') addTodo();
     });
+
+    // Search
+    const searchInput = document.getElementById('search');
+    const searchBar = document.getElementById('search-bar');
+
+    searchInput.addEventListener('input', () => {
+      searchQuery = searchInput.value.trim();
+      searchBar.classList.toggle('has-query', searchQuery.length > 0);
+      render();
+    });
+
+    searchInput.addEventListener('keydown', e => {
+      if (e.key === 'Escape') clearSearch();
+    });
+
+    function clearSearch() {
+      searchInput.value = '';
+      searchQuery = '';
+      searchBar.classList.remove('has-query');
+      render();
+    }
 
     // Initial load from API
     loadTodos();
