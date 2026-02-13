@@ -23,6 +23,13 @@ db.exec(`
   )
 `);
 
+const MAX_TODO_LENGTH = 500;
+
+// Strip HTML tags to prevent stored XSS
+function sanitize(str) {
+  return str.replace(/<[^>]*>/g, '');
+}
+
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -40,10 +47,17 @@ app.post('/api/todos', (req, res) => {
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Text is required' });
   }
+  const cleaned = sanitize(text.trim());
+  if (!cleaned) {
+    return res.status(400).json({ error: 'Text is required' });
+  }
+  if (cleaned.length > MAX_TODO_LENGTH) {
+    return res.status(400).json({ error: `Text must be ${MAX_TODO_LENGTH} characters or less` });
+  }
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM todos').get();
   const nextOrder = maxOrder.max_order + 1;
-  const result = db.prepare('INSERT INTO todos (text, done, sort_order) VALUES (?, 0, ?)').run(text.trim(), nextOrder);
-  res.status(201).json({ id: result.lastInsertRowid, text: text.trim(), done: false });
+  const result = db.prepare('INSERT INTO todos (text, done, sort_order) VALUES (?, 0, ?)').run(cleaned, nextOrder);
+  res.status(201).json({ id: result.lastInsertRowid, text: cleaned, done: false });
 });
 
 // PUT /api/todos/:id - update a todo (text and/or done status)
@@ -61,8 +75,16 @@ app.put('/api/todos/:id', (req, res) => {
     return res.status(400).json({ error: 'Text cannot be empty' });
   }
 
-  db.prepare('UPDATE todos SET text = ?, done = ? WHERE id = ?').run(text.trim(), done, id);
-  res.json({ id: Number(id), text: text.trim(), done: !!done });
+  const cleaned = sanitize(text.trim());
+  if (!cleaned) {
+    return res.status(400).json({ error: 'Text cannot be empty' });
+  }
+  if (cleaned.length > MAX_TODO_LENGTH) {
+    return res.status(400).json({ error: `Text must be ${MAX_TODO_LENGTH} characters or less` });
+  }
+
+  db.prepare('UPDATE todos SET text = ?, done = ? WHERE id = ?').run(cleaned, done, id);
+  res.json({ id: Number(id), text: cleaned, done: !!done });
 });
 
 // DELETE /api/todos/:id - delete a todo

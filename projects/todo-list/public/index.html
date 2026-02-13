@@ -140,8 +140,7 @@
       margin-bottom: 28px;
     }
 
-    .input-area input {
-      flex: 1;
+    .input-area input[type="text"] {
       padding: 14px 18px;
       border: 2px solid var(--border);
       border-radius: var(--radius);
@@ -181,6 +180,28 @@
     }
 
     .input-area button:active { transform: translateY(0); }
+
+    /* Character counter */
+    .input-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .input-wrapper input {
+      width: 100%;
+    }
+
+    .char-count {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: right;
+      transition: color var(--transition);
+    }
+
+    .char-count.near-limit { color: #f59e0b; }
+    .char-count.at-limit { color: var(--delete-color); }
 
     /* Todo list */
     ul { list-style: none; }
@@ -410,7 +431,10 @@
     </div>
     <div class="stats" id="stats"></div>
     <div class="input-area">
-      <input id="input" type="text" placeholder="What needs to be done?" autofocus>
+      <div class="input-wrapper">
+        <input id="input" type="text" placeholder="What needs to be done?" maxlength="500" autofocus>
+        <div class="char-count" id="char-count"></div>
+      </div>
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="filters">
@@ -424,6 +448,7 @@
   <script>
     let todos = [];
     let currentFilter = 'all';
+    const MAX_LENGTH = 500;
 
     // API helpers
     async function api(path, options = {}) {
@@ -434,6 +459,24 @@
       if (res.status === 204) return null;
       return res.json();
     }
+
+    // Character counter
+    function updateCharCount(input, counterEl) {
+      const len = input.value.length;
+      if (len === 0) {
+        counterEl.textContent = '';
+        counterEl.className = 'char-count';
+        return;
+      }
+      counterEl.textContent = len + ' / ' + MAX_LENGTH;
+      counterEl.className = 'char-count';
+      if (len >= MAX_LENGTH) counterEl.classList.add('at-limit');
+      else if (len >= MAX_LENGTH * 0.9) counterEl.classList.add('near-limit');
+    }
+
+    document.getElementById('input').addEventListener('input', function() {
+      updateCharCount(this, document.getElementById('char-count'));
+    });
 
     async function loadTodos() {
       todos = await api('/todos');
@@ -531,11 +574,14 @@
       const input = document.getElementById('input');
       const text = input.value.trim();
       if (!text) return;
+      if (text.length > MAX_LENGTH) return;
       input.value = '';
+      updateCharCount(input, document.getElementById('char-count'));
       const todo = await api('/todos', {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
+      if (todo && todo.error) return;
       todos.unshift(todo);
       render();
     }
@@ -594,6 +640,7 @@
       input.type = 'text';
       input.className = 'edit-input';
       input.value = todos[i].text;
+      input.maxLength = MAX_LENGTH;
       span.replaceWith(input);
       input.focus();
       input.select();
@@ -603,7 +650,8 @@
         if (saved) return;
         saved = true;
         const newText = input.value.trim();
-        if (newText && newText !== todos[i].text) {
+        if (!newText || newText.length > MAX_LENGTH) { render(); return; }
+        if (newText !== todos[i].text) {
           const updated = await api('/todos/' + todos[i].id, {
             method: 'PUT',
             body: JSON.stringify({ text: newText }),
