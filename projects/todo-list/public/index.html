@@ -380,6 +380,55 @@
       font-weight: 600;
     }
 
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      top: 24px;
+      right: 24px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .toast {
+      padding: 12px 20px;
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      border: 1px solid var(--delete-color);
+      color: var(--delete-color);
+      font-size: 14px;
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
+      pointer-events: auto;
+      animation: toastIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      max-width: 360px;
+      word-break: break-word;
+    }
+
+    .toast.removing {
+      animation: toastOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    @keyframes toastIn {
+      from {
+        opacity: 0;
+        transform: translateX(40px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    @keyframes toastOut {
+      to {
+        opacity: 0;
+        transform: translateX(40px);
+      }
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -401,6 +450,7 @@
   </style>
 </head>
 <body>
+  <div class="toast-container" id="toast-container"></div>
   <div class="container">
     <div class="header">
       <h1>Todo List</h1>
@@ -425,19 +475,42 @@
     let todos = [];
     let currentFilter = 'all';
 
+    // Toast notifications
+    function showToast(message, duration = 4000) {
+      console.error('[Todo App]', message);
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add('removing');
+        toast.addEventListener('animationend', () => toast.remove());
+      }, duration);
+    }
+
     // API helpers
     async function api(path, options = {}) {
       const res = await fetch('/api' + path, {
         headers: { 'Content-Type': 'application/json' },
         ...options,
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const msg = (body && body.error) || `Request failed (${res.status})`;
+        throw new Error(msg);
+      }
       if (res.status === 204) return null;
       return res.json();
     }
 
     async function loadTodos() {
-      todos = await api('/todos');
-      render();
+      try {
+        todos = await api('/todos');
+        render();
+      } catch (e) {
+        showToast('Failed to load todos. Please refresh the page.');
+      }
     }
 
     // Theme management (stays in localStorage - per-browser preference)
@@ -532,22 +605,31 @@
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
-      const todo = await api('/todos', {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      });
-      todos.unshift(todo);
-      render();
+      try {
+        const todo = await api('/todos', {
+          method: 'POST',
+          body: JSON.stringify({ text }),
+        });
+        todos.unshift(todo);
+        render();
+      } catch (e) {
+        input.value = text;
+        showToast('Failed to add todo. Please try again.');
+      }
     }
 
     async function toggle(i) {
       const todo = todos[i];
-      const updated = await api('/todos/' + todo.id, {
-        method: 'PUT',
-        body: JSON.stringify({ done: !todo.done }),
-      });
-      todos[i] = updated;
-      render();
+      try {
+        const updated = await api('/todos/' + todo.id, {
+          method: 'PUT',
+          body: JSON.stringify({ done: !todo.done }),
+        });
+        todos[i] = updated;
+        render();
+      } catch (e) {
+        showToast('Failed to update todo. Please try again.');
+      }
     }
 
     async function del(i) {
@@ -557,9 +639,14 @@
       const items = document.querySelectorAll('#list li');
 
       async function doDelete() {
-        await api('/todos/' + todo.id, { method: 'DELETE' });
-        todos.splice(i, 1);
-        render();
+        try {
+          await api('/todos/' + todo.id, { method: 'DELETE' });
+          todos.splice(i, 1);
+          render();
+        } catch (e) {
+          render();
+          showToast('Failed to delete todo. Please try again.');
+        }
       }
 
       if (visibleIndex >= 0 && items[visibleIndex]) {
@@ -604,11 +691,15 @@
         saved = true;
         const newText = input.value.trim();
         if (newText && newText !== todos[i].text) {
-          const updated = await api('/todos/' + todos[i].id, {
-            method: 'PUT',
-            body: JSON.stringify({ text: newText }),
-          });
-          todos[i] = updated;
+          try {
+            const updated = await api('/todos/' + todos[i].id, {
+              method: 'PUT',
+              body: JSON.stringify({ text: newText }),
+            });
+            todos[i] = updated;
+          } catch (e) {
+            showToast('Failed to save edit. Please try again.');
+          }
         }
         render();
       }
