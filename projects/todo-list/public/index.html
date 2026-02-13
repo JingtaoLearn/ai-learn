@@ -137,7 +137,7 @@
     .input-area {
       display: flex;
       gap: 10px;
-      margin-bottom: 28px;
+      margin-bottom: 12px;
     }
 
     .input-area input {
@@ -187,7 +187,7 @@
 
     li {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 12px;
       padding: 14px 16px;
       background: var(--bg-card);
@@ -230,6 +230,7 @@
       flex-shrink: 0;
       transition: all var(--transition);
       background: transparent;
+      margin-top: 1px;
     }
 
     .checkbox:hover {
@@ -308,6 +309,7 @@
       justify-content: center;
       transition: all var(--transition);
       flex-shrink: 0;
+      margin-top: 1px;
     }
 
     li:hover .del { color: var(--text-muted); }
@@ -380,6 +382,200 @@
       font-weight: 600;
     }
 
+    /* Tag input area */
+    .tag-input-area {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      min-height: 36px;
+    }
+
+    .tag-input-area label {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+
+    .tag-chips-input {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+      padding: 6px 10px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      transition: border-color var(--transition), box-shadow var(--transition);
+      cursor: text;
+    }
+
+    .tag-chips-input:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .tag-chips-input input {
+      border: none;
+      outline: none;
+      background: transparent;
+      font-size: 13px;
+      font-family: inherit;
+      color: var(--text-primary);
+      min-width: 80px;
+      flex: 1;
+      padding: 4px 0;
+    }
+
+    .tag-chips-input input::placeholder { color: var(--text-muted); }
+
+    /* Tag chip (shared between input and todo items) */
+    .tag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.6;
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
+
+    .tag-chip-removable {
+      cursor: default;
+    }
+
+    .tag-chip .tag-remove {
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      opacity: 0.6;
+      transition: opacity var(--transition);
+      margin-left: 2px;
+    }
+
+    .tag-chip .tag-remove:hover { opacity: 1; }
+
+    /* Tag colors */
+    .tag-color-0 { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
+    .tag-color-1 { background: rgba(16, 185, 129, 0.12); color: #10b981; }
+    .tag-color-2 { background: rgba(245, 158, 11, 0.12); color: #d97706; }
+    .tag-color-3 { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+    .tag-color-4 { background: rgba(139, 92, 246, 0.12); color: #8b5cf6; }
+    .tag-color-5 { background: rgba(236, 72, 153, 0.12); color: #ec4899; }
+    .tag-color-6 { background: rgba(14, 165, 233, 0.12); color: #0ea5e9; }
+    .tag-color-7 { background: rgba(20, 184, 166, 0.12); color: #14b8a6; }
+
+    [data-theme="dark"] .tag-color-0 { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+    [data-theme="dark"] .tag-color-1 { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+    [data-theme="dark"] .tag-color-2 { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
+    [data-theme="dark"] .tag-color-3 { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+    [data-theme="dark"] .tag-color-4 { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; }
+    [data-theme="dark"] .tag-color-5 { background: rgba(236, 72, 153, 0.2); color: #f9a8d4; }
+    [data-theme="dark"] .tag-color-6 { background: rgba(14, 165, 233, 0.2); color: #7dd3fc; }
+    [data-theme="dark"] .tag-color-7 { background: rgba(20, 184, 166, 0.2); color: #5eead4; }
+
+    /* Tag filter bar */
+    .tag-filter-bar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .tag-filter-bar:empty { display: none; }
+
+    .tag-filter-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1.5px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      font-family: inherit;
+    }
+
+    .tag-filter-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .tag-filter-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .tag-filter-btn .tag-count {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    /* Tags row in todo item */
+    .todo-tags {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .todo-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* Autocomplete dropdown */
+    .autocomplete-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-md);
+      z-index: 100;
+      max-height: 160px;
+      overflow-y: auto;
+      margin-top: 4px;
+    }
+
+    .autocomplete-dropdown:empty { display: none; }
+
+    .autocomplete-item {
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text-primary);
+      transition: background var(--transition);
+    }
+
+    .autocomplete-item:hover,
+    .autocomplete-item.highlighted {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .tag-chips-input-wrapper {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -413,17 +609,38 @@
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
       <button onclick="addTodo()">Add</button>
     </div>
+    <div class="tag-input-area">
+      <label>Tags:</label>
+      <div class="tag-chips-input-wrapper">
+        <div class="tag-chips-input" id="tag-chips-input" onclick="document.getElementById('tag-input').focus()">
+          <input id="tag-input" type="text" placeholder="Add tags...">
+        </div>
+        <div class="autocomplete-dropdown" id="tag-autocomplete"></div>
+      </div>
+    </div>
     <div class="filters">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
       <button class="filter-btn" data-filter="active" onclick="setFilter('active')">Active</button>
       <button class="filter-btn" data-filter="done" onclick="setFilter('done')">Completed</button>
     </div>
+    <div class="tag-filter-bar" id="tag-filter-bar"></div>
     <ul id="list"></ul>
   </div>
 
   <script>
     let todos = [];
+    let allTags = [];
     let currentFilter = 'all';
+    let currentTagFilter = null;
+    let pendingTags = [];
+    let autocompleteIndex = -1;
+
+    // Tag color helper - consistent color per tag name
+    function tagColorClass(tag) {
+      let hash = 0;
+      for (let i = 0; i < tag.length; i++) hash = ((hash << 5) - hash + tag.charCodeAt(i)) | 0;
+      return 'tag-color-' + (Math.abs(hash) % 8);
+    }
 
     // API helpers
     async function api(path, options = {}) {
@@ -437,7 +654,13 @@
 
     async function loadTodos() {
       todos = await api('/todos');
+      await loadTags();
       render();
+    }
+
+    async function loadTags() {
+      allTags = await api('/tags');
+      renderTagFilter();
     }
 
     // Theme management (stays in localStorage - per-browser preference)
@@ -466,6 +689,121 @@
       }
     });
 
+    // Pending tags management (for the add-todo form)
+    function renderPendingTags() {
+      const container = document.getElementById('tag-chips-input');
+      const input = document.getElementById('tag-input');
+      // Remove existing chips
+      container.querySelectorAll('.tag-chip').forEach(el => el.remove());
+      // Insert chips before input
+      pendingTags.forEach((tag, idx) => {
+        const chip = document.createElement('span');
+        chip.className = `tag-chip tag-chip-removable ${tagColorClass(tag)}`;
+        chip.innerHTML = `${esc(tag)}<span class="tag-remove" data-idx="${idx}">&times;</span>`;
+        container.insertBefore(chip, input);
+      });
+    }
+
+    document.getElementById('tag-chips-input').addEventListener('click', e => {
+      if (e.target.classList.contains('tag-remove')) {
+        const idx = parseInt(e.target.dataset.idx);
+        pendingTags.splice(idx, 1);
+        renderPendingTags();
+      }
+    });
+
+    // Tag input handling
+    const tagInput = document.getElementById('tag-input');
+    tagInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        addPendingTag(tagInput.value);
+      } else if (e.key === 'Backspace' && !tagInput.value && pendingTags.length) {
+        pendingTags.pop();
+        renderPendingTags();
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateAutocomplete(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Escape') {
+        hideAutocomplete();
+      }
+    });
+
+    tagInput.addEventListener('input', () => {
+      showAutocomplete(tagInput.value.trim());
+    });
+
+    tagInput.addEventListener('blur', () => {
+      // Delay to allow click on autocomplete item
+      setTimeout(() => hideAutocomplete(), 150);
+    });
+
+    function addPendingTag(value) {
+      // If autocomplete item is highlighted, use that
+      if (autocompleteIndex >= 0) {
+        const items = document.querySelectorAll('.autocomplete-item');
+        if (items[autocompleteIndex]) {
+          value = items[autocompleteIndex].textContent;
+        }
+      }
+      const tag = value.replace(/,/g, '').trim().toLowerCase();
+      if (tag && !pendingTags.includes(tag)) {
+        pendingTags.push(tag);
+        renderPendingTags();
+      }
+      tagInput.value = '';
+      hideAutocomplete();
+    }
+
+    // Autocomplete
+    function showAutocomplete(query) {
+      const dropdown = document.getElementById('tag-autocomplete');
+      autocompleteIndex = -1;
+      if (!query) { dropdown.innerHTML = ''; return; }
+      const suggestions = allTags
+        .map(t => t.name)
+        .filter(name => name.includes(query.toLowerCase()) && !pendingTags.includes(name));
+      if (!suggestions.length) { dropdown.innerHTML = ''; return; }
+      dropdown.innerHTML = suggestions.slice(0, 6).map((s, i) =>
+        `<div class="autocomplete-item" data-value="${esc(s)}">${esc(s)}</div>`
+      ).join('');
+      dropdown.querySelectorAll('.autocomplete-item').forEach(el => {
+        el.addEventListener('mousedown', e => {
+          e.preventDefault();
+          addPendingTag(el.dataset.value);
+          tagInput.focus();
+        });
+      });
+    }
+
+    function hideAutocomplete() {
+      document.getElementById('tag-autocomplete').innerHTML = '';
+      autocompleteIndex = -1;
+    }
+
+    function navigateAutocomplete(dir) {
+      const items = document.querySelectorAll('.autocomplete-item');
+      if (!items.length) return;
+      autocompleteIndex = Math.max(-1, Math.min(items.length - 1, autocompleteIndex + dir));
+      items.forEach((el, i) => el.classList.toggle('highlighted', i === autocompleteIndex));
+    }
+
+    // Tag filter bar
+    function renderTagFilter() {
+      const bar = document.getElementById('tag-filter-bar');
+      if (!allTags.length) { bar.innerHTML = ''; return; }
+      bar.innerHTML = allTags.map(t =>
+        `<button class="tag-filter-btn ${currentTagFilter === t.name ? 'active' : ''}"
+          onclick="toggleTagFilter('${esc(t.name)}')">${esc(t.name)} <span class="tag-count">(${t.count})</span></button>`
+      ).join('');
+    }
+
+    function toggleTagFilter(tag) {
+      currentTagFilter = currentTagFilter === tag ? null : tag;
+      renderTagFilter();
+      render();
+    }
+
     // Stats and rendering
     function updateStats() {
       const total = todos.length;
@@ -483,9 +821,18 @@
     }
 
     function getFiltered() {
-      if (currentFilter === 'active') return todos.filter(t => !t.done);
-      if (currentFilter === 'done') return todos.filter(t => t.done);
-      return todos;
+      let filtered = todos;
+      if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
+      if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
+      if (currentTagFilter) filtered = filtered.filter(t => t.tags && t.tags.includes(currentTagFilter));
+      return filtered;
+    }
+
+    function renderTodoTags(tags) {
+      if (!tags || !tags.length) return '';
+      return '<div class="todo-tags">' +
+        tags.map(tag => `<span class="tag-chip ${tagColorClass(tag)}">${esc(tag)}</span>`).join('') +
+        '</div>';
     }
 
     function render() {
@@ -499,10 +846,12 @@
           active: 'No active todos. Great job!',
           done: 'No completed todos yet.'
         };
+        let msg = msgs[currentFilter];
+        if (currentTagFilter) msg = `No todos with tag "${esc(currentTagFilter)}"`;
         list.innerHTML = `
           <div class="empty">
             <div class="empty-icon">${currentFilter === 'active' ? '&#127881;' : '&#128221;'}</div>
-            ${msgs[currentFilter]}
+            ${msg}
           </div>`;
         return;
       }
@@ -514,7 +863,10 @@
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
-          <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          <div class="todo-content">
+            <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+            ${renderTodoTags(t.tags)}
+          </div>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
         </li>`;
       }).join('');
@@ -532,11 +884,16 @@
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
+      const tags = [...pendingTags];
+      pendingTags = [];
+      renderPendingTags();
+      tagInput.value = '';
       const todo = await api('/todos', {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, tags }),
       });
       todos.unshift(todo);
+      await loadTags();
       render();
     }
 
@@ -559,6 +916,7 @@
       async function doDelete() {
         await api('/todos/' + todo.id, { method: 'DELETE' });
         todos.splice(i, 1);
+        await loadTags();
         render();
       }
 
