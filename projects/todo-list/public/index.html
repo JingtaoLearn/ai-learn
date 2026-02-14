@@ -28,6 +28,9 @@
       --priority-medium-bg: rgba(99, 102, 241, 0.1);
       --priority-low: #9ca3af;
       --priority-low-bg: rgba(156, 163, 175, 0.1);
+      --tag-bg: rgba(99, 102, 241, 0.08);
+      --tag-color: var(--accent);
+      --tag-border: rgba(99, 102, 241, 0.2);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.08);
@@ -59,6 +62,9 @@
       --priority-medium-bg: rgba(129, 140, 248, 0.12);
       --priority-low: #6b7280;
       --priority-low-bg: rgba(107, 114, 128, 0.12);
+      --tag-bg: rgba(129, 140, 248, 0.1);
+      --tag-color: #a5b4fc;
+      --tag-border: rgba(129, 140, 248, 0.25);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -457,6 +463,190 @@
       border-radius: 50%;
     }
 
+    /* Tag filter bar */
+    .tag-filters {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .tag-filter-btn {
+      padding: 4px 12px;
+      border: 1px solid var(--tag-border);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .tag-filter-btn:hover {
+      background: var(--tag-bg);
+      color: var(--tag-color);
+    }
+
+    .tag-filter-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* Tag input area */
+    .tag-input-area {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: flex-start;
+      position: relative;
+    }
+
+    .tag-input-wrapper {
+      flex: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 8px 12px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      min-height: 40px;
+      align-items: center;
+      cursor: text;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .tag-input-wrapper:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .tag-input-wrapper .tag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: var(--tag-bg);
+      color: var(--tag-color);
+      border: 1px solid var(--tag-border);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      animation: slideIn 0.15s ease;
+    }
+
+    .tag-chip-remove {
+      background: none;
+      border: none;
+      color: var(--tag-color);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0 2px;
+      line-height: 1;
+      opacity: 0.6;
+      transition: opacity var(--transition);
+    }
+
+    .tag-chip-remove:hover { opacity: 1; }
+
+    .tag-input-field {
+      flex: 1;
+      min-width: 80px;
+      border: none;
+      outline: none;
+      font-size: 13px;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-primary);
+      padding: 2px 0;
+    }
+
+    .tag-input-field::placeholder { color: var(--text-muted); }
+
+    /* Tag autocomplete */
+    .tag-autocomplete {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      overflow: hidden;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    .tag-autocomplete-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background var(--transition);
+      border: none;
+      background: none;
+      width: 100%;
+      font-family: inherit;
+      color: var(--text-primary);
+      text-align: left;
+    }
+
+    .tag-autocomplete-item:hover,
+    .tag-autocomplete-item.highlighted {
+      background: var(--bg-input);
+    }
+
+    .tag-autocomplete-item .tag-icon {
+      color: var(--tag-color);
+      font-size: 11px;
+    }
+
+    /* Tag badges on todo items */
+    .todo-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .todo-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 8px;
+      background: var(--tag-bg);
+      color: var(--tag-color);
+      border: 1px solid var(--tag-border);
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .todo-tag:hover {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* Todo content wrapper for text + tags layout */
+    .todo-content {
+      flex: 1;
+      min-width: 0;
+    }
+
     /* Fade-out animation for deleted items */
     li.removing {
       animation: fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
@@ -712,6 +902,13 @@
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
       <button onclick="addTodo()">Add</button>
     </div>
+    <div class="tag-input-area" id="tag-input-area">
+      <div class="tag-input-wrapper" onclick="document.getElementById('tag-input').focus()">
+        <span id="tag-chips"></span>
+        <input id="tag-input" class="tag-input-field" type="text" placeholder="Add tags (comma to confirm)">
+      </div>
+      <div class="tag-autocomplete" id="tag-autocomplete" style="display:none"></div>
+    </div>
     <div class="search-area" id="search-area">
       <span class="search-icon">&#128269;</span>
       <input id="search-input" type="text" placeholder="Search todos...">
@@ -727,6 +924,7 @@
       <button class="priority-filter-btn" data-priority="medium" onclick="setPriorityFilter('medium')"><span class="priority-dot" style="background:var(--priority-medium)"></span>Medium</button>
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
     </div>
+    <div class="tag-filters" id="tag-filters"></div>
     <ul id="list"></ul>
   </div>
 
@@ -776,7 +974,11 @@
     let todos = [];
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
+    let currentTagFilter = null;
     let openDropdownIndex = null;
+    let allTags = [];
+    let pendingTags = [];
+    let autocompleteHighlight = -1;
 
     // API helpers
     async function api(path, options = {}) {
@@ -790,7 +992,13 @@
 
     async function loadTodos() {
       todos = await api('/todos');
+      await loadAllTags();
       render();
+    }
+
+    async function loadAllTags() {
+      allTags = await api('/tags');
+      renderTagFilters();
     }
 
     // Theme management (stays in localStorage - per-browser preference)
@@ -842,6 +1050,7 @@
       if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
       if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
       if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => t.priority === currentPriorityFilter);
+      if (currentTagFilter) filtered = filtered.filter(t => t.tags && t.tags.includes(currentTagFilter));
       return filtered;
     }
 
@@ -866,12 +1075,18 @@
 
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
+        const tagsHtml = t.tags && t.tags.length > 0
+          ? `<div class="todo-tags">${t.tags.map(tag => `<span class="todo-tag" onclick="setTagFilter('${esc(tag)}')">${esc(tag)}</span>`).join('')}</div>`
+          : '';
         return `
         <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}">
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
-          <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          <div class="todo-content">
+            <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+            ${tagsHtml}
+          </div>
           <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
         </li>`;
@@ -890,11 +1105,14 @@
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
+      const tags = [...pendingTags];
+      clearPendingTags();
       const todo = await api('/todos', {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, tags }),
       });
       todos.unshift(todo);
+      if (tags.length > 0) await loadAllTags();
       render();
     }
 
@@ -910,6 +1128,7 @@
 
     async function del(i) {
       const todo = todos[i];
+      const hasTags = todo.tags && todo.tags.length > 0;
       const filtered = getFiltered();
       const visibleIndex = filtered.indexOf(todo);
       const items = document.querySelectorAll('#list li');
@@ -917,6 +1136,7 @@
       async function doDelete() {
         await api('/todos/' + todo.id, { method: 'DELETE' });
         todos.splice(i, 1);
+        if (hasTags) await loadAllTags();
         render();
       }
 
@@ -985,6 +1205,130 @@
         render();
       }
     });
+
+    // Tag input management
+    function renderPendingTags() {
+      const container = document.getElementById('tag-chips');
+      container.innerHTML = pendingTags.map((tag, i) =>
+        `<span class="tag-chip">${esc(tag)}<button class="tag-chip-remove" onclick="removePendingTag(${i})">&times;</button></span>`
+      ).join('');
+    }
+
+    function addPendingTag(tag) {
+      const normalized = tag.trim().toLowerCase();
+      if (normalized && !pendingTags.includes(normalized)) {
+        pendingTags.push(normalized);
+        renderPendingTags();
+      }
+      document.getElementById('tag-input').value = '';
+      hideAutocomplete();
+    }
+
+    function removePendingTag(i) {
+      pendingTags.splice(i, 1);
+      renderPendingTags();
+    }
+
+    function clearPendingTags() {
+      pendingTags = [];
+      renderPendingTags();
+      document.getElementById('tag-input').value = '';
+      hideAutocomplete();
+    }
+
+    // Tag autocomplete
+    function showAutocomplete(query) {
+      const ac = document.getElementById('tag-autocomplete');
+      if (!query) { hideAutocomplete(); return; }
+      const matches = allTags.filter(t => t.includes(query.toLowerCase()) && !pendingTags.includes(t));
+      if (matches.length === 0) { hideAutocomplete(); return; }
+      autocompleteHighlight = -1;
+      ac.innerHTML = matches.map((tag, i) =>
+        `<button class="tag-autocomplete-item" onmousedown="addPendingTag('${esc(tag)}')"><span class="tag-icon">#</span>${esc(tag)}</button>`
+      ).join('');
+      ac.style.display = 'block';
+    }
+
+    function hideAutocomplete() {
+      document.getElementById('tag-autocomplete').style.display = 'none';
+      autocompleteHighlight = -1;
+    }
+
+    function getAutocompleteItems() {
+      return document.querySelectorAll('#tag-autocomplete .tag-autocomplete-item');
+    }
+
+    // Tag input event listeners
+    const tagInput = document.getElementById('tag-input');
+    tagInput.addEventListener('input', e => {
+      showAutocomplete(e.target.value.trim());
+    });
+
+    tagInput.addEventListener('keydown', e => {
+      const items = getAutocompleteItems();
+      const acVisible = document.getElementById('tag-autocomplete').style.display !== 'none';
+
+      if (e.key === 'ArrowDown' && acVisible) {
+        e.preventDefault();
+        autocompleteHighlight = Math.min(autocompleteHighlight + 1, items.length - 1);
+        items.forEach((item, i) => item.classList.toggle('highlighted', i === autocompleteHighlight));
+        return;
+      }
+      if (e.key === 'ArrowUp' && acVisible) {
+        e.preventDefault();
+        autocompleteHighlight = Math.max(autocompleteHighlight - 1, 0);
+        items.forEach((item, i) => item.classList.toggle('highlighted', i === autocompleteHighlight));
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (acVisible && autocompleteHighlight >= 0 && items[autocompleteHighlight]) {
+          items[autocompleteHighlight].click();
+        } else if (tagInput.value.trim()) {
+          addPendingTag(tagInput.value);
+        }
+        return;
+      }
+      if (e.key === ',' || e.key === 'Tab') {
+        if (tagInput.value.trim()) {
+          e.preventDefault();
+          addPendingTag(tagInput.value);
+        }
+        return;
+      }
+      if (e.key === 'Backspace' && !tagInput.value && pendingTags.length > 0) {
+        removePendingTag(pendingTags.length - 1);
+        return;
+      }
+      if (e.key === 'Escape') {
+        hideAutocomplete();
+        return;
+      }
+    });
+
+    tagInput.addEventListener('blur', () => {
+      setTimeout(hideAutocomplete, 150);
+    });
+
+    // Tag filter
+    function renderTagFilters() {
+      const container = document.getElementById('tag-filters');
+      if (allTags.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+      container.innerHTML =
+        `<button class="tag-filter-btn ${currentTagFilter === null ? 'active' : ''}" onclick="setTagFilter(null)">All tags</button>` +
+        allTags.map(tag =>
+          `<button class="tag-filter-btn ${currentTagFilter === tag ? 'active' : ''}" onclick="setTagFilter('${esc(tag)}')">#${esc(tag)}</button>`
+        ).join('');
+    }
+
+    function setTagFilter(tag) {
+      currentTagFilter = currentTagFilter === tag ? null : tag;
+      renderTagFilters();
+      render();
+    }
 
     // Inline editing
     function startEdit(i, event) {
@@ -1073,7 +1417,10 @@
     getFiltered = function() {
       let result = _originalGetFiltered();
       if (searchQuery) {
-        result = result.filter(t => t.text.toLowerCase().includes(searchQuery));
+        result = result.filter(t =>
+          t.text.toLowerCase().includes(searchQuery) ||
+          (t.tags && t.tags.some(tag => tag.includes(searchQuery)))
+        );
       }
       return result;
     };
