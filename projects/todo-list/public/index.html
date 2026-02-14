@@ -928,6 +928,120 @@
       border-left-color: var(--delete-color) !important;
     }
 
+    /* Clear completed button */
+    .clear-completed {
+      display: none;
+      margin-top: 16px;
+      padding: 10px 20px;
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all var(--transition);
+      width: 100%;
+      text-align: center;
+    }
+
+    .clear-completed.visible {
+      display: block;
+    }
+
+    .clear-completed:hover {
+      color: var(--delete-color);
+      border-color: var(--delete-color);
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .clear-completed .clear-count {
+      font-weight: 600;
+    }
+
+    /* Confirm dialog */
+    .confirm-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      animation: fadeInOverlay 0.15s ease;
+    }
+
+    .confirm-overlay.visible {
+      display: flex;
+    }
+
+    .confirm-dialog {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 32px;
+      max-width: 380px;
+      width: 90%;
+      box-shadow: var(--shadow-lg);
+      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      text-align: center;
+    }
+
+    .confirm-dialog .confirm-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+    }
+
+    .confirm-dialog h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .confirm-dialog p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 20px;
+    }
+
+    .confirm-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    .confirm-actions button {
+      padding: 10px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all var(--transition);
+      border: none;
+    }
+
+    .confirm-cancel {
+      background: var(--bg-input);
+      color: var(--text-primary);
+    }
+
+    .confirm-cancel:hover {
+      background: var(--border);
+    }
+
+    .confirm-delete {
+      background: var(--delete-color);
+      color: #fff;
+    }
+
+    .confirm-delete:hover {
+      background: var(--delete-hover);
+      transform: translateY(-1px);
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -983,6 +1097,22 @@
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
     </div>
     <ul id="list"></ul>
+    <button class="clear-completed" id="clear-completed" onclick="confirmClearCompleted()">
+      🧹 Clear <span class="clear-count" id="clear-count">0</span> completed
+    </button>
+  </div>
+
+  <!-- Confirm dialog -->
+  <div class="confirm-overlay" id="confirm-dialog">
+    <div class="confirm-dialog">
+      <div class="confirm-icon">🗑️</div>
+      <h3>Clear completed todos?</h3>
+      <p id="confirm-text">This will permanently delete all completed items.</p>
+      <div class="confirm-actions">
+        <button class="confirm-cancel" onclick="hideConfirm()">Cancel</button>
+        <button class="confirm-delete" onclick="executeClearCompleted()">Delete</button>
+      </div>
+    </div>
   </div>
 
   <!-- Help modal -->
@@ -1137,14 +1267,15 @@
       const el = document.getElementById('stats');
       if (total === 0) {
         el.innerHTML = '';
-        return;
+      } else {
+        el.innerHTML = `
+          <span><span class="dot dot-active"></span>${active} active</span>
+          <span><span class="dot dot-done"></span>${done} completed</span>
+          ${high > 0 ? `<span><span class="dot" style="background:var(--priority-high)"></span>${high} high</span>` : ''}
+          ${overdue > 0 ? `<span><span class="dot" style="background:var(--delete-color)"></span>${overdue} overdue</span>` : ''}
+        `;
       }
-      el.innerHTML = `
-        <span><span class="dot dot-active"></span>${active} active</span>
-        <span><span class="dot dot-done"></span>${done} completed</span>
-        ${high > 0 ? `<span><span class="dot" style="background:var(--priority-high)"></span>${high} high</span>` : ''}
-        ${overdue > 0 ? `<span><span class="dot" style="background:var(--delete-color)"></span>${overdue} overdue</span>` : ''}
-      `;
+      updateClearButton();
     }
 
     function getFiltered() {
@@ -1531,10 +1662,15 @@
       const isEditInput = target.classList && target.classList.contains('edit-input');
       const helpVisible = document.getElementById('help-modal').classList.contains('visible');
 
-      // Escape: close help modal, close search, or clear input
+      // Escape: close help modal, close confirm dialog, close search, or clear input
       if (e.key === 'Escape') {
         if (helpVisible) {
           hideHelp();
+          e.preventDefault();
+          return;
+        }
+        if (document.getElementById('confirm-dialog').classList.contains('visible')) {
+          hideConfirm();
           e.preventDefault();
           return;
         }
@@ -1744,6 +1880,56 @@
       });
 
       render();
+    });
+
+    // Clear completed todos
+    function updateClearButton() {
+      const completedCount = todos.filter(t => t.done).length;
+      const btn = document.getElementById('clear-completed');
+      const countEl = document.getElementById('clear-count');
+      countEl.textContent = completedCount;
+      btn.classList.toggle('visible', completedCount > 0);
+    }
+
+    function confirmClearCompleted() {
+      const completedCount = todos.filter(t => t.done).length;
+      document.getElementById('confirm-text').textContent =
+        `This will permanently delete ${completedCount} completed item${completedCount !== 1 ? 's' : ''}.`;
+      document.getElementById('confirm-dialog').classList.add('visible');
+    }
+
+    function hideConfirm() {
+      document.getElementById('confirm-dialog').classList.remove('visible');
+    }
+
+    async function executeClearCompleted() {
+      hideConfirm();
+      const completed = todos.filter(t => t.done);
+
+      // Animate removal of visible completed items
+      const filtered = getFiltered();
+      const items = document.querySelectorAll('#list li');
+      completed.forEach(todo => {
+        const visIdx = filtered.indexOf(todo);
+        if (visIdx >= 0 && items[visIdx]) {
+          items[visIdx].classList.add('removing');
+        }
+      });
+
+      // Wait for animation, then delete from backend
+      await new Promise(r => setTimeout(r, 300));
+
+      // Batch delete all completed todos
+      await api('/todos/completed', { method: 'DELETE' });
+
+      // Remove from local array
+      todos = todos.filter(t => !t.done);
+      render();
+    }
+
+    // Close confirm dialog on click outside or Escape
+    document.getElementById('confirm-dialog').addEventListener('click', e => {
+      if (e.target === document.getElementById('confirm-dialog')) hideConfirm();
     });
 
     // Initial load from API

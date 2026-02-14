@@ -108,6 +108,12 @@ app.post('/api/todos/reorder', (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /api/todos/completed - delete all completed todos
+app.delete('/api/todos/completed', (req, res) => {
+  const result = db.prepare('DELETE FROM todos WHERE done = 1').run();
+  res.json({ deleted: result.changes });
+});
+
 // DELETE /api/todos/:id - delete a todo
 app.delete('/api/todos/:id', (req, res) => {
   const { id } = req.params;
