@@ -22,6 +22,12 @@
       --done-border: #bbf7d0;
       --delete-color: #ef4444;
       --delete-hover: #dc2626;
+      --priority-high: #ef4444;
+      --priority-high-bg: rgba(239, 68, 68, 0.1);
+      --priority-medium: #6366f1;
+      --priority-medium-bg: rgba(99, 102, 241, 0.1);
+      --priority-low: #9ca3af;
+      --priority-low-bg: rgba(156, 163, 175, 0.1);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.08);
@@ -47,6 +53,12 @@
       --done-border: rgba(74, 222, 128, 0.2);
       --delete-color: #f87171;
       --delete-hover: #ef4444;
+      --priority-high: #f87171;
+      --priority-high-bg: rgba(248, 113, 113, 0.12);
+      --priority-medium: #818cf8;
+      --priority-medium-bg: rgba(129, 140, 248, 0.12);
+      --priority-low: #6b7280;
+      --priority-low-bg: rgba(107, 114, 128, 0.12);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -317,6 +329,134 @@
       background: rgba(239, 68, 68, 0.1);
     }
 
+    /* Priority badge */
+    .priority-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+      cursor: pointer;
+      position: relative;
+      user-select: none;
+      transition: all var(--transition);
+    }
+
+    .priority-badge.high {
+      color: var(--priority-high);
+      background: var(--priority-high-bg);
+    }
+
+    .priority-badge.medium {
+      color: var(--priority-medium);
+      background: var(--priority-medium-bg);
+    }
+
+    .priority-badge.low {
+      color: var(--priority-low);
+      background: var(--priority-low-bg);
+    }
+
+    .priority-badge:hover {
+      transform: scale(1.05);
+    }
+
+    /* Priority dropdown */
+    .priority-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      overflow: hidden;
+      min-width: 100px;
+    }
+
+    .priority-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background var(--transition);
+      border: none;
+      background: none;
+      width: 100%;
+      font-family: inherit;
+      color: var(--text-primary);
+    }
+
+    .priority-option:hover {
+      background: var(--bg-input);
+    }
+
+    .priority-option .priority-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .priority-option .priority-dot.high { background: var(--priority-high); }
+    .priority-option .priority-dot.medium { background: var(--priority-medium); }
+    .priority-option .priority-dot.low { background: var(--priority-low); }
+
+    /* Priority indicator bar on left */
+    li.priority-high { border-left: 3px solid var(--priority-high); }
+    li.priority-medium { border-left: 3px solid var(--priority-medium); }
+    li.priority-low { border-left: 3px solid var(--priority-low); }
+
+    /* Priority filter bar */
+    .priority-filters {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      padding: 4px;
+      background: var(--bg-input);
+      border-radius: var(--radius);
+    }
+
+    .priority-filter-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .priority-filter-btn:hover { color: var(--text-primary); }
+
+    .priority-filter-btn.active {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+      font-weight: 600;
+    }
+
+    .priority-filter-btn .priority-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
     /* Fade-out animation for deleted items */
     li.removing {
       animation: fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
@@ -418,12 +558,20 @@
       <button class="filter-btn" data-filter="active" onclick="setFilter('active')">Active</button>
       <button class="filter-btn" data-filter="done" onclick="setFilter('done')">Completed</button>
     </div>
+    <div class="priority-filters">
+      <button class="priority-filter-btn active" data-priority="all" onclick="setPriorityFilter('all')">All</button>
+      <button class="priority-filter-btn" data-priority="high" onclick="setPriorityFilter('high')"><span class="priority-dot" style="background:var(--priority-high)"></span>High</button>
+      <button class="priority-filter-btn" data-priority="medium" onclick="setPriorityFilter('medium')"><span class="priority-dot" style="background:var(--priority-medium)"></span>Medium</button>
+      <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
+    </div>
     <ul id="list"></ul>
   </div>
 
   <script>
     let todos = [];
     let currentFilter = 'all';
+    let currentPriorityFilter = 'all';
+    let openDropdownIndex = null;
 
     // API helpers
     async function api(path, options = {}) {
@@ -471,6 +619,7 @@
       const total = todos.length;
       const done = todos.filter(t => t.done).length;
       const active = total - done;
+      const high = todos.filter(t => t.priority === 'high' && !t.done).length;
       const el = document.getElementById('stats');
       if (total === 0) {
         el.innerHTML = '';
@@ -479,13 +628,16 @@
       el.innerHTML = `
         <span><span class="dot dot-active"></span>${active} active</span>
         <span><span class="dot dot-done"></span>${done} completed</span>
+        ${high > 0 ? `<span><span class="dot" style="background:var(--priority-high)"></span>${high} high</span>` : ''}
       `;
     }
 
     function getFiltered() {
-      if (currentFilter === 'active') return todos.filter(t => !t.done);
-      if (currentFilter === 'done') return todos.filter(t => t.done);
-      return todos;
+      let filtered = todos;
+      if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
+      if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
+      if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => t.priority === currentPriorityFilter);
+      return filtered;
     }
 
     function render() {
@@ -510,11 +662,12 @@
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
         return `
-        <li class="${t.done ? 'done' : ''}">
+        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}">
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
           <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
         </li>`;
       }).join('');
@@ -578,6 +731,55 @@
       });
       render();
     }
+
+    function setPriorityFilter(priority) {
+      currentPriorityFilter = priority;
+      document.querySelectorAll('.priority-filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.priority === priority);
+      });
+      render();
+    }
+
+    // Priority dropdown
+    function renderPriorityDropdown(i) {
+      return `
+        <div class="priority-dropdown" onclick="event.stopPropagation()">
+          <button class="priority-option" onclick="setPriority(${i}, 'high')">
+            <span class="priority-dot high"></span>High
+          </button>
+          <button class="priority-option" onclick="setPriority(${i}, 'medium')">
+            <span class="priority-dot medium"></span>Medium
+          </button>
+          <button class="priority-option" onclick="setPriority(${i}, 'low')">
+            <span class="priority-dot low"></span>Low
+          </button>
+        </div>`;
+    }
+
+    function togglePriorityDropdown(i, event) {
+      event.stopPropagation();
+      openDropdownIndex = openDropdownIndex === i ? null : i;
+      render();
+    }
+
+    async function setPriority(i, priority) {
+      const todo = todos[i];
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ priority }),
+      });
+      todos[i] = updated;
+      openDropdownIndex = null;
+      render();
+    }
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', () => {
+      if (openDropdownIndex !== null) {
+        openDropdownIndex = null;
+        render();
+      }
+    });
 
     // Inline editing
     function startEdit(i, event) {
