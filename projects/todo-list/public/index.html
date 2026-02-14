@@ -522,26 +522,25 @@
 
     /* Search bar */
     .search-area {
-      display: none;
       margin-bottom: 16px;
       position: relative;
-      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    .search-area.visible {
-      display: block;
     }
 
     .search-area input {
       width: 100%;
-      padding: 12px 18px 12px 40px;
-      border: 2px solid var(--accent);
+      padding: 12px 36px 12px 40px;
+      border: 2px solid var(--border);
       border-radius: var(--radius);
       font-size: 15px;
       font-family: inherit;
       background: var(--bg-card);
       color: var(--text-primary);
       outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .search-area input:focus {
+      border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-glow);
     }
 
@@ -552,9 +551,42 @@
       left: 14px;
       top: 50%;
       transform: translateY(-50%);
-      color: var(--accent);
+      color: var(--text-muted);
       font-size: 16px;
       pointer-events: none;
+      transition: color var(--transition);
+    }
+
+    .search-area input:focus ~ .search-icon,
+    .search-area input:not(:placeholder-shown) ~ .search-icon {
+      color: var(--accent);
+    }
+
+    .search-clear {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 4px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      transition: color var(--transition), background var(--transition);
+    }
+
+    .search-clear.visible {
+      display: flex;
+    }
+
+    .search-clear:hover {
+      color: var(--text-primary);
+      background: var(--bg-input);
     }
 
     /* Keyboard shortcut hint */
@@ -713,8 +745,9 @@
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="search-area" id="search-area">
+      <input id="search-input" type="text" placeholder="Search todos... (Ctrl+K)">
       <span class="search-icon">&#128269;</span>
-      <input id="search-input" type="text" placeholder="Search todos...">
+      <button class="search-clear" id="search-clear" onclick="clearSearch()" title="Clear search (Esc)" aria-label="Clear search">&#10005;</button>
     </div>
     <div class="filters">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
@@ -741,11 +774,11 @@
           <kbd>Alt+N</kbd>
         </li>
         <li>
-          <span class="shortcut-desc">Clear input / Close search</span>
+          <span class="shortcut-desc">Clear input / Clear search</span>
           <kbd>Esc</kbd>
         </li>
         <li>
-          <span class="shortcut-desc">Toggle search</span>
+          <span class="shortcut-desc">Focus search</span>
           <kbd>Ctrl+K</kbd>
         </li>
         <li>
@@ -851,15 +884,23 @@
       updateStats();
 
       if (!filtered.length) {
-        const msgs = {
-          all: 'No todos yet. Add one above!',
-          active: 'No active todos. Great job!',
-          done: 'No completed todos yet.'
-        };
+        let emptyMsg, emptyIcon;
+        if (searchQuery) {
+          emptyIcon = '&#128270;';
+          emptyMsg = 'No todos match your search.';
+        } else {
+          const msgs = {
+            all: 'No todos yet. Add one above!',
+            active: 'No active todos. Great job!',
+            done: 'No completed todos yet.'
+          };
+          emptyIcon = currentFilter === 'active' ? '&#127881;' : '&#128221;';
+          emptyMsg = msgs[currentFilter];
+        }
         list.innerHTML = `
           <div class="empty">
-            <div class="empty-icon">${currentFilter === 'active' ? '&#127881;' : '&#128221;'}</div>
-            ${msgs[currentFilter]}
+            <div class="empty-icon">${emptyIcon}</div>
+            ${emptyMsg}
           </div>`;
         return;
       }
@@ -1035,36 +1076,32 @@
     // Search
     let searchQuery = '';
 
-    function toggleSearch() {
-      const area = document.getElementById('search-area');
+    function clearSearch() {
       const searchInput = document.getElementById('search-input');
-      if (area.classList.contains('visible')) {
-        closeSearch();
-      } else {
-        area.classList.add('visible');
-        searchInput.focus();
-        searchInput.select();
-      }
-    }
-
-    function closeSearch() {
-      const area = document.getElementById('search-area');
-      const searchInput = document.getElementById('search-input');
-      area.classList.remove('visible');
       searchInput.value = '';
       searchQuery = '';
+      updateSearchClear();
       render();
+    }
+
+    function updateSearchClear() {
+      const clearBtn = document.getElementById('search-clear');
+      clearBtn.classList.toggle('visible', searchQuery.length > 0);
     }
 
     document.getElementById('search-input').addEventListener('input', e => {
       searchQuery = e.target.value.toLowerCase();
+      updateSearchClear();
       render();
     });
 
     document.getElementById('search-input').addEventListener('keydown', e => {
       if (e.key === 'Escape') {
-        closeSearch();
+        if (searchQuery) {
+          clearSearch();
+        }
         document.getElementById('input').focus();
+        e.preventDefault();
       }
     });
 
@@ -1125,17 +1162,15 @@
       const isEditInput = target.classList && target.classList.contains('edit-input');
       const helpVisible = document.getElementById('help-modal').classList.contains('visible');
 
-      // Escape: close help modal, close search, or clear input
+      // Escape: close help modal, clear search, or clear input
       if (e.key === 'Escape') {
         if (helpVisible) {
           hideHelp();
           e.preventDefault();
           return;
         }
-        if (document.getElementById('search-area').classList.contains('visible')) {
-          closeSearch();
-          e.preventDefault();
-          return;
+        if (document.activeElement === document.getElementById('search-input')) {
+          return; // let the search input's own handler deal with it
         }
         if (isEditInput) return; // let inline edit handle its own Escape
         const mainInput = document.getElementById('input');
@@ -1158,17 +1193,18 @@
         return;
       }
 
-      // Ctrl+K / Cmd+K: toggle search
+      // Ctrl+K / Cmd+K: focus search
       if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        toggleSearch();
+        document.getElementById('search-input').focus();
+        document.getElementById('search-input').select();
         return;
       }
 
       // Alt+N / Cmd+N: focus new todo input
       if (e.key === 'n' && (e.altKey || e.metaKey)) {
         e.preventDefault();
-        closeSearch();
+        clearSearch();
         clearFocus();
         document.getElementById('input').focus();
         return;
