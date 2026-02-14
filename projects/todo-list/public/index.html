@@ -789,6 +789,145 @@
       box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-glow);
     }
 
+    /* Due date */
+    .due-date-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .due-date-badge {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 6px;
+      color: var(--text-muted);
+      background: var(--bg-input);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .due-date-badge:hover {
+      color: var(--text-secondary);
+      background: var(--accent-light);
+    }
+
+    .due-date-badge.overdue {
+      color: var(--delete-color);
+      background: rgba(239, 68, 68, 0.1);
+      font-weight: 600;
+    }
+
+    .due-date-badge.due-today {
+      color: #f59e0b;
+      background: rgba(245, 158, 11, 0.1);
+      font-weight: 600;
+    }
+
+    .due-date-badge.due-soon {
+      color: #f59e0b;
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    li.done .due-date-badge {
+      color: var(--text-muted);
+      background: transparent;
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+
+    .due-date-badge .due-icon {
+      font-size: 12px;
+    }
+
+    .due-date-clear {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+      line-height: 1;
+      transition: all var(--transition);
+      display: none;
+    }
+
+    .due-date-wrapper:hover .due-date-clear {
+      display: inline-flex;
+    }
+
+    .due-date-clear:hover {
+      color: var(--delete-color);
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .add-due-btn {
+      background: none;
+      border: 1px dashed var(--border);
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      padding: 3px 8px;
+      border-radius: 6px;
+      transition: all var(--transition);
+      flex-shrink: 0;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .add-due-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    /* Hidden native date input used for picking */
+    .hidden-date-input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+
+    /* Input row with due date */
+    .input-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .input-due-date {
+      padding: 12px 14px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-family: inherit;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+      max-width: 150px;
+    }
+
+    .input-due-date:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    /* Overdue item subtle highlight */
+    li.overdue-item {
+      border-left-color: var(--delete-color) !important;
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -825,6 +964,7 @@
     <div class="stats" id="stats"></div>
     <div class="input-area">
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
+      <input id="input-due" type="date" class="input-due-date" title="Due date (optional)">
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="search-area" id="search-area">
@@ -884,6 +1024,10 @@
           <kbd>?</kbd>
         </li>
         <li>
+          <span class="shortcut-desc">Set due date</span>
+          <kbd>D</kbd>
+        </li>
+        <li>
           <span class="shortcut-desc">Reorder todos</span>
           <kbd>Drag &#9776;</kbd>
         </li>
@@ -896,6 +1040,51 @@
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
     let openDropdownIndex = null;
+
+    // Date helpers
+    function getTodayStr() {
+      const d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+
+    function formatDueDate(dateStr) {
+      if (!dateStr) return '';
+      const today = new Date(getTodayStr());
+      const due = new Date(dateStr);
+      const diffDays = Math.round((due - today) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0) return `Overdue ${-diffDays}d`;
+      if (diffDays === 0) return 'Today';
+      if (diffDays === 1) return 'Tomorrow';
+      if (diffDays <= 7) return `${diffDays}d left`;
+      // Format as Mon DD
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[due.getMonth()] + ' ' + due.getDate();
+    }
+
+    function dueDateClass(dateStr, done) {
+      if (!dateStr || done) return '';
+      const today = new Date(getTodayStr());
+      const due = new Date(dateStr);
+      const diffDays = Math.round((due - today) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0) return 'overdue';
+      if (diffDays === 0) return 'due-today';
+      if (diffDays <= 2) return 'due-soon';
+      return '';
+    }
+
+    function renderDueDate(i, todo) {
+      if (!todo.due_date) {
+        return `<button class="add-due-btn" onclick="pickDueDate(${i}, event)" title="Set due date"><span class="due-icon">📅</span></button>`;
+      }
+      const cls = dueDateClass(todo.due_date, todo.done);
+      const label = formatDueDate(todo.due_date);
+      return `<span class="due-date-wrapper">
+        <span class="due-date-badge ${cls}" onclick="pickDueDate(${i}, event)" title="Click to change due date">
+          <span class="due-icon">📅</span>${label}
+        </span>
+        <button class="due-date-clear" onclick="clearDueDate(${i}, event)" title="Remove due date">✕</button>
+      </span>`;
+    }
 
     // API helpers
     async function api(path, options = {}) {
@@ -944,6 +1133,7 @@
       const done = todos.filter(t => t.done).length;
       const active = total - done;
       const high = todos.filter(t => t.priority === 'high' && !t.done).length;
+      const overdue = todos.filter(t => !t.done && t.due_date && dueDateClass(t.due_date, false) === 'overdue').length;
       const el = document.getElementById('stats');
       if (total === 0) {
         el.innerHTML = '';
@@ -953,6 +1143,7 @@
         <span><span class="dot dot-active"></span>${active} active</span>
         <span><span class="dot dot-done"></span>${done} completed</span>
         ${high > 0 ? `<span><span class="dot" style="background:var(--priority-high)"></span>${high} high</span>` : ''}
+        ${overdue > 0 ? `<span><span class="dot" style="background:var(--delete-color)"></span>${overdue} overdue</span>` : ''}
       `;
     }
 
@@ -986,13 +1177,15 @@
       const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery;
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
+        const isOverdue = !t.done && t.due_date && dueDateClass(t.due_date, t.done) === 'overdue';
         return `
-        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
+        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'} ${isOverdue ? 'overdue-item' : ''}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
           ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
           <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          ${renderDueDate(i, t)}
           <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
         </li>`;
@@ -1008,12 +1201,15 @@
     // Actions
     async function addTodo() {
       const input = document.getElementById('input');
+      const dueInput = document.getElementById('input-due');
       const text = input.value.trim();
       if (!text) return;
+      const due_date = dueInput.value || null;
       input.value = '';
+      dueInput.value = '';
       const todo = await api('/todos', {
         method: 'POST',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, due_date }),
       });
       todos.unshift(todo);
       render();
@@ -1149,6 +1345,52 @@
         render();
       }
     });
+
+    // Due date picking via native date input
+    function pickDueDate(i, event) {
+      event.stopPropagation();
+      const todo = todos[i];
+      // Create a temporary date input
+      const dateInput = document.createElement('input');
+      dateInput.type = 'date';
+      dateInput.className = 'hidden-date-input';
+      dateInput.value = todo.due_date || '';
+      dateInput.min = getTodayStr();
+      document.body.appendChild(dateInput);
+
+      dateInput.addEventListener('change', async () => {
+        const newDate = dateInput.value || null;
+        const updated = await api('/todos/' + todo.id, {
+          method: 'PUT',
+          body: JSON.stringify({ due_date: newDate }),
+        });
+        todos[i] = updated;
+        render();
+        dateInput.remove();
+      });
+
+      dateInput.addEventListener('blur', () => {
+        setTimeout(() => dateInput.remove(), 200);
+      });
+
+      // Some browsers need the element visible briefly to show picker
+      dateInput.style.position = 'fixed';
+      dateInput.style.opacity = '0';
+      dateInput.style.pointerEvents = 'auto';
+      dateInput.focus();
+      dateInput.showPicker?.();
+    }
+
+    async function clearDueDate(i, event) {
+      event.stopPropagation();
+      const todo = todos[i];
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ due_date: null }),
+      });
+      todos[i] = updated;
+      render();
+    }
 
     // Inline editing
     function startEdit(i, event) {
@@ -1388,6 +1630,17 @@
           if (items[focusedIndex]) {
             startEdit(realIndex, { stopPropagation: () => {} });
           }
+        }
+        return;
+      }
+
+      // d: set due date on focused item
+      if (e.key === 'd' && focusedIndex >= 0 && focusedIndex < itemCount) {
+        e.preventDefault();
+        const todo = filtered[focusedIndex];
+        const realIndex = todos.indexOf(todo);
+        if (realIndex >= 0) {
+          pickDueDate(realIndex, { stopPropagation: () => {} });
         }
         return;
       }
