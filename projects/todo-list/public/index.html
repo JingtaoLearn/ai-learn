@@ -28,6 +28,11 @@
       --priority-medium-bg: rgba(99, 102, 241, 0.1);
       --priority-low: #9ca3af;
       --priority-low-bg: rgba(156, 163, 175, 0.1);
+      --overdue: #ef4444;
+      --overdue-bg: rgba(239, 68, 68, 0.08);
+      --overdue-border: rgba(239, 68, 68, 0.3);
+      --due-soon: #f59e0b;
+      --due-date-text: #6b7280;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.08);
@@ -59,6 +64,11 @@
       --priority-medium-bg: rgba(129, 140, 248, 0.12);
       --priority-low: #6b7280;
       --priority-low-bg: rgba(107, 114, 128, 0.12);
+      --overdue: #f87171;
+      --overdue-bg: rgba(248, 113, 113, 0.1);
+      --overdue-border: rgba(248, 113, 113, 0.3);
+      --due-soon: #fbbf24;
+      --due-date-text: #9ca3af;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -414,6 +424,128 @@
     li.priority-medium { border-left: 3px solid var(--priority-medium); }
     li.priority-low { border-left: 3px solid var(--priority-low); }
 
+    /* Overdue indicator */
+    li.overdue:not(.done) {
+      background: var(--overdue-bg);
+      border-color: var(--overdue-border);
+    }
+
+    /* Due date display */
+    .due-date {
+      font-size: 11px;
+      color: var(--due-date-text);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 6px;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .due-date:hover {
+      background: var(--bg-input);
+    }
+
+    .due-date.overdue {
+      color: var(--overdue);
+      font-weight: 600;
+    }
+
+    .due-date.due-soon {
+      color: var(--due-soon);
+      font-weight: 600;
+    }
+
+    .due-date-add {
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      transition: all var(--transition);
+      opacity: 0;
+      white-space: nowrap;
+    }
+
+    li:hover .due-date-add {
+      opacity: 1;
+    }
+
+    .due-date-add:hover {
+      background: var(--bg-input);
+      color: var(--text-secondary);
+    }
+
+    /* Due date input */
+    .due-date-input {
+      font-size: 12px;
+      padding: 2px 6px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      font-family: inherit;
+      outline: none;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 2px var(--accent-glow);
+    }
+
+    /* Due date sort/filter bar */
+    .due-date-filters {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      padding: 4px;
+      background: var(--bg-input);
+      border-radius: var(--radius);
+    }
+
+    .due-date-filter-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .due-date-filter-btn:hover { color: var(--text-primary); }
+
+    .due-date-filter-btn.active {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+      font-weight: 600;
+    }
+
+    /* Todo content wrapper */
+    .todo-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .todo-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     /* Priority filter bar */
     .priority-filters {
       display: flex;
@@ -727,6 +859,13 @@
       <button class="priority-filter-btn" data-priority="medium" onclick="setPriorityFilter('medium')"><span class="priority-dot" style="background:var(--priority-medium)"></span>Medium</button>
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
     </div>
+    <div class="due-date-filters">
+      <button class="due-date-filter-btn active" data-due="all" onclick="setDueDateFilter('all')">All</button>
+      <button class="due-date-filter-btn" data-due="overdue" onclick="setDueDateFilter('overdue')">Overdue</button>
+      <button class="due-date-filter-btn" data-due="today" onclick="setDueDateFilter('today')">Today</button>
+      <button class="due-date-filter-btn" data-due="upcoming" onclick="setDueDateFilter('upcoming')">Upcoming</button>
+      <button class="due-date-filter-btn" data-due="no-date" onclick="setDueDateFilter('no-date')">No Date</button>
+    </div>
     <ul id="list"></ul>
   </div>
 
@@ -776,7 +915,47 @@
     let todos = [];
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
+    let currentDueDateFilter = 'all';
     let openDropdownIndex = null;
+
+    // Date helpers
+    function getToday() {
+      const d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+
+    function isOverdue(dueDate) {
+      if (!dueDate) return false;
+      return dueDate < getToday();
+    }
+
+    function isDueToday(dueDate) {
+      if (!dueDate) return false;
+      return dueDate === getToday();
+    }
+
+    function isDueSoon(dueDate) {
+      if (!dueDate) return false;
+      const today = new Date(getToday());
+      const due = new Date(dueDate);
+      const diff = (due - today) / (1000 * 60 * 60 * 24);
+      return diff >= 0 && diff <= 3;
+    }
+
+    function formatDueDate(dueDate) {
+      if (!dueDate) return '';
+      const today = getToday();
+      if (dueDate === today) return 'Today';
+      const todayDate = new Date(today);
+      const dueObj = new Date(dueDate);
+      const diff = Math.round((dueObj - todayDate) / (1000 * 60 * 60 * 24));
+      if (diff === 1) return 'Tomorrow';
+      if (diff === -1) return 'Yesterday';
+      if (diff > 1 && diff <= 7) return `In ${diff} days`;
+      if (diff < -1 && diff >= -7) return `${Math.abs(diff)} days ago`;
+      const parts = dueDate.split('-');
+      return parts[1] + '/' + parts[2] + '/' + parts[0];
+    }
 
     // API helpers
     async function api(path, options = {}) {
@@ -825,6 +1004,7 @@
       const done = todos.filter(t => t.done).length;
       const active = total - done;
       const high = todos.filter(t => t.priority === 'high' && !t.done).length;
+      const overdue = todos.filter(t => !t.done && isOverdue(t.due_date)).length;
       const el = document.getElementById('stats');
       if (total === 0) {
         el.innerHTML = '';
@@ -834,6 +1014,7 @@
         <span><span class="dot dot-active"></span>${active} active</span>
         <span><span class="dot dot-done"></span>${done} completed</span>
         ${high > 0 ? `<span><span class="dot" style="background:var(--priority-high)"></span>${high} high</span>` : ''}
+        ${overdue > 0 ? `<span><span class="dot" style="background:var(--overdue)"></span>${overdue} overdue</span>` : ''}
       `;
     }
 
@@ -842,6 +1023,10 @@
       if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
       if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
       if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => t.priority === currentPriorityFilter);
+      if (currentDueDateFilter === 'overdue') filtered = filtered.filter(t => !t.done && isOverdue(t.due_date));
+      if (currentDueDateFilter === 'today') filtered = filtered.filter(t => isDueToday(t.due_date));
+      if (currentDueDateFilter === 'upcoming') filtered = filtered.filter(t => t.due_date && t.due_date >= getToday());
+      if (currentDueDateFilter === 'no-date') filtered = filtered.filter(t => !t.due_date);
       return filtered;
     }
 
@@ -866,13 +1051,23 @@
 
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
+        const overdueClass = !t.done && isOverdue(t.due_date) ? ' overdue' : '';
+        const dueDateClass = !t.done && isOverdue(t.due_date) ? 'overdue' : (!t.done && isDueSoon(t.due_date) ? 'due-soon' : '');
+        const dueDateHtml = t.due_date
+          ? `<span class="due-date ${dueDateClass}" onclick="editDueDate(${i}, event)" title="${t.due_date}">${formatDueDate(t.due_date)}</span>`
+          : `<span class="due-date-add" onclick="editDueDate(${i}, event)">+ date</span>`;
         return `
-        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}">
+        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}${overdueClass}">
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
-          <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
-          <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
+          <div class="todo-content">
+            <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          </div>
+          <div class="todo-meta">
+            ${dueDateHtml}
+            <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
+          </div>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
         </li>`;
       }).join('');
@@ -985,6 +1180,56 @@
         render();
       }
     });
+
+    // Due date editing
+    function editDueDate(i, event) {
+      event.stopPropagation();
+      const filtered = getFiltered();
+      const todoItem = todos[i];
+      const visibleIndex = filtered.indexOf(todoItem);
+      const items = document.querySelectorAll('#list li');
+      if (visibleIndex < 0) return;
+
+      const li = items[visibleIndex];
+      const target = li.querySelector('.due-date') || li.querySelector('.due-date-add');
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.className = 'due-date-input';
+      input.value = todos[i].due_date || '';
+      target.replaceWith(input);
+      input.focus();
+
+      let saved = false;
+      async function saveDueDate() {
+        if (saved) return;
+        saved = true;
+        const newDate = input.value || null;
+        if (newDate !== (todos[i].due_date || null)) {
+          const updated = await api('/todos/' + todos[i].id, {
+            method: 'PUT',
+            body: JSON.stringify({ due_date: newDate }),
+          });
+          todos[i] = updated;
+        }
+        render();
+      }
+
+      input.addEventListener('change', saveDueDate);
+      input.addEventListener('blur', saveDueDate);
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { saved = true; render(); }
+        if (e.key === 'Enter') saveDueDate();
+      });
+    }
+
+    // Due date filter
+    function setDueDateFilter(filter) {
+      currentDueDateFilter = filter;
+      document.querySelectorAll('.due-date-filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.due === filter);
+      });
+      render();
+    }
 
     // Inline editing
     function startEdit(i, event) {
