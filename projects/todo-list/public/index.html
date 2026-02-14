@@ -149,27 +149,8 @@
     .input-area {
       display: flex;
       gap: 10px;
-      margin-bottom: 28px;
-    }
-
-    .input-area input {
-      flex: 1;
-      padding: 14px 18px;
-      border: 2px solid var(--border);
-      border-radius: var(--radius);
-      font-size: 15px;
-      font-family: inherit;
-      background: var(--bg-card);
-      color: var(--text-primary);
-      outline: none;
-      transition: border-color var(--transition), box-shadow var(--transition);
-    }
-
-    .input-area input::placeholder { color: var(--text-muted); }
-
-    .input-area input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
+      margin-bottom: 6px;
+      align-items: flex-start;
     }
 
     .input-area button {
@@ -293,7 +274,7 @@
 
     /* Edit input */
     .edit-input {
-      flex: 1;
+      width: 100%;
       font-size: 15px;
       line-height: 1.5;
       padding: 4px 10px;
@@ -471,6 +452,69 @@
         margin-bottom: 0;
         border-color: transparent;
       }
+    }
+
+    /* Character counter */
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+
+    .input-wrapper input {
+      width: 100%;
+      padding: 14px 18px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-family: inherit;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .input-wrapper input::placeholder { color: var(--text-muted); }
+
+    .input-wrapper input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .char-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: right;
+      margin-top: 4px;
+      transition: color var(--transition);
+      display: none;
+    }
+
+    .char-count.visible { display: block; }
+
+    .char-count.warning { color: #f59e0b; }
+
+    .char-count.error { color: var(--delete-color); }
+
+    .input-wrapper input.input-error {
+      border-color: var(--delete-color);
+      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+    }
+
+    .edit-char-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: right;
+      margin-top: 2px;
+      transition: color var(--transition);
+    }
+
+    .edit-char-count.warning { color: #f59e0b; }
+
+    .edit-char-count.error { color: var(--delete-color); }
+
+    .edit-input.input-error {
+      border-color: var(--delete-color) !important;
+      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15) !important;
     }
 
     /* Empty state */
@@ -674,6 +718,11 @@
       box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-glow);
     }
 
+    /* Input area bottom spacing */
+    .input-bottom-spacer {
+      height: 22px;
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -709,9 +758,13 @@
     </div>
     <div class="stats" id="stats"></div>
     <div class="input-area">
-      <input id="input" type="text" placeholder="What needs to be done?" autofocus>
+      <div class="input-wrapper">
+        <input id="input" type="text" placeholder="What needs to be done?" maxlength="500" autofocus>
+        <div class="char-count" id="char-count">0 / 500</div>
+      </div>
       <button onclick="addTodo()">Add</button>
     </div>
+    <div class="input-bottom-spacer"></div>
     <div class="search-area" id="search-area">
       <span class="search-icon">&#128269;</span>
       <input id="search-input" type="text" placeholder="Search todos...">
@@ -777,6 +830,21 @@
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
     let openDropdownIndex = null;
+    const MAX_TODO_LENGTH = 500;
+
+    // Character counter for main input
+    function updateCharCount() {
+      const input = document.getElementById('input');
+      const counter = document.getElementById('char-count');
+      const len = input.value.length;
+      counter.textContent = `${len} / ${MAX_TODO_LENGTH}`;
+      counter.classList.toggle('visible', len > 0);
+      counter.classList.toggle('warning', len >= MAX_TODO_LENGTH * 0.9 && len < MAX_TODO_LENGTH);
+      counter.classList.toggle('error', len >= MAX_TODO_LENGTH);
+      input.classList.toggle('input-error', len >= MAX_TODO_LENGTH);
+    }
+
+    document.getElementById('input').addEventListener('input', updateCharCount);
 
     // API helpers
     async function api(path, options = {}) {
@@ -785,7 +853,9 @@
         ...options,
       });
       if (res.status === 204) return null;
-      return res.json();
+      const data = await res.json();
+      if (!res.ok) return { error: data.error || 'Request failed' };
+      return data;
     }
 
     async function loadTodos() {
@@ -889,12 +959,15 @@
       const input = document.getElementById('input');
       const text = input.value.trim();
       if (!text) return;
-      input.value = '';
-      const todo = await api('/todos', {
+      if (text.length > MAX_TODO_LENGTH) return;
+      const data = await api('/todos', {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
-      todos.unshift(todo);
+      if (data && data.error) return;
+      input.value = '';
+      updateCharCount();
+      todos.unshift(data);
       render();
     }
 
@@ -997,11 +1070,32 @@
 
       const li = items[visibleIndex];
       const span = li.querySelector('.text');
+
+      // Create edit container with input and char counter
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'flex:1;min-width:0;';
+
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'edit-input';
       input.value = todos[i].text;
-      span.replaceWith(input);
+      input.maxLength = MAX_TODO_LENGTH;
+
+      const charCount = document.createElement('div');
+      charCount.className = 'edit-char-count';
+      const updateEditCount = () => {
+        const len = input.value.length;
+        charCount.textContent = `${len} / ${MAX_TODO_LENGTH}`;
+        charCount.classList.toggle('warning', len >= MAX_TODO_LENGTH * 0.9 && len < MAX_TODO_LENGTH);
+        charCount.classList.toggle('error', len >= MAX_TODO_LENGTH);
+        input.classList.toggle('input-error', len >= MAX_TODO_LENGTH);
+      };
+      updateEditCount();
+      input.addEventListener('input', updateEditCount);
+
+      wrapper.appendChild(input);
+      wrapper.appendChild(charCount);
+      span.replaceWith(wrapper);
       input.focus();
       input.select();
 
@@ -1010,12 +1104,14 @@
         if (saved) return;
         saved = true;
         const newText = input.value.trim();
-        if (newText && newText !== todos[i].text) {
+        if (newText && newText !== todos[i].text && newText.length <= MAX_TODO_LENGTH) {
           const updated = await api('/todos/' + todos[i].id, {
             method: 'PUT',
             body: JSON.stringify({ text: newText }),
           });
-          todos[i] = updated;
+          if (updated && !updated.error) {
+            todos[i] = updated;
+          }
         }
         render();
       }
@@ -1141,6 +1237,7 @@
         const mainInput = document.getElementById('input');
         if (document.activeElement === mainInput && mainInput.value) {
           mainInput.value = '';
+          updateCharCount();
           e.preventDefault();
           return;
         }
