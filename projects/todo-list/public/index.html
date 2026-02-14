@@ -520,6 +520,160 @@
       font-weight: 600;
     }
 
+    /* Search bar */
+    .search-area {
+      display: none;
+      margin-bottom: 16px;
+      position: relative;
+      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .search-area.visible {
+      display: block;
+    }
+
+    .search-area input {
+      width: 100%;
+      padding: 12px 18px 12px 40px;
+      border: 2px solid var(--accent);
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-family: inherit;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .search-area input::placeholder { color: var(--text-muted); }
+
+    .search-area .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-size: 16px;
+      pointer-events: none;
+    }
+
+    /* Keyboard shortcut hint */
+    .shortcut-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      background: var(--bg-input);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      line-height: 1;
+    }
+
+    /* Help modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      animation: fadeInOverlay 0.15s ease;
+    }
+
+    .modal-overlay.visible {
+      display: flex;
+    }
+
+    @keyframes fadeInOverlay {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 32px;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: var(--shadow-lg);
+      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .modal h2 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: var(--text-primary);
+    }
+
+    .modal-close {
+      float: right;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: all var(--transition);
+    }
+
+    .modal-close:hover {
+      color: var(--text-primary);
+      background: var(--bg-input);
+    }
+
+    .shortcut-list {
+      list-style: none;
+    }
+
+    .shortcut-list li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border: none;
+      background: none;
+      box-shadow: none;
+      margin-bottom: 0;
+      border-bottom: 1px solid var(--border);
+      animation: none;
+    }
+
+    .shortcut-list li:last-child {
+      border-bottom: none;
+    }
+
+    .shortcut-list li:hover {
+      transform: none;
+      box-shadow: none;
+    }
+
+    .shortcut-list .shortcut-desc {
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+
+    .shortcut-list kbd {
+      font-size: 12px;
+      color: var(--text-secondary);
+      padding: 3px 8px;
+      background: var(--bg-input);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      white-space: nowrap;
+    }
+
+    /* Focused todo item */
+    li.kb-focused {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-glow);
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -544,14 +698,23 @@
   <div class="container">
     <div class="header">
       <h1>Todo List</h1>
-      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle dark/light mode">
-        <span id="theme-icon">&#9789;</span>
-      </button>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <button class="theme-toggle" onclick="showHelp()" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">
+          <span>?</span>
+        </button>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle dark/light mode">
+          <span id="theme-icon">&#9789;</span>
+        </button>
+      </div>
     </div>
     <div class="stats" id="stats"></div>
     <div class="input-area">
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
       <button onclick="addTodo()">Add</button>
+    </div>
+    <div class="search-area" id="search-area">
+      <span class="search-icon">&#128269;</span>
+      <input id="search-input" type="text" placeholder="Search todos...">
     </div>
     <div class="filters">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
@@ -565,6 +728,48 @@
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
     </div>
     <ul id="list"></ul>
+  </div>
+
+  <!-- Help modal -->
+  <div class="modal-overlay" id="help-modal">
+    <div class="modal">
+      <button class="modal-close" onclick="hideHelp()" aria-label="Close">&times;</button>
+      <h2>Keyboard Shortcuts</h2>
+      <ul class="shortcut-list">
+        <li>
+          <span class="shortcut-desc">Focus new todo input</span>
+          <kbd>Alt+N</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Clear input / Close search</span>
+          <kbd>Esc</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Toggle search</span>
+          <kbd>Ctrl+K</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Navigate todos</span>
+          <kbd>J / K</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Toggle selected todo</span>
+          <kbd>X</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Edit selected todo</span>
+          <kbd>E</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Delete selected todo</span>
+          <kbd>Delete</kbd>
+        </li>
+        <li>
+          <span class="shortcut-desc">Show this help</span>
+          <kbd>?</kbd>
+        </li>
+      </ul>
+    </div>
   </div>
 
   <script>
@@ -825,6 +1030,215 @@
     // Keyboard
     document.getElementById('input').addEventListener('keydown', e => {
       if (e.key === 'Enter') addTodo();
+    });
+
+    // Search
+    let searchQuery = '';
+
+    function toggleSearch() {
+      const area = document.getElementById('search-area');
+      const searchInput = document.getElementById('search-input');
+      if (area.classList.contains('visible')) {
+        closeSearch();
+      } else {
+        area.classList.add('visible');
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+
+    function closeSearch() {
+      const area = document.getElementById('search-area');
+      const searchInput = document.getElementById('search-input');
+      area.classList.remove('visible');
+      searchInput.value = '';
+      searchQuery = '';
+      render();
+    }
+
+    document.getElementById('search-input').addEventListener('input', e => {
+      searchQuery = e.target.value.toLowerCase();
+      render();
+    });
+
+    document.getElementById('search-input').addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeSearch();
+        document.getElementById('input').focus();
+      }
+    });
+
+    // Override getFiltered to support search
+    const _originalGetFiltered = getFiltered;
+    getFiltered = function() {
+      let result = _originalGetFiltered();
+      if (searchQuery) {
+        result = result.filter(t => t.text.toLowerCase().includes(searchQuery));
+      }
+      return result;
+    };
+
+    // Help modal
+    function showHelp() {
+      document.getElementById('help-modal').classList.add('visible');
+    }
+
+    function hideHelp() {
+      document.getElementById('help-modal').classList.remove('visible');
+    }
+
+    document.getElementById('help-modal').addEventListener('click', e => {
+      if (e.target === document.getElementById('help-modal')) hideHelp();
+    });
+
+    // Keyboard navigation
+    let focusedIndex = -1;
+
+    function updateFocus() {
+      document.querySelectorAll('#list li').forEach((li, i) => {
+        li.classList.toggle('kb-focused', i === focusedIndex);
+      });
+      if (focusedIndex >= 0) {
+        const items = document.querySelectorAll('#list li');
+        if (items[focusedIndex]) {
+          items[focusedIndex].scrollIntoView({ block: 'nearest' });
+        }
+      }
+    }
+
+    function clearFocus() {
+      focusedIndex = -1;
+      updateFocus();
+    }
+
+    // Reset focus when rendering
+    const _originalRender = render;
+    render = function() {
+      _originalRender();
+      focusedIndex = -1;
+    };
+
+    // Global keyboard shortcuts
+    document.addEventListener('keydown', e => {
+      const target = e.target;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      const isEditInput = target.classList && target.classList.contains('edit-input');
+      const helpVisible = document.getElementById('help-modal').classList.contains('visible');
+
+      // Escape: close help modal, close search, or clear input
+      if (e.key === 'Escape') {
+        if (helpVisible) {
+          hideHelp();
+          e.preventDefault();
+          return;
+        }
+        if (document.getElementById('search-area').classList.contains('visible')) {
+          closeSearch();
+          e.preventDefault();
+          return;
+        }
+        if (isEditInput) return; // let inline edit handle its own Escape
+        const mainInput = document.getElementById('input');
+        if (document.activeElement === mainInput && mainInput.value) {
+          mainInput.value = '';
+          e.preventDefault();
+          return;
+        }
+        if (focusedIndex >= 0) {
+          clearFocus();
+          e.preventDefault();
+          return;
+        }
+        return;
+      }
+
+      // Close help modal on any key
+      if (helpVisible) {
+        hideHelp();
+        return;
+      }
+
+      // Ctrl+K / Cmd+K: toggle search
+      if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        toggleSearch();
+        return;
+      }
+
+      // Alt+N / Cmd+N: focus new todo input
+      if (e.key === 'n' && (e.altKey || e.metaKey)) {
+        e.preventDefault();
+        closeSearch();
+        clearFocus();
+        document.getElementById('input').focus();
+        return;
+      }
+
+      // The following shortcuts only work when not typing in an input
+      if (isInput) return;
+
+      const filtered = getFiltered();
+      const itemCount = filtered.length;
+
+      // ? : show help
+      if (e.key === '?') {
+        e.preventDefault();
+        showHelp();
+        return;
+      }
+
+      // j/ArrowDown: move focus down
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        if (itemCount === 0) return;
+        e.preventDefault();
+        focusedIndex = focusedIndex < itemCount - 1 ? focusedIndex + 1 : 0;
+        updateFocus();
+        return;
+      }
+
+      // k/ArrowUp: move focus up
+      if (e.key === 'k' || e.key === 'ArrowUp') {
+        if (itemCount === 0) return;
+        e.preventDefault();
+        focusedIndex = focusedIndex > 0 ? focusedIndex - 1 : itemCount - 1;
+        updateFocus();
+        return;
+      }
+
+      // x/Space: toggle done on focused item
+      if ((e.key === 'x' || e.key === ' ') && focusedIndex >= 0 && focusedIndex < itemCount) {
+        e.preventDefault();
+        const todo = filtered[focusedIndex];
+        const realIndex = todos.indexOf(todo);
+        if (realIndex >= 0) toggle(realIndex);
+        return;
+      }
+
+      // e: edit focused item
+      if (e.key === 'e' && focusedIndex >= 0 && focusedIndex < itemCount) {
+        e.preventDefault();
+        const todo = filtered[focusedIndex];
+        const realIndex = todos.indexOf(todo);
+        if (realIndex >= 0) {
+          const items = document.querySelectorAll('#list li');
+          if (items[focusedIndex]) {
+            startEdit(realIndex, { stopPropagation: () => {} });
+          }
+        }
+        return;
+      }
+
+      // Delete/Backspace: delete focused item
+      if ((e.key === 'Delete' || e.key === 'Backspace') && focusedIndex >= 0 && focusedIndex < itemCount) {
+        e.preventDefault();
+        const todo = filtered[focusedIndex];
+        const realIndex = todos.indexOf(todo);
+        if (realIndex >= 0) {
+          del(realIndex);
+          if (focusedIndex >= itemCount - 1) focusedIndex = itemCount - 2;
+        }
+        return;
+      }
     });
 
     // Initial load from API
