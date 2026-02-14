@@ -242,6 +242,7 @@
       flex-shrink: 0;
       transition: all var(--transition);
       background: transparent;
+      position: relative;
     }
 
     .checkbox:hover {
@@ -260,6 +261,13 @@
       transition: stroke var(--transition);
     }
 
+    /* Checkbox check animation */
+    .checkbox svg polyline {
+      stroke-dasharray: 24;
+      stroke-dashoffset: 24;
+      transition: stroke-dashoffset 0.3s cubic-bezier(0.4, 0, 0.2, 1) 0.05s;
+    }
+
     /* Done state */
     li.done {
       background: var(--done-bg);
@@ -275,9 +283,67 @@
       stroke: #fff;
     }
 
+    li.done .checkbox svg polyline {
+      stroke-dashoffset: 0;
+    }
+
     li.done .text {
-      text-decoration: line-through;
       color: var(--text-muted);
+    }
+
+    /* Strikethrough sweep animation */
+    .text::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 0%;
+      height: 1.5px;
+      background: var(--text-muted);
+      transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    li.done .text::after {
+      width: 100%;
+    }
+
+    /* Checkbox pop animation on toggle */
+    @keyframes checkPop {
+      0% { transform: scale(1); }
+      40% { transform: scale(1.25); }
+      70% { transform: scale(0.9); }
+      100% { transform: scale(1); }
+    }
+
+    .checkbox.popping {
+      animation: checkPop 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Completion particles */
+    .particle-container {
+      position: absolute;
+      pointer-events: none;
+      width: 0;
+      height: 0;
+    }
+
+    @keyframes particleBurst {
+      0% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+      }
+      100% {
+        transform: translate(var(--px), var(--py)) scale(0);
+        opacity: 0;
+      }
+    }
+
+    .particle {
+      position: absolute;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      animation: particleBurst 0.5s cubic-bezier(0.2, 0, 0.3, 1) forwards;
     }
 
     /* Text */
@@ -289,6 +355,8 @@
       cursor: pointer;
       word-break: break-word;
       transition: color var(--transition);
+      position: relative;
+      display: inline-block;
     }
 
     /* Edit input */
@@ -953,12 +1021,55 @@
 
     async function toggle(i) {
       const todo = todos[i];
+      const willBeDone = !todo.done;
+
+      // Find the checkbox element for animation
+      const filtered = getFiltered();
+      const visibleIndex = filtered.indexOf(todo);
+      const items = document.querySelectorAll('#list li');
+      const li = items[visibleIndex];
+      const checkbox = li ? li.querySelector('.checkbox') : null;
+
+      // Pop animation on checkbox
+      if (checkbox) {
+        checkbox.classList.remove('popping');
+        void checkbox.offsetWidth; // force reflow
+        checkbox.classList.add('popping');
+        setTimeout(() => checkbox.classList.remove('popping'), 350);
+      }
+
+      // Particle burst when completing (not uncompleting)
+      if (willBeDone && checkbox) {
+        spawnParticles(checkbox);
+      }
+
       const updated = await api('/todos/' + todo.id, {
         method: 'PUT',
-        body: JSON.stringify({ done: !todo.done }),
+        body: JSON.stringify({ done: willBeDone }),
       });
       todos[i] = updated;
       render();
+    }
+
+    // Particle burst effect
+    function spawnParticles(anchor) {
+      const colors = ['#6366f1', '#818cf8', '#34d399', '#fbbf24', '#f87171', '#a78bfa'];
+      const container = document.createElement('div');
+      container.className = 'particle-container';
+      anchor.appendChild(container);
+
+      for (let j = 0; j < 8; j++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const angle = (j / 8) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const dist = 16 + Math.random() * 12;
+        p.style.setProperty('--px', `${Math.cos(angle) * dist}px`);
+        p.style.setProperty('--py', `${Math.sin(angle) * dist}px`);
+        p.style.background = colors[Math.floor(Math.random() * colors.length)];
+        container.appendChild(p);
+      }
+
+      setTimeout(() => container.remove(), 600);
     }
 
     async function del(i) {
