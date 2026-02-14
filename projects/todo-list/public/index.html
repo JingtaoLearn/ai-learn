@@ -667,6 +667,53 @@
       white-space: nowrap;
     }
 
+    /* Drag and drop */
+    li[draggable="true"] {
+      cursor: grab;
+    }
+
+    li[draggable="true"]:active {
+      cursor: grabbing;
+    }
+
+    li.dragging {
+      opacity: 0.4;
+      transform: scale(0.98);
+      box-shadow: var(--shadow-lg);
+    }
+
+    li.drag-over {
+      border-top: 2px solid var(--accent);
+      margin-top: -1px;
+    }
+
+    li.drag-over-bottom {
+      border-bottom: 2px solid var(--accent);
+      margin-bottom: -1px;
+    }
+
+    .drag-handle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: transparent;
+      font-size: 14px;
+      cursor: grab;
+      padding: 2px 4px;
+      flex-shrink: 0;
+      transition: color var(--transition);
+      user-select: none;
+      touch-action: none;
+    }
+
+    li:hover .drag-handle {
+      color: var(--text-muted);
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
     /* Focused todo item */
     li.kb-focused {
       outline: 2px solid var(--accent);
@@ -768,6 +815,10 @@
           <span class="shortcut-desc">Show this help</span>
           <kbd>?</kbd>
         </li>
+        <li>
+          <span class="shortcut-desc">Reorder todos</span>
+          <kbd>Drag &#9776;</kbd>
+        </li>
       </ul>
     </div>
   </div>
@@ -864,10 +915,12 @@
         return;
       }
 
+      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery;
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
         return `
-        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}">
+        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
+          ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
@@ -1239,6 +1292,94 @@
         }
         return;
       }
+    });
+
+    // Drag and drop reordering
+    let dragSrcIndex = null;
+    let dragOverIndex = null;
+
+    document.getElementById('list').addEventListener('dragstart', e => {
+      const li = e.target.closest('li[draggable]');
+      if (!li) return;
+      dragSrcIndex = parseInt(li.dataset.index);
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragSrcIndex);
+    });
+
+    document.getElementById('list').addEventListener('dragend', e => {
+      const li = e.target.closest('li[draggable]');
+      if (li) li.classList.remove('dragging');
+      document.querySelectorAll('#list li').forEach(item => {
+        item.classList.remove('drag-over', 'drag-over-bottom');
+      });
+      dragSrcIndex = null;
+      dragOverIndex = null;
+    });
+
+    document.getElementById('list').addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const li = e.target.closest('li[draggable]');
+      if (!li) return;
+
+      // Remove previous indicators
+      document.querySelectorAll('#list li').forEach(item => {
+        item.classList.remove('drag-over', 'drag-over-bottom');
+      });
+
+      const rect = li.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) {
+        li.classList.add('drag-over');
+      } else {
+        li.classList.add('drag-over-bottom');
+      }
+    });
+
+    document.getElementById('list').addEventListener('dragleave', e => {
+      const li = e.target.closest('li[draggable]');
+      if (li && !li.contains(e.relatedTarget)) {
+        li.classList.remove('drag-over', 'drag-over-bottom');
+      }
+    });
+
+    document.getElementById('list').addEventListener('drop', async e => {
+      e.preventDefault();
+      const targetLi = e.target.closest('li[draggable]');
+      if (!targetLi) return;
+
+      const fromIndex = dragSrcIndex;
+      const toIndex = parseInt(targetLi.dataset.index);
+      if (fromIndex === null || fromIndex === toIndex) return;
+
+      // Determine if dropping below the target
+      const rect = targetLi.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      const dropBelow = e.clientY >= midY;
+
+      // Clean up visual indicators
+      document.querySelectorAll('#list li').forEach(item => {
+        item.classList.remove('drag-over', 'drag-over-bottom', 'dragging');
+      });
+
+      // Reorder in array
+      const [moved] = todos.splice(fromIndex, 1);
+      // After splice, recalculate target position
+      let targetIdx = toIndex > fromIndex ? toIndex - 1 : toIndex;
+      if (dropBelow) targetIdx++;
+      if (targetIdx > todos.length) targetIdx = todos.length;
+      
+      todos.splice(targetIdx, 0, moved);
+
+      // Save new order to backend
+      const ids = todos.map(t => t.id);
+      await api('/todos/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      });
+
+      render();
     });
 
     // Initial load from API

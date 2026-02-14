@@ -78,6 +78,23 @@ app.put('/api/todos/:id', (req, res) => {
   res.json({ id: Number(id), text: text.trim(), done: !!done, priority });
 });
 
+// POST /api/todos/reorder - reorder todos
+app.post('/api/todos/reorder', (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array is required' });
+  }
+  const update = db.prepare('UPDATE todos SET sort_order = ? WHERE id = ?');
+  const reorder = db.transaction((ids) => {
+    // Highest sort_order = first in list (DESC ordering)
+    ids.forEach((id, index) => {
+      update.run(ids.length - index, id);
+    });
+  });
+  reorder(ids);
+  res.json({ ok: true });
+});
+
 // DELETE /api/todos/:id - delete a todo
 app.delete('/api/todos/:id', (req, res) => {
   const { id } = req.params;
