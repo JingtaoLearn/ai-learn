@@ -292,7 +292,12 @@
     }
 
     /* Strikethrough sweep animation */
-    .text::after {
+    .text-content {
+      position: relative;
+      display: inline;
+    }
+
+    .text-content::after {
       content: '';
       position: absolute;
       left: 0;
@@ -303,7 +308,7 @@
       transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    li.done .text::after {
+    li.done .text-content::after {
       width: 100%;
     }
 
@@ -352,11 +357,31 @@
       font-size: 15px;
       line-height: 1.5;
       color: var(--text-primary);
-      cursor: pointer;
+      cursor: text;
       word-break: break-word;
       transition: color var(--transition);
       position: relative;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .edit-hint {
+      opacity: 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      transition: opacity var(--transition);
+      flex-shrink: 0;
+      pointer-events: none;
+    }
+
+    li:hover .edit-hint {
+      opacity: 0.6;
+    }
+
+    li:hover .text:hover .edit-hint {
+      opacity: 1;
+      color: var(--accent);
     }
 
     /* Edit input */
@@ -1318,7 +1343,7 @@
         </li>
         <li>
           <span class="shortcut-desc">Edit selected todo</span>
-          <kbd>E</kbd>
+          <kbd>E / Dbl-click / Long-press</kbd>
         </li>
         <li>
           <span class="shortcut-desc">Delete selected todo</span>
@@ -1545,7 +1570,7 @@
           <div class="checkbox" onclick="toggle(${i})">
             <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
           </div>
-          <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+          <span class="text" ondblclick="startEdit(${i}, event)" title="Double-click to edit"><span class="text-content">${esc(t.text)}</span><span class="edit-hint">✏️</span></span>
           ${renderDueDate(i, t)}
           <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
           <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
@@ -1841,7 +1866,7 @@
       render();
     }
 
-    // Inline editing
+    // Inline editing (double-click or long-press on mobile)
     function startEdit(i, event) {
       event.stopPropagation();
       const filtered = getFiltered();
@@ -2297,6 +2322,40 @@
 
     // Initial load from API
     loadTodos();
+
+    // Long-press to edit on mobile (touch devices)
+    let longPressTimer = null;
+    let longPressTarget = null;
+
+    document.getElementById('list').addEventListener('touchstart', e => {
+      const textEl = e.target.closest('.text');
+      if (!textEl) return;
+      const li = textEl.closest('li');
+      if (!li) return;
+
+      longPressTarget = textEl;
+      longPressTimer = setTimeout(() => {
+        // Find the todo index from the ondblclick attribute
+        const match = textEl.getAttribute('ondblclick')?.match(/startEdit\((\d+)/);
+        if (match) {
+          e.preventDefault();
+          // Visual feedback: brief vibration if available
+          if (navigator.vibrate) navigator.vibrate(30);
+          startEdit(parseInt(match[1]), { stopPropagation: () => {} });
+        }
+        longPressTarget = null;
+      }, 500);
+    }, { passive: false });
+
+    document.getElementById('list').addEventListener('touchend', () => {
+      clearTimeout(longPressTimer);
+      longPressTarget = null;
+    });
+
+    document.getElementById('list').addEventListener('touchmove', () => {
+      clearTimeout(longPressTimer);
+      longPressTarget = null;
+    });
   </script>
 </body>
 </html>
