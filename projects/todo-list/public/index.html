@@ -1042,6 +1042,113 @@
       transform: translateY(-1px);
     }
 
+    /* Toast notification (undo) */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+      pointer-events: none;
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: var(--text-primary);
+      color: var(--bg-primary);
+      border-radius: var(--radius);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+      font-size: 14px;
+      font-weight: 500;
+      pointer-events: auto;
+      animation: toastIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      max-width: 360px;
+    }
+
+    .toast.hiding {
+      animation: toastOut 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    @keyframes toastIn {
+      from {
+        opacity: 0;
+        transform: translateY(16px) scale(0.95);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes toastOut {
+      to {
+        opacity: 0;
+        transform: translateY(16px) scale(0.95);
+      }
+    }
+
+    .toast-text {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .toast-undo {
+      background: none;
+      border: none;
+      color: #818cf8;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: background 0.15s ease;
+      white-space: nowrap;
+    }
+
+    [data-theme="dark"] .toast {
+      background: #e5e7eb;
+      color: #1a1d23;
+    }
+
+    [data-theme="dark"] .toast-undo {
+      color: #4f46e5;
+    }
+
+    .toast-undo:hover {
+      background: rgba(129, 140, 248, 0.15);
+    }
+
+    .toast-progress {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 3px;
+      background: #818cf8;
+      border-radius: 0 0 var(--radius) var(--radius);
+      transition: width linear;
+    }
+
+    [data-theme="dark"] .toast-progress {
+      background: #4f46e5;
+    }
+
+    .toast {
+      position: relative;
+      overflow: hidden;
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -1102,6 +1209,9 @@
     </button>
   </div>
 
+  <!-- Toast container for undo notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
   <!-- Confirm dialog -->
   <div class="confirm-overlay" id="confirm-dialog">
     <div class="confirm-dialog">
@@ -1161,6 +1271,10 @@
           <span class="shortcut-desc">Reorder todos</span>
           <kbd>Drag &#9776;</kbd>
         </li>
+        <li>
+          <span class="shortcut-desc">Undo delete</span>
+          <kbd>Ctrl+Z</kbd>
+        </li>
       </ul>
     </div>
   </div>
@@ -1170,6 +1284,50 @@
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
     let openDropdownIndex = null;
+
+    // Toast/Undo system
+    let toastTimers = [];
+
+    function showToast(message, undoCallback, durationMs = 5000) {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.innerHTML = `
+        <span class="toast-text">${message}</span>
+        <button class="toast-undo">Undo</button>
+        <div class="toast-progress" style="width: 100%"></div>
+      `;
+      container.appendChild(toast);
+
+      // Animate progress bar
+      const progress = toast.querySelector('.toast-progress');
+      requestAnimationFrame(() => {
+        progress.style.transitionDuration = durationMs + 'ms';
+        progress.style.width = '0%';
+      });
+
+      let undone = false;
+
+      const undoBtn = toast.querySelector('.toast-undo');
+      undoBtn.addEventListener('click', () => {
+        if (undone) return;
+        undone = true;
+        undoCallback();
+        removeToast(toast);
+      });
+
+      const timer = setTimeout(() => {
+        if (!undone) removeToast(toast);
+      }, durationMs);
+
+      toastTimers.push({ toast, timer });
+    }
+
+    function removeToast(toast) {
+      toast.classList.add('hiding');
+      setTimeout(() => toast.remove(), 250);
+      toastTimers = toastTimers.filter(t => t.toast !== toast);
+    }
 
     // Date helpers
     function getTodayStr() {
@@ -1405,10 +1563,37 @@
       const visibleIndex = filtered.indexOf(todo);
       const items = document.querySelectorAll('#list li');
 
+      // Store todo data for undo
+      const deletedTodo = { ...todo };
+      const deletedIndex = i;
+
       async function doDelete() {
         await api('/todos/' + todo.id, { method: 'DELETE' });
         todos.splice(i, 1);
         render();
+        // Show undo toast
+        showToast(`Deleted "${deletedTodo.text.length > 30 ? deletedTodo.text.slice(0, 30) + '…' : deletedTodo.text}"`, async () => {
+          // Undo: re-create the todo on the server
+          const restored = await api('/todos', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: deletedTodo.text,
+              priority: deletedTodo.priority,
+              due_date: deletedTodo.due_date,
+            }),
+          });
+          // Restore done state if needed
+          if (deletedTodo.done) {
+            const updated = await api('/todos/' + restored.id, {
+              method: 'PUT',
+              body: JSON.stringify({ done: true }),
+            });
+            todos.splice(Math.min(deletedIndex, todos.length), 0, updated);
+          } else {
+            todos.splice(Math.min(deletedIndex, todos.length), 0, restored);
+          }
+          render();
+        });
       }
 
       if (visibleIndex >= 0 && items[visibleIndex]) {
@@ -1707,6 +1892,17 @@
         return;
       }
 
+      // Ctrl+Z / Cmd+Z: trigger latest undo toast
+      if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        if (toastTimers.length > 0) {
+          e.preventDefault();
+          const latest = toastTimers[toastTimers.length - 1];
+          const undoBtn = latest.toast.querySelector('.toast-undo');
+          if (undoBtn) undoBtn.click();
+          return;
+        }
+      }
+
       // Alt+N / Cmd+N: focus new todo input
       if (e.key === 'n' && (e.altKey || e.metaKey)) {
         e.preventDefault();
@@ -1905,6 +2101,7 @@
     async function executeClearCompleted() {
       hideConfirm();
       const completed = todos.filter(t => t.done);
+      const completedData = completed.map(t => ({ ...t }));
 
       // Animate removal of visible completed items
       const filtered = getFiltered();
@@ -1925,6 +2122,29 @@
       // Remove from local array
       todos = todos.filter(t => !t.done);
       render();
+
+      // Show undo toast
+      const count = completedData.length;
+      showToast(`Cleared ${count} completed item${count !== 1 ? 's' : ''}`, async () => {
+        // Undo: re-create all deleted todos
+        for (const td of completedData) {
+          const restored = await api('/todos', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: td.text,
+              priority: td.priority,
+              due_date: td.due_date,
+            }),
+          });
+          // Restore done state
+          const updated = await api('/todos/' + restored.id, {
+            method: 'PUT',
+            body: JSON.stringify({ done: true }),
+          });
+          todos.push(updated);
+        }
+        render();
+      }, 7000); // longer timeout for bulk undo
     }
 
     // Close confirm dialog on click outside or Escape
