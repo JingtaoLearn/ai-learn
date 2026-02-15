@@ -1247,6 +1247,121 @@
 
       .stats { font-size: 12px; }
     }
+
+    /* Notes */
+    .todo-main-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .notes-section {
+      display: none;
+      width: 100%;
+      margin-top: 8px;
+      padding-left: 34px;
+      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .notes-section.visible {
+      display: block;
+    }
+
+    .notes-display {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      padding: 8px 12px;
+      background: var(--bg-input);
+      border-radius: 8px;
+      cursor: pointer;
+      white-space: pre-wrap;
+      word-break: break-word;
+      transition: background var(--transition);
+    }
+
+    .notes-display:hover {
+      background: var(--accent-light);
+    }
+
+    .notes-placeholder {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-style: italic;
+      padding: 6px 12px;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all var(--transition);
+      border: 1px dashed transparent;
+    }
+
+    .notes-placeholder:hover {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .notes-edit {
+      width: 100%;
+      min-height: 60px;
+      max-height: 200px;
+      padding: 8px 12px;
+      border: 2px solid var(--accent);
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+      line-height: 1.5;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      outline: none;
+      resize: vertical;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .notes-edit::placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .notes-indicator {
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      flex-shrink: 0;
+      transition: all var(--transition);
+      opacity: 0;
+      border-radius: 4px;
+    }
+
+    li:hover .notes-indicator {
+      opacity: 0.6;
+    }
+
+    .notes-indicator:hover {
+      opacity: 1 !important;
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .notes-indicator.has-notes {
+      opacity: 0.8;
+      color: var(--accent);
+    }
+
+    li:hover .notes-indicator.has-notes {
+      opacity: 1;
+    }
+
+    /* Override li layout for notes support */
+    li {
+      flex-wrap: wrap;
+    }
+
+    li.done .notes-display {
+      opacity: 0.5;
+    }
   </style>
 </head>
 <body>
@@ -1358,6 +1473,10 @@
           <kbd>D</kbd>
         </li>
         <li>
+          <span class="shortcut-desc">Toggle notes</span>
+          <kbd>N</kbd>
+        </li>
+        <li>
           <span class="shortcut-desc">Reorder todos</span>
           <kbd>Drag &#9776;</kbd>
         </li>
@@ -1380,6 +1499,7 @@
     let openDropdownIndex = null;
     let currentSort = 'manual';
     let sortDirection = 'asc'; // asc or desc
+    let expandedNotes = new Set(); // track which todo ids have notes expanded
 
     // Toast/Undo system
     let toastTimers = [];
@@ -1564,16 +1684,26 @@
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
         const isOverdue = !t.done && t.due_date && dueDateClass(t.due_date, t.done) === 'overdue';
+        const hasNotes = t.notes && t.notes.trim();
+        const notesExpanded = expandedNotes.has(t.id);
         return `
         <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'} ${isOverdue ? 'overdue-item' : ''}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
-          ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
-          <div class="checkbox" onclick="toggle(${i})">
-            <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
+          <div class="todo-main-row">
+            ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
+            <div class="checkbox" onclick="toggle(${i})">
+              <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
+            </div>
+            <span class="text" ondblclick="startEdit(${i}, event)" title="Double-click to edit"><span class="text-content">${esc(t.text)}</span><span class="edit-hint">✏️</span></span>
+            <span class="notes-indicator ${hasNotes ? 'has-notes' : ''}" onclick="toggleNotes(${t.id})" title="${hasNotes ? 'Show notes' : 'Add notes'}">📝</span>
+            ${renderDueDate(i, t)}
+            <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
+            <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
           </div>
-          <span class="text" ondblclick="startEdit(${i}, event)" title="Double-click to edit"><span class="text-content">${esc(t.text)}</span><span class="edit-hint">✏️</span></span>
-          ${renderDueDate(i, t)}
-          <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
-          <button class="del" onclick="del(${i})" title="Delete" aria-label="Delete todo">&#10005;</button>
+          <div class="notes-section ${notesExpanded ? 'visible' : ''}" id="notes-${t.id}">
+            ${hasNotes
+              ? `<div class="notes-display" onclick="startEditNotes(${i})" title="Click to edit notes">${esc(t.notes)}</div>`
+              : `<div class="notes-placeholder" onclick="startEditNotes(${i})">+ Add notes...</div>`}
+          </div>
         </li>`;
       }).join('');
     }
@@ -1677,6 +1807,7 @@
               text: deletedTodo.text,
               priority: deletedTodo.priority,
               due_date: deletedTodo.due_date,
+              notes: deletedTodo.notes,
             }),
           });
           // Restore done state if needed
@@ -1907,6 +2038,64 @@
       input.addEventListener('blur', saveEdit);
     }
 
+    // Notes toggle and editing
+    function toggleNotes(todoId) {
+      if (expandedNotes.has(todoId)) {
+        expandedNotes.delete(todoId);
+      } else {
+        expandedNotes.add(todoId);
+      }
+      render();
+    }
+
+    function startEditNotes(i) {
+      const todo = todos[i];
+      const notesSection = document.getElementById('notes-' + todo.id);
+      if (!notesSection) return;
+
+      const textarea = document.createElement('textarea');
+      textarea.className = 'notes-edit';
+      textarea.value = todo.notes || '';
+      textarea.placeholder = 'Add details, links, or any notes...';
+      notesSection.innerHTML = '';
+      notesSection.appendChild(textarea);
+      textarea.focus();
+
+      // Auto-resize
+      function autoResize() {
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+      }
+      autoResize();
+      textarea.addEventListener('input', autoResize);
+
+      let saved = false;
+      async function saveNotes() {
+        if (saved) return;
+        saved = true;
+        const newNotes = textarea.value.trim();
+        if (newNotes !== (todo.notes || '').trim()) {
+          const updated = await api('/todos/' + todo.id, {
+            method: 'PUT',
+            body: JSON.stringify({ notes: newNotes }),
+          });
+          todos[i] = updated;
+        }
+        // Keep notes expanded if there's content
+        if (newNotes) {
+          expandedNotes.add(todo.id);
+        }
+        render();
+      }
+
+      textarea.addEventListener('blur', saveNotes);
+      textarea.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { saved = true; render(); }
+        // Ctrl/Cmd+Enter to save
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { saveNotes(); }
+      });
+    }
+
     // Keyboard
     document.getElementById('input').addEventListener('keydown', e => {
       if (e.key === 'Enter') addTodo();
@@ -1953,7 +2142,7 @@
     getFiltered = function() {
       let result = _originalGetFiltered();
       if (searchQuery) {
-        result = result.filter(t => t.text.toLowerCase().includes(searchQuery));
+        result = result.filter(t => t.text.toLowerCase().includes(searchQuery) || (t.notes && t.notes.toLowerCase().includes(searchQuery)));
       }
       return result;
     };
@@ -2145,6 +2334,21 @@
         return;
       }
 
+      // n: toggle notes on focused item
+      if (e.key === 'n' && focusedIndex >= 0 && focusedIndex < itemCount) {
+        e.preventDefault();
+        const todo = filtered[focusedIndex];
+        toggleNotes(todo.id);
+        // If notes just expanded, start editing
+        if (expandedNotes.has(todo.id)) {
+          const realIndex = todos.indexOf(todo);
+          if (realIndex >= 0) {
+            setTimeout(() => startEditNotes(realIndex), 50);
+          }
+        }
+        return;
+      }
+
       // Delete/Backspace: delete focused item
       if ((e.key === 'Delete' || e.key === 'Backspace') && focusedIndex >= 0 && focusedIndex < itemCount) {
         e.preventDefault();
@@ -2302,6 +2506,7 @@
               text: td.text,
               priority: td.priority,
               due_date: td.due_date,
+              notes: td.notes,
             }),
           });
           // Restore done state
