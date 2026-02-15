@@ -21,10 +21,10 @@ OpenClaw Gateway (18789)
 **Fallback chain (as configured):**
 
 ```
-Primary:    litellm/claude-opus-4.6-fast
-Fallback 1: openai-codex/gpt-5.2
-Fallback 2: openai-codex/gpt-5.2-codex
-Fallback 3: openai-codex/gpt-5.3-codex
+Primary:    litellm/github-copilot/claude-opus-4.6-fast
+Fallback 1: litellm/github-copilot/claude-sonnet-4.5
+Fallback 2: openai-codex/gpt-5.3-codex
+Fallback 3: openai-codex/gpt-5.2-codex
 ```
 
 ## Provider Configuration
@@ -43,7 +43,7 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
         "api": "openai-completions",
         "models": [
           {
-            "id": "claude-opus-4.6-fast",
+            "id": "github-copilot/claude-opus-4.6-fast",
             "name": "Claude Opus 4.6 Fast",
             "reasoning": true,
             "input": ["text", "image"],
@@ -51,7 +51,7 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
             "maxTokens": 64000
           },
           {
-            "id": "claude-sonnet-4.5",
+            "id": "github-copilot/claude-sonnet-4.5",
             "name": "Claude Sonnet 4.5",
             "reasoning": true,
             "input": ["text", "image"],
@@ -69,8 +69,8 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
 
 | Model Ref | Context | Input | Role |
 |-----------|---------|-------|------|
-| `litellm/claude-opus-4.6-fast` | 200k | text+image | Primary |
-| `litellm/claude-sonnet-4.5` | 200k | text+image | Available (not in fallback chain) |
+| `litellm/github-copilot/claude-opus-4.6-fast` | 200k | text+image | Primary |
+| `litellm/github-copilot/claude-sonnet-4.5` | 200k | text+image | Fallback 1 |
 
 ### openai-codex (Fallback)
 
@@ -101,9 +101,8 @@ Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus acco
 
 | Model Ref | Context | Role |
 |-----------|---------|------|
-| `openai-codex/gpt-5.2` | — | Fallback 1 |
-| `openai-codex/gpt-5.2-codex` | — | Fallback 2 |
-| `openai-codex/gpt-5.3-codex` | 200k | Fallback 3 |
+| `openai-codex/gpt-5.3-codex` | 200k | Fallback 2 |
+| `openai-codex/gpt-5.2-codex` | — | Fallback 3 |
 
 ## Services
 
