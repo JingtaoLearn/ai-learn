@@ -525,6 +525,61 @@
       border-radius: 50%;
     }
 
+    /* Sort controls */
+    .sort-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .sort-bar .sort-label {
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .sort-options {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .sort-btn {
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
+    .sort-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .sort-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .sort-btn .sort-arrow {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
     /* Fade-out animation for deleted items */
     li.removing {
       animation: fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
@@ -1203,6 +1258,16 @@
       <button class="priority-filter-btn" data-priority="medium" onclick="setPriorityFilter('medium')"><span class="priority-dot" style="background:var(--priority-medium)"></span>Medium</button>
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
     </div>
+    <div class="sort-bar" id="sort-bar">
+      <span class="sort-label">Sort:</span>
+      <div class="sort-options">
+        <button class="sort-btn active" data-sort="manual" onclick="setSort('manual')">Manual</button>
+        <button class="sort-btn" data-sort="due" onclick="setSort('due')">📅 Due Date</button>
+        <button class="sort-btn" data-sort="priority" onclick="setSort('priority')">🔴 Priority</button>
+        <button class="sort-btn" data-sort="alpha" onclick="setSort('alpha')">A-Z</button>
+        <button class="sort-btn" data-sort="created" onclick="setSort('created')">🕐 Newest</button>
+      </div>
+    </div>
     <ul id="list"></ul>
     <button class="clear-completed" id="clear-completed" onclick="confirmClearCompleted()">
       🧹 Clear <span class="clear-count" id="clear-count">0</span> completed
@@ -1272,6 +1337,10 @@
           <kbd>Drag &#9776;</kbd>
         </li>
         <li>
+          <span class="shortcut-desc">Cycle sort mode</span>
+          <kbd>S</kbd>
+        </li>
+        <li>
           <span class="shortcut-desc">Undo delete</span>
           <kbd>Ctrl+Z</kbd>
         </li>
@@ -1284,6 +1353,8 @@
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
     let openDropdownIndex = null;
+    let currentSort = 'manual';
+    let sortDirection = 'asc'; // asc or desc
 
     // Toast/Undo system
     let toastTimers = [];
@@ -1441,6 +1512,7 @@
       if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
       if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
       if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => t.priority === currentPriorityFilter);
+      filtered = applySorting(filtered);
       return filtered;
     }
 
@@ -1463,7 +1535,7 @@
         return;
       }
 
-      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery;
+      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery && currentSort === 'manual';
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
         const isOverdue = !t.done && t.due_date && dueDateClass(t.due_date, t.done) === 'overdue';
@@ -1619,6 +1691,67 @@
         btn.classList.toggle('active', btn.dataset.priority === priority);
       });
       render();
+    }
+
+    // Sorting
+    function setSort(sort) {
+      if (currentSort === sort && sort !== 'manual') {
+        // Toggle direction on second click
+        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort = sort;
+        // Set sensible defaults per sort type
+        if (sort === 'due') sortDirection = 'asc';       // soonest first
+        else if (sort === 'priority') sortDirection = 'asc'; // high first
+        else if (sort === 'alpha') sortDirection = 'asc';    // A-Z
+        else if (sort === 'created') sortDirection = 'desc'; // newest first
+        else sortDirection = 'asc';
+      }
+      document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.sort === currentSort);
+        // Update arrow indicator
+        const arrow = btn.querySelector('.sort-arrow');
+        if (arrow) arrow.remove();
+        if (btn.dataset.sort === currentSort && currentSort !== 'manual') {
+          const arrowEl = document.createElement('span');
+          arrowEl.className = 'sort-arrow';
+          arrowEl.textContent = sortDirection === 'asc' ? '↑' : '↓';
+          btn.appendChild(arrowEl);
+        }
+      });
+      render();
+    }
+
+    function applySorting(items) {
+      if (currentSort === 'manual') return items;
+
+      const priorityOrder = { high: 0, medium: 1, low: 2 };
+      const sorted = [...items];
+
+      sorted.sort((a, b) => {
+        let cmp = 0;
+        switch (currentSort) {
+          case 'due':
+            // Items without due dates go to the end
+            if (!a.due_date && !b.due_date) cmp = 0;
+            else if (!a.due_date) cmp = 1;
+            else if (!b.due_date) cmp = -1;
+            else cmp = a.due_date.localeCompare(b.due_date);
+            break;
+          case 'priority':
+            cmp = (priorityOrder[a.priority || 'medium']) - (priorityOrder[b.priority || 'medium']);
+            break;
+          case 'alpha':
+            cmp = a.text.localeCompare(b.text, undefined, { sensitivity: 'base' });
+            break;
+          case 'created':
+            cmp = a.id - b.id;
+            break;
+        }
+        return sortDirection === 'desc' ? -cmp : cmp;
+      });
+
+      return sorted;
     }
 
     // Priority dropdown
@@ -1922,6 +2055,16 @@
       if (e.key === '?') {
         e.preventDefault();
         showHelp();
+        return;
+      }
+
+      // s: cycle sort mode
+      if (e.key === 's') {
+        e.preventDefault();
+        const sortModes = ['manual', 'due', 'priority', 'alpha', 'created'];
+        const currentIdx = sortModes.indexOf(currentSort);
+        const nextSort = sortModes[(currentIdx + 1) % sortModes.length];
+        setSort(nextSort);
         return;
       }
 
