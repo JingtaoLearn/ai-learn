@@ -75,6 +75,8 @@
       justify-content: center;
       padding: 48px 16px 80px;
       transition: background var(--transition), color var(--transition);
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
     }
 
     .container {
@@ -1307,23 +1309,351 @@
       animation: progressShine 2s ease-in-out infinite;
     }
 
-    /* Responsive */
-    @media (max-width: 480px) {
-      body { padding: 24px 12px 60px; }
+    /* Responsive — Tablet */
+    @media (max-width: 768px) {
+      body { padding: 32px 16px 60px; }
 
-      .header h1 { font-size: 26px; }
+      .sort-bar {
+        flex-wrap: wrap;
+      }
+
+      .sort-options {
+        flex-wrap: wrap;
+      }
+
+      .modal {
+        max-width: 90%;
+        padding: 24px;
+      }
+
+      .confirm-dialog {
+        max-width: 90%;
+        padding: 24px;
+      }
+    }
+
+    /* Responsive — Mobile */
+    @media (max-width: 480px) {
+      body { padding: 20px 12px 60px; }
+
+      .container {
+        max-width: 100%;
+      }
+
+      .header h1 { font-size: 24px; }
+
+      .header {
+        margin-bottom: 20px;
+      }
+
+      .stats {
+        font-size: 12px;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
 
       .input-area {
         flex-direction: column;
+        gap: 8px;
+      }
+
+      .input-area input {
+        padding: 12px 14px;
+        font-size: 16px; /* prevents iOS zoom on focus */
       }
 
       .input-area button {
         padding: 12px 24px;
       }
 
-      li { padding: 12px 14px; }
+      .input-due-date {
+        max-width: 100%;
+        font-size: 16px;
+      }
 
-      .stats { font-size: 12px; }
+      .input-row {
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      /* Filters: smaller text, compact */
+      .filters {
+        margin-bottom: 12px;
+      }
+
+      .filter-btn {
+        padding: 7px 8px;
+        font-size: 12px;
+      }
+
+      .priority-filters {
+        margin-bottom: 12px;
+      }
+
+      .priority-filter-btn {
+        padding: 7px 8px;
+        font-size: 12px;
+      }
+
+      /* Sort bar: scrollable horizontally */
+      .sort-bar {
+        margin-bottom: 12px;
+        font-size: 12px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        flex-wrap: nowrap;
+      }
+
+      .sort-bar::-webkit-scrollbar {
+        display: none;
+      }
+
+      .sort-options {
+        flex-wrap: nowrap;
+      }
+
+      .sort-btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        flex-shrink: 0;
+      }
+
+      /* Todo items: more compact */
+      li {
+        padding: 10px 12px;
+        gap: 8px;
+        border-radius: 10px;
+        margin-bottom: 6px;
+      }
+
+      .todo-main-row {
+        gap: 8px;
+      }
+
+      .text {
+        font-size: 14px;
+      }
+
+      .edit-hint {
+        display: none; /* hide pencil on mobile, long-press is the affordance */
+      }
+
+      .checkbox {
+        width: 20px;
+        height: 20px;
+      }
+
+      .checkbox svg {
+        width: 12px;
+        height: 12px;
+      }
+
+      .del {
+        padding: 4px;
+        font-size: 14px;
+      }
+
+      .priority-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+      }
+
+      .due-date-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+      }
+
+      .add-due-btn {
+        font-size: 11px;
+        padding: 2px 6px;
+      }
+
+      .notes-indicator {
+        font-size: 11px;
+      }
+
+      .notes-section {
+        padding-left: 28px;
+      }
+
+      .notes-display, .notes-placeholder {
+        font-size: 12px;
+      }
+
+      /* Drag handle: more touch-friendly */
+      .drag-handle {
+        padding: 4px 6px;
+        font-size: 16px;
+        min-width: 24px;
+        min-height: 24px;
+      }
+
+      /* Progress bar */
+      .progress-container {
+        margin-bottom: 16px;
+      }
+
+      .progress-header {
+        font-size: 12px;
+      }
+
+      /* Search */
+      .search-area input {
+        font-size: 16px; /* prevents iOS zoom */
+        padding: 10px 14px 10px 36px;
+      }
+
+      .search-area .search-icon {
+        left: 12px;
+        font-size: 14px;
+      }
+
+      /* Modal: near-fullscreen on mobile */
+      .modal {
+        max-width: 95%;
+        padding: 20px;
+        border-radius: var(--radius);
+      }
+
+      .modal h2 {
+        font-size: 16px;
+      }
+
+      .shortcut-list .shortcut-desc {
+        font-size: 13px;
+      }
+
+      .shortcut-list kbd {
+        font-size: 11px;
+        padding: 2px 6px;
+      }
+
+      .confirm-dialog {
+        max-width: 92%;
+        padding: 20px 24px;
+      }
+
+      /* Toast: full-width on mobile */
+      .toast-container {
+        left: 12px;
+        right: 12px;
+        transform: none;
+        bottom: 16px;
+      }
+
+      .toast {
+        max-width: 100%;
+        font-size: 13px;
+        padding: 10px 14px;
+      }
+
+      .toast-undo {
+        font-size: 13px;
+      }
+
+      /* Clear completed */
+      .clear-completed {
+        font-size: 12px;
+        padding: 8px 16px;
+        margin-top: 12px;
+      }
+    }
+
+    /* Responsive — Very small screens */
+    @media (max-width: 360px) {
+      body { padding: 16px 8px 50px; }
+
+      .header h1 { font-size: 22px; }
+
+      .filter-btn {
+        padding: 6px 4px;
+        font-size: 11px;
+      }
+
+      .priority-filter-btn {
+        padding: 6px 4px;
+        font-size: 11px;
+      }
+
+      .priority-filter-btn .priority-dot {
+        display: none; /* save space on tiny screens */
+      }
+
+      li {
+        padding: 8px 10px;
+      }
+
+      .text {
+        font-size: 13px;
+      }
+
+      /* Stack priority badge and due date below text on very small screens */
+      .todo-main-row {
+        flex-wrap: wrap;
+      }
+
+      .priority-badge {
+        order: 10;
+        margin-left: 32px;
+      }
+
+      .due-date-wrapper, .add-due-btn {
+        order: 11;
+      }
+    }
+
+    /* Touch device optimizations */
+    @media (hover: none) and (pointer: coarse) {
+      /* Always show delete button on touch devices */
+      li .del {
+        color: var(--text-muted);
+      }
+
+      /* Always show notes indicator on touch */
+      .notes-indicator {
+        opacity: 0.5;
+      }
+
+      .notes-indicator.has-notes {
+        opacity: 0.8;
+      }
+
+      /* Larger touch targets */
+      .checkbox {
+        min-width: 24px;
+        min-height: 24px;
+      }
+
+      .del {
+        min-width: 32px;
+        min-height: 32px;
+      }
+
+      .priority-badge {
+        min-height: 24px;
+        display: flex;
+        align-items: center;
+      }
+
+      .drag-handle {
+        min-width: 28px;
+        min-height: 32px;
+      }
+
+      /* Disable hover effects that cause sticky on mobile */
+      li:hover {
+        transform: none;
+        box-shadow: var(--shadow-sm);
+      }
+
+      .theme-toggle:hover {
+        transform: none;
+      }
+
+      .input-area button:hover {
+        transform: none;
+      }
     }
 
     /* Notes */
