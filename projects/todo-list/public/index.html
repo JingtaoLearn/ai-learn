@@ -612,6 +612,10 @@
       animation: fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
     }
 
+    .swipe-wrapper.removing {
+      animation: fadeOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
     @keyframes fadeOut {
       to {
         opacity: 0;
@@ -1732,6 +1736,60 @@
       }
     }
 
+    /* Swipe-to-delete */
+    .swipe-wrapper {
+      position: relative;
+      overflow: hidden;
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .swipe-wrapper li {
+      margin-bottom: 0;
+      position: relative;
+      z-index: 1;
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                  background var(--transition),
+                  border-color var(--transition),
+                  opacity 0.3s ease;
+      will-change: transform;
+      animation: none;
+    }
+
+    .swipe-wrapper.swiping li {
+      transition: none;
+    }
+
+    .swipe-bg {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      background: var(--delete-color);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 24px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      gap: 8px;
+      border-radius: var(--radius);
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .swipe-wrapper.swiping .swipe-bg,
+    .swipe-wrapper.swiped .swipe-bg {
+      opacity: 1;
+    }
+
+    .swipe-bg-icon {
+      font-size: 20px;
+    }
+
     /* Touch device optimizations */
     @media (hover: none) and (pointer: coarse) {
       /* Always show delete button on touch devices */
@@ -2047,6 +2105,10 @@
           <kbd>Drag &#9776;</kbd>
         </li>
         <li>
+          <span class="shortcut-desc">Delete (mobile)</span>
+          <kbd>Swipe ←</kbd>
+        </li>
+        <li>
           <span class="shortcut-desc">Cycle sort mode</span>
           <kbd>S</kbd>
         </li>
@@ -2273,7 +2335,7 @@
         const isOverdue = !t.done && t.due_date && dueDateClass(t.due_date, t.done) === 'overdue';
         const hasNotes = t.notes && t.notes.trim();
         const notesExpanded = expandedNotes.has(t.id);
-        return `
+        const liHtml = `
         <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'} ${isOverdue ? 'overdue-item' : ''}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
           <div class="todo-main-row">
             ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
@@ -2292,7 +2354,17 @@
               : `<div class="notes-placeholder" onclick="startEditNotes(${i})">+ Add notes...</div>`}
           </div>
         </li>`;
+        // Wrap in swipe container for touch delete
+        if (isTouchDevice) {
+          return `<div class="swipe-wrapper" data-todo-index="${i}">
+            <div class="swipe-bg"><span class="swipe-bg-icon">🗑️</span> Delete</div>
+            ${liHtml}
+          </div>`;
+        }
+        return liHtml;
       }).join('');
+      // Re-attach swipe listeners after render
+      if (isTouchDevice) initSwipeListeners();
     }
 
     function esc(s) {
@@ -2415,7 +2487,13 @@
       }
 
       if (visibleIndex >= 0 && items[visibleIndex]) {
-        items[visibleIndex].classList.add('removing');
+        const el = items[visibleIndex];
+        const wrapper = el.closest('.swipe-wrapper');
+        if (wrapper) {
+          wrapper.classList.add('removing');
+        } else {
+          el.classList.add('removing');
+        }
         setTimeout(doDelete, 280);
       } else {
         doDelete();
@@ -3146,6 +3224,101 @@
 
     // Initial load from API
     loadTodos();
+
+    // Swipe-to-delete on touch devices
+    const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    const SWIPE_THRESHOLD = 80; // px to trigger delete
+    const SWIPE_VELOCITY_THRESHOLD = 0.5; // px/ms for fast swipe
+
+    function initSwipeListeners() {
+      document.querySelectorAll('.swipe-wrapper').forEach(wrapper => {
+        if (wrapper._swipeInit) return;
+        wrapper._swipeInit = true;
+
+        let startX = 0, startY = 0, currentX = 0;
+        let startTime = 0;
+        let isSwiping = false;
+        let isVerticalScroll = false;
+        const li = wrapper.querySelector('li');
+
+        wrapper.addEventListener('touchstart', e => {
+          // Don't swipe on interactive elements
+          const target = e.target;
+          if (target.closest('.checkbox, .del, .priority-badge, .due-date-badge, .add-due-btn, .due-date-clear, .notes-indicator, .notes-section, .drag-handle, .edit-input, input, textarea, button')) return;
+
+          startX = e.touches[0].clientX;
+          startY = e.touches[0].clientY;
+          startTime = Date.now();
+          currentX = 0;
+          isSwiping = false;
+          isVerticalScroll = false;
+          wrapper.classList.remove('swiped');
+        }, { passive: true });
+
+        wrapper.addEventListener('touchmove', e => {
+          if (isVerticalScroll) return;
+
+          const dx = e.touches[0].clientX - startX;
+          const dy = e.touches[0].clientY - startY;
+
+          // Determine scroll direction on first significant move
+          if (!isSwiping && !isVerticalScroll) {
+            if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 10) {
+              isVerticalScroll = true;
+              return;
+            }
+            if (Math.abs(dx) > 10) {
+              isSwiping = true;
+              wrapper.classList.add('swiping');
+            }
+            return;
+          }
+
+          if (!isSwiping) return;
+
+          // Only allow left swipe (negative dx)
+          currentX = Math.min(0, dx);
+          // Rubber-band effect: diminish past threshold
+          let translateX = currentX;
+          if (Math.abs(currentX) > SWIPE_THRESHOLD) {
+            const excess = Math.abs(currentX) - SWIPE_THRESHOLD;
+            translateX = -(SWIPE_THRESHOLD + excess * 0.3);
+          }
+          li.style.transform = `translateX(${translateX}px)`;
+
+          e.preventDefault();
+        }, { passive: false });
+
+        wrapper.addEventListener('touchend', e => {
+          if (!isSwiping) return;
+          wrapper.classList.remove('swiping');
+
+          const elapsed = Date.now() - startTime;
+          const velocity = Math.abs(currentX) / elapsed;
+          const shouldDelete = Math.abs(currentX) > SWIPE_THRESHOLD || (velocity > SWIPE_VELOCITY_THRESHOLD && Math.abs(currentX) > 40);
+
+          if (shouldDelete) {
+            // Animate off-screen then delete
+            wrapper.classList.add('swiped');
+            li.style.transition = 'transform 0.2s ease-out';
+            li.style.transform = `translateX(-${wrapper.offsetWidth}px)`;
+            if (navigator.vibrate) navigator.vibrate(20);
+
+            setTimeout(() => {
+              const idx = parseInt(wrapper.dataset.todoIndex);
+              if (!isNaN(idx)) del(idx);
+            }, 200);
+          } else {
+            // Snap back
+            li.style.transition = 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
+            li.style.transform = 'translateX(0)';
+          }
+
+          currentX = 0;
+          isSwiping = false;
+        }, { passive: true });
+      });
+    }
 
     // Long-press to edit on mobile (touch devices)
     let longPressTimer = null;
