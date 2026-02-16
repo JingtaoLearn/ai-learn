@@ -1309,6 +1309,125 @@
       animation: progressShine 2s ease-in-out infinite;
     }
 
+    /* Input extras row */
+    .input-extras {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    /* Input priority selector */
+    .input-priority-selector {
+      position: relative;
+    }
+
+    .input-priority-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 14px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .input-priority-btn:hover {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .input-priority-btn.high {
+      border-color: var(--priority-high);
+      color: var(--priority-high);
+    }
+
+    .input-priority-btn.high:hover {
+      background: var(--priority-high-bg);
+    }
+
+    .input-priority-btn.medium {
+      border-color: var(--priority-medium);
+      color: var(--priority-medium);
+    }
+
+    .input-priority-btn.medium:hover {
+      background: var(--priority-medium-bg);
+    }
+
+    .input-priority-btn.low {
+      border-color: var(--priority-low);
+      color: var(--priority-low);
+    }
+
+    .input-priority-btn.low:hover {
+      background: var(--priority-low-bg);
+    }
+
+    .priority-dot-inline {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    .input-priority-arrow {
+      font-size: 10px;
+      opacity: 0.6;
+      transition: transform var(--transition);
+    }
+
+    .input-priority-selector.open .input-priority-arrow {
+      transform: rotate(180deg);
+    }
+
+    .input-priority-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      overflow: hidden;
+      min-width: 120px;
+      animation: slideIn 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .input-priority-selector.open .input-priority-menu {
+      display: block;
+    }
+
+    .input-priority-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background var(--transition);
+      border: none;
+      background: none;
+      width: 100%;
+      font-family: inherit;
+      color: var(--text-primary);
+    }
+
+    .input-priority-option:hover {
+      background: var(--bg-input);
+    }
+
     /* Responsive — Tablet */
     @media (max-width: 768px) {
       body { padding: 32px 16px 60px; }
@@ -1366,8 +1485,18 @@
         padding: 12px 24px;
       }
 
+      .input-extras {
+        width: 100%;
+      }
+
+      .input-priority-btn {
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+
       .input-due-date {
         max-width: 100%;
+        flex: 1;
         font-size: 16px;
       }
 
@@ -1797,7 +1926,27 @@
     </div>
     <div class="input-area">
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
-      <input id="input-due" type="date" class="input-due-date" title="Due date (optional)">
+      <div class="input-extras">
+        <div class="input-priority-selector" id="input-priority-selector">
+          <button class="input-priority-btn medium" id="input-priority-btn" onclick="toggleInputPriority(event)" title="Set priority">
+            <span class="priority-dot-inline" id="input-priority-dot"></span>
+            <span id="input-priority-label">Medium</span>
+            <span class="input-priority-arrow">▾</span>
+          </button>
+          <div class="input-priority-menu" id="input-priority-menu">
+            <button class="input-priority-option" onclick="selectInputPriority('high', event)">
+              <span class="priority-dot high"></span>High
+            </button>
+            <button class="input-priority-option" onclick="selectInputPriority('medium', event)">
+              <span class="priority-dot medium"></span>Medium
+            </button>
+            <button class="input-priority-option" onclick="selectInputPriority('low', event)">
+              <span class="priority-dot low"></span>Low
+            </button>
+          </div>
+        </div>
+        <input id="input-due" type="date" class="input-due-date" title="Due date (optional)">
+      </div>
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="search-area" id="search-area">
@@ -2159,11 +2308,14 @@
       const text = input.value.trim();
       if (!text) return;
       const due_date = dueInput.value || null;
+      const priority = inputPriority;
       input.value = '';
       dueInput.value = '';
+      // Reset priority to medium after adding
+      selectInputPriority('medium', { stopPropagation: () => {} });
       const todo = await api('/todos', {
         method: 'POST',
-        body: JSON.stringify({ text, due_date }),
+        body: JSON.stringify({ text, due_date, priority }),
       });
       todos.unshift(todo);
       render();
@@ -2961,6 +3113,35 @@
     // Close confirm dialog on click outside or Escape
     document.getElementById('confirm-dialog').addEventListener('click', e => {
       if (e.target === document.getElementById('confirm-dialog')) hideConfirm();
+    });
+
+    // Input priority selector
+    let inputPriority = 'medium';
+
+    function toggleInputPriority(event) {
+      event.stopPropagation();
+      const selector = document.getElementById('input-priority-selector');
+      selector.classList.toggle('open');
+    }
+
+    function selectInputPriority(priority, event) {
+      event.stopPropagation();
+      inputPriority = priority;
+      const btn = document.getElementById('input-priority-btn');
+      const label = document.getElementById('input-priority-label');
+      const selector = document.getElementById('input-priority-selector');
+
+      btn.className = 'input-priority-btn ' + priority;
+      label.textContent = priority.charAt(0).toUpperCase() + priority.slice(1);
+      selector.classList.remove('open');
+    }
+
+    // Close input priority menu when clicking outside
+    document.addEventListener('click', (e) => {
+      const selector = document.getElementById('input-priority-selector');
+      if (selector && !selector.contains(e.target)) {
+        selector.classList.remove('open');
+      }
     });
 
     // Initial load from API
