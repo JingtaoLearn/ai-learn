@@ -277,4 +277,4 @@ tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log
 
 ## Last Updated
 
-2026-02-11 - Initial security documentation for maximum permissions configuration
+2026-02-17 - Updated to reflect allowlist-based Discord groupPolicy and hooks configuration
