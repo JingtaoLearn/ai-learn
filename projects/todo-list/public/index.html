@@ -868,6 +868,39 @@
       cursor: grabbing;
     }
 
+    /* Touch drag-and-drop */
+    .touch-drag-ghost {
+      position: fixed;
+      z-index: 9999;
+      pointer-events: none;
+      opacity: 0.9;
+      transform: scale(1.03);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+      border-radius: var(--radius);
+      transition: none;
+      will-change: top, left;
+    }
+
+    .touch-drag-placeholder {
+      background: var(--accent-light);
+      border: 2px dashed var(--accent);
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      transition: height 0.15s ease;
+    }
+
+    .touch-dragging {
+      opacity: 0.3;
+    }
+
+    /* On touch devices, always show drag handle so users know they can drag */
+    @media (hover: none) and (pointer: coarse) {
+      .drag-handle {
+        color: var(--text-muted);
+        opacity: 0.4;
+      }
+    }
+
     /* Focused todo item */
     li.kb-focused {
       outline: 2px solid var(--accent);
@@ -3793,6 +3826,186 @@
       clearTimeout(longPressTimer);
       longPressTarget = null;
     });
+
+    // Touch-based drag-and-drop reordering (for mobile)
+    (function initTouchDragReorder() {
+      const listEl = document.getElementById('list');
+      let touchDragState = null;
+
+      function getCanDrag() {
+        return currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery && currentSort === 'manual' && !batchMode;
+      }
+
+      function getSwipeWrapperIndex(wrapper) {
+        // data-todo-index on swipe-wrapper
+        return parseInt(wrapper.dataset.todoIndex);
+      }
+
+      function getLiIndex(li) {
+        // data-index on li
+        return parseInt(li.dataset.index);
+      }
+
+      listEl.addEventListener('touchstart', function(e) {
+        if (!getCanDrag()) return;
+        const handle = e.target.closest('.drag-handle');
+        if (!handle) return;
+
+        // Find the parent li and swipe-wrapper
+        const li = handle.closest('li');
+        if (!li) return;
+        const wrapper = li.closest('.swipe-wrapper') || li;
+        const todoIndex = wrapper.dataset ? getSwipeWrapperIndex(wrapper) : getLiIndex(li);
+        if (isNaN(todoIndex)) return;
+
+        e.preventDefault(); // prevent scrolling when dragging handle
+
+        const touch = e.touches[0];
+        const rect = wrapper.getBoundingClientRect();
+
+        // Create ghost element
+        const ghost = wrapper.cloneNode(true);
+        ghost.className = 'touch-drag-ghost';
+        ghost.style.width = rect.width + 'px';
+        ghost.style.left = rect.left + 'px';
+        ghost.style.top = rect.top + 'px';
+        document.body.appendChild(ghost);
+
+        // Mark source as dragging
+        wrapper.classList.add('touch-dragging');
+
+        // Haptic feedback
+        if (navigator.vibrate) navigator.vibrate(15);
+
+        touchDragState = {
+          todoIndex,
+          sourceWrapper: wrapper,
+          ghost,
+          offsetY: touch.clientY - rect.top,
+          startY: touch.clientY,
+          currentDropIndex: todoIndex,
+          placeholder: null,
+        };
+      }, { passive: false });
+
+      listEl.addEventListener('touchmove', function(e) {
+        if (!touchDragState) return;
+        e.preventDefault();
+
+        const touch = e.touches[0];
+        const { ghost, offsetY, sourceWrapper } = touchDragState;
+
+        // Move ghost
+        ghost.style.top = (touch.clientY - offsetY) + 'px';
+
+        // Find drop target
+        const wrappers = Array.from(listEl.querySelectorAll('.swipe-wrapper, li[draggable]'));
+        let dropIndex = touchDragState.todoIndex;
+
+        for (const w of wrappers) {
+          if (w === sourceWrapper) continue;
+          if (w.classList.contains('touch-drag-ghost')) continue;
+          const rect = w.getBoundingClientRect();
+          const midY = rect.top + rect.height / 2;
+          if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+            const wIdx = w.dataset.todoIndex !== undefined
+              ? parseInt(w.dataset.todoIndex)
+              : parseInt(w.dataset.index);
+            if (!isNaN(wIdx)) {
+              // Determine if above or below midpoint
+              dropIndex = touch.clientY < midY ? wIdx : wIdx + 1;
+            }
+            break;
+          }
+        }
+
+        // Update visual indicators
+        if (dropIndex !== touchDragState.currentDropIndex) {
+          touchDragState.currentDropIndex = dropIndex;
+          // Remove existing placeholder
+          if (touchDragState.placeholder) {
+            touchDragState.placeholder.remove();
+            touchDragState.placeholder = null;
+          }
+
+          // Remove all drag-over indicators
+          wrappers.forEach(w => {
+            w.classList.remove('drag-over', 'drag-over-bottom');
+            const innerLi = w.querySelector ? w.querySelector('li') : w;
+            if (innerLi) {
+              innerLi.classList.remove('drag-over', 'drag-over-bottom');
+            }
+          });
+
+          // Insert placeholder
+          const placeholder = document.createElement('div');
+          placeholder.className = 'touch-drag-placeholder';
+          placeholder.style.height = sourceWrapper.getBoundingClientRect().height + 'px';
+
+          // Find the wrapper at the drop index
+          const targetWrapper = wrappers.find(w => {
+            const idx = w.dataset.todoIndex !== undefined
+              ? parseInt(w.dataset.todoIndex)
+              : parseInt(w.dataset.index);
+            return idx === dropIndex;
+          });
+
+          if (targetWrapper && targetWrapper !== sourceWrapper) {
+            targetWrapper.parentNode.insertBefore(placeholder, targetWrapper);
+          } else if (dropIndex >= todos.length) {
+            // Drop at end
+            listEl.appendChild(placeholder);
+          }
+
+          touchDragState.placeholder = placeholder;
+        }
+
+        // Auto-scroll if near edges
+        const scrollMargin = 50;
+        const scrollSpeed = 8;
+        if (touch.clientY < scrollMargin) {
+          window.scrollBy(0, -scrollSpeed);
+        } else if (touch.clientY > window.innerHeight - scrollMargin) {
+          window.scrollBy(0, scrollSpeed);
+        }
+      }, { passive: false });
+
+      async function handleTouchEnd() {
+        if (!touchDragState) return;
+        const { todoIndex, sourceWrapper, ghost, currentDropIndex, placeholder } = touchDragState;
+
+        // Clean up
+        ghost.remove();
+        sourceWrapper.classList.remove('touch-dragging');
+        if (placeholder) placeholder.remove();
+
+        touchDragState = null;
+
+        // Perform reorder if position changed
+        if (currentDropIndex !== todoIndex && currentDropIndex !== todoIndex + 1) {
+          const [moved] = todos.splice(todoIndex, 1);
+          let targetIdx = currentDropIndex > todoIndex ? currentDropIndex - 1 : currentDropIndex;
+          if (targetIdx < 0) targetIdx = 0;
+          if (targetIdx > todos.length) targetIdx = todos.length;
+          todos.splice(targetIdx, 0, moved);
+
+          // Save to backend
+          const ids = todos.map(t => t.id);
+          await api('/todos/reorder', {
+            method: 'POST',
+            body: JSON.stringify({ ids }),
+          });
+
+          // Haptic feedback on drop
+          if (navigator.vibrate) navigator.vibrate(10);
+
+          render();
+        }
+      }
+
+      listEl.addEventListener('touchend', handleTouchEnd, { passive: true });
+      listEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+    })();
   </script>
 </body>
 </html>
