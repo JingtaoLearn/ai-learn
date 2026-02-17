@@ -1991,6 +1991,308 @@
       opacity: 0.5;
     }
 
+    /* Today Dashboard */
+    .today-dashboard {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-sm);
+      transition: all var(--transition);
+      animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .today-dashboard:hover {
+      box-shadow: var(--shadow-md);
+    }
+
+    .today-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .today-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .today-header-left .today-icon {
+      font-size: 20px;
+    }
+
+    .today-header h2 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 0;
+    }
+
+    .today-date {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .today-collapse-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: all var(--transition);
+      line-height: 1;
+    }
+
+    .today-collapse-btn:hover {
+      color: var(--text-primary);
+      background: var(--bg-input);
+    }
+
+    .today-body {
+      display: block;
+    }
+
+    .today-body.collapsed {
+      display: none;
+    }
+
+    .today-summary {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .today-stat {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--bg-input);
+      border-radius: var(--radius);
+      flex: 1;
+      min-width: 100px;
+      transition: all var(--transition);
+    }
+
+    .today-stat:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .today-stat-icon {
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .today-stat-info {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .today-stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.2;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .today-stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .today-stat.overdue {
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .today-stat.overdue .today-stat-value {
+      color: var(--delete-color);
+    }
+
+    .today-stat.due-today {
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    .today-stat.due-today .today-stat-value {
+      color: #f59e0b;
+    }
+
+    .today-stat.upcoming {
+      background: var(--accent-light);
+    }
+
+    .today-stat.upcoming .today-stat-value {
+      color: var(--accent);
+    }
+
+    .today-stat.completed-today {
+      background: var(--done-bg);
+    }
+
+    .today-stat.completed-today .today-stat-value {
+      color: var(--done-text);
+    }
+
+    .today-tasks {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .today-section-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin: 12px 0 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .today-section-label:first-child {
+      margin-top: 0;
+    }
+
+    .today-task-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition);
+      font-size: 14px;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .today-task-item:hover {
+      background: var(--bg-input);
+    }
+
+    .today-task-item .task-priority-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .today-task-item .task-priority-dot.high { background: var(--priority-high); }
+    .today-task-item .task-priority-dot.medium { background: var(--priority-medium); }
+    .today-task-item .task-priority-dot.low { background: var(--priority-low); }
+
+    .today-task-item .task-text {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .today-task-item .task-due-label {
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .today-task-item .task-due-label.overdue {
+      color: var(--delete-color);
+    }
+
+    .today-task-item .task-due-label.due-today {
+      color: #f59e0b;
+    }
+
+    .today-task-item .task-due-label.due-soon {
+      color: var(--accent);
+    }
+
+    .today-empty {
+      text-align: center;
+      padding: 16px 0;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .today-empty-icon {
+      font-size: 24px;
+      margin-bottom: 4px;
+    }
+
+    /* Hide dashboard when no todos */
+    .today-dashboard.hidden {
+      display: none;
+    }
+
+    @media (max-width: 480px) {
+      .today-dashboard {
+        padding: 14px;
+        margin-bottom: 16px;
+        border-radius: var(--radius);
+      }
+
+      .today-header h2 {
+        font-size: 14px;
+      }
+
+      .today-date {
+        font-size: 11px;
+      }
+
+      .today-summary {
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .today-stat {
+        padding: 8px 10px;
+        min-width: 70px;
+      }
+
+      .today-stat-value {
+        font-size: 16px;
+      }
+
+      .today-stat-label {
+        font-size: 10px;
+      }
+
+      .today-stat-icon {
+        font-size: 14px;
+      }
+
+      .today-task-item {
+        padding: 6px 8px;
+        font-size: 13px;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .today-summary {
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .today-stat {
+        min-width: unset;
+      }
+    }
+
     /* Batch selection mode */
     .batch-toggle {
       background: none;
@@ -2281,6 +2583,20 @@
         <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%"></div>
       </div>
     </div>
+    <div class="today-dashboard hidden" id="today-dashboard">
+      <div class="today-header" onclick="toggleDashboard()">
+        <div class="today-header-left">
+          <span class="today-icon">📋</span>
+          <h2>Today <span class="today-date" id="today-date"></span></h2>
+        </div>
+        <button class="today-collapse-btn" id="today-collapse-btn" title="Collapse/expand">▾</button>
+      </div>
+      <div class="today-body" id="today-body">
+        <div class="today-summary" id="today-summary"></div>
+        <div class="today-tasks" id="today-tasks"></div>
+      </div>
+    </div>
+
     <div class="input-area">
       <input id="input" type="text" placeholder="What needs to be done?" autofocus>
       <div class="input-extras">
@@ -3168,6 +3484,7 @@
       _originalRender();
       focusedIndex = -1;
       updateBatchBar();
+      updateDashboard();
     };
 
     // Global keyboard shortcuts
@@ -3723,6 +4040,174 @@
       });
     }
     restoreViewPreferences();
+
+    // Today Dashboard
+    let dashboardCollapsed = localStorage.getItem('todo-dashboard-collapsed') === 'true';
+
+    function toggleDashboard() {
+      dashboardCollapsed = !dashboardCollapsed;
+      localStorage.setItem('todo-dashboard-collapsed', dashboardCollapsed);
+      updateDashboardCollapse();
+    }
+
+    function updateDashboardCollapse() {
+      const body = document.getElementById('today-body');
+      const btn = document.getElementById('today-collapse-btn');
+      if (dashboardCollapsed) {
+        body.classList.add('collapsed');
+        btn.textContent = '▸';
+      } else {
+        body.classList.remove('collapsed');
+        btn.textContent = '▾';
+      }
+    }
+
+    function updateDashboard() {
+      const dashboard = document.getElementById('today-dashboard');
+      const summaryEl = document.getElementById('today-summary');
+      const tasksEl = document.getElementById('today-tasks');
+      const dateEl = document.getElementById('today-date');
+
+      // Only show dashboard when there are todos
+      if (todos.length === 0) {
+        dashboard.classList.add('hidden');
+        return;
+      }
+      dashboard.classList.remove('hidden');
+
+      // Format today's date
+      const now = new Date();
+      const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      dateEl.textContent = `— ${weekdays[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}`;
+
+      const todayStr = getTodayStr();
+
+      // Categorize active todos
+      const activeTodos = todos.filter(t => !t.done);
+      const overdueTodos = activeTodos.filter(t => t.due_date && t.due_date < todayStr);
+      const dueTodayTodos = activeTodos.filter(t => t.due_date === todayStr);
+
+      // Upcoming: due in next 3 days (not including today)
+      const threeDaysLater = new Date(now);
+      threeDaysLater.setDate(threeDaysLater.getDate() + 3);
+      const threeDaysStr = threeDaysLater.getFullYear() + '-' +
+        String(threeDaysLater.getMonth() + 1).padStart(2, '0') + '-' +
+        String(threeDaysLater.getDate()).padStart(2, '0');
+      const upcomingTodos = activeTodos.filter(t => t.due_date && t.due_date > todayStr && t.due_date <= threeDaysStr);
+
+      // High priority without due date (important but undated)
+      const highPriorityNoDue = activeTodos.filter(t => t.priority === 'high' && !t.due_date);
+
+      // Summary stats
+      const stats = [];
+      if (overdueTodos.length > 0) {
+        stats.push(`<div class="today-stat overdue">
+          <span class="today-stat-icon">🔴</span>
+          <div class="today-stat-info">
+            <span class="today-stat-value">${overdueTodos.length}</span>
+            <span class="today-stat-label">Overdue</span>
+          </div>
+        </div>`);
+      }
+      stats.push(`<div class="today-stat due-today">
+        <span class="today-stat-icon">📌</span>
+        <div class="today-stat-info">
+          <span class="today-stat-value">${dueTodayTodos.length}</span>
+          <span class="today-stat-label">Due Today</span>
+        </div>
+      </div>`);
+      if (upcomingTodos.length > 0) {
+        stats.push(`<div class="today-stat upcoming">
+          <span class="today-stat-icon">📅</span>
+          <div class="today-stat-info">
+            <span class="today-stat-value">${upcomingTodos.length}</span>
+            <span class="today-stat-label">Upcoming</span>
+          </div>
+        </div>`);
+      }
+      // Count todos completed today (compare created_at isn't available, so count done items — this is approximate)
+      const totalDone = todos.filter(t => t.done).length;
+      stats.push(`<div class="today-stat completed-today">
+        <span class="today-stat-icon">✅</span>
+        <div class="today-stat-info">
+          <span class="today-stat-value">${totalDone}</span>
+          <span class="today-stat-label">Done</span>
+        </div>
+      </div>`);
+
+      summaryEl.innerHTML = stats.join('');
+
+      // Task list sections
+      let taskHtml = '';
+      const hasTimeSensitive = overdueTodos.length + dueTodayTodos.length + upcomingTodos.length > 0;
+
+      if (!hasTimeSensitive && highPriorityNoDue.length === 0) {
+        taskHtml = `<div class="today-empty">
+          <div class="today-empty-icon">🎯</div>
+          No time-sensitive tasks. Set due dates to see them here!
+        </div>`;
+      } else {
+        if (overdueTodos.length > 0) {
+          taskHtml += `<div class="today-section-label">🔴 Overdue</div>`;
+          taskHtml += overdueTodos.map(t => renderDashboardTask(t, 'overdue')).join('');
+        }
+        if (dueTodayTodos.length > 0) {
+          taskHtml += `<div class="today-section-label">📌 Due Today</div>`;
+          taskHtml += dueTodayTodos.map(t => renderDashboardTask(t, 'due-today')).join('');
+        }
+        if (upcomingTodos.length > 0) {
+          taskHtml += `<div class="today-section-label">📅 Next 3 Days</div>`;
+          taskHtml += upcomingTodos.map(t => renderDashboardTask(t, 'due-soon')).join('');
+        }
+        if (highPriorityNoDue.length > 0) {
+          taskHtml += `<div class="today-section-label">⚡ High Priority</div>`;
+          taskHtml += highPriorityNoDue.map(t => renderDashboardTask(t, '')).join('');
+        }
+      }
+
+      tasksEl.innerHTML = taskHtml;
+      updateDashboardCollapse();
+    }
+
+    function renderDashboardTask(todo, dueClass) {
+      const dueLabel = todo.due_date ? formatDueDate(todo.due_date) : '';
+      const todoIndex = todos.indexOf(todo);
+      return `<div class="today-task-item" onclick="scrollToTodo(${todo.id})" title="Click to locate">
+        <span class="task-priority-dot ${todo.priority || 'medium'}"></span>
+        <span class="task-text">${esc(todo.text)}</span>
+        ${dueLabel ? `<span class="task-due-label ${dueClass}">${dueLabel}</span>` : ''}
+      </div>`;
+    }
+
+    function scrollToTodo(todoId) {
+      // Ensure the todo is visible: switch to 'all' or 'active' filter
+      const todo = todos.find(t => t.id === todoId);
+      if (!todo) return;
+
+      if (currentFilter === 'done' && !todo.done) {
+        setFilter('all');
+      }
+      if (currentPriorityFilter !== 'all' && todo.priority !== currentPriorityFilter) {
+        setPriorityFilter('all');
+      }
+
+      // Find the rendered item and scroll to it + highlight
+      setTimeout(() => {
+        const items = document.querySelectorAll('#list li');
+        const filtered = getFiltered();
+        const visIdx = filtered.indexOf(todo);
+        if (visIdx >= 0 && items[visIdx]) {
+          items[visIdx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Brief highlight flash
+          items[visIdx].style.transition = 'box-shadow 0.3s ease';
+          items[visIdx].style.boxShadow = '0 0 0 3px var(--accent-glow), var(--shadow-md)';
+          setTimeout(() => {
+            items[visIdx].style.boxShadow = '';
+          }, 1500);
+        }
+      }, 100);
+    }
 
     // Initial load from API
     loadTodos();
