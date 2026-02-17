@@ -2425,11 +2425,11 @@
 
   <script>
     let todos = [];
-    let currentFilter = 'all';
-    let currentPriorityFilter = 'all';
+    let currentFilter = localStorage.getItem('todo-filter') || 'all';
+    let currentPriorityFilter = localStorage.getItem('todo-priority-filter') || 'all';
     let openDropdownIndex = null;
-    let currentSort = 'manual';
-    let sortDirection = 'asc'; // asc or desc
+    let currentSort = localStorage.getItem('todo-sort') || 'manual';
+    let sortDirection = localStorage.getItem('todo-sort-dir') || 'asc'; // asc or desc
     let expandedNotes = new Set(); // track which todo ids have notes expanded
     let batchMode = false;
     let selectedIds = new Set(); // track selected todo ids for batch operations
@@ -2813,6 +2813,7 @@
     // Filters
     function setFilter(filter) {
       currentFilter = filter;
+      localStorage.setItem('todo-filter', filter);
       document.querySelectorAll('.filter-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.filter === filter);
       });
@@ -2821,6 +2822,7 @@
 
     function setPriorityFilter(priority) {
       currentPriorityFilter = priority;
+      localStorage.setItem('todo-priority-filter', priority);
       document.querySelectorAll('.priority-filter-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.priority === priority);
       });
@@ -2841,6 +2843,8 @@
         else if (sort === 'created') sortDirection = 'desc'; // newest first
         else sortDirection = 'asc';
       }
+      localStorage.setItem('todo-sort', currentSort);
+      localStorage.setItem('todo-sort-dir', sortDirection);
       document.querySelectorAll('.sort-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.sort === currentSort);
         // Update arrow indicator
@@ -3694,6 +3698,31 @@
         menu.classList.remove('visible');
       }
     });
+
+    // Restore saved view preferences on page load
+    function restoreViewPreferences() {
+      // Sync filter buttons
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === currentFilter);
+      });
+      // Sync priority filter buttons
+      document.querySelectorAll('.priority-filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.priority === currentPriorityFilter);
+      });
+      // Sync sort buttons
+      document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.sort === currentSort);
+        const arrow = btn.querySelector('.sort-arrow');
+        if (arrow) arrow.remove();
+        if (btn.dataset.sort === currentSort && currentSort !== 'manual') {
+          const arrowEl = document.createElement('span');
+          arrowEl.className = 'sort-arrow';
+          arrowEl.textContent = sortDirection === 'asc' ? '↑' : '↓';
+          btn.appendChild(arrowEl);
+        }
+      });
+    }
+    restoreViewPreferences();
 
     // Initial load from API
     loadTodos();
