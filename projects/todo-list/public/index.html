@@ -1957,6 +1957,257 @@
     li.done .notes-display {
       opacity: 0.5;
     }
+
+    /* Batch selection mode */
+    .batch-toggle {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
+      font-family: inherit;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .batch-toggle:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .batch-toggle.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* Selection checkbox */
+    .select-checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--accent);
+      border-radius: 5px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all var(--transition);
+      background: transparent;
+    }
+
+    .batch-mode .select-checkbox {
+      display: flex;
+    }
+
+    .select-checkbox:hover {
+      background: var(--accent-light);
+    }
+
+    .select-checkbox.selected {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .select-checkbox svg {
+      width: 12px;
+      height: 12px;
+      stroke: transparent;
+      stroke-width: 3;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .select-checkbox.selected svg {
+      stroke: #fff;
+    }
+
+    /* Batch action bar */
+    .batch-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--accent);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      flex-wrap: wrap;
+    }
+
+    .batch-bar.visible {
+      display: flex;
+    }
+
+    .batch-bar-info {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      margin-right: auto;
+      white-space: nowrap;
+    }
+
+    .batch-bar-btn {
+      padding: 6px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .batch-bar-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .batch-bar-btn.danger {
+      background: rgba(239, 68, 68, 0.3);
+      border-color: rgba(239, 68, 68, 0.5);
+    }
+
+    .batch-bar-btn.danger:hover {
+      background: rgba(239, 68, 68, 0.5);
+    }
+
+    .batch-select-all {
+      padding: 6px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.8);
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+    }
+
+    .batch-select-all:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    /* Hide drag handle in batch mode */
+    .batch-mode .drag-handle {
+      display: none;
+    }
+
+    /* Batch mode checkbox animation */
+    @keyframes checkFadeIn {
+      from { opacity: 0; transform: scale(0.5); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .batch-mode .select-checkbox {
+      animation: checkFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Selected item highlight */
+    li.batch-selected {
+      background: var(--accent-light);
+      border-color: var(--accent);
+    }
+
+    [data-theme="dark"] li.batch-selected {
+      background: rgba(129, 140, 248, 0.08);
+    }
+
+    /* Batch priority dropdown */
+    .batch-priority-dropdown {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .batch-priority-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      z-index: 100;
+      overflow: hidden;
+      min-width: 120px;
+      animation: slideIn 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .batch-priority-menu.visible {
+      display: block;
+    }
+
+    .batch-priority-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background var(--transition);
+      border: none;
+      background: none;
+      width: 100%;
+      font-family: inherit;
+      color: var(--text-primary);
+    }
+
+    .batch-priority-option:hover {
+      background: var(--bg-input);
+    }
+
+    /* Mobile adjustments for batch bar */
+    @media (max-width: 480px) {
+      .batch-bar {
+        padding: 10px 12px;
+        gap: 6px;
+      }
+
+      .batch-bar-info {
+        font-size: 13px;
+        width: 100%;
+        margin-bottom: 4px;
+      }
+
+      .batch-bar-btn {
+        font-size: 11px;
+        padding: 5px 10px;
+      }
+
+      .batch-select-all {
+        font-size: 11px;
+        padding: 5px 10px;
+      }
+
+      .select-checkbox {
+        width: 18px;
+        height: 18px;
+      }
+
+      .batch-toggle {
+        font-size: 12px;
+        padding: 5px 10px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1964,6 +2215,7 @@
     <div class="header">
       <h1>Todo List</h1>
       <div style="display: flex; gap: 8px; align-items: center;">
+        <button class="batch-toggle" id="batch-toggle" onclick="toggleBatchMode()" title="Batch select mode (B)">☑️ Select</button>
         <button class="theme-toggle" onclick="showHelp()" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">
           <span>?</span>
         </button>
@@ -1973,6 +2225,20 @@
       </div>
     </div>
     <div class="stats" id="stats"></div>
+    <div class="batch-bar" id="batch-bar">
+      <span class="batch-bar-info" id="batch-info">0 selected</span>
+      <button class="batch-select-all" id="batch-select-all" onclick="batchSelectAll()">Select All</button>
+      <button class="batch-bar-btn" onclick="batchToggleDone()">✓ Toggle Done</button>
+      <div class="batch-priority-dropdown">
+        <button class="batch-bar-btn" onclick="toggleBatchPriorityMenu(event)">🔴 Priority ▾</button>
+        <div class="batch-priority-menu" id="batch-priority-menu">
+          <button class="batch-priority-option" onclick="batchSetPriority('high')"><span class="priority-dot high"></span>High</button>
+          <button class="batch-priority-option" onclick="batchSetPriority('medium')"><span class="priority-dot medium"></span>Medium</button>
+          <button class="batch-priority-option" onclick="batchSetPriority('low')"><span class="priority-dot low"></span>Low</button>
+        </div>
+      </div>
+      <button class="batch-bar-btn danger" onclick="batchDelete()">🗑️ Delete</button>
+    </div>
     <div class="progress-container" id="progress-container">
       <div class="progress-header">
         <span class="progress-label">Progress</span>
@@ -2101,6 +2367,10 @@
           <kbd>N</kbd>
         </li>
         <li>
+          <span class="shortcut-desc">Toggle batch select mode</span>
+          <kbd>B</kbd>
+        </li>
+        <li>
           <span class="shortcut-desc">Reorder todos</span>
           <kbd>Drag &#9776;</kbd>
         </li>
@@ -2128,6 +2398,8 @@
     let currentSort = 'manual';
     let sortDirection = 'asc'; // asc or desc
     let expandedNotes = new Set(); // track which todo ids have notes expanded
+    let batchMode = false;
+    let selectedIds = new Set(); // track selected todo ids for batch operations
 
     // Toast/Undo system
     let toastTimers = [];
@@ -2329,15 +2601,20 @@
         return;
       }
 
-      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery && currentSort === 'manual';
+      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery && currentSort === 'manual' && !batchMode;
+      list.className = batchMode ? 'batch-mode' : '';
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
         const isOverdue = !t.done && t.due_date && dueDateClass(t.due_date, t.done) === 'overdue';
         const hasNotes = t.notes && t.notes.trim();
         const notesExpanded = expandedNotes.has(t.id);
+        const isSelected = selectedIds.has(t.id);
         const liHtml = `
-        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'} ${isOverdue ? 'overdue-item' : ''}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
+        <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'} ${isOverdue ? 'overdue-item' : ''} ${isSelected ? 'batch-selected' : ''}" ${canDrag ? `draggable="true" data-index="${i}"` : ''}>
           <div class="todo-main-row">
+            <div class="select-checkbox ${isSelected ? 'selected' : ''}" onclick="toggleSelect(${t.id}, event)">
+              <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
+            </div>
             ${canDrag ? `<span class="drag-handle" title="Drag to reorder">&#9776;</span>` : ''}
             <div class="checkbox" onclick="toggle(${i})">
               <svg viewBox="0 0 24 24"><polyline points="4 12 10 18 20 6"></polyline></svg>
@@ -2853,6 +3130,7 @@
     render = function() {
       _originalRender();
       focusedIndex = -1;
+      updateBatchBar();
     };
 
     // Global keyboard shortcuts
@@ -2888,6 +3166,11 @@
         }
         if (focusedIndex >= 0) {
           clearFocus();
+          e.preventDefault();
+          return;
+        }
+        if (batchMode) {
+          toggleBatchMode();
           e.preventDefault();
           return;
         }
@@ -2937,6 +3220,13 @@
       if (e.key === '?') {
         e.preventDefault();
         showHelp();
+        return;
+      }
+
+      // b: toggle batch select mode
+      if (e.key === 'b') {
+        e.preventDefault();
+        toggleBatchMode();
         return;
       }
 
@@ -3219,6 +3509,156 @@
       const selector = document.getElementById('input-priority-selector');
       if (selector && !selector.contains(e.target)) {
         selector.classList.remove('open');
+      }
+    });
+
+    // Batch selection mode
+    function toggleBatchMode() {
+      batchMode = !batchMode;
+      selectedIds.clear();
+      document.getElementById('batch-toggle').classList.toggle('active', batchMode);
+      updateBatchBar();
+      render();
+    }
+
+    function toggleSelect(todoId, event) {
+      event.stopPropagation();
+      if (!batchMode) return;
+      if (selectedIds.has(todoId)) {
+        selectedIds.delete(todoId);
+      } else {
+        selectedIds.add(todoId);
+      }
+      updateBatchBar();
+      render();
+    }
+
+    function updateBatchBar() {
+      const bar = document.getElementById('batch-bar');
+      const info = document.getElementById('batch-info');
+      const selectAllBtn = document.getElementById('batch-select-all');
+
+      if (batchMode && selectedIds.size > 0) {
+        bar.classList.add('visible');
+        info.textContent = `${selectedIds.size} selected`;
+        const filtered = getFiltered();
+        const allSelected = filtered.length > 0 && filtered.every(t => selectedIds.has(t.id));
+        selectAllBtn.textContent = allSelected ? 'Deselect All' : 'Select All';
+      } else {
+        bar.classList.remove('visible');
+      }
+    }
+
+    function batchSelectAll() {
+      const filtered = getFiltered();
+      const allSelected = filtered.length > 0 && filtered.every(t => selectedIds.has(t.id));
+      if (allSelected) {
+        // Deselect all visible
+        filtered.forEach(t => selectedIds.delete(t.id));
+      } else {
+        // Select all visible
+        filtered.forEach(t => selectedIds.add(t.id));
+      }
+      updateBatchBar();
+      render();
+    }
+
+    async function batchToggleDone() {
+      if (selectedIds.size === 0) return;
+      const selectedTodos = todos.filter(t => selectedIds.has(t.id));
+      // If any are not done, mark all done; if all done, mark all undone
+      const allDone = selectedTodos.every(t => t.done);
+      const newDone = !allDone;
+
+      for (const todo of selectedTodos) {
+        if (todo.done !== newDone) {
+          const updated = await api('/todos/' + todo.id, {
+            method: 'PUT',
+            body: JSON.stringify({ done: newDone }),
+          });
+          const idx = todos.indexOf(todo);
+          if (idx >= 0) todos[idx] = updated;
+        }
+      }
+      selectedIds.clear();
+      updateBatchBar();
+      render();
+    }
+
+    function toggleBatchPriorityMenu(event) {
+      event.stopPropagation();
+      const menu = document.getElementById('batch-priority-menu');
+      menu.classList.toggle('visible');
+    }
+
+    async function batchSetPriority(priority) {
+      if (selectedIds.size === 0) return;
+      const menu = document.getElementById('batch-priority-menu');
+      menu.classList.remove('visible');
+
+      const selectedTodos = todos.filter(t => selectedIds.has(t.id));
+      for (const todo of selectedTodos) {
+        if (todo.priority !== priority) {
+          const updated = await api('/todos/' + todo.id, {
+            method: 'PUT',
+            body: JSON.stringify({ priority }),
+          });
+          const idx = todos.indexOf(todo);
+          if (idx >= 0) todos[idx] = updated;
+        }
+      }
+      selectedIds.clear();
+      updateBatchBar();
+      render();
+    }
+
+    async function batchDelete() {
+      if (selectedIds.size === 0) return;
+      const count = selectedIds.size;
+      const selectedTodos = todos.filter(t => selectedIds.has(t.id));
+      const deletedData = selectedTodos.map(t => ({ ...t }));
+
+      // Delete all selected
+      for (const todo of selectedTodos) {
+        await api('/todos/' + todo.id, { method: 'DELETE' });
+        const idx = todos.indexOf(todo);
+        if (idx >= 0) todos.splice(idx, 1);
+      }
+      selectedIds.clear();
+      updateBatchBar();
+      render();
+
+      // Show undo toast
+      showToast(`Deleted ${count} item${count !== 1 ? 's' : ''}`, async () => {
+        for (const td of deletedData) {
+          const restored = await api('/todos', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: td.text,
+              priority: td.priority,
+              due_date: td.due_date,
+              notes: td.notes,
+            }),
+          });
+          if (td.done) {
+            const updated = await api('/todos/' + restored.id, {
+              method: 'PUT',
+              body: JSON.stringify({ done: true }),
+            });
+            todos.push(updated);
+          } else {
+            todos.push(restored);
+          }
+        }
+        render();
+      }, 7000);
+    }
+
+    // Close batch priority menu when clicking outside
+    document.addEventListener('click', (e) => {
+      const menu = document.getElementById('batch-priority-menu');
+      if (menu && !e.target.closest('.batch-priority-dropdown')) {
+        menu.classList.remove('visible');
       }
     });
 
