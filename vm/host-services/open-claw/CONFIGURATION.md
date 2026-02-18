@@ -146,11 +146,11 @@ openssl rand -base64 24
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
         "fallbacks": [
-          "openai-codex/gpt-5.2",
-          "openai-codex/gpt-5.2-codex",
-          "openai-codex/gpt-5.3-codex"
+          "litellm/github-copilot/claude-sonnet-4.5",
+          "openai-codex/gpt-5.3-codex",
+          "openai-codex/gpt-5.2-codex"
         ]
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
@@ -168,7 +168,7 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
-| `model.primary` | Primary model (`litellm/claude-opus-4.6-fast`) |
+| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6-fast`) |
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
@@ -210,12 +210,22 @@ openssl rand -base64 24
       "name": "Discord",
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
-      "groupPolicy": "open",
+      "groupPolicy": "allowlist",
+      "dm": {
+        "policy": "pairing",
+        "allowFrom": ["1471352977691250891"]
+      },
       "guilds": {
-        "*": {
-          "requireMention": false
+        "1471415768955490418": {
+          "requireMention": false,
+          "users": ["1471352977691250891", "1471678943999426643", "1471680872607518932"],
+          "channels": {
+            "*": { "enabled": true },
+            "1471752874982768794": { "enabled": true, "requireMention": true }
+          }
         }
-      }
+      },
+      "allowBots": true
     }
   }
 }
@@ -225,8 +235,53 @@ openssl rand -base64 24
 |---------|-------------|
 | `enabled` | Enable/disable the channel |
 | `token` | Bot token for Discord |
-| `groupPolicy` | Guild access policy (`"open"` or `"allowlist"`) |
-| `guilds.*.requireMention` | Whether bot must be @mentioned to respond |
+| `groupPolicy` | Guild access policy (`"allowlist"` restricts to configured guilds) |
+| `dm.policy` | DM access policy (`"pairing"` requires user to initiate) |
+| `dm.allowFrom` | User IDs allowed to DM the bot |
+| `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (per-guild) |
+| `guilds.<id>.users` | Allowed user IDs in the guild |
+| `guilds.<id>.channels` | Per-channel overrides (enable/disable, requireMention) |
+| `allowBots` | Whether to process messages from other bots |
+
+## Hooks
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "${OPENCLAW_GATEWAY_TOKEN}"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable webhook endpoint |
+| `path` | URL path for webhook endpoint |
+| `token` | Authentication token for webhook requests |
+
+## Browser
+
+```json
+{
+  "browser": {
+    "enabled": true,
+    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable browser automation |
+| `executablePath` | Path to Chromium/Chrome binary |
+| `headless` | Run browser without display |
+| `noSandbox` | Disable Chrome sandboxing (required for root/containers) |
+| `defaultProfile` | Default browser profile name |
 
 ## Validation
 

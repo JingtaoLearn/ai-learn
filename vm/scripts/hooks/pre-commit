@@ -23,6 +23,9 @@ if [[ -f "$SYSTEM_CONFIG" ]] && git diff --cached --name-only | grep -q "$REPO_C
   if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
     sed -i "s|${OPENCLAW_GATEWAY_TOKEN}|\${OPENCLAW_GATEWAY_TOKEN}|g" "$REPO_CONFIG"
   fi
+  if [[ -n "${S_DISCORD_BOT_TOKEN:-}" ]]; then
+    sed -i "s|${S_DISCORD_BOT_TOKEN}|\${S_DISCORD_BOT_TOKEN}|g" "$REPO_CONFIG"
+  fi
 
   # Strip runtime-only fields (meta, wizard) and add example comment
   python3 -c "
