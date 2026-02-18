@@ -47,20 +47,31 @@ try {
   // Column already exists, ignore
 }
 
+// Migration: add tags column if it doesn't exist
+try {
+  db.exec(`ALTER TABLE todos ADD COLUMN tags TEXT DEFAULT '[]'`);
+} catch (e) {
+  // Column already exists, ignore
+}
+
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // GET /api/todos - list all todos ordered by sort_order desc (newest first)
 app.get('/api/todos', (req, res) => {
-  const rows = db.prepare('SELECT id, text, done, sort_order, priority, due_date, notes FROM todos ORDER BY sort_order DESC, id DESC').all();
-  const todos = rows.map(r => ({ id: r.id, text: r.text, done: !!r.done, priority: r.priority, due_date: r.due_date || null, notes: r.notes || '' }));
+  const rows = db.prepare('SELECT id, text, done, sort_order, priority, due_date, notes, tags FROM todos ORDER BY sort_order DESC, id DESC').all();
+  const todos = rows.map(r => {
+    let tags = [];
+    try { tags = JSON.parse(r.tags || '[]'); } catch (e) { tags = []; }
+    return { id: r.id, text: r.text, done: !!r.done, priority: r.priority, due_date: r.due_date || null, notes: r.notes || '', tags };
+  });
   res.json(todos);
 });
 
 // POST /api/todos - create a new todo
 app.post('/api/todos', (req, res) => {
-  const { text, priority, due_date, notes } = req.body;
+  const { text, priority, due_date, notes, tags } = req.body;
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Text is required' });
   }
@@ -68,16 +79,18 @@ app.post('/api/todos', (req, res) => {
   const todoPriority = validPriorities.includes(priority) ? priority : 'medium';
   const todoDueDate = due_date && /^\d{4}-\d{2}-\d{2}$/.test(due_date) ? due_date : null;
   const todoNotes = (typeof notes === 'string') ? notes.trim() : '';
+  const todoTags = Array.isArray(tags) ? tags.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim().toLowerCase()) : [];
+  const tagsJson = JSON.stringify(todoTags);
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM todos').get();
   const nextOrder = maxOrder.max_order + 1;
-  const result = db.prepare('INSERT INTO todos (text, done, sort_order, priority, due_date, notes) VALUES (?, 0, ?, ?, ?, ?)').run(text.trim(), nextOrder, todoPriority, todoDueDate, todoNotes);
-  res.status(201).json({ id: result.lastInsertRowid, text: text.trim(), done: false, priority: todoPriority, due_date: todoDueDate, notes: todoNotes });
+  const result = db.prepare('INSERT INTO todos (text, done, sort_order, priority, due_date, notes, tags) VALUES (?, 0, ?, ?, ?, ?, ?)').run(text.trim(), nextOrder, todoPriority, todoDueDate, todoNotes, tagsJson);
+  res.status(201).json({ id: result.lastInsertRowid, text: text.trim(), done: false, priority: todoPriority, due_date: todoDueDate, notes: todoNotes, tags: todoTags });
 });
 
 // PUT /api/todos/:id - update a todo (text and/or done status)
 app.put('/api/todos/:id', (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT id, text, done, priority, due_date, notes FROM todos WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, text, done, priority, due_date, notes, tags FROM todos WHERE id = ?').get(id);
   if (!existing) {
     return res.status(404).json({ error: 'Todo not found' });
   }
@@ -92,13 +105,32 @@ app.put('/api/todos/:id', (req, res) => {
     due_date = req.body.due_date && /^\d{4}-\d{2}-\d{2}$/.test(req.body.due_date) ? req.body.due_date : null;
   }
   const notes = req.body.notes !== undefined ? (typeof req.body.notes === 'string' ? req.body.notes : '') : (existing.notes || '');
+  let existingTags = [];
+  try { existingTags = JSON.parse(existing.tags || '[]'); } catch (e) { existingTags = []; }
+  const tags = req.body.tags !== undefined
+    ? (Array.isArray(req.body.tags) ? req.body.tags.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim().toLowerCase()) : existingTags)
+    : existingTags;
+  const tagsJson = JSON.stringify(tags);
 
   if (typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'Text cannot be empty' });
   }
 
-  db.prepare('UPDATE todos SET text = ?, done = ?, priority = ?, due_date = ?, notes = ? WHERE id = ?').run(text.trim(), done, priority, due_date, notes, id);
-  res.json({ id: Number(id), text: text.trim(), done: !!done, priority, due_date, notes });
+  db.prepare('UPDATE todos SET text = ?, done = ?, priority = ?, due_date = ?, notes = ?, tags = ? WHERE id = ?').run(text.trim(), done, priority, due_date, notes, tagsJson, id);
+  res.json({ id: Number(id), text: text.trim(), done: !!done, priority, due_date, notes, tags });
+});
+
+// GET /api/tags - get all unique tags
+app.get('/api/tags', (req, res) => {
+  const rows = db.prepare('SELECT tags FROM todos WHERE tags IS NOT NULL AND tags != \'[]\' AND tags != \'\'').all();
+  const tagSet = new Set();
+  rows.forEach(r => {
+    try {
+      const tags = JSON.parse(r.tags);
+      tags.forEach(t => tagSet.add(t));
+    } catch (e) {}
+  });
+  res.json([...tagSet].sort());
 });
 
 // POST /api/todos/reorder - reorder todos

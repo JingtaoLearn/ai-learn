@@ -2543,6 +2543,195 @@
         padding: 5px 10px;
       }
     }
+
+    /* Tags */
+    .tag-colors {
+      --tag-blue: #3b82f6;
+      --tag-green: #22c55e;
+      --tag-orange: #f97316;
+      --tag-purple: #a855f7;
+      --tag-pink: #ec4899;
+      --tag-teal: #14b8a6;
+      --tag-red: #ef4444;
+      --tag-yellow: #eab308;
+    }
+
+    .todo-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+      border: 1px solid transparent;
+    }
+
+    .tag:hover {
+      filter: brightness(1.1);
+    }
+
+    .tag .tag-remove {
+      font-size: 10px;
+      opacity: 0;
+      cursor: pointer;
+      margin-left: 1px;
+      transition: opacity var(--transition);
+      line-height: 1;
+    }
+
+    .tag:hover .tag-remove {
+      opacity: 0.7;
+    }
+
+    .tag .tag-remove:hover {
+      opacity: 1;
+    }
+
+    /* Tag filter bar */
+    .tag-filters {
+      display: none;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 0;
+      align-items: center;
+    }
+
+    .tag-filters.visible {
+      display: flex;
+    }
+
+    .tag-filter-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-right: 2px;
+    }
+
+    .tag-filter-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+      font-family: inherit;
+    }
+
+    .tag-filter-btn:hover {
+      border-color: var(--accent);
+      color: var(--text-primary);
+    }
+
+    .tag-filter-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    /* Tag input for adding tags to new todo */
+    .input-tags-area {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+      min-height: 0;
+    }
+
+    .input-tags-area .tag {
+      animation: checkFadeIn 0.15s ease-out;
+    }
+
+    .tag-add-input {
+      border: none;
+      outline: none;
+      background: transparent;
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text-primary);
+      min-width: 80px;
+      padding: 4px 0;
+    }
+
+    .tag-add-input::placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Tag suggestions dropdown */
+    .tag-suggestions {
+      display: none;
+      position: absolute;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow-lg);
+      z-index: 200;
+      max-height: 160px;
+      overflow-y: auto;
+      min-width: 120px;
+    }
+
+    .tag-suggestions.visible {
+      display: block;
+    }
+
+    .tag-suggestion-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background var(--transition);
+      color: var(--text-primary);
+    }
+
+    .tag-suggestion-item:hover,
+    .tag-suggestion-item.highlighted {
+      background: var(--bg-input);
+    }
+
+    .tag-suggestion-item .tag-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 480px) {
+      .tag-filters {
+        gap: 4px;
+        padding: 6px 0;
+      }
+
+      .tag-filter-btn {
+        font-size: 10px;
+        padding: 2px 8px;
+      }
+
+      .tag {
+        font-size: 10px;
+        padding: 1px 6px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -2620,6 +2809,10 @@
         </div>
         <input id="input-due" type="date" class="input-due-date" title="Due date (optional)">
       </div>
+      <div class="input-tags-area" id="input-tags-area" style="position: relative;">
+        <input id="input-tag" type="text" class="tag-add-input" placeholder="Add tag..." maxlength="20">
+        <div class="tag-suggestions" id="tag-suggestions"></div>
+      </div>
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="search-area" id="search-area">
@@ -2636,6 +2829,9 @@
       <button class="priority-filter-btn" data-priority="high" onclick="setPriorityFilter('high')"><span class="priority-dot" style="background:var(--priority-high)"></span>High</button>
       <button class="priority-filter-btn" data-priority="medium" onclick="setPriorityFilter('medium')"><span class="priority-dot" style="background:var(--priority-medium)"></span>Medium</button>
       <button class="priority-filter-btn" data-priority="low" onclick="setPriorityFilter('low')"><span class="priority-dot" style="background:var(--priority-low)"></span>Low</button>
+    </div>
+    <div class="tag-filters" id="tag-filters">
+      <span class="tag-filter-label">🏷️</span>
     </div>
     <div class="sort-bar" id="sort-bar">
       <span class="sort-label">Sort:</span>
@@ -2735,6 +2931,10 @@
           <span class="shortcut-desc">Undo delete</span>
           <kbd>Ctrl+Z</kbd>
         </li>
+        <li>
+          <span class="shortcut-desc">Add tags</span>
+          <kbd>Type in tag field, Enter/comma</kbd>
+        </li>
       </ul>
     </div>
   </div>
@@ -2749,6 +2949,212 @@
     let expandedNotes = new Set(); // track which todo ids have notes expanded
     let batchMode = false;
     let selectedIds = new Set(); // track selected todo ids for batch operations
+
+    // Tags system
+    let allKnownTags = []; // all unique tags from backend
+    let currentTagFilter = 'all'; // 'all' or a specific tag name
+    let inputTags = []; // tags for new todo being created
+    const TAG_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#a855f7', '#ec4899', '#14b8a6', '#ef4444', '#eab308'];
+
+    function getTagColor(tag) {
+      let hash = 0;
+      for (let i = 0; i < tag.length; i++) hash = ((hash << 5) - hash + tag.charCodeAt(i)) | 0;
+      return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
+    }
+
+    function renderTagChip(tag, removable, onRemoveAction) {
+      const color = getTagColor(tag);
+      const bgColor = color + '20';
+      return `<span class="tag" style="background:${bgColor};color:${color};border-color:${color}30" onclick="${onRemoveAction ? '' : `setTagFilter('${esc(tag)}')`}" title="${removable ? 'Click × to remove' : 'Filter by this tag'}">${esc(tag)}${removable ? `<span class="tag-remove" onclick="${onRemoveAction};event.stopPropagation()">✕</span>` : ''}</span>`;
+    }
+
+    function setTagFilter(tag) {
+      currentTagFilter = currentTagFilter === tag ? 'all' : tag;
+      updateTagFilterBar();
+      render();
+    }
+
+    function updateTagFilterBar() {
+      const bar = document.getElementById('tag-filters');
+      // Collect all tags from current todos
+      const tagSet = new Set();
+      todos.forEach(t => (t.tags || []).forEach(tag => tagSet.add(tag)));
+      allKnownTags = [...tagSet].sort();
+
+      if (allKnownTags.length === 0) {
+        bar.classList.remove('visible');
+        currentTagFilter = 'all';
+        return;
+      }
+
+      bar.classList.add('visible');
+      let html = '<span class="tag-filter-label">🏷️</span>';
+      html += `<button class="tag-filter-btn ${currentTagFilter === 'all' ? 'active' : ''}" onclick="setTagFilter('all')">All</button>`;
+      allKnownTags.forEach(tag => {
+        const color = getTagColor(tag);
+        const isActive = currentTagFilter === tag;
+        html += `<button class="tag-filter-btn ${isActive ? 'active' : ''}" onclick="setTagFilter('${esc(tag)}')" style="${isActive ? `border-color:${color};background:${color}20;color:${color}` : ''}"><span class="tag-dot" style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>${esc(tag)}</button>`;
+      });
+      bar.innerHTML = html;
+    }
+
+    // Input tag management
+    function renderInputTags() {
+      const area = document.getElementById('input-tags-area');
+      const input = document.getElementById('input-tag');
+      // Remove existing chips
+      area.querySelectorAll('.tag').forEach(el => el.remove());
+      // Add chips before input
+      inputTags.forEach((tag, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'tag';
+        const color = getTagColor(tag);
+        chip.style.cssText = `background:${color}20;color:${color};border-color:${color}30`;
+        chip.innerHTML = `${esc(tag)}<span class="tag-remove" style="opacity:0.7">✕</span>`;
+        chip.querySelector('.tag-remove').addEventListener('click', () => {
+          inputTags.splice(idx, 1);
+          renderInputTags();
+        });
+        area.insertBefore(chip, input);
+      });
+    }
+
+    function addInputTag(tag) {
+      tag = tag.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff\-]/g, '');
+      if (!tag || inputTags.includes(tag)) return;
+      if (inputTags.length >= 5) return; // max 5 tags
+      inputTags.push(tag);
+      renderInputTags();
+      document.getElementById('input-tag').value = '';
+      hideSuggestions();
+    }
+
+    function showTagSuggestions(query) {
+      const dropdown = document.getElementById('tag-suggestions');
+      const input = document.getElementById('input-tag');
+      query = query.toLowerCase().trim();
+
+      // Get suggestions: existing tags that match and aren't already added
+      let suggestions = allKnownTags.filter(t => !inputTags.includes(t));
+      if (query) {
+        suggestions = suggestions.filter(t => t.includes(query));
+        // If query doesn't match any existing tag, offer to create it
+        if (!suggestions.includes(query) && !inputTags.includes(query)) {
+          suggestions.unshift(query);
+        }
+      }
+
+      if (suggestions.length === 0 || (!query && suggestions.length === 0)) {
+        hideSuggestions();
+        return;
+      }
+
+      dropdown.innerHTML = suggestions.map((tag, i) => {
+        const color = getTagColor(tag);
+        const isNew = !allKnownTags.includes(tag);
+        return `<div class="tag-suggestion-item${i === 0 ? ' highlighted' : ''}" data-tag="${esc(tag)}" onclick="addInputTag('${esc(tag)}')"><span class="tag-dot" style="background:${color}"></span>${esc(tag)}${isNew ? ' <span style="color:var(--text-muted);font-style:italic">(new)</span>' : ''}</div>`;
+      }).join('');
+
+      // Position dropdown
+      const rect = input.getBoundingClientRect();
+      const areaRect = document.getElementById('input-tags-area').getBoundingClientRect();
+      dropdown.style.top = (input.offsetTop + input.offsetHeight + 4) + 'px';
+      dropdown.style.left = '0';
+      dropdown.style.minWidth = Math.max(160, areaRect.width) + 'px';
+      dropdown.classList.add('visible');
+    }
+
+    function hideSuggestions() {
+      document.getElementById('tag-suggestions').classList.remove('visible');
+    }
+
+    // Tag input event listeners
+    document.getElementById('input-tag').addEventListener('input', e => {
+      const val = e.target.value;
+      if (val.length > 0) {
+        showTagSuggestions(val);
+      } else {
+        hideSuggestions();
+      }
+    });
+
+    document.getElementById('input-tag').addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const val = e.target.value.trim().replace(/,/g, '');
+        if (val) addInputTag(val);
+      }
+      if (e.key === 'Backspace' && !e.target.value && inputTags.length > 0) {
+        inputTags.pop();
+        renderInputTags();
+      }
+      if (e.key === 'Escape') {
+        hideSuggestions();
+        e.target.blur();
+      }
+      // Arrow keys for suggestions
+      const dropdown = document.getElementById('tag-suggestions');
+      if (dropdown.classList.contains('visible')) {
+        const items = dropdown.querySelectorAll('.tag-suggestion-item');
+        const current = dropdown.querySelector('.highlighted');
+        let idx = [...items].indexOf(current);
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          idx = Math.min(idx + 1, items.length - 1);
+          items.forEach(el => el.classList.remove('highlighted'));
+          items[idx]?.classList.add('highlighted');
+          items[idx]?.scrollIntoView({ block: 'nearest' });
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          idx = Math.max(idx - 1, 0);
+          items.forEach(el => el.classList.remove('highlighted'));
+          items[idx]?.classList.add('highlighted');
+          items[idx]?.scrollIntoView({ block: 'nearest' });
+        }
+        if (e.key === 'Enter') {
+          const highlighted = dropdown.querySelector('.highlighted');
+          if (highlighted) {
+            addInputTag(highlighted.dataset.tag);
+          }
+        }
+      }
+    });
+
+    document.getElementById('input-tag').addEventListener('focus', e => {
+      if (e.target.value) showTagSuggestions(e.target.value);
+    });
+
+    document.addEventListener('click', e => {
+      if (!e.target.closest('#input-tags-area')) hideSuggestions();
+    });
+
+    // Add/remove tags on existing todos
+    async function addTagToTodo(todoIndex, tag) {
+      const todo = todos[todoIndex];
+      tag = tag.trim().toLowerCase();
+      if (!tag || (todo.tags || []).includes(tag)) return;
+      const newTags = [...(todo.tags || []), tag];
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ tags: newTags }),
+      });
+      todos[todoIndex] = updated;
+      updateTagFilterBar();
+      render();
+    }
+
+    async function removeTagFromTodo(todoIndex, tag) {
+      const todo = todos[todoIndex];
+      const newTags = (todo.tags || []).filter(t => t !== tag);
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ tags: newTags }),
+      });
+      todos[todoIndex] = updated;
+      updateTagFilterBar();
+      render();
+    }
 
     // Toast/Undo system
     let toastTimers = [];
@@ -2851,6 +3257,7 @@
 
     async function loadTodos() {
       todos = await api('/todos');
+      updateTagFilterBar();
       render();
     }
 
@@ -2927,6 +3334,7 @@
       if (currentFilter === 'active') filtered = filtered.filter(t => !t.done);
       if (currentFilter === 'done') filtered = filtered.filter(t => t.done);
       if (currentPriorityFilter !== 'all') filtered = filtered.filter(t => t.priority === currentPriorityFilter);
+      if (currentTagFilter !== 'all') filtered = filtered.filter(t => (t.tags || []).includes(currentTagFilter));
       filtered = applySorting(filtered);
       return filtered;
     }
@@ -2950,7 +3358,7 @@
         return;
       }
 
-      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && !searchQuery && currentSort === 'manual' && !batchMode;
+      const canDrag = currentFilter === 'all' && currentPriorityFilter === 'all' && currentTagFilter === 'all' && !searchQuery && currentSort === 'manual' && !batchMode;
       list.className = batchMode ? 'batch-mode' : '';
       list.innerHTML = filtered.map(t => {
         const i = todos.indexOf(t);
@@ -2979,6 +3387,7 @@
               ? `<div class="notes-display" onclick="startEditNotes(${i})" title="Click to edit notes">${esc(t.notes)}</div>`
               : `<div class="notes-placeholder" onclick="startEditNotes(${i})">+ Add notes...</div>`}
           </div>
+          ${(t.tags && t.tags.length > 0) ? `<div class="todo-tags">${t.tags.map(tag => renderTagChip(tag, true, `removeTagFromTodo(${i},'${esc(tag)}')`)).join('')}</div>` : ''}
         </li>`;
         // Wrap in swipe container for touch delete
         if (isTouchDevice) {
@@ -3007,15 +3416,19 @@
       if (!text) return;
       const due_date = dueInput.value || null;
       const priority = inputPriority;
+      const tags = [...inputTags];
       input.value = '';
       dueInput.value = '';
+      inputTags = [];
+      renderInputTags();
       // Reset priority to medium after adding
       selectInputPriority('medium', { stopPropagation: () => {} });
       const todo = await api('/todos', {
         method: 'POST',
-        body: JSON.stringify({ text, due_date, priority }),
+        body: JSON.stringify({ text, due_date, priority, tags }),
       });
       todos.unshift(todo);
+      updateTagFilterBar();
       render();
     }
 
@@ -3440,7 +3853,7 @@
     getFiltered = function() {
       let result = _originalGetFiltered();
       if (searchQuery) {
-        result = result.filter(t => t.text.toLowerCase().includes(searchQuery) || (t.notes && t.notes.toLowerCase().includes(searchQuery)));
+        result = result.filter(t => t.text.toLowerCase().includes(searchQuery) || (t.notes && t.notes.toLowerCase().includes(searchQuery)) || (t.tags && t.tags.some(tag => tag.toLowerCase().includes(searchQuery))));
       }
       return result;
     };
