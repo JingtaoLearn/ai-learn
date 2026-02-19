@@ -18,6 +18,48 @@ To modify OpenClaw's configuration, edit `~/.openclaw/openclaw.json` directly or
 
 See [MODELS.md](MODELS.md) for detailed provider architecture, model catalog, and setup instructions.
 
+## Browser Configuration
+
+```json
+{
+  "browser": {
+    "enabled": true,
+    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable browser automation |
+| `executablePath` | Path to Chromium/Chrome binary (Playwright-managed) |
+| `headless` | Run browser without GUI (required for headless servers) |
+| `noSandbox` | Disable Chrome sandboxing (needed when running as non-root) |
+| `defaultProfile` | Default browser profile to use (`"openclaw"` for isolated profile) |
+
+## Hooks Configuration
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "${OPENCLAW_GATEWAY_TOKEN}"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable webhook hooks |
+| `path` | URL path for hook endpoint (gateway listens at `<gateway-url>/hooks`) |
+| `token` | Authentication token for hook requests (reuses gateway token) |
+
+Hooks allow external processes (e.g., Claude Code completion notifications) to send events to the gateway.
+
 ## Maximum Permissions Configuration
 
 OpenClaw is configured with **maximum permissions** for full system access. This is intentional for development and learning environments.
@@ -146,11 +188,11 @@ openssl rand -base64 24
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
         "fallbacks": [
-          "openai-codex/gpt-5.2",
-          "openai-codex/gpt-5.2-codex",
-          "openai-codex/gpt-5.3-codex"
+          "litellm/github-copilot/claude-sonnet-4.5",
+          "openai-codex/gpt-5.3-codex",
+          "openai-codex/gpt-5.2-codex"
         ]
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
@@ -168,7 +210,7 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
-| `model.primary` | Primary model (`litellm/claude-opus-4.6-fast`) |
+| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6-fast`) |
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
@@ -210,12 +252,22 @@ openssl rand -base64 24
       "name": "Discord",
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
-      "groupPolicy": "open",
+      "groupPolicy": "allowlist",
+      "dm": {
+        "policy": "pairing",
+        "allowFrom": ["<user-id>"]
+      },
       "guilds": {
-        "*": {
-          "requireMention": false
+        "<guild-id>": {
+          "requireMention": false,
+          "users": ["<user-id-1>", "<user-id-2>"],
+          "channels": {
+            "*": { "enabled": true },
+            "<channel-id>": { "enabled": true, "requireMention": true }
+          }
         }
-      }
+      },
+      "allowBots": true
     }
   }
 }
@@ -226,7 +278,12 @@ openssl rand -base64 24
 | `enabled` | Enable/disable the channel |
 | `token` | Bot token for Discord |
 | `groupPolicy` | Guild access policy (`"open"` or `"allowlist"`) |
-| `guilds.*.requireMention` | Whether bot must be @mentioned to respond |
+| `dm.policy` | DM handling policy (`"pairing"` for paired sessions) |
+| `dm.allowFrom` | List of user IDs allowed to DM the bot |
+| `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (default for guild) |
+| `guilds.<id>.users` | Allowlisted user IDs for this guild |
+| `guilds.<id>.channels` | Per-channel overrides (enable/disable, requireMention) |
+| `allowBots` | Whether to process messages from other bots |
 
 ## Validation
 
