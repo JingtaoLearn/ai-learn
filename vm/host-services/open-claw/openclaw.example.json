@@ -1,5 +1,12 @@
 {
   "_comment": "EXAMPLE CONFIG - For reference only. Actual config is at ~/.openclaw/openclaw.json. Sensitive values use ${ENV_VAR} placeholders.",
+  "browser": {
+    "enabled": true,
+    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  },
   "auth": {
     "profiles": {
       "litellm:default": {
@@ -20,7 +27,7 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "claude-opus-4.6-fast",
+            "id": "github-copilot/claude-opus-4.6-fast",
             "name": "Claude Opus 4.6 Fast",
             "reasoning": true,
             "input": [
@@ -37,7 +44,7 @@
             "maxTokens": 64000
           },
           {
-            "id": "claude-sonnet-4.5",
+            "id": "github-copilot/claude-sonnet-4.5",
             "name": "Claude Sonnet 4.5",
             "reasoning": true,
             "input": [
@@ -54,47 +61,24 @@
             "maxTokens": 64000
           }
         ]
-      },
-      "openai-codex": {
-        "baseUrl": "https://api.openai.com/v1",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "gpt-5.3-codex",
-            "name": "GPT-5.3 Codex",
-            "reasoning": true,
-            "input": [
-              "text",
-              "image"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 200000,
-            "maxTokens": 16384
-          }
-        ]
       }
     }
   },
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
         "fallbacks": [
-          "openai-codex/gpt-5.2",
-          "openai-codex/gpt-5.2-codex",
-          "openai-codex/gpt-5.3-codex"
+          "litellm/github-copilot/claude-sonnet-4.5",
+          "openai-codex/gpt-5.3-codex",
+          "openai-codex/gpt-5.2-codex"
         ]
       },
       "models": {
-        "litellm/claude-opus-4.6-fast": {},
-        "openai-codex/gpt-5.2": {},
-        "openai-codex/gpt-5.2-codex": {},
-        "openai-codex/gpt-5.3-codex": {}
+        "litellm/github-copilot/claude-opus-4.6-fast": {},
+        "litellm/github-copilot/claude-sonnet-4.5": {},
+        "openai-codex/gpt-5.3-codex": {},
+        "openai-codex/gpt-5.2-codex": {}
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "compaction": {
@@ -133,6 +117,45 @@
   "session": {
     "dmScope": "per-channel-peer"
   },
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "${OPENCLAW_GATEWAY_TOKEN}"
+  },
+  "channels": {
+    "discord": {
+      "name": "Discord",
+      "enabled": true,
+      "token": "${S_DISCORD_BOT_TOKEN}",
+      "groupPolicy": "allowlist",
+      "dm": {
+        "policy": "pairing",
+        "allowFrom": [
+          "1471352977691250891"
+        ]
+      },
+      "guilds": {
+        "1471415768955490418": {
+          "requireMention": false,
+          "users": [
+            "1471352977691250891",
+            "1471678943999426643",
+            "1471680872607518932"
+          ],
+          "channels": {
+            "*": {
+              "enabled": true
+            },
+            "1471752874982768794": {
+              "enabled": true,
+              "requireMention": true
+            }
+          }
+        }
+      },
+      "allowBots": true
+    }
+  },
   "gateway": {
     "port": 18789,
     "mode": "local",
@@ -164,19 +187,6 @@
       },
       "discord": {
         "enabled": true
-      }
-    }
-  },
-  "channels": {
-    "discord": {
-      "name": "Discord",
-      "enabled": true,
-      "token": "${S_DISCORD_BOT_TOKEN}",
-      "groupPolicy": "open",
-      "guilds": {
-        "*": {
-          "requireMention": false
-        }
       }
     }
   }
