@@ -33,6 +33,11 @@
       --overdue-border: rgba(239, 68, 68, 0.3);
       --due-soon: #f59e0b;
       --due-date-text: #6b7280;
+      --tag-bg: rgba(99, 102, 241, 0.1);
+      --tag-text: #6366f1;
+      --tag-border: rgba(99, 102, 241, 0.2);
+      --toast-bg: #1a1d23;
+      --toast-text: #fff;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.08);
@@ -69,6 +74,11 @@
       --overdue-border: rgba(248, 113, 113, 0.3);
       --due-soon: #fbbf24;
       --due-date-text: #9ca3af;
+      --tag-bg: rgba(129, 140, 248, 0.15);
+      --tag-text: #a5b4fc;
+      --tag-border: rgba(129, 140, 248, 0.25);
+      --toast-bg: #e5e7eb;
+      --toast-text: #1a1d23;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
       --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -652,28 +662,28 @@
       font-weight: 600;
     }
 
-    /* Search bar */
+    /* Search bar - always visible */
     .search-area {
-      display: none;
+      display: block;
       margin-bottom: 16px;
       position: relative;
-      animation: slideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    .search-area.visible {
-      display: block;
     }
 
     .search-area input {
       width: 100%;
       padding: 12px 18px 12px 40px;
-      border: 2px solid var(--accent);
+      border: 2px solid var(--border);
       border-radius: var(--radius);
       font-size: 15px;
       font-family: inherit;
       background: var(--bg-card);
       color: var(--text-primary);
       outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .search-area input:focus {
+      border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-glow);
     }
 
@@ -684,8 +694,29 @@
       left: 14px;
       top: 50%;
       transform: translateY(-50%);
-      color: var(--accent);
+      color: var(--text-muted);
       font-size: 16px;
+      pointer-events: none;
+      transition: color var(--transition);
+    }
+
+    .search-area input:focus ~ .search-icon,
+    .search-area:focus-within .search-icon {
+      color: var(--accent);
+    }
+
+    .search-area .search-hint {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      background: var(--bg-input);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
       pointer-events: none;
     }
 
@@ -799,6 +830,203 @@
       white-space: nowrap;
     }
 
+    /* Tag chips */
+    .tag-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 2px;
+    }
+
+    .tag-chip {
+      font-size: 10px;
+      font-weight: 500;
+      padding: 1px 7px;
+      border-radius: 10px;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      border: 1px solid var(--tag-border);
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .tag-chip:hover {
+      background: var(--accent-light);
+    }
+
+    .tag-chip.remove-tag {
+      cursor: pointer;
+    }
+
+    .tag-chip.remove-tag::after {
+      content: ' \00d7';
+      font-weight: 700;
+    }
+
+    /* Tag input */
+    .tag-input-area {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .tag-input {
+      font-size: 12px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-card);
+      color: var(--text-primary);
+      font-family: inherit;
+      outline: none;
+      width: 100px;
+    }
+
+    .tag-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-glow);
+    }
+
+    .add-tag-btn {
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 6px;
+      transition: all var(--transition);
+      opacity: 0;
+      white-space: nowrap;
+      background: none;
+      border: none;
+      font-family: inherit;
+    }
+
+    li:hover .add-tag-btn {
+      opacity: 1;
+    }
+
+    .add-tag-btn:hover {
+      background: var(--bg-input);
+      color: var(--text-secondary);
+    }
+
+    /* Tag filter bar */
+    .tag-filters {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      padding: 4px;
+      background: var(--bg-input);
+      border-radius: var(--radius);
+      flex-wrap: wrap;
+    }
+
+    .tag-filter-btn {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .tag-filter-btn:hover { color: var(--text-primary); }
+
+    .tag-filter-btn.active {
+      background: var(--bg-card);
+      color: var(--accent);
+      box-shadow: var(--shadow-sm);
+      font-weight: 600;
+    }
+
+    .tag-filter-btn .tag-count {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: var(--toast-bg);
+      color: var(--toast-text);
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-family: inherit;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+      pointer-events: auto;
+      animation: toastIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      max-width: 360px;
+      word-break: break-word;
+    }
+
+    .toast.toast-error {
+      background: var(--delete-color);
+      color: #fff;
+    }
+
+    .toast.removing {
+      animation: toastOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(40px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes toastOut {
+      from { opacity: 1; transform: translateX(0); }
+      to { opacity: 0; transform: translateX(40px); }
+    }
+
+    /* Char counter */
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+
+    .input-wrapper input {
+      width: 100%;
+    }
+
+    .char-counter {
+      position: absolute;
+      right: 10px;
+      bottom: -16px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      transition: color var(--transition);
+    }
+
+    .char-counter.warn {
+      color: var(--due-soon);
+    }
+
+    .char-counter.over {
+      color: var(--delete-color);
+      font-weight: 600;
+    }
+
     /* Focused todo item */
     li.kb-focused {
       outline: 2px solid var(--accent);
@@ -841,12 +1069,16 @@
     </div>
     <div class="stats" id="stats"></div>
     <div class="input-area">
-      <input id="input" type="text" placeholder="What needs to be done?" autofocus>
+      <div class="input-wrapper">
+        <input id="input" type="text" placeholder="What needs to be done?" maxlength="500" autofocus>
+        <span class="char-counter" id="char-counter"></span>
+      </div>
       <button onclick="addTodo()">Add</button>
     </div>
     <div class="search-area" id="search-area">
-      <span class="search-icon">&#128269;</span>
       <input id="search-input" type="text" placeholder="Search todos...">
+      <span class="search-icon">&#128269;</span>
+      <span class="search-hint">Ctrl+K</span>
     </div>
     <div class="filters">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all')">All</button>
@@ -866,8 +1098,14 @@
       <button class="due-date-filter-btn" data-due="upcoming" onclick="setDueDateFilter('upcoming')">Upcoming</button>
       <button class="due-date-filter-btn" data-due="no-date" onclick="setDueDateFilter('no-date')">No Date</button>
     </div>
+    <div class="tag-filters" id="tag-filters" style="display:none">
+      <button class="tag-filter-btn active" data-tag="all" onclick="setTagFilter('all')">All</button>
+    </div>
     <ul id="list"></ul>
   </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toast-container"></div>
 
   <!-- Help modal -->
   <div class="modal-overlay" id="help-modal">
@@ -916,7 +1154,10 @@
     let currentFilter = 'all';
     let currentPriorityFilter = 'all';
     let currentDueDateFilter = 'all';
+    let currentTagFilter = 'all';
+    let allTags = [];
     let openDropdownIndex = null;
+    const MAX_TEXT_LENGTH = 500;
 
     // Date helpers
     function getToday() {
@@ -957,19 +1198,58 @@
       return parts[1] + '/' + parts[2] + '/' + parts[0];
     }
 
+    // Toast notifications
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = 'toast' + (type === 'error' ? ' toast-error' : '');
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add('removing');
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
     // API helpers
     async function api(path, options = {}) {
-      const res = await fetch('/api' + path, {
-        headers: { 'Content-Type': 'application/json' },
-        ...options,
-      });
-      if (res.status === 204) return null;
-      return res.json();
+      try {
+        const res = await fetch('/api' + path, {
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+        });
+        if (res.status === 204) return null;
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Request failed', 'error');
+          return null;
+        }
+        return data;
+      } catch (err) {
+        showToast('Network error: could not reach server', 'error');
+        return null;
+      }
     }
 
     async function loadTodos() {
-      todos = await api('/todos');
+      const data = await api('/todos');
+      if (data) todos = data;
+      await loadTags();
       render();
+    }
+
+    async function loadTags() {
+      const data = await api('/tags');
+      if (data) allTags = data;
+      renderTagFilters();
+    }
+
+    function renderTagFilters() {
+      const container = document.getElementById('tag-filters');
+      if (!allTags.length) { container.style.display = 'none'; return; }
+      container.style.display = 'flex';
+      container.innerHTML = `<button class="tag-filter-btn${currentTagFilter === 'all' ? ' active' : ''}" data-tag="all" onclick="setTagFilter('all')">All</button>` +
+        allTags.map(t => `<button class="tag-filter-btn${currentTagFilter === t.name ? ' active' : ''}" data-tag="${esc(t.name)}" onclick="setTagFilter('${esc(t.name)}')">${esc(t.name)} <span class="tag-count">${t.count}</span></button>`).join('');
     }
 
     // Theme management (stays in localStorage - per-browser preference)
@@ -1027,6 +1307,7 @@
       if (currentDueDateFilter === 'today') filtered = filtered.filter(t => isDueToday(t.due_date));
       if (currentDueDateFilter === 'upcoming') filtered = filtered.filter(t => t.due_date && t.due_date >= getToday());
       if (currentDueDateFilter === 'no-date') filtered = filtered.filter(t => !t.due_date);
+      if (currentTagFilter !== 'all') filtered = filtered.filter(t => t.tags && t.tags.some(tag => tag.name === currentTagFilter));
       return filtered;
     }
 
@@ -1056,6 +1337,9 @@
         const dueDateHtml = t.due_date
           ? `<span class="due-date ${dueDateClass}" onclick="editDueDate(${i}, event)" title="${t.due_date}">${formatDueDate(t.due_date)}</span>`
           : `<span class="due-date-add" onclick="editDueDate(${i}, event)">+ date</span>`;
+        const tagsHtml = (t.tags && t.tags.length)
+          ? `<div class="tag-chips">${t.tags.map(tag => `<span class="tag-chip" onclick="setTagFilter('${esc(tag.name)}')">${esc(tag.name)}</span>`).join('')}</div>`
+          : '';
         return `
         <li class="${t.done ? 'done' : ''} priority-${t.priority || 'medium'}${overdueClass}">
           <div class="checkbox" onclick="toggle(${i})">
@@ -1063,8 +1347,10 @@
           </div>
           <div class="todo-content">
             <span class="text" ondblclick="startEdit(${i}, event)">${esc(t.text)}</span>
+            ${tagsHtml}
           </div>
           <div class="todo-meta">
+            <button class="add-tag-btn" onclick="startAddTag(${i}, event)">+ tag</button>
             ${dueDateHtml}
             <span class="priority-badge ${t.priority || 'medium'}" onclick="togglePriorityDropdown(${i}, event)">${t.priority || 'medium'}${openDropdownIndex === i ? renderPriorityDropdown(i) : ''}</span>
           </div>
@@ -1084,13 +1370,20 @@
       const input = document.getElementById('input');
       const text = input.value.trim();
       if (!text) return;
+      if (text.length > MAX_TEXT_LENGTH) {
+        showToast(`Text must be ${MAX_TEXT_LENGTH} characters or fewer`, 'error');
+        return;
+      }
       input.value = '';
+      updateCharCounter();
       const todo = await api('/todos', {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
-      todos.unshift(todo);
-      render();
+      if (todo) {
+        todos.unshift(todo);
+        render();
+      }
     }
 
     async function toggle(i) {
@@ -1099,8 +1392,10 @@
         method: 'PUT',
         body: JSON.stringify({ done: !todo.done }),
       });
-      todos[i] = updated;
-      render();
+      if (updated) {
+        todos[i] = updated;
+        render();
+      }
     }
 
     async function del(i) {
@@ -1168,7 +1463,7 @@
         method: 'PUT',
         body: JSON.stringify({ priority }),
       });
-      todos[i] = updated;
+      if (updated) todos[i] = updated;
       openDropdownIndex = null;
       render();
     }
@@ -1180,6 +1475,69 @@
         render();
       }
     });
+
+    // Tag management
+    function setTagFilter(tag) {
+      currentTagFilter = tag;
+      renderTagFilters();
+      render();
+    }
+
+    function startAddTag(i, event) {
+      event.stopPropagation();
+      const filtered = getFiltered();
+      const todoItem = todos[i];
+      const visibleIndex = filtered.indexOf(todoItem);
+      const items = document.querySelectorAll('#list li');
+      if (visibleIndex < 0) return;
+
+      const li = items[visibleIndex];
+      const btn = li.querySelector('.add-tag-btn');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'tag-input';
+      input.placeholder = 'tag name';
+      input.maxLength = 50;
+      btn.replaceWith(input);
+      input.focus();
+
+      async function saveTag() {
+        const name = input.value.trim().toLowerCase();
+        if (name && !(todoItem.tags || []).some(t => t.name === name)) {
+          const tagNames = (todoItem.tags || []).map(t => t.name).concat(name);
+          const updated = await api('/todos/' + todoItem.id, {
+            method: 'PUT',
+            body: JSON.stringify({ tags: tagNames }),
+          });
+          if (updated) {
+            todos[i] = updated;
+            await loadTags();
+          }
+        }
+        render();
+      }
+
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') saveTag();
+        if (e.key === 'Escape') render();
+      });
+      input.addEventListener('blur', saveTag);
+    }
+
+    async function removeTag(todoIndex, tagName, event) {
+      event.stopPropagation();
+      const todo = todos[todoIndex];
+      const tagNames = (todo.tags || []).filter(t => t.name !== tagName).map(t => t.name);
+      const updated = await api('/todos/' + todo.id, {
+        method: 'PUT',
+        body: JSON.stringify({ tags: tagNames }),
+      });
+      if (updated) {
+        todos[todoIndex] = updated;
+        await loadTags();
+      }
+      render();
+    }
 
     // Due date editing
     function editDueDate(i, event) {
@@ -1209,7 +1567,7 @@
             method: 'PUT',
             body: JSON.stringify({ due_date: newDate }),
           });
-          todos[i] = updated;
+          if (updated) todos[i] = updated;
         }
         render();
       }
@@ -1246,6 +1604,7 @@
       input.type = 'text';
       input.className = 'edit-input';
       input.value = todos[i].text;
+      input.maxLength = MAX_TEXT_LENGTH;
       span.replaceWith(input);
       input.focus();
       input.select();
@@ -1260,7 +1619,7 @@
             method: 'PUT',
             body: JSON.stringify({ text: newText }),
           });
-          todos[i] = updated;
+          if (updated) todos[i] = updated;
         }
         render();
       }
@@ -1280,22 +1639,14 @@
     // Search
     let searchQuery = '';
 
-    function toggleSearch() {
-      const area = document.getElementById('search-area');
+    function focusSearch() {
       const searchInput = document.getElementById('search-input');
-      if (area.classList.contains('visible')) {
-        closeSearch();
-      } else {
-        area.classList.add('visible');
-        searchInput.focus();
-        searchInput.select();
-      }
+      searchInput.focus();
+      searchInput.select();
     }
 
-    function closeSearch() {
-      const area = document.getElementById('search-area');
+    function clearSearch() {
       const searchInput = document.getElementById('search-input');
-      area.classList.remove('visible');
       searchInput.value = '';
       searchQuery = '';
       render();
@@ -1308,7 +1659,7 @@
 
     document.getElementById('search-input').addEventListener('keydown', e => {
       if (e.key === 'Escape') {
-        closeSearch();
+        clearSearch();
         document.getElementById('input').focus();
       }
     });
@@ -1318,7 +1669,10 @@
     getFiltered = function() {
       let result = _originalGetFiltered();
       if (searchQuery) {
-        result = result.filter(t => t.text.toLowerCase().includes(searchQuery));
+        result = result.filter(t =>
+          t.text.toLowerCase().includes(searchQuery) ||
+          (t.tags && t.tags.some(tag => tag.name.includes(searchQuery)))
+        );
       }
       return result;
     };
@@ -1370,22 +1724,24 @@
       const isEditInput = target.classList && target.classList.contains('edit-input');
       const helpVisible = document.getElementById('help-modal').classList.contains('visible');
 
-      // Escape: close help modal, close search, or clear input
+      // Escape: close help modal, clear search, or clear input
       if (e.key === 'Escape') {
         if (helpVisible) {
           hideHelp();
           e.preventDefault();
           return;
         }
-        if (document.getElementById('search-area').classList.contains('visible')) {
-          closeSearch();
+        if (isEditInput) return; // let inline edit handle its own Escape
+        const searchInput = document.getElementById('search-input');
+        if (document.activeElement === searchInput && searchInput.value) {
+          clearSearch();
           e.preventDefault();
           return;
         }
-        if (isEditInput) return; // let inline edit handle its own Escape
         const mainInput = document.getElementById('input');
         if (document.activeElement === mainInput && mainInput.value) {
           mainInput.value = '';
+          updateCharCounter();
           e.preventDefault();
           return;
         }
@@ -1403,17 +1759,16 @@
         return;
       }
 
-      // Ctrl+K / Cmd+K: toggle search
+      // Ctrl+K / Cmd+K: focus search
       if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        toggleSearch();
+        focusSearch();
         return;
       }
 
       // Alt+N / Cmd+N: focus new todo input
       if (e.key === 'n' && (e.altKey || e.metaKey)) {
         e.preventDefault();
-        closeSearch();
         clearFocus();
         document.getElementById('input').focus();
         return;
@@ -1485,6 +1840,18 @@
         return;
       }
     });
+
+    // Char counter
+    function updateCharCounter() {
+      const input = document.getElementById('input');
+      const counter = document.getElementById('char-counter');
+      const len = input.value.length;
+      if (len === 0) { counter.textContent = ''; return; }
+      counter.textContent = len + '/' + MAX_TEXT_LENGTH;
+      counter.className = 'char-counter' + (len > MAX_TEXT_LENGTH ? ' over' : (len > MAX_TEXT_LENGTH * 0.9 ? ' warn' : ''));
+    }
+
+    document.getElementById('input').addEventListener('input', updateCharCounter);
 
     // Initial load from API
     loadTodos();
