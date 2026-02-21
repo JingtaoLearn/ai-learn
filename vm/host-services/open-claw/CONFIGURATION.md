@@ -10,7 +10,7 @@ The actual configuration file used by OpenClaw is located at:
 ~/.openclaw/openclaw.json
 ```
 
-The file `openclaw.example.json` in this directory is a **sanitized reference copy** — it shows the configuration structure with placeholder values (e.g., `${S_LITELLM_API_KEY}`) instead of real secrets. It is **not** used by OpenClaw directly.
+The file `openclaw.example.json` in this directory is a **sanitized reference copy** — it shows the configuration structure with `<REDACTED>` placeholders instead of real secrets. It is **not** used by OpenClaw directly.
 
 To modify OpenClaw's configuration, edit `~/.openclaw/openclaw.json` directly or use `openclaw config`.
 
@@ -82,19 +82,13 @@ These must be set in `/etc/environment` or your shell profile:
 ```bash
 # API key for LiteLLM proxy authentication
 S_LITELLM_API_KEY="your-api-key-here"
-
-# Gateway authentication token
-OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
-
-# Discord bot token
-S_DISCORD_BOT_TOKEN="your-discord-bot-token-here"
 ```
 
 | Variable | Purpose | Used By |
 |----------|---------|---------|
 | `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider |
-| `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
-| `S_DISCORD_BOT_TOKEN` | Discord bot authentication | channels.discord config |
+
+> **Note:** Discord bot token, gateway token, and hooks token are configured directly in `openclaw.json` (not via environment variables). The example config shows `<REDACTED>` for these values.
 
 ### Generating Secure Tokens
 
@@ -116,14 +110,14 @@ openssl rand -base64 24
     "bind": "loopback",
     "auth": {
       "mode": "token",
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+      "token": "<REDACTED>"
     },
     "tailscale": {
       "mode": "off",
       "resetOnExit": false
     },
     "remote": {
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+      "token": "<REDACTED>"
     }
   }
 }
@@ -146,11 +140,11 @@ openssl rand -base64 24
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
         "fallbacks": [
-          "openai-codex/gpt-5.2",
-          "openai-codex/gpt-5.2-codex",
-          "openai-codex/gpt-5.3-codex"
+          "litellm/github-copilot/claude-sonnet-4.5",
+          "openai-codex/gpt-5.3-codex",
+          "openai-codex/gpt-5.2-codex"
         ]
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
@@ -168,7 +162,7 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
-| `model.primary` | Primary model (`litellm/claude-opus-4.6-fast`) |
+| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6-fast`) |
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
@@ -201,6 +195,46 @@ openssl rand -base64 24
 | `whatsapp` | WhatsApp messaging integration |
 | `discord` | Discord messaging integration |
 
+## Hooks
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "<REDACTED>"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable webhook endpoint |
+| `path` | URL path for incoming hooks |
+| `token` | Authentication token for hook requests |
+
+## Browser
+
+```json
+{
+  "browser": {
+    "enabled": true,
+    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "headless": true,
+    "noSandbox": true,
+    "defaultProfile": "openclaw"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable/disable browser automation |
+| `executablePath` | Path to Chromium binary (Playwright-managed) |
+| `headless` | Run browser without GUI |
+| `noSandbox` | Disable Chrome sandbox (needed for some server environments) |
+| `defaultProfile` | Default browser profile name |
+
 ## Channels
 
 ```json
@@ -209,13 +243,23 @@ openssl rand -base64 24
     "discord": {
       "name": "Discord",
       "enabled": true,
-      "token": "${S_DISCORD_BOT_TOKEN}",
-      "groupPolicy": "open",
+      "token": "<REDACTED>",
+      "groupPolicy": "allowlist",
+      "dm": {
+        "policy": "pairing",
+        "allowFrom": ["<user-id>"]
+      },
       "guilds": {
-        "*": {
-          "requireMention": false
+        "<guild-id>": {
+          "requireMention": false,
+          "users": ["<user-id-1>", "<bot-id-1>", "<bot-id-2>"],
+          "channels": {
+            "*": { "enabled": true },
+            "<channel-id>": { "enabled": true, "requireMention": true }
+          }
         }
-      }
+      },
+      "allowBots": true
     }
   }
 }
@@ -225,8 +269,13 @@ openssl rand -base64 24
 |---------|-------------|
 | `enabled` | Enable/disable the channel |
 | `token` | Bot token for Discord |
-| `groupPolicy` | Guild access policy (`"open"` or `"allowlist"`) |
-| `guilds.*.requireMention` | Whether bot must be @mentioned to respond |
+| `groupPolicy` | Guild access policy (`"allowlist"` restricts to listed guilds) |
+| `dm.policy` | DM handling policy (`"pairing"` for paired DM sessions) |
+| `dm.allowFrom` | User IDs allowed to DM the bot |
+| `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (default for guild) |
+| `guilds.<id>.users` | Allowed user/bot IDs in this guild |
+| `guilds.<id>.channels` | Per-channel overrides (enable/disable, requireMention) |
+| `allowBots` | Whether to process messages from other bots |
 
 ## Validation
 

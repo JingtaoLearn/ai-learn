@@ -5,8 +5,8 @@ Self-hosted AI agent framework with multi-model support. Runs directly on the VM
 ## Overview
 
 OpenClaw provides an AI agent gateway with access to multiple LLM providers:
-- **Primary**: Claude Opus 4.6 Fast via LiteLLM proxy
-- **Fallback**: GPT-5.2 / GPT-5.2-codex / GPT-5.3 Codex via OpenAI API (OAuth)
+- **Primary**: Claude Opus 4.6 Fast via LiteLLM proxy (GitHub Copilot backend)
+- **Fallback**: Claude Sonnet 4.5 via LiteLLM, then GPT-5.3/5.2 Codex via OpenAI API (OAuth)
 
 The system runs as a systemd user service:
 - **openclaw-gateway** (port 18789) - Main agent gateway
@@ -43,6 +43,7 @@ openclaw status
 
 ```
 OpenClaw Gateway (18789) ──┬─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
+                           │       (GitHub Copilot / Anthropic)
                            │
                            └─→ OpenAI API (openai-codex, OAuth)         ← FALLBACK
 ```
@@ -62,7 +63,7 @@ open-claw/
     └── openclaw-gateway.service.example   # Gateway service template
 ```
 
-> **Note:** `openclaw.example.json` is a **sanitized example** of the configuration for reference purposes. The actual configuration used by OpenClaw lives at `~/.openclaw/openclaw.json`. Sensitive values (API keys, tokens) are replaced with `${ENV_VAR}` placeholders in the example.
+> **Note:** `openclaw.example.json` is a **sanitized example** of the configuration for reference purposes. The actual configuration used by OpenClaw lives at `~/.openclaw/openclaw.json`. Sensitive values (API keys, tokens) are replaced with `<REDACTED>` placeholders in the example.
 
 ## Key Features
 
