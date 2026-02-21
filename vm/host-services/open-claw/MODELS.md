@@ -4,27 +4,26 @@ Configuration and setup for LLM model providers in OpenClaw.
 
 ## Provider Architecture
 
-OpenClaw uses two providers:
+OpenClaw uses a single provider:
 
 - **litellm** — connects to a LiteLLM proxy (`litellm.us.jingtao.fun`), which routes to upstream LLM backends (GitHub Copilot / Anthropic API)
-- **openai-codex** — connects directly to OpenAI API via OAuth (ChatGPT Plus subscription)
+
+OpenAI Codex models are available as fallbacks via auth profiles but no longer configured as a separate provider block.
 
 ```
 OpenClaw Gateway (18789)
-    ├─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
-    │       ↓
-    │   GitHub Copilot / Anthropic API
-    │
-    └─→ OpenAI API (openai-codex, OAuth)         ← FALLBACK
+    └─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
+            ↓
+        GitHub Copilot / Anthropic API
 ```
 
 **Fallback chain (as configured):**
 
 ```
-Primary:    litellm/claude-opus-4.6-fast
-Fallback 1: openai-codex/gpt-5.2
-Fallback 2: openai-codex/gpt-5.2-codex
-Fallback 3: openai-codex/gpt-5.3-codex
+Primary:    litellm/github-copilot/claude-opus-4.6-fast
+Fallback 1: litellm/github-copilot/claude-sonnet-4.5
+Fallback 2: openai-codex/gpt-5.3-codex
+Fallback 3: openai-codex/gpt-5.2-codex
 ```
 
 ## Provider Configuration
@@ -39,11 +38,11 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
     "providers": {
       "litellm": {
         "baseUrl": "https://litellm.us.jingtao.fun/",
-        "apiKey": "${S_LITELLM_API_KEY}",
+        "apiKey": "<REDACTED>",
         "api": "openai-completions",
         "models": [
           {
-            "id": "claude-opus-4.6-fast",
+            "id": "github-copilot/claude-opus-4.6-fast",
             "name": "Claude Opus 4.6 Fast",
             "reasoning": true,
             "input": ["text", "image"],
@@ -51,7 +50,7 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
             "maxTokens": 64000
           },
           {
-            "id": "claude-sonnet-4.5",
+            "id": "github-copilot/claude-sonnet-4.5",
             "name": "Claude Sonnet 4.5",
             "reasoning": true,
             "input": ["text", "image"],
@@ -69,41 +68,19 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
 
 | Model Ref | Context | Input | Role |
 |-----------|---------|-------|------|
-| `litellm/claude-opus-4.6-fast` | 200k | text+image | Primary |
-| `litellm/claude-sonnet-4.5` | 200k | text+image | Available (not in fallback chain) |
+| `litellm/github-copilot/claude-opus-4.6-fast` | 200k | text+image | Primary |
+| `litellm/github-copilot/claude-sonnet-4.5` | 200k | text+image | Fallback 1 |
 
 ### openai-codex (Fallback)
 
-Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus account.
-
-```json
-{
-  "providers": {
-    "openai-codex": {
-      "baseUrl": "https://api.openai.com/v1",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "gpt-5.3-codex",
-          "name": "GPT-5.3 Codex",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 200000,
-          "maxTokens": 16384
-        }
-      ]
-    }
-  }
-}
-```
+Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus account. Configured via auth profiles (not as a provider block in the main config).
 
 **Authentication:** OAuth (no API key needed), requires ChatGPT Plus subscription.
 
 | Model Ref | Context | Role |
 |-----------|---------|------|
-| `openai-codex/gpt-5.2` | — | Fallback 1 |
-| `openai-codex/gpt-5.2-codex` | — | Fallback 2 |
-| `openai-codex/gpt-5.3-codex` | 200k | Fallback 3 |
+| `openai-codex/gpt-5.3-codex` | 200k | Fallback 2 |
+| `openai-codex/gpt-5.2-codex` | — | Fallback 3 |
 
 ## Services
 
