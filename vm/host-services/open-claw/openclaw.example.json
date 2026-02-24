@@ -105,7 +105,11 @@
       "memory",
       "cron"
     ],
-    "deny": []
+    "deny": [],
+    "exec": {
+      "security": "full",
+      "ask": "off"
+    }
   },
   "messages": {
     "ackReactionScope": "group-mentions"
