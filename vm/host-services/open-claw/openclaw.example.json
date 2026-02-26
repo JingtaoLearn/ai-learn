@@ -84,6 +84,16 @@
       "compaction": {
         "mode": "safeguard"
       },
+      "heartbeat": {
+        "every": "5m",
+        "activeHours": {
+          "start": "08:00",
+          "end": "24:00",
+          "timezone": "Asia/Shanghai"
+        },
+        "target": "discord",
+        "to": "channel:1471477049108729926"
+      },
       "maxConcurrent": 4,
       "subagents": {
         "maxConcurrent": 8
@@ -116,7 +126,9 @@
   },
   "commands": {
     "native": "auto",
-    "nativeSkills": "auto"
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
   },
   "session": {
     "dmScope": "per-channel-peer"
@@ -131,13 +143,13 @@
       "name": "Discord",
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
+      "allowBots": true,
       "groupPolicy": "allowlist",
-      "dm": {
-        "policy": "pairing",
-        "allowFrom": [
-          "1471352977691250891"
-        ]
-      },
+      "streaming": "off",
+      "dmPolicy": "pairing",
+      "allowFrom": [
+        "1471352977691250891"
+      ],
       "guilds": {
         "1471415768955490418": {
           "requireMention": false,
@@ -151,13 +163,12 @@
               "enabled": true
             },
             "1471752874982768794": {
-              "enabled": true,
-              "requireMention": true
+              "requireMention": true,
+              "enabled": true
             }
           }
         }
-      },
-      "allowBots": true
+      }
     }
   },
   "gateway": {
