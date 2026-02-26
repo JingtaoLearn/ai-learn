@@ -203,6 +203,16 @@ openssl rand -base64 24
       "compaction": {
         "mode": "safeguard"
       },
+      "heartbeat": {
+        "every": "5m",
+        "activeHours": {
+          "start": "08:00",
+          "end": "24:00",
+          "timezone": "Asia/Shanghai"
+        },
+        "target": "discord",
+        "to": "channel:<channel-id>"
+      },
       "maxConcurrent": 4,
       "subagents": {
         "maxConcurrent": 8
@@ -218,6 +228,10 @@ openssl rand -base64 24
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
+| `heartbeat.every` | Heartbeat polling interval (e.g., `"5m"`, `"30m"`) |
+| `heartbeat.activeHours` | Time window for heartbeats (`start`/`end` in HH:MM, with `timezone`) |
+| `heartbeat.target` | Channel to deliver heartbeat responses (e.g., `"discord"`) |
+| `heartbeat.to` | Specific channel/user target (e.g., `"channel:<id>"`) |
 | `maxConcurrent` | Maximum concurrent agents |
 | `subagents.maxConcurrent` | Maximum concurrent subagents per agent |
 
@@ -256,22 +270,21 @@ openssl rand -base64 24
       "name": "Discord",
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
+      "allowBots": true,
       "groupPolicy": "allowlist",
-      "dm": {
-        "policy": "pairing",
-        "allowFrom": ["1471352977691250891"]
-      },
+      "streaming": "off",
+      "dmPolicy": "pairing",
+      "allowFrom": ["1471352977691250891"],
       "guilds": {
         "1471415768955490418": {
           "requireMention": false,
           "users": ["1471352977691250891", "1471678943999426643", "1471680872607518932"],
           "channels": {
             "*": { "enabled": true },
-            "1471752874982768794": { "enabled": true, "requireMention": true }
+            "1471752874982768794": { "requireMention": true, "enabled": true }
           }
         }
-      },
-      "allowBots": true
+      }
     }
   }
 }
@@ -281,13 +294,34 @@ openssl rand -base64 24
 |---------|-------------|
 | `enabled` | Enable/disable the channel |
 | `token` | Bot token for Discord |
+| `allowBots` | Whether to process messages from other bots |
 | `groupPolicy` | Guild access policy (`"allowlist"` — only listed guilds are allowed) |
-| `dm.policy` | DM policy (`"pairing"` — requires allowFrom match) |
-| `dm.allowFrom` | User IDs allowed to initiate DMs |
+| `streaming` | Response streaming mode (`"off"` to disable streaming responses) |
+| `dmPolicy` | DM policy (`"pairing"` — requires allowFrom match) |
+| `allowFrom` | User IDs allowed to initiate DMs |
 | `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (default for guild) |
 | `guilds.<id>.users` | Allowed user IDs in the guild |
 | `guilds.<id>.channels` | Per-channel overrides (e.g., require mention in specific channels) |
-| `allowBots` | Whether to process messages from other bots |
+
+## Commands
+
+```json
+{
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `native` | Native command handling mode (`"auto"` for automatic detection) |
+| `nativeSkills` | Native skill command handling mode (`"auto"` for automatic detection) |
+| `restart` | Enable the `/restart` command for restarting OpenClaw |
+| `ownerDisplay` | How to display the owner in command responses (`"raw"` for unformatted) |
 
 ## Validation
 
