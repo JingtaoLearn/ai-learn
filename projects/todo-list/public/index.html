@@ -1034,6 +1034,157 @@
       box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-glow);
     }
 
+    /* Auth screen */
+    .auth-container {
+      display: none;
+      max-width: 400px;
+      margin: 80px auto;
+      padding: 0 20px;
+    }
+
+    .auth-container.visible {
+      display: block;
+    }
+
+    .auth-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 36px 32px;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .auth-card h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+
+    .auth-card .auth-subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 28px;
+    }
+
+    .auth-field {
+      margin-bottom: 16px;
+    }
+
+    .auth-field label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .auth-field input {
+      width: 100%;
+      padding: 12px 16px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-family: inherit;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+      box-sizing: border-box;
+    }
+
+    .auth-field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .auth-btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background var(--transition);
+      margin-top: 8px;
+    }
+
+    .auth-btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .auth-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .auth-switch {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    .auth-switch a {
+      color: var(--accent);
+      cursor: pointer;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .auth-switch a:hover {
+      text-decoration: underline;
+    }
+
+    .auth-error {
+      background: var(--priority-high-bg);
+      color: var(--priority-high);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .auth-error.visible {
+      display: block;
+    }
+
+    /* User info in header */
+    .user-info {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .user-info .username {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .logout-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-family: inherit;
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .logout-btn:hover {
+      border-color: var(--delete-color);
+      color: var(--delete-color);
+    }
+
     /* Responsive */
     @media (max-width: 480px) {
       body { padding: 24px 12px 60px; }
@@ -1051,14 +1202,46 @@
       li { padding: 12px 14px; }
 
       .stats { font-size: 12px; }
+
+      .auth-container { margin-top: 40px; }
+      .auth-card { padding: 28px 20px; }
     }
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- Auth screen -->
+  <div class="auth-container" id="auth-container">
+    <div class="auth-card">
+      <h1 id="auth-title">Sign In</h1>
+      <p class="auth-subtitle" id="auth-subtitle">Enter your credentials to access your todos</p>
+      <div class="auth-error" id="auth-error"></div>
+      <form id="auth-form" onsubmit="handleAuth(event)">
+        <div class="auth-field">
+          <label for="auth-username">Username</label>
+          <input id="auth-username" type="text" placeholder="Enter username" autocomplete="username" required>
+        </div>
+        <div class="auth-field">
+          <label for="auth-password">Password</label>
+          <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="auth-btn" id="auth-submit-btn">Sign In</button>
+      </form>
+      <div class="auth-switch">
+        <span id="auth-switch-text">Don't have an account?</span>
+        <a id="auth-switch-link" onclick="toggleAuthMode()">Register</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main app (hidden until authenticated) -->
+  <div class="container" id="app-container" style="display:none">
     <div class="header">
       <h1>Todo List</h1>
       <div style="display: flex; gap: 8px; align-items: center;">
+        <div class="user-info" id="user-info">
+          <span class="username" id="display-username"></span>
+          <button class="logout-btn" onclick="logout()">Sign out</button>
+        </div>
         <button class="theme-toggle" onclick="showHelp()" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">
           <span>?</span>
         </button>
@@ -1158,6 +1341,101 @@
     let allTags = [];
     let openDropdownIndex = null;
     const MAX_TEXT_LENGTH = 500;
+    let authMode = 'login'; // 'login' or 'register'
+
+    // Auth functions
+    function showAuth() {
+      document.getElementById('auth-container').classList.add('visible');
+      document.getElementById('app-container').style.display = 'none';
+    }
+
+    function showApp(username) {
+      document.getElementById('auth-container').classList.remove('visible');
+      document.getElementById('app-container').style.display = '';
+      document.getElementById('display-username').textContent = username;
+      loadTodos();
+    }
+
+    function toggleAuthMode() {
+      authMode = authMode === 'login' ? 'register' : 'login';
+      document.getElementById('auth-title').textContent = authMode === 'login' ? 'Sign In' : 'Create Account';
+      document.getElementById('auth-subtitle').textContent = authMode === 'login'
+        ? 'Enter your credentials to access your todos'
+        : 'Choose a username and password to get started';
+      document.getElementById('auth-submit-btn').textContent = authMode === 'login' ? 'Sign In' : 'Create Account';
+      document.getElementById('auth-switch-text').textContent = authMode === 'login'
+        ? "Don't have an account?"
+        : 'Already have an account?';
+      document.getElementById('auth-switch-link').textContent = authMode === 'login' ? 'Register' : 'Sign In';
+      document.getElementById('auth-password').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
+      hideAuthError();
+    }
+
+    function showAuthError(msg) {
+      const el = document.getElementById('auth-error');
+      el.textContent = msg;
+      el.classList.add('visible');
+    }
+
+    function hideAuthError() {
+      document.getElementById('auth-error').classList.remove('visible');
+    }
+
+    async function handleAuth(e) {
+      e.preventDefault();
+      const username = document.getElementById('auth-username').value.trim();
+      const password = document.getElementById('auth-password').value;
+      if (!username || !password) return;
+
+      hideAuthError();
+      const btn = document.getElementById('auth-submit-btn');
+      btn.disabled = true;
+
+      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showAuthError(data.error || 'Authentication failed');
+          btn.disabled = false;
+          return;
+        }
+        document.getElementById('auth-form').reset();
+        showApp(data.username);
+      } catch (err) {
+        showAuthError('Network error: could not reach server');
+      }
+      btn.disabled = false;
+    }
+
+    async function logout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (e) {
+        // ignore
+      }
+      todos = [];
+      allTags = [];
+      showAuth();
+    }
+
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          showApp(data.username);
+          return;
+        }
+      } catch (e) {
+        // ignore
+      }
+      showAuth();
+    }
 
     // Date helpers
     function getToday() {
@@ -1218,6 +1496,10 @@
           headers: { 'Content-Type': 'application/json' },
           ...options,
         });
+        if (res.status === 401) {
+          showAuth();
+          return null;
+        }
         if (res.status === 204) return null;
         const data = await res.json();
         if (!res.ok) {
@@ -1853,8 +2135,8 @@
 
     document.getElementById('input').addEventListener('input', updateCharCounter);
 
-    // Initial load from API
-    loadTodos();
+    // Initial auth check
+    checkAuth();
   </script>
 </body>
 </html>
