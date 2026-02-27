@@ -1,0 +1,13 @@
+{
+  "name": "note-app",
+  "version": "1.0.0",
+  "description": "Note-taking app with Markdown support and SQLite backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "better-sqlite3": "^11.6.0"
+  }
+}
