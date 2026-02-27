@@ -86,9 +86,7 @@ app.post('/api/notes', (req, res) => {
   const content = (req.body.content || '').trim();
   const tags = req.body.tags || [];
 
-  if (!title && !content) {
-    return res.status(400).json({ error: 'Title or content is required' });
-  }
+  // Allow empty notes — user creates first, then types content
 
   if (title.length > 200) {
     return res.status(400).json({ error: 'Title must be 200 characters or less' });
