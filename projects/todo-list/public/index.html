@@ -1130,14 +1130,20 @@
     }
 
     .auth-switch a {
-      color: var(--accent);
+      color: #fff;
       cursor: pointer;
       font-weight: 600;
       text-decoration: none;
+      background: var(--accent);
+      padding: 8px 20px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-top: 8px;
+      transition: opacity 0.2s;
     }
 
     .auth-switch a:hover {
-      text-decoration: underline;
+      opacity: 0.85;
     }
 
     .auth-error {
