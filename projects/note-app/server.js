@@ -1,6 +1,8 @@
 const express = require('express');
 const Database = require('better-sqlite3');
 const path = require('path');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 80;
@@ -12,6 +14,36 @@ const dbDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
+
+// Ensure uploads directory exists
+const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Configure multer for image uploads
+const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, uuidv4() + ext);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_SIZE },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only jpg, png, gif, and webp images are allowed'));
+    }
+  }
+});
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -44,6 +76,25 @@ db.exec(`
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve uploaded files
+app.use('/uploads', express.static(UPLOADS_DIR));
+
+// POST /api/upload — upload an image
+app.post('/api/upload', (req, res) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File too large (max 5MB)' });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+    res.json({ url: `/uploads/${req.file.filename}` });
+  });
+});
 
 // Sanitize HTML to prevent XSS
 function escapeHtml(str) {

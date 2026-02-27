@@ -612,8 +612,26 @@
     }
     .content-preview a { color: var(--accent); text-decoration: none; }
     .content-preview a:hover { text-decoration: underline; }
-    .content-preview img { max-width: 100%; border-radius: var(--radius-md); }
+    .content-preview img { max-width: 100%; height: auto; border-radius: var(--radius-md); box-shadow: var(--shadow-sm); }
     .content-preview hr { border: none; border-top: 1px solid var(--border-color); margin: 16px 0; }
+
+    /* Image upload */
+    .content-edit.drag-over {
+      outline: 2px dashed var(--accent);
+      outline-offset: -4px;
+      background: var(--accent-light);
+    }
+
+    .upload-status {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      padding: 0 48px;
+      min-height: 18px;
+    }
+
+    .upload-status.uploading {
+      color: var(--accent);
+    }
     .content-preview table { border-collapse: collapse; margin: 0 0 12px; width: 100%; }
     .content-preview th, .content-preview td { border: 1px solid var(--border-color); padding: 8px 12px; text-align: left; }
     .content-preview th { background: var(--bg-tertiary); font-weight: 600; }
@@ -788,6 +806,10 @@
         padding: 0 20px 20px;
       }
 
+      .upload-status {
+        padding: 0 20px;
+      }
+
       .editor-toolbar {
         padding: 10px 16px;
       }
@@ -851,6 +873,10 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               <span>Preview</span>
             </button>
+            <button class="toolbar-btn" onclick="triggerImageUpload()" id="upload-btn" title="Upload image">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <span>Image</span>
+            </button>
           </div>
           <div class="editor-toolbar-right">
             <span class="save-status" id="save-status"></span>
@@ -869,6 +895,8 @@
             <textarea class="content-edit" id="content-edit" placeholder="Write your note here... (Markdown supported)" oninput="onContentChange()"></textarea>
             <div class="content-preview" id="content-preview"></div>
           </div>
+          <div class="upload-status" id="upload-status"></div>
+          <input type="file" id="image-file-input" accept="image/jpeg,image/png,image/gif,image/webp" style="display:none">
         </div>
       </div>
     </main>
@@ -1380,6 +1408,107 @@
         }
       }
     });
+
+    // Image upload
+    function triggerImageUpload() {
+      if (!activeNoteId) return;
+      document.getElementById('image-file-input').click();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const fileInput = document.getElementById('image-file-input');
+      const textarea = document.getElementById('content-edit');
+
+      fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+          uploadImage(e.target.files[0]);
+          e.target.value = '';
+        }
+      });
+
+      // Drag & drop on textarea
+      textarea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        textarea.classList.add('drag-over');
+      });
+
+      textarea.addEventListener('dragleave', () => {
+        textarea.classList.remove('drag-over');
+      });
+
+      textarea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        textarea.classList.remove('drag-over');
+        if (!activeNoteId) return;
+
+        const file = e.dataTransfer.files[0];
+        if (file && file.type.startsWith('image/')) {
+          uploadImage(file);
+        }
+      });
+
+      // Paste from clipboard
+      textarea.addEventListener('paste', (e) => {
+        if (!activeNoteId) return;
+        const items = e.clipboardData.items;
+        for (const item of items) {
+          if (item.type.startsWith('image/')) {
+            e.preventDefault();
+            const file = item.getAsFile();
+            if (file) uploadImage(file);
+            return;
+          }
+        }
+      });
+    });
+
+    async function uploadImage(file) {
+      const statusEl = document.getElementById('upload-status');
+      const textarea = document.getElementById('content-edit');
+
+      if (file.size > 5 * 1024 * 1024) {
+        showToast('Image too large (max 5MB)', 'error');
+        return;
+      }
+
+      statusEl.textContent = 'Uploading image...';
+      statusEl.classList.add('uploading');
+
+      const formData = new FormData();
+      formData.append('image', file);
+
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+        const altText = file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+        const markdown = `![${altText}](${data.url})`;
+
+        // Insert at cursor position
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const text = textarea.value;
+        const before = text.substring(0, start);
+        const after = text.substring(end);
+        const needsNewline = before.length > 0 && !before.endsWith('\n') ? '\n' : '';
+        const insertion = needsNewline + markdown + '\n';
+
+        textarea.value = before + insertion + after;
+        textarea.selectionStart = textarea.selectionEnd = start + insertion.length;
+        textarea.focus();
+
+        statusEl.textContent = 'Image inserted';
+        onContentChange();
+        scheduleSave();
+
+        setTimeout(() => { statusEl.textContent = ''; statusEl.classList.remove('uploading'); }, 2000);
+      } catch (err) {
+        statusEl.textContent = '';
+        statusEl.classList.remove('uploading');
+        showToast(err.message, 'error');
+      }
+    }
   </script>
 </body>
 </html>
