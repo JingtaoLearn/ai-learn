@@ -5,6 +5,7 @@ export function useLiveSync(
   boardId: string | null,
   onSnapshot: (data: string) => void,
   onUpdate: (data: string) => void,
+  onLaser?: (data: string) => void,
   onEditRequest?: (viewerId: string) => void,
   onEditGranted?: (editToken: string) => void,
   onEditDenied?: () => void,
@@ -21,6 +22,8 @@ export function useLiveSync(
         onSnapshot(msg.data as string);
       } else if (type === "update") {
         onUpdate(msg.data as string);
+      } else if (type === "laser" && onLaser) {
+        onLaser(msg.data as string);
       } else if (type === "edit-request" && onEditRequest) {
         onEditRequest(msg.viewerId as string);
       } else if (type === "edit-granted" && onEditGranted) {
@@ -36,7 +39,7 @@ export function useLiveSync(
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [boardId, onSnapshot, onUpdate, onEditRequest, onEditGranted, onEditDenied, onEditRevoked]);
+  }, [boardId, onSnapshot, onUpdate, onLaser, onEditRequest, onEditGranted, onEditDenied, onEditRevoked]);
 
   return wsRef;
 }

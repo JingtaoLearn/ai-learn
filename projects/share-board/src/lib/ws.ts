@@ -39,6 +39,14 @@ export class BoardWebSocket {
     }
   }
 
+  sendLaser(editToken: string, data: string) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({ type: "laser", editToken, data }),
+      );
+    }
+  }
+
   sendEditRequest() {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "edit-request" }));
