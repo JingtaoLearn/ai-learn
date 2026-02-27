@@ -9,8 +9,14 @@ import type {
 } from "@excalidraw/excalidraw/types";
 import { Toolbar } from "../components/Toolbar";
 import { ShareDialog } from "../components/ShareDialog";
+import { EditRequestNotification } from "../components/EditRequestNotification";
 import { useBoard } from "../hooks/useBoard";
 import { BoardWebSocket } from "../lib/ws";
+
+interface PendingEditRequest {
+  viewerId: string;
+  timestamp: number;
+}
 
 export function EditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -27,6 +33,7 @@ export function EditorPage() {
     files: BinaryFiles;
   } | null>(null);
   const [initialDataReady, setInitialDataReady] = useState(!id);
+  const [editRequests, setEditRequests] = useState<PendingEditRequest[]>([]);
 
   const editToken = boardId ? getEditToken(boardId) : null;
 
@@ -70,8 +77,15 @@ export function EditorPage() {
   useEffect(() => {
     if (!boardId || !editToken) return;
 
-    wsRef.current = new BoardWebSocket(boardId, () => {
-      // Creator doesn't need to process incoming messages
+    wsRef.current = new BoardWebSocket(boardId, (msg) => {
+      const type = msg.type as string;
+      if (type === "edit-request") {
+        const viewerId = msg.viewerId as string;
+        setEditRequests((prev) => {
+          if (prev.some((r) => r.viewerId === viewerId)) return prev;
+          return [...prev, { viewerId, timestamp: Date.now() }];
+        });
+      }
     });
 
     return () => {
@@ -79,6 +93,26 @@ export function EditorPage() {
       wsRef.current = null;
     };
   }, [boardId, editToken]);
+
+  const handleApproveEdit = useCallback(
+    (viewerId: string) => {
+      if (wsRef.current && editToken) {
+        wsRef.current.sendEditResponse(editToken, viewerId, true);
+        setEditRequests((prev) => prev.filter((r) => r.viewerId !== viewerId));
+      }
+    },
+    [editToken],
+  );
+
+  const handleDenyEdit = useCallback(
+    (viewerId: string) => {
+      if (wsRef.current && editToken) {
+        wsRef.current.sendEditResponse(editToken, viewerId, false);
+        setEditRequests((prev) => prev.filter((r) => r.viewerId !== viewerId));
+      }
+    },
+    [editToken],
+  );
 
   const getSnapshot = useCallback(() => {
     if (!apiRef.current) return null;
@@ -169,6 +203,14 @@ export function EditorPage() {
           onClose={() => setShowShare(false)}
         />
       )}
+      {editRequests.map((request) => (
+        <EditRequestNotification
+          key={request.viewerId}
+          viewerId={request.viewerId}
+          onApprove={handleApproveEdit}
+          onDeny={handleDenyEdit}
+        />
+      ))}
     </div>
   );
 }

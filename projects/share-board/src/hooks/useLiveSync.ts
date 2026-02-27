@@ -5,6 +5,10 @@ export function useLiveSync(
   boardId: string | null,
   onSnapshot: (data: string) => void,
   onUpdate: (data: string) => void,
+  onEditRequest?: (viewerId: string) => void,
+  onEditGranted?: (editToken: string) => void,
+  onEditDenied?: () => void,
+  onEditRevoked?: () => void,
 ) {
   const wsRef = useRef<BoardWebSocket | null>(null);
 
@@ -12,10 +16,19 @@ export function useLiveSync(
     if (!boardId) return;
 
     wsRef.current = new BoardWebSocket(boardId, (msg) => {
-      if (msg.type === "snapshot") {
-        onSnapshot(msg.data);
-      } else if (msg.type === "update") {
-        onUpdate(msg.data);
+      const type = msg.type as string;
+      if (type === "snapshot") {
+        onSnapshot(msg.data as string);
+      } else if (type === "update") {
+        onUpdate(msg.data as string);
+      } else if (type === "edit-request" && onEditRequest) {
+        onEditRequest(msg.viewerId as string);
+      } else if (type === "edit-granted" && onEditGranted) {
+        onEditGranted(msg.editToken as string);
+      } else if (type === "edit-denied" && onEditDenied) {
+        onEditDenied();
+      } else if (type === "edit-revoked" && onEditRevoked) {
+        onEditRevoked();
       }
     });
 
@@ -23,7 +36,7 @@ export function useLiveSync(
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [boardId, onSnapshot, onUpdate]);
+  }, [boardId, onSnapshot, onUpdate, onEditRequest, onEditGranted, onEditDenied, onEditRevoked]);
 
   return wsRef;
 }

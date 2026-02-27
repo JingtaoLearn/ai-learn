@@ -1,12 +1,14 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "node:http";
 import { URL } from "node:url";
+import { nanoid } from "nanoid";
 import db from "../db/index.js";
 
 interface BoardRoom {
   creator: WebSocket | null;
-  viewers: Set<WebSocket>;
+  viewers: Map<string, WebSocket>;
   editToken: string | null;
+  grantedEditors: Set<string>;
 }
 
 const rooms = new Map<string, BoardRoom>();
@@ -14,7 +16,12 @@ const rooms = new Map<string, BoardRoom>();
 function getOrCreateRoom(boardId: string): BoardRoom {
   let room = rooms.get(boardId);
   if (!room) {
-    room = { creator: null, viewers: new Set(), editToken: null };
+    room = {
+      creator: null,
+      viewers: new Map(),
+      editToken: null,
+      grantedEditors: new Set(),
+    };
     rooms.set(boardId, room);
   }
   return room;
@@ -62,10 +69,12 @@ export function setupWebSocket(server: Server) {
     }
 
     const room = getOrCreateRoom(boardId);
-    room.viewers.add(ws);
+    const viewerId = nanoid(12);
+    room.viewers.set(viewerId, ws);
 
-    // Send current snapshot to newly connected client
+    // Send current snapshot and viewer ID to newly connected client
     ws.send(JSON.stringify({ type: "snapshot", data: board.snapshot }));
+    ws.send(JSON.stringify({ type: "viewer-id", viewerId }));
 
     ws.on("message", (raw) => {
       try {
@@ -91,10 +100,52 @@ export function setupWebSocket(server: Server) {
             data: msg.data,
           });
 
-          for (const viewer of room.viewers) {
+          for (const [, viewer] of room.viewers) {
             if (viewer !== ws && viewer.readyState === WebSocket.OPEN) {
               viewer.send(payload);
             }
+          }
+        }
+
+        // Viewer requests edit access
+        if (msg.type === "edit-request") {
+          if (room.creator && room.creator.readyState === WebSocket.OPEN) {
+            room.creator.send(
+              JSON.stringify({
+                type: "edit-request",
+                viewerId,
+              }),
+            );
+          } else {
+            // Owner not online, deny
+            ws.send(JSON.stringify({ type: "edit-denied" }));
+          }
+        }
+
+        // Owner responds to edit request
+        if (msg.type === "edit-response" && msg.editToken && msg.viewerId !== undefined) {
+          // Verify this is the owner
+          const valid = db
+            .prepare(
+              "SELECT id FROM boards WHERE id = ? AND edit_token = ?",
+            )
+            .get(boardId, msg.editToken) as { id: string } | undefined;
+
+          if (!valid) return;
+
+          const targetWs = room.viewers.get(msg.viewerId);
+          if (!targetWs || targetWs.readyState !== WebSocket.OPEN) return;
+
+          if (msg.approved) {
+            room.grantedEditors.add(msg.viewerId);
+            targetWs.send(
+              JSON.stringify({
+                type: "edit-granted",
+                editToken: room.editToken,
+              }),
+            );
+          } else {
+            targetWs.send(JSON.stringify({ type: "edit-denied" }));
           }
         }
       } catch {
@@ -103,10 +154,19 @@ export function setupWebSocket(server: Server) {
     });
 
     ws.on("close", () => {
-      room.viewers.delete(ws);
+      room.grantedEditors.delete(viewerId);
+      room.viewers.delete(viewerId);
       if (room.creator === ws) {
         room.creator = null;
         room.editToken = null;
+        // Revoke all granted editors when owner disconnects
+        for (const editorId of room.grantedEditors) {
+          const editorWs = room.viewers.get(editorId);
+          if (editorWs && editorWs.readyState === WebSocket.OPEN) {
+            editorWs.send(JSON.stringify({ type: "edit-revoked" }));
+          }
+        }
+        room.grantedEditors.clear();
       }
       cleanupRoom(boardId);
     });

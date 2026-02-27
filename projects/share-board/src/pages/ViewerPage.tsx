@@ -4,10 +4,13 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type {
   ExcalidrawImperativeAPI,
+  AppState,
   BinaryFiles,
 } from "@excalidraw/excalidraw/types";
 import { useLiveSync } from "../hooks/useLiveSync";
-import { getBoard } from "../lib/api";
+import { getBoard, updateBoard } from "../lib/api";
+
+type EditRequestStatus = "idle" | "pending" | "granted" | "denied";
 
 export function ViewerPage() {
   const { id } = useParams<{ id: string }>();
@@ -18,6 +21,9 @@ export function ViewerPage() {
     elements: ExcalidrawElement[];
     files: BinaryFiles;
   } | null>(null);
+  const [editStatus, setEditStatus] = useState<EditRequestStatus>("idle");
+  const [editToken, setEditToken] = useState<string | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load initial board data
   useEffect(() => {
@@ -70,8 +76,74 @@ export function ViewerPage() {
     }
   }, []);
 
+  const handleEditGranted = useCallback((token: string) => {
+    setEditStatus("granted");
+    setEditToken(token);
+  }, []);
+
+  const handleEditDenied = useCallback(() => {
+    setEditStatus("denied");
+    setTimeout(() => setEditStatus("idle"), 3000);
+  }, []);
+
+  const handleEditRevoked = useCallback(() => {
+    setEditStatus("idle");
+    setEditToken(null);
+  }, []);
+
   // Live sync via WebSocket
-  useLiveSync(loaded ? id ?? null : null, handleSnapshot, handleUpdate);
+  const wsRef = useLiveSync(
+    loaded ? id ?? null : null,
+    handleSnapshot,
+    handleUpdate,
+    undefined,
+    handleEditGranted,
+    handleEditDenied,
+    handleEditRevoked,
+  );
+
+  const handleRequestEdit = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.sendEditRequest();
+      setEditStatus("pending");
+    }
+  }, [wsRef]);
+
+  const getSnapshot = useCallback(() => {
+    if (!apiRef.current) return null;
+    return {
+      elements: apiRef.current.getSceneElements(),
+      files: apiRef.current.getFiles(),
+    };
+  }, []);
+
+  const handleChange = useCallback(
+    (
+      _elements: readonly ExcalidrawElement[],
+      _appState: AppState,
+      _files: BinaryFiles,
+    ) => {
+      if (!editToken || !id || !wsRef.current) return;
+
+      const snapshot = getSnapshot();
+      if (snapshot) {
+        wsRef.current.sendUpdate(editToken, JSON.stringify(snapshot));
+      }
+
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(async () => {
+        const snap = getSnapshot();
+        if (snap) {
+          try {
+            await updateBoard(id, editToken, snap);
+          } catch {
+            // Ignore save errors in viewer edit mode
+          }
+        }
+      }, 2000);
+    },
+    [editToken, id, getSnapshot, wsRef],
+  );
 
   if (error) {
     return (
@@ -87,13 +159,49 @@ export function ViewerPage() {
     );
   }
 
+  const isEditing = editStatus === "granted" && editToken;
+
   return (
     <div className="viewer-page">
       <div className="viewer-topbar">
-        <span className="viewer-badge">View Only</span>
-        <Link to="/" className="viewer-new-btn">
-          + New Board
-        </Link>
+        <span className={`viewer-badge ${isEditing ? "viewer-badge-edit" : ""}`}>
+          {isEditing ? "Editing" : "View Only"}
+        </span>
+        <div className="viewer-topbar-right">
+          {editStatus === "idle" && (
+            <button className="request-edit-btn" onClick={handleRequestEdit}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Request to Edit
+            </button>
+          )}
+          {editStatus === "pending" && (
+            <span className="edit-status-pending">
+              <span className="spinner spinner-sm" />
+              Edit request sent, waiting for approval...
+            </span>
+          )}
+          {editStatus === "denied" && (
+            <span className="edit-status-denied">
+              Edit request denied
+            </span>
+          )}
+          {isEditing && (
+            <span className="edit-status-granted">
+              Edit access granted
+            </span>
+          )}
+          <Link to="/" className="viewer-new-btn">
+            + New Board
+          </Link>
+        </div>
       </div>
       <div className="viewer-canvas">
         {initialData && (
@@ -105,7 +213,8 @@ export function ViewerPage() {
               elements: initialData.elements,
               files: initialData.files,
             }}
-            viewModeEnabled={true}
+            viewModeEnabled={!isEditing}
+            onChange={isEditing ? handleChange : undefined}
           />
         )}
       </div>
