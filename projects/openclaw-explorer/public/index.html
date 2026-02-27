@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Explorer</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Explorer</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Main Content (no sidebar) -->
+<main class="main-landing">
+
+  <h2 style="font-size:28px;font-weight:600;margin-bottom:8px">Topics</h2>
+  <p style="margin-bottom:32px">Deep dives into how OpenClaw works under the hood. Pick a topic to explore.</p>
+
+  <div class="topic-grid">
+    <a class="topic-card" href="pages/system-prompt.html">
+      <div class="topic-num">Topic 01</div>
+      <h3>System Prompt Assembly</h3>
+      <p>How OpenClaw builds its system prompt from 26 sections &mdash; entry points, prompt modes, project context files, plugin hooks, and configuration knobs.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/memory.html">
+      <div class="topic-num">Topic 02</div>
+      <h3>Memory Management</h3>
+      <p>How OpenClaw persists and retrieves memories &mdash; two-layer storage, hybrid search pipeline, embedding providers, memory flush, and configuration.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <div class="topic-card coming-soon">
+      <div class="topic-num">Coming Soon</div>
+      <h3>More topics</h3>
+      <p>Additional exploration topics will be added here &mdash; plugin system, agent lifecycle, tool policies, and more.</p>
+    </div>
+  </div>
+
+</main>
+
+<script src="js/main.js"></script>
+
+</body>
+</html>

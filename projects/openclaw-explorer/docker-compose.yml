@@ -1,0 +1,11 @@
+services:
+  openclaw-explorer:
+    build: .
+    container_name: openclaw-explorer
+    restart: always
+    environment:
+      - VIRTUAL_HOST=oc.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=oc.${S_DOMAIN}
+    expose:
+      - "80"

@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Prompt Assembly - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> System Prompt Explorer</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Sidebar toggle (mobile) -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <a class="back-link" href="../" style="padding:8px 16px;display:block">&larr; Back to Topics</a>
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-link" href="#overview">Architecture Overview</a>
+  <a class="nav-link" href="#entry-points">Entry Points</a>
+  <a class="nav-link" href="#call-chain">Call Chain</a>
+
+  <div class="nav-section">Prompt Structure</div>
+  <a class="nav-link" href="#sections">26 Sections</a>
+  <a class="nav-link" href="#prompt-modes">Prompt Modes</a>
+  <a class="nav-link" href="#project-context">Project Context Files</a>
+
+  <div class="nav-section">Variations</div>
+  <a class="nav-link" href="#channels">Channel Variations</a>
+  <a class="nav-link" href="#plugins">Plugin Hooks</a>
+  <a class="nav-link" href="#config">Config Knobs</a>
+</nav>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- Overview -->
+  <section id="overview">
+    <h2><span class="section-num">01</span>Architecture Overview</h2>
+    <p class="lead">
+      OpenClaw's system prompt is assembled through a layered pipeline. Three entry points
+      converge into a single core builder function — <code>buildAgentSystemPrompt()</code> —
+      which concatenates 26 ordered sections into the final prompt string.
+    </p>
+    <p>
+      After assembly, plugin hooks can modify the result before it reaches the LLM provider.
+      The prompt varies by mode (full / minimal / none) and by messaging channel.
+    </p>
+  </section>
+
+  <!-- Entry Points -->
+  <section id="entry-points">
+    <h2><span class="section-num">02</span>Entry Points</h2>
+    <p>Three distinct code paths lead into the prompt builder. Each serves a different interaction surface:</p>
+
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Entry Point</th>
+            <th>Source</th>
+            <th>Purpose</th>
+            <th>When It Fires</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Embedded Pi Runner</strong></td>
+            <td><code>attempt.ts:514</code></td>
+            <td>The primary path for all messaging channels. Handles real-time conversations from chat platforms where OpenClaw acts as a conversational agent.</td>
+            <td>A user sends a message via Discord, Telegram, Slack, Signal, or any other connected messaging channel.</td>
+          </tr>
+          <tr>
+            <td><strong>CLI Runner</strong></td>
+            <td><code>cli-runner/helpers.ts:86</code></td>
+            <td>Backend for external CLI tools that interact with OpenClaw programmatically. Used when developers or scripts invoke OpenClaw from the command line rather than through a chat platform.</td>
+            <td>A CLI client connects to the OpenClaw gateway and sends a request (e.g., <code>openclaw run "..."</code>).</td>
+          </tr>
+          <tr>
+            <td><strong>Commands System Prompt</strong></td>
+            <td><code>commands-system-prompt.ts:112</code></td>
+            <td>Serves the HTTP API and OpenAI-compatible endpoints. Enables programmatic access for third-party integrations, automated workflows, and applications that talk to OpenClaw over HTTP.</td>
+            <td>An HTTP request hits the Gateway API (e.g., <code>POST /v1/chat/completions</code>) or the OpenResponses endpoint.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="flow">
+      <div class="flow-row">
+        <div class="flow-box entry">
+          <div class="flow-title">Embedded Pi Runner</div>
+          <div class="flow-file">src/agents/pi-embedded-runner/run/attempt.ts:514</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Chat messages from Discord / Telegram / Slack / Signal</div>
+        </div>
+        <div class="flow-box entry">
+          <div class="flow-title">CLI Runner</div>
+          <div class="flow-file">src/agents/cli-runner/helpers.ts:86</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Command-line tool and script invocations</div>
+        </div>
+        <div class="flow-box entry">
+          <div class="flow-title">Commands System Prompt</div>
+          <div class="flow-file">src/auto-reply/reply/commands-system-prompt.ts:112</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Gateway HTTP API / OpenResponses endpoints</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660; &#9660; &#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">buildAgentSystemPrompt()</div>
+        <div class="flow-file">src/agents/system-prompt.ts:189-648</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Core assembly — 26 sections</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box hook">
+        <div class="flow-title">Plugin Hooks</div>
+        <div class="flow-file">resolvePromptBuildHookResult()</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">before_prompt_build / before_agent_start</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Final System Prompt</div>
+        <div class="flow-file">applySystemPromptOverrideToSession()</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Injected into Pi agent session</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Call Chain -->
+  <section id="call-chain">
+    <h2><span class="section-num">03</span>Call Chain</h2>
+    <p>The full assembly pipeline from inbound message to final prompt injection:</p>
+    <pre>
+Inbound Message
+  → runPreparedReply()                    <span style="color:var(--text-secondary)">[get-reply-run.ts:179]</span>
+    → buildInboundMetaSystemPrompt()      <span style="color:var(--text-secondary)">(metadata JSON)</span>
+    → buildGroupChatContext()             <span style="color:var(--text-secondary)">(group chat context)</span>
+    → buildGroupIntro()                   <span style="color:var(--text-secondary)">(activation mode / style)</span>
+  → runEmbeddedAttempt()                  <span style="color:var(--text-secondary)">[attempt.ts:294]</span>
+    → loadWorkspaceBootstrapFiles()       <span style="color:var(--text-secondary)">(Project Context files)</span>
+    → resolveSkillsPromptForRun()         <span style="color:var(--text-secondary)">(skill loading)</span>
+    → <span style="color:var(--accent)">buildAgentSystemPrompt()</span>            <span style="color:var(--text-secondary)">← core assembly</span>
+  → resolvePromptBuildHookResult()        <span style="color:var(--text-secondary)">(plugin hooks)</span>
+  → applySystemPromptOverrideToSession()  <span style="color:var(--text-secondary)">(inject into Pi agent)</span></pre>
+  </section>
+
+  <!-- 26 Sections -->
+  <section id="sections">
+    <h2><span class="section-num">04</span>The 26 Sections</h2>
+    <p>
+      <code>buildAgentSystemPrompt()</code> concatenates these sections in order.
+      Each section's inclusion depends on the prompt mode.
+    </p>
+    <p>
+      <span class="badge badge-full">full</span> = included in full mode &nbsp;
+      <span class="badge badge-minimal">min</span> = included in minimal mode &nbsp;
+      <span class="badge badge-none">none</span> = included in none mode
+    </p>
+
+    <div class="table-wrap">
+      <table class="section-table">
+        <thead>
+          <tr>
+            <th class="col-order">#</th>
+            <th class="col-name">Section</th>
+            <th>Description</th>
+            <th>Content Source</th>
+            <th class="col-example">Example (from real prompt)</th>
+            <th>Modes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-order">1</td>
+            <td><strong>Identity</strong></td>
+            <td>"You are a personal assistant running inside OpenClaw."</td>
+            <td>Hardcoded string literal</td>
+            <td class="col-example"><code>You are a personal assistant running inside OpenClaw.</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span> <span class="badge badge-none">none</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">2</td>
+            <td><strong>Tooling</strong></td>
+            <td>Lists all available tools with one-line descriptions, sorted by fixed priority</td>
+            <td>Hardcoded <code>coreToolSummaries</code> map merged with external tool summaries from config; filtered by policy</td>
+            <td class="col-example"><code>## Tooling
+Tool availability (filtered by policy):
+- read: Read file contents
+- write: Create or overwrite files
+- exec: Run shell commands
+- web_search: Search the web
+- gateway: Restart, apply config...
+TOOLS.md does not control tool availability.</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">3</td>
+            <td><strong>Tool Call Style</strong></td>
+            <td>When to explain tool calls vs. execute silently</td>
+            <td>Hardcoded guidance text</td>
+            <td class="col-example"><code>## Tool Call Style
+Default: do not narrate routine, low-risk tool calls (just call the tool).
+Narrate only when it helps: multi-step work, complex problems, sensitive actions.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">4</td>
+            <td><strong>Safety</strong></td>
+            <td>Anti-manipulation, human oversight instructions</td>
+            <td>Hardcoded <code>safetySection</code> array (inspired by Anthropic's constitution)</td>
+            <td class="col-example"><code>## Safety
+You have no independent goals: do not pursue self-preservation, replication...
+Prioritize safety and human oversight over completion.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">5</td>
+            <td><strong>CLI Quick Reference</strong></td>
+            <td>Gateway management subcommand reference</td>
+            <td>Hardcoded CLI subcommand list; only shown when <code>gateway</code> tool is available</td>
+            <td class="col-example"><code>## OpenClaw CLI Quick Reference
+OpenClaw is controlled via subcommands.
+- openclaw gateway status / start / stop / restart</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">6</td>
+            <td><strong>Skills</strong></td>
+            <td><code>&lt;available_skills&gt;</code> XML block loaded from workspace / managed / bundled sources</td>
+            <td>Built by <code>buildSkillsSection()</code> from <code>skillsPrompt</code> param; skills loaded from <code>SKILL.md</code> files in workspace/managed/bundled dirs</td>
+            <td class="col-example"><code>## Skills (mandatory)
+Before replying: scan &lt;available_skills&gt;...
+&lt;available_skills&gt;
+  &lt;skill name="git-workflow"&gt;
+    &lt;description&gt;Standard git workflow&lt;/description&gt;
+  &lt;/skill&gt;
+&lt;/available_skills&gt;</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">7</td>
+            <td><strong>Memory Recall</strong></td>
+            <td>Memory search and citation guidance (skipped in minimal mode)</td>
+            <td>Built by <code>buildMemorySection()</code>; content references <code>MEMORY.md</code> + <code>memory/*.md</code> files in workspace</td>
+            <td class="col-example"><code>## Memory Recall
+Before answering anything about prior work, decisions, dates: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">8</td>
+            <td><strong>Self-Update</strong></td>
+            <td><code>config.apply</code>, <code>update.run</code> operation guidance</td>
+            <td>Hardcoded instructions; only shown when <code>gateway</code> tool is available</td>
+            <td class="col-example"><code>## OpenClaw Self-Update
+Get Updates (self-update) is ONLY allowed when the user explicitly asks for it.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">9</td>
+            <td><strong>Model Aliases</strong></td>
+            <td>Model alias map from <code>agents.defaults.models</code></td>
+            <td>Loaded from <code>agents.defaults.models</code> config; passed as <code>modelAliasLines</code> param</td>
+            <td class="col-example"><code>## Model Aliases
+Prefer aliases when specifying model overrides.
+- fast → litellm/claude-sonnet-4-20250514
+- smart → litellm/claude-opus-4-0-20250514</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">10</td>
+            <td><strong>Date/Time Hint</strong></td>
+            <td>Use <code>session_status</code> to get current time</td>
+            <td>Hardcoded hint; only shown when <code>userTimezone</code> is set</td>
+            <td class="col-example"><code>If you need the current date, time, or day of week, run session_status.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">11</td>
+            <td><strong>Workspace</strong></td>
+            <td>Working directory path, sandbox vs regular path guidance</td>
+            <td>Constructed from <code>workspace.path</code> config + <code>sandboxInfo</code>; includes <code>workspaceNotes</code></td>
+            <td class="col-example"><code>## Workspace
+Your working directory is: /home/user/.openclaw/workspace
+Treat this directory as the single global workspace for file operations.</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">12</td>
+            <td><strong>Documentation</strong></td>
+            <td>Local docs path, mirror URL, community links</td>
+            <td>Built by <code>buildDocsSection()</code>; local path from <code>docsPath</code> config, URLs hardcoded</td>
+            <td class="col-example"><code>## Documentation
+OpenClaw docs: /home/user/.openclaw/docs
+Mirror: https://docs.openclaw.ai
+For OpenClaw behavior, commands, config: consult local docs first.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">13</td>
+            <td><strong>Sandbox</strong></td>
+            <td>Container directories, host mounts, browser info (only when sandbox enabled)</td>
+            <td>Constructed from <code>sandboxInfo</code> param (container workspace dir, host mount, browser URLs, elevated settings)</td>
+            <td class="col-example"><code>## Sandbox
+Container workspace: /workspace
+Host mount: /home/user/.openclaw/workspace
+Browser: http://localhost:6080
+(only shown when sandbox is enabled)</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">14</td>
+            <td><strong>Authorized Senders</strong></td>
+            <td>Owner phone number (raw or HMAC hashed)</td>
+            <td>Built by <code>buildUserIdentitySection()</code> from <code>owner.phone</code> config; display mode selects raw or SHA-256/HMAC hash</td>
+            <td class="col-example"><code>## Authorized Senders
+Authorized senders: a1b2c3d4e5f6. These senders are allowlisted; do not assume they are the owner.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">15</td>
+            <td><strong>Current Date &amp; Time</strong></td>
+            <td>User timezone</td>
+            <td>Built by <code>buildTimeSection()</code> from <code>userTimezone</code> param</td>
+            <td class="col-example"><code>## Current Date &amp; Time
+Time zone: Asia/Shanghai</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">16</td>
+            <td><strong>Workspace Files Header</strong></td>
+            <td>Project Context files injection header</td>
+            <td>Hardcoded header text introducing the injected workspace files</td>
+            <td class="col-example"><code>## Workspace Files (injected)
+These user-editable files are loaded by OpenClaw and included below in Project Context.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">17</td>
+            <td><strong>Reply Tags</strong></td>
+            <td><code>[[reply_to_current]]</code> and related tag usage</td>
+            <td>Built by <code>buildReplyTagsSection()</code>; hardcoded tag format documentation</td>
+            <td class="col-example"><code>## Reply Tags
+Reply tags must be the very first token:
+[[reply_to_current]] your reply.
+Prefer [[reply_to_current]]. Use [[reply_to:&lt;id&gt;]] only when an id was explicitly provided.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">18</td>
+            <td><strong>Messaging</strong></td>
+            <td>Cross-session messaging, sub-agent orchestration, channel options</td>
+            <td>Built by <code>buildMessagingSection()</code>; channel options from <code>listDeliverableMessageChannels()</code>, hints from <code>channel-tools.ts</code></td>
+            <td class="col-example"><code>## Messaging
+- Reply in current session → automatically routes to the source channel
+### message tool
+- Use message for proactive sends + channel actions</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">19</td>
+            <td><strong>Voice/TTS</strong></td>
+            <td>TTS configuration hints</td>
+            <td>Built by <code>buildVoiceSection()</code> from <code>ttsHint</code> param; only shown when TTS is configured</td>
+            <td class="col-example"><code>(Only shown when TTS is configured)
+Voice output enabled. Keep replies concise for natural speech.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">20</td>
+            <td><strong>Extra System Prompt</strong></td>
+            <td>Group chat context / sub-agent context (concatenated by upstream)</td>
+            <td>Passed as <code>extraSystemPrompt</code> param; built by upstream callers (<code>buildGroupChatContext()</code>, <code>buildGroupIntro()</code>)</td>
+            <td class="col-example"><code>## Group Chat Context
+Group: "Dev Team" (telegram)
+Members: Alice, Bob, Charlie
+Activation: mention-only</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">21</td>
+            <td><strong>Reactions</strong></td>
+            <td>Channel-specific reaction guidance (Telegram/Signal)</td>
+            <td>Constructed from <code>reactionGuidance</code> param; hardcoded minimal/extensive guidance text per channel</td>
+            <td class="col-example"><code>## Reactions
+Reactions are enabled for telegram in MINIMAL mode.
+React ONLY when truly relevant.
+Guideline: at most 1 reaction per 5-10 exchanges.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">22</td>
+            <td><strong>Reasoning Format</strong></td>
+            <td><code>&lt;think&gt;</code> / <code>&lt;final&gt;</code> tag format</td>
+            <td>Hardcoded tag format instructions; only shown when <code>reasoningTagHint</code> is enabled</td>
+            <td class="col-example"><code>## Reasoning Format
+ALL internal reasoning MUST be inside &lt;think&gt;...&lt;/think&gt;.
+Format every reply as &lt;think&gt;...&lt;/think&gt; then &lt;final&gt;...&lt;/final&gt;.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">23</td>
+            <td><strong>Project Context</strong></td>
+            <td>Largest section — injects AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, BOOTSTRAP.md, MEMORY.md</td>
+            <td>Loaded by <code>loadWorkspaceBootstrapFiles()</code> from workspace directory; reads user-created <code>.md</code> files from disk</td>
+            <td class="col-example"><code># Project Context
+The following project context files have been loaded:
+If SOUL.md is present, embody its persona.
+## AGENTS.md
+(contents of AGENTS.md...)
+## SOUL.md
+(contents of SOUL.md...)</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">24</td>
+            <td><strong>Silent Replies</strong></td>
+            <td><code>NO_REPLY</code> token usage guidance</td>
+            <td>Hardcoded instructions; token value is <code>NO_REPLY</code> (from <code>SILENT_REPLY_TOKEN</code> constant)</td>
+            <td class="col-example"><code>## Silent Replies
+When you have nothing to say, respond with ONLY: NO_REPLY
+It must be your ENTIRE message — nothing else.</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">25</td>
+            <td><strong>Heartbeats</strong></td>
+            <td>Heartbeat polling and <code>HEARTBEAT_OK</code> response format</td>
+            <td>Hardcoded response format; heartbeat prompt text from config (e.g., "Read HEARTBEAT.md if it exists...")</td>
+            <td class="col-example"><code>## Heartbeats
+Heartbeat prompt: Read HEARTBEAT.md if it exists (workspace context). Follow it strictly.
+If you receive a heartbeat poll, reply exactly: HEARTBEAT_OK</code></td>
+            <td><span class="badge badge-full">full</span></td>
+          </tr>
+          <tr>
+            <td class="col-order">26</td>
+            <td><strong>Runtime</strong></td>
+            <td>Agent ID, hostname, OS, arch, model, shell, channel, capabilities — dense one-liner</td>
+            <td>Built by <code>buildRuntimeLine()</code> from <code>runtimeInfo</code> param; values collected at session startup</td>
+            <td class="col-example"><code>Runtime: agent=main | host=ailearn | repo=/home/user/.openclaw/workspace | os=Linux 6.14.0 (x64) | model=litellm/claude-opus-4-0 | channel=discord | capabilities=none | thinking=off</code></td>
+            <td><span class="badge badge-full">full</span> <span class="badge badge-minimal">min</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Full Assembled Prompt</h3>
+    <p>Expand below for a bird's-eye view of what the final system prompt looks like in a real <code>developer</code> message.</p>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Full Assembled Prompt (annotated real example)
+      </div>
+      <div class="collapsible-body">
+        <p>This is a real system prompt sent to the LLM as the <code>developer</code> message. Each section boundary is annotated. The middle sections (Project Context) are truncated for brevity.</p>
+        <div class="prompt-annotated">
+<span class="section-label">#1 Identity</span>
+<div class="prompt-line">You are a personal assistant running inside OpenClaw.</div>
+
+<span class="section-label">#2 Tooling</span>
+<div class="prompt-line">## Tooling</div>
+<div class="prompt-line">Tool availability (filtered by policy):</div>
+<div class="prompt-line">Tool names are case-sensitive. Call tools exactly as listed.</div>
+<div class="prompt-line">- read: Read file contents</div>
+<div class="prompt-line">- write: Create or overwrite files</div>
+<div class="prompt-line">- edit: Make precise edits to files</div>
+<div class="prompt-line">- exec: Run shell commands (pty available for TTY-required CLIs)</div>
+<div class="prompt-line">- process: Manage background exec sessions</div>
+<div class="prompt-line">- web_search: Search the web (Brave API)</div>
+<div class="prompt-line">- web_fetch: Fetch and extract readable content from a URL</div>
+<div class="prompt-line">- browser: Control web browser</div>
+<div class="prompt-line">- cron: Manage cron jobs and wake events (...)</div>
+<div class="prompt-line">- message: Send messages and channel actions</div>
+<div class="prompt-line">- gateway: Restart, apply config, or run updates on the running OpenClaw process</div>
+<div class="prompt-line">- sessions_list: List other sessions (incl. sub-agents) with filters/last</div>
+<div class="prompt-line">- sessions_send: Send a message to another session/sub-agent</div>
+<div class="prompt-line">- sessions_spawn: Spawn a sub-agent session</div>
+<div class="prompt-line">- subagents: List, steer, or kill sub-agent runs for this requester session</div>
+<div class="prompt-line">- session_status: Show a /status-equivalent status card (...)</div>
+<div class="prompt-line">TOOLS.md does not control tool availability; it is user guidance for how to use external tools.</div>
+<div class="prompt-line">For long waits, avoid rapid poll loops: use exec with enough yieldMs or process(...).</div>
+<div class="prompt-line">If a task is more complex or takes longer, spawn a sub-agent.</div>
+
+<span class="section-label">#3 Tool Call Style</span>
+<div class="prompt-line">## Tool Call Style</div>
+<div class="prompt-line">Default: do not narrate routine, low-risk tool calls (just call the tool).</div>
+<div class="prompt-line">Narrate only when it helps: multi-step work, complex/challenging problems, ...</div>
+
+<span class="section-label">#4 Safety</span>
+<div class="prompt-line">## Safety</div>
+<div class="prompt-line">You have no independent goals: do not pursue self-preservation, replication, ...</div>
+<div class="prompt-line">Prioritize safety and human oversight over completion; ...</div>
+
+<span class="section-label">#5 CLI Quick Reference</span>
+<div class="prompt-line">## OpenClaw CLI Quick Reference</div>
+<div class="prompt-line">OpenClaw is controlled via subcommands. Do not invent commands.</div>
+<div class="prompt-line">- openclaw gateway status / start / stop / restart</div>
+
+<span class="section-label">#6 Skills</span>
+<div class="prompt-line">## Skills (mandatory)</div>
+<div class="prompt-line">Before replying: scan &lt;available_skills&gt; &lt;description&gt; entries. ...</div>
+<div class="prompt-line">&lt;available_skills&gt; ... &lt;/available_skills&gt;</div>
+
+<span class="section-label">#7 Memory Recall</span>
+<div class="prompt-line">## Memory Recall</div>
+<div class="prompt-line">Before answering anything about prior work, decisions, dates, ...</div>
+
+<span class="section-label">#8 Self-Update</span>
+<div class="prompt-line">## OpenClaw Self-Update</div>
+<div class="prompt-line">Get Updates (self-update) is ONLY allowed when the user explicitly asks for it. ...</div>
+
+<span class="section-label">#9 Model Aliases</span>
+<div class="prompt-line">## Model Aliases</div>
+<div class="prompt-line">Prefer aliases when specifying model overrides; full provider/model is also accepted.</div>
+<div class="prompt-line">- fast → litellm/claude-sonnet-4-20250514</div>
+
+<span class="section-label">#10 Date/Time Hint</span>
+<div class="prompt-line">If you need the current date, time, or day of week, run session_status.</div>
+
+<span class="section-label">#11 Workspace</span>
+<div class="prompt-line">## Workspace</div>
+<div class="prompt-line">Your working directory is: /home/user/.openclaw/workspace</div>
+<div class="prompt-line">Treat this directory as the single global workspace for file operations ...</div>
+
+<span class="section-label">#12 Documentation</span>
+<div class="prompt-line">## Documentation</div>
+<div class="prompt-line">OpenClaw docs: /home/user/.openclaw/docs</div>
+<div class="prompt-line">Mirror: https://docs.openclaw.ai ...</div>
+
+<span class="section-label">#14 Authorized Senders</span>
+<div class="prompt-line">## Authorized Senders</div>
+<div class="prompt-line">Authorized senders: a1b2c3d4e5f6. These senders are allowlisted; ...</div>
+
+<span class="section-label">#15 Current Date &amp; Time</span>
+<div class="prompt-line">## Current Date &amp; Time</div>
+<div class="prompt-line">Time zone: Asia/Shanghai</div>
+
+<span class="section-label">#16 Workspace Files Header</span>
+<div class="prompt-line">## Workspace Files (injected)</div>
+<div class="prompt-line">These user-editable files are loaded by OpenClaw and included below in Project Context.</div>
+
+<span class="section-label">#17 Reply Tags</span>
+<div class="prompt-line">## Reply Tags</div>
+<div class="prompt-line">To request a native reply/quote on supported surfaces, include one tag in your reply: ...</div>
+
+<span class="section-label">#18 Messaging</span>
+<div class="prompt-line">## Messaging</div>
+<div class="prompt-line">- Reply in current session → automatically routes to the source channel ...</div>
+<div class="prompt-line">### message tool</div>
+<div class="prompt-line">- Use `message` for proactive sends + channel actions ...</div>
+
+<span class="section-label">#23 Project Context</span>
+<div class="prompt-line"># Project Context</div>
+<div class="prompt-line">The following project context files have been loaded:</div>
+<div class="prompt-line">If SOUL.md is present, embody its persona and tone. ...</div>
+<div class="prompt-line">## AGENTS.md</div>
+<div class="prompt-line dim">  (contents of AGENTS.md from workspace...)</div>
+<div class="prompt-line">## SOUL.md</div>
+<div class="prompt-line dim">  (contents of SOUL.md from workspace...)</div>
+<div class="prompt-line">## TOOLS.md</div>
+<div class="prompt-line dim">  (contents of TOOLS.md from workspace...)</div>
+<div class="prompt-line">## IDENTITY.md</div>
+<div class="prompt-line dim">  (contents of IDENTITY.md from workspace...)</div>
+<div class="prompt-line">## USER.md</div>
+<div class="prompt-line dim">  (contents of USER.md from workspace...)</div>
+<div class="prompt-line">## HEARTBEAT.md</div>
+<div class="prompt-line dim">  (contents of HEARTBEAT.md from workspace...)</div>
+<div class="prompt-line">## MEMORY.md</div>
+<div class="prompt-line dim">  (contents of MEMORY.md from workspace...)</div>
+
+<span class="section-label">#24 Silent Replies</span>
+<div class="prompt-line">## Silent Replies</div>
+<div class="prompt-line">When you have nothing to say, respond with ONLY: NO_REPLY</div>
+
+<span class="section-label">#25 Heartbeats</span>
+<div class="prompt-line">## Heartbeats</div>
+<div class="prompt-line">Heartbeat prompt: Read HEARTBEAT.md if it exists (workspace context). ...</div>
+<div class="prompt-line">If you receive a heartbeat poll (...), reply exactly: HEARTBEAT_OK</div>
+
+<span class="section-label">#26 Runtime</span>
+<div class="prompt-line">## Runtime</div>
+<div class="prompt-line">Runtime: agent=main | host=ailearn | repo=/home/user/.openclaw/workspace | os=Linux 6.14.0-1017-azure (x64) | node=v22.22.0 | model=litellm/github-copilot/claude-opus-4.6-fast | default_model=litellm/github-copilot/claude-opus-4.6-fast | shell=bash | channel=discord | capabilities=none | thinking=off</div>
+<div class="prompt-line">Reasoning: off (hidden unless on/stream). Toggle /reasoning; /status shows Reasoning when enabled.</div>
+        </div>
+        <p>The entire prompt is sent as a single string in the <code>developer</code> role message. Sections 13 (Sandbox), 19 (Voice/TTS), 20 (Extra System Prompt), 21 (Reactions), and 22 (Reasoning Format) are absent in this example because the corresponding features are not enabled.</p>
+      </div>
+    </div>
+
+  </section>
+  <section id="prompt-modes">
+    <h2><span class="section-num">05</span>Prompt Modes</h2>
+    <p>The system prompt has three modes that control how much content is included:</p>
+
+    <div class="mode-cards">
+      <div class="mode-card">
+        <div class="mode-card-header full">full</div>
+        <div class="mode-card-body">
+          <p><strong>Scenarios:</strong></p>
+          <ul>
+            <li>Direct messages (DMs) from users on any channel</li>
+            <li>Group chat conversations where OpenClaw is mentioned or activated</li>
+            <li>Interactive sessions via the CLI runner</li>
+            <li>Any primary conversation where the agent needs full capabilities</li>
+          </ul>
+          <p style="margin-top:12px"><strong>Includes:</strong> All 26 sections — identity, tooling, safety, skills, memory, messaging, project context, runtime, and everything in between. This is the default mode.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header minimal">minimal</div>
+        <div class="mode-card-body">
+          <p><strong>Scenarios:</strong></p>
+          <ul>
+            <li>Sub-agents spawned by the main agent to handle subtasks</li>
+            <li>Cron/scheduled tasks that run in the background</li>
+            <li>Automated workflows where full context is unnecessary</li>
+            <li>Any delegated execution where token budget should be conserved</li>
+          </ul>
+          <p style="margin-top:12px"><strong>Includes:</strong> Only Identity, Tooling, Workspace, Extra System Prompt, Project Context (trimmed), and Runtime. No skills, memory recall, reactions, or voice hints.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header none">none</div>
+        <div class="mode-card-body">
+          <p><strong>Scenarios:</strong></p>
+          <ul>
+            <li>Caller supplies its own complete system prompt</li>
+            <li>Specialized agents with fully custom instructions</li>
+            <li>Testing or debugging with a blank-slate prompt</li>
+            <li>Plugin-driven flows where the hook replaces the entire prompt</li>
+          </ul>
+          <p style="margin-top:12px"><strong>Includes:</strong> Only the Identity line ("You are a personal assistant running inside OpenClaw."). No tools, workspace, project context, or runtime metadata. Minimal token usage.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Section inclusion matrix
+      </div>
+      <div class="collapsible-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Section</th>
+                <th>full</th>
+                <th>minimal</th>
+                <th>none</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>1</td><td>Identity</td><td>&#10003;</td><td>&#10003;</td><td>&#10003;</td></tr>
+              <tr><td>2</td><td>Tooling</td><td>&#10003;</td><td>&#10003;</td><td></td></tr>
+              <tr><td>3</td><td>Tool Call Style</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>4</td><td>Safety</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>5</td><td>CLI Quick Reference</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>6</td><td>Skills</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>7</td><td>Memory Recall</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>8</td><td>Self-Update</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>9</td><td>Model Aliases</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>10</td><td>Date/Time Hint</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>11</td><td>Workspace</td><td>&#10003;</td><td>&#10003;</td><td></td></tr>
+              <tr><td>12</td><td>Documentation</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>13</td><td>Sandbox</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>14</td><td>Authorized Senders</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>15</td><td>Current Date & Time</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>16</td><td>Workspace Files Header</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>17</td><td>Reply Tags</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>18</td><td>Messaging</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>19</td><td>Voice/TTS</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>20</td><td>Extra System Prompt</td><td>&#10003;</td><td>&#10003;</td><td></td></tr>
+              <tr><td>21</td><td>Reactions</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>22</td><td>Reasoning Format</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>23</td><td>Project Context</td><td>&#10003;</td><td>&#10003;</td><td></td></tr>
+              <tr><td>24</td><td>Silent Replies</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>25</td><td>Heartbeats</td><td>&#10003;</td><td></td><td></td></tr>
+              <tr><td>26</td><td>Runtime</td><td>&#10003;</td><td>&#10003;</td><td></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Project Context Files -->
+  <section id="project-context">
+    <h2><span class="section-num">06</span>Project Context Files</h2>
+    <p>
+      Section 23 (Project Context) is the largest section. It's loaded by
+      <code>loadWorkspaceBootstrapFiles()</code> from <code>src/agents/workspace.ts:441</code>
+      in the following order:
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>File</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td><code>AGENTS.md</code></td><td>Agent configuration and behavior definitions</td></tr>
+          <tr><td>2</td><td><code>SOUL.md</code></td><td>Personality, tone, and communication style</td></tr>
+          <tr><td>3</td><td><code>TOOLS.md</code></td><td>Custom tool documentation and usage patterns</td></tr>
+          <tr><td>4</td><td><code>IDENTITY.md</code></td><td>Identity and role definitions</td></tr>
+          <tr><td>5</td><td><code>USER.md</code></td><td>User preferences and context</td></tr>
+          <tr><td>6</td><td><code>HEARTBEAT.md</code></td><td>Heartbeat behavior configuration</td></tr>
+          <tr><td>7</td><td><code>BOOTSTRAP.md</code></td><td>Initial instructions and bootstrap logic</td></tr>
+          <tr><td>8</td><td><code>MEMORY.md</code></td><td>Persistent memory entries</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Size limits and truncation
+      </div>
+      <div class="collapsible-body">
+        <p>Each file has a default character limit of <strong>20,000 characters</strong>.
+          The total combined limit is <strong>150,000 characters</strong>.</p>
+        <p>When a file exceeds its limit, it is truncated using a <strong>70/20 split</strong>:</p>
+        <ul style="list-style:none;padding:0">
+          <li style="padding:4px 0;color:var(--text-secondary)"><span style="color:var(--green)">70%</span> from the head (beginning of the file)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><span style="color:var(--green)">20%</span> from the tail (end of the file)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><span style="color:var(--text-secondary)">10%</span> gap in the middle (omitted with a marker)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Channel Variations -->
+  <section id="channels">
+    <h2><span class="section-num">07</span>Channel Variations</h2>
+    <p>The prompt adapts based on the messaging channel. Key differences:</p>
+
+    <div class="channel-grid">
+      <div class="channel-card">
+        <h4>Telegram</h4>
+        <ul>
+          <li>Reaction guidance (minimal/extensive)</li>
+          <li>Inline button support</li>
+          <li>Channel-specific message hints</li>
+          <li>Group chat context with members</li>
+        </ul>
+      </div>
+      <div class="channel-card">
+        <h4>Discord</h4>
+        <ul>
+          <li>Channel-specific message hints</li>
+          <li>Inline button capabilities</li>
+          <li>Group chat with activation modes</li>
+          <li>Server/channel context</li>
+        </ul>
+      </div>
+      <div class="channel-card">
+        <h4>Signal</h4>
+        <ul>
+          <li>Reaction guidance (minimal/extensive)</li>
+          <li>Simpler message format</li>
+          <li>Group name and members</li>
+          <li>Privacy-focused context</li>
+        </ul>
+      </div>
+      <div class="channel-card">
+        <h4>Slack</h4>
+        <ul>
+          <li>Workspace context</li>
+          <li>Thread-based messaging</li>
+          <li>Channel-specific hints</li>
+          <li>Integration capabilities</li>
+        </ul>
+      </div>
+      <div class="channel-card">
+        <h4>CLI</h4>
+        <ul>
+          <li>External CLI backend path</li>
+          <li>No reaction support</li>
+          <li>No inline buttons</li>
+          <li>Direct command execution</li>
+        </ul>
+      </div>
+      <div class="channel-card">
+        <h4>HTTP API</h4>
+        <ul>
+          <li>Gateway HTTP / OpenResponses</li>
+          <li>Programmatic access</li>
+          <li>No channel-specific UI</li>
+          <li>Structured response format</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        How channels affect the prompt
+      </div>
+      <div class="collapsible-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Aspect</th>
+                <th>Where</th>
+                <th>Effect</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Runtime line</td>
+                <td>Section 26</td>
+                <td>Tags <code>channel=telegram</code>, <code>channel=discord</code>, etc.</td>
+              </tr>
+              <tr>
+                <td>Reaction guidance</td>
+                <td>Section 21</td>
+                <td>Telegram/Signal have minimal/extensive modes; others omit this section</td>
+              </tr>
+              <tr>
+                <td>Message tool hints</td>
+                <td>Section 18</td>
+                <td>Each channel has independent hints from <code>channel-tools.ts:67</code></td>
+              </tr>
+              <tr>
+                <td>Inline buttons</td>
+                <td>Section 18</td>
+                <td>Enabled/disabled per channel capability</td>
+              </tr>
+              <tr>
+                <td>Group chat context</td>
+                <td>Section 20</td>
+                <td>Group name, members, activation mode vary by channel</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Plugin Hooks -->
+  <section id="plugins">
+    <h2><span class="section-num">08</span>Plugin Hooks</h2>
+    <p>
+      After <code>buildAgentSystemPrompt()</code> assembles the prompt, two plugin hooks
+      can modify the final result. These are defined in <code>src/plugins/types.ts:354-367</code>.
+    </p>
+
+    <div class="collapsible open">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        before_prompt_build <span class="badge badge-full" style="margin-left:8px">Primary</span>
+      </div>
+      <div class="collapsible-body">
+        <p>The preferred hook. Runs first and can:</p>
+        <ul style="list-style:none;padding:0">
+          <li style="padding:4px 0;color:var(--text-secondary)">&#8226; Replace the entire system prompt with a custom one</li>
+          <li style="padding:4px 0;color:var(--text-secondary)">&#8226; Prepend content before the assembled prompt</li>
+          <li style="padding:4px 0;color:var(--text-secondary)">&#8226; Append content after the assembled prompt</li>
+          <li style="padding:4px 0;color:var(--text-secondary)">&#8226; Pass through unchanged (return null)</li>
+        </ul>
+        <p>Takes higher priority over <code>before_agent_start</code>.</p>
+      </div>
+    </div>
+
+    <div class="collapsible open">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        before_agent_start <span class="badge badge-minimal" style="margin-left:8px">Legacy</span>
+      </div>
+      <div class="collapsible-body">
+        <p>Legacy hook with the same capabilities as <code>before_prompt_build</code>.
+          If both hooks are present, <code>before_prompt_build</code> takes priority.</p>
+        <p>Kept for backward compatibility with existing plugins.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config Knobs -->
+  <section id="config">
+    <h2><span class="section-num">09</span>Configuration Knobs</h2>
+    <p>Key configuration paths that affect the system prompt assembly:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Config Path</th>
+            <th>Effect on Prompt</th>
+            <th>Default</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>agents.defaults.models</code></td>
+            <td>Populates Section 9 (Model Aliases) with available model mappings</td>
+            <td>Built-in model list</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.prompt_mode</code></td>
+            <td>Controls which sections are included: <code>full</code>, <code>minimal</code>, or <code>none</code></td>
+            <td><code>full</code></td>
+          </tr>
+          <tr>
+            <td><code>sandbox.enabled</code></td>
+            <td>Toggles Section 13 (Sandbox) — container dirs, host mounts, browser info</td>
+            <td><code>false</code></td>
+          </tr>
+          <tr>
+            <td><code>owner.phone</code></td>
+            <td>Sets Section 14 (Authorized Senders) — raw or HMAC hashed</td>
+            <td>&mdash;</td>
+          </tr>
+          <tr>
+            <td><code>tts.enabled</code></td>
+            <td>Toggles Section 19 (Voice/TTS) hints</td>
+            <td><code>false</code></td>
+          </tr>
+          <tr>
+            <td><code>workspace.path</code></td>
+            <td>Sets Section 11 (Workspace) directory path</td>
+            <td><code>~/.openclaw</code></td>
+          </tr>
+          <tr>
+            <td><code>workspace.bootstrap_files</code></td>
+            <td>Controls which Project Context files are loaded in Section 23</td>
+            <td>All 8 files</td>
+          </tr>
+          <tr>
+            <td><code>reactions.mode</code></td>
+            <td>Controls Section 21 reaction behavior: <code>minimal</code> or <code>extensive</code></td>
+            <td><code>minimal</code></td>
+          </tr>
+          <tr>
+            <td><code>reasoning.enabled</code></td>
+            <td>Toggles Section 22 (Reasoning Format) with <code>&lt;think&gt;</code>/<code>&lt;final&gt;</code> tags</td>
+            <td><code>false</code></td>
+          </tr>
+          <tr>
+            <td><code>heartbeat.enabled</code></td>
+            <td>Toggles Section 25 (Heartbeats) polling instructions</td>
+            <td><code>true</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <p>OpenClaw Explorer &mdash; System Prompt Assembly</p>
+    <p>Source analysis based on the OpenClaw codebase</p>
+  </footer>
+
+</main>
+
+<script src="../js/main.js"></script>
+
+</body>
+</html>

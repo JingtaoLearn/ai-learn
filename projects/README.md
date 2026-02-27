@@ -23,7 +23,10 @@ projects/
 
 ## Deployed Projects
 
-Currently no projects deployed. This directory is ready for self-developed applications.
+| Project | Subdomain | Description |
+|---------|-----------|-------------|
+| [todo-list](todo-list/) | `todo.${S_DOMAIN}` | Todo list app with SQLite backend |
+| [openclaw-explorer](openclaw-explorer/) | `oc.${S_DOMAIN}` | OpenClaw system prompt assembly flow visualizer |
 
 ## Adding a New Project
 
