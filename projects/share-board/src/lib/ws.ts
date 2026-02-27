@@ -1,4 +1,4 @@
-type MessageHandler = (data: { type: string; data: string }) => void;
+type MessageHandler = (data: Record<string, unknown>) => void;
 
 export class BoardWebSocket {
   private ws: WebSocket | null = null;
@@ -43,6 +43,20 @@ export class BoardWebSocket {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({ type: "laser", editToken, data }),
+      );
+    }
+  }
+
+  sendEditRequest() {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "edit-request" }));
+    }
+  }
+
+  sendEditResponse(editToken: string, viewerId: string, approved: boolean) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({ type: "edit-response", editToken, viewerId, approved }),
       );
     }
   }

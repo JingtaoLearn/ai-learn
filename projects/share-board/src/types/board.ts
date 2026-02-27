@@ -19,7 +19,7 @@ export interface AssetUploadResponse {
 }
 
 export interface WsMessage {
-  type: "snapshot" | "update";
+  type: "snapshot" | "update" | "edit-request" | "edit-response" | "edit-granted" | "edit-denied" | "edit-revoked";
   data: string;
 }
 
@@ -27,4 +27,25 @@ export interface WsUpdateMessage {
   type: "update";
   editToken: string;
   data: string;
+}
+
+export interface WsEditRequest {
+  type: "edit-request";
+  viewerId: string;
+}
+
+export interface WsEditResponse {
+  type: "edit-response";
+  viewerId: string;
+  approved: boolean;
+  editToken?: string;
+}
+
+export interface WsEditGranted {
+  type: "edit-granted";
+  editToken: string;
+}
+
+export interface WsEditDenied {
+  type: "edit-denied";
 }
