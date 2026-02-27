@@ -5,6 +5,7 @@ export function useLiveSync(
   boardId: string | null,
   onSnapshot: (data: string) => void,
   onUpdate: (data: string) => void,
+  onLaser?: (data: string) => void,
 ) {
   const wsRef = useRef<BoardWebSocket | null>(null);
 
@@ -16,6 +17,8 @@ export function useLiveSync(
         onSnapshot(msg.data);
       } else if (msg.type === "update") {
         onUpdate(msg.data);
+      } else if (msg.type === "laser" && onLaser) {
+        onLaser(msg.data);
       }
     });
 
@@ -23,7 +26,7 @@ export function useLiveSync(
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [boardId, onSnapshot, onUpdate]);
+  }, [boardId, onSnapshot, onUpdate, onLaser]);
 
   return wsRef;
 }

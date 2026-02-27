@@ -97,6 +97,32 @@ export function setupWebSocket(server: Server) {
             }
           }
         }
+
+        if (msg.type === "laser" && msg.editToken && msg.data) {
+          // Verify edit token for laser pointer
+          const valid = db
+            .prepare(
+              "SELECT id FROM boards WHERE id = ? AND edit_token = ?",
+            )
+            .get(boardId, msg.editToken) as { id: string } | undefined;
+
+          if (!valid) return;
+
+          room.creator = ws;
+          room.editToken = msg.editToken;
+
+          // Broadcast laser pointer data to all viewers
+          const payload = JSON.stringify({
+            type: "laser",
+            data: msg.data,
+          });
+
+          for (const viewer of room.viewers) {
+            if (viewer !== ws && viewer.readyState === WebSocket.OPEN) {
+              viewer.send(payload);
+            }
+          }
+        }
       } catch {
         // Ignore malformed messages
       }
