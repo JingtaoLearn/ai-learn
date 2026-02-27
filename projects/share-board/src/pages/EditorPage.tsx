@@ -19,6 +19,7 @@ export function EditorPage() {
     useBoard();
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [showShare, setShowShare] = useState(false);
+  const [laserActive, setLaserActive] = useState(false);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const wsRef = useRef<BoardWebSocket | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -27,8 +28,15 @@ export function EditorPage() {
     files: BinaryFiles;
   } | null>(null);
   const [initialDataReady, setInitialDataReady] = useState(!id);
+  const laserActiveRef = useRef(false);
+  const appStateRef = useRef<AppState | null>(null);
 
   const editToken = boardId ? getEditToken(boardId) : null;
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    laserActiveRef.current = laserActive;
+  }, [laserActive]);
 
   // Load existing board if editing
   useEffect(() => {
@@ -80,6 +88,44 @@ export function EditorPage() {
     };
   }, [boardId, editToken]);
 
+  // Laser pointer mouse tracking
+  useEffect(() => {
+    if (!laserActive) return;
+
+    const canvasEl = document.querySelector(".editor-canvas");
+    if (!canvasEl) return;
+
+    const handleMouseMove = (e: Event) => {
+      const mouseEvent = e as MouseEvent;
+      if (!wsRef.current || !appStateRef.current) return;
+
+      const currentBoardId = localStorage.getItem("share-board:currentId");
+      const currentToken = currentBoardId
+        ? localStorage.getItem(`board:${currentBoardId}:editToken`)
+        : null;
+      if (!currentToken) return;
+
+      const rect = (canvasEl as HTMLElement).getBoundingClientRect();
+      const screenX = mouseEvent.clientX - rect.left;
+      const screenY = mouseEvent.clientY - rect.top;
+
+      // Convert screen coordinates to scene coordinates using Excalidraw's appState
+      const { scrollX, scrollY, zoom } = appStateRef.current;
+      const sceneX = (screenX / zoom.value) - scrollX;
+      const sceneY = (screenY / zoom.value) - scrollY;
+
+      wsRef.current.sendLaser(
+        currentToken,
+        JSON.stringify({ x: sceneX, y: sceneY }),
+      );
+    };
+
+    canvasEl.addEventListener("mousemove", handleMouseMove);
+    return () => {
+      canvasEl.removeEventListener("mousemove", handleMouseMove);
+    };
+  }, [laserActive]);
+
   const getSnapshot = useCallback(() => {
     if (!apiRef.current) return null;
     return {
@@ -91,9 +137,12 @@ export function EditorPage() {
   const handleChange = useCallback(
     (
       _elements: readonly ExcalidrawElement[],
-      _appState: AppState,
+      appState: AppState,
       _files: BinaryFiles,
     ) => {
+      // Track appState for coordinate conversion
+      appStateRef.current = appState;
+
       const currentBoardId = localStorage.getItem("share-board:currentId");
       const currentToken = currentBoardId
         ? localStorage.getItem(`board:${currentBoardId}:editToken`)
@@ -141,10 +190,19 @@ export function EditorPage() {
     }
   }, [getSnapshot, saveBoard, id, navigate]);
 
+  const handleLaserToggle = useCallback(() => {
+    setLaserActive((prev) => !prev);
+  }, []);
+
   return (
     <div className="editor-page">
-      <Toolbar onShare={handleShare} saving={loading} />
-      <div className="editor-canvas">
+      <Toolbar
+        onShare={handleShare}
+        saving={loading}
+        laserActive={laserActive}
+        onLaserToggle={handleLaserToggle}
+      />
+      <div className={`editor-canvas${laserActive ? " laser-cursor" : ""}`}>
         {initialDataReady && (
           <Excalidraw
             excalidrawAPI={(api) => {
