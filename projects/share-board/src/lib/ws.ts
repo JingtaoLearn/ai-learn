@@ -5,6 +5,7 @@ export class BoardWebSocket {
   private onMessage: MessageHandler;
   private boardId: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private viewerId: string | null = null;
 
   constructor(boardId: string, onMessage: MessageHandler) {
     this.boardId = boardId;
@@ -14,12 +15,18 @@ export class BoardWebSocket {
 
   private connect() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws?boardId=${this.boardId}`;
+    let url = `${protocol}//${window.location.host}/ws?boardId=${this.boardId}`;
+    if (this.viewerId) {
+      url += `&viewerId=${this.viewerId}`;
+    }
     this.ws = new WebSocket(url);
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type === "viewer-id" && msg.viewerId) {
+          this.viewerId = msg.viewerId;
+        }
         this.onMessage(msg);
       } catch {
         // Ignore malformed messages
