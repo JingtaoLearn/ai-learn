@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Install Azure CLI and configure Managed Identity login.
+# Install Azure CLI for managing Azure resources.
 #
-# Prerequisites:
-#   - VM must have System-assigned Managed Identity enabled in Azure Portal
-#   - The identity must be granted appropriate role on target resource groups
+# Supports two authentication methods:
+#   1. Managed Identity — for resources in the same tenant as this VM
+#   2. Service Principal — for cross-tenant access (current setup)
 #
 # Usage:
 #   sudo bash 05-install-azure-cli.sh
 #
-# Post-install (as regular user):
-#   az login --identity
+# Post-install (Service Principal login):
+#   See vm/docs/azure-cross-tenant-auth.md for setup details.
 
 source "$(dirname "$0")/lib/common.sh"
 require_root
@@ -31,6 +31,4 @@ set_flag "${FLAG_NAME}"
 echo "Done. Azure CLI installed."
 echo ""
 echo "Next steps:"
-echo "  1. Enable System-assigned Managed Identity on this VM (Azure Portal)"
-echo "  2. Assign roles to the identity on target resource groups"
-echo "  3. Run: az login --identity"
+echo "  See vm/docs/azure-cross-tenant-auth.md for authentication setup."

@@ -19,6 +19,11 @@ Services deployed directly on the VM host without Docker containerization. Inclu
 
 **See**: [host-services/README.md](host-services/) for available services and installation guides.
 
+### [`docs/`](docs/)
+Infrastructure documentation covering authentication, networking, and operational guides.
+
+- [Azure Cross-Tenant Auth](docs/azure-cross-tenant-auth.md) — Service Principal setup for cross-tenant resource access
+
 ## Environment Variables
 
 All VM components rely on these environment variables (configured via `scripts/03-set-env.sh`):
