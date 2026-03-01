@@ -173,26 +173,29 @@ export function ViewerPage() {
       // Track appState for coordinate conversion
       appStateRef.current = appState;
 
-      if (!editToken || !id || !wsRef.current) return;
+      const currentToken = editTokenRef.current;
+      if (!currentToken || !id || !wsRef.current) return;
 
       const snapshot = getSnapshot();
       if (snapshot) {
-        wsRef.current.sendUpdate(editToken, JSON.stringify(snapshot));
+        wsRef.current.sendUpdate(currentToken, JSON.stringify(snapshot));
       }
 
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(async () => {
+        const latestToken = editTokenRef.current;
+        if (!latestToken) return;
         const snap = getSnapshot();
         if (snap) {
           try {
-            await updateBoard(id, editToken, snap);
+            await updateBoard(id, latestToken, snap);
           } catch {
             // Ignore save errors in viewer edit mode
           }
         }
       }, 2000);
     },
-    [editToken, id, getSnapshot, wsRef],
+    [id, getSnapshot, wsRef],
   );
 
   // Convert scene coordinates to screen coordinates for rendering
@@ -223,7 +226,27 @@ export function ViewerPage() {
     );
   }
 
-  const isEditing = editStatus === "granted" && editToken;
+  const isEditing = editStatus === "granted" && !!editToken;
+
+  // Force remount Excalidraw when switching between view/edit mode
+  // Excalidraw doesn't reliably support toggling viewModeEnabled dynamically
+  const [excalidrawKey, setExcalidrawKey] = useState(0);
+  const prevIsEditingRef = useRef(false);
+  useEffect(() => {
+    if (isEditing && !prevIsEditingRef.current) {
+      // Switching from view → edit: save current elements, remount
+      if (apiRef.current) {
+        const currentElements = apiRef.current.getSceneElements();
+        const currentFiles = apiRef.current.getFiles();
+        setInitialData({
+          elements: currentElements as ExcalidrawElement[],
+          files: currentFiles,
+        });
+      }
+      setExcalidrawKey((k) => k + 1);
+    }
+    prevIsEditingRef.current = isEditing;
+  }, [isEditing]);
 
   return (
     <div className="viewer-page">
@@ -270,6 +293,7 @@ export function ViewerPage() {
       <div className="viewer-canvas">
         {initialData && (
           <Excalidraw
+            key={excalidrawKey}
             excalidrawAPI={(api) => {
               apiRef.current = api;
             }}
