@@ -96,6 +96,8 @@ export function ViewerPage() {
   }, []);
 
   const handleUpdate = useCallback((data: string) => {
+    // Skip incoming updates when we have edit access — our local state takes precedence
+    if (editTokenRef.current) return;
     if (!apiRef.current) return;
     try {
       const snapshot = JSON.parse(data);
