@@ -11,6 +11,7 @@ Numbered shell scripts for server provisioning. Run them in order on a fresh Ubu
 | `02-install-docker.sh` | Install Docker CE and Docker Compose V2 plugin | Yes |
 | `03-set-env.sh` | Set server environment variables in `/etc/environment` | Yes |
 | `04-install-python-tools.sh` | Install Python tools (router-maestro) using pipx | No |
+| `05-install-azure-cli.sh` | Install Azure CLI for managing Azure resources via Managed Identity | Yes |
 
 ## Usage
 
@@ -36,6 +37,10 @@ bash 04-install-python-tools.sh
 **User-level (04-install-python-tools.sh):**
 - `router-maestro` - Multi-model LLM router with OpenAI-compatible API
 
+**Azure CLI (05-install-azure-cli.sh):**
+- `az` - Azure CLI for resource management
+- Uses VM Managed Identity for authentication (no secrets needed)
+
 ## Verification
 
 ```bash
@@ -44,6 +49,7 @@ gh --version
 python3 -m pip --version
 pipx --version
 router-maestro --version
+az --version
 ```
 
 ## Shared Library
