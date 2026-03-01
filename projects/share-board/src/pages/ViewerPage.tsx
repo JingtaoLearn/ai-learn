@@ -71,7 +71,16 @@ export function ViewerPage() {
       });
   }, [id]);
 
+  const editTokenRef = useRef<string | null>(null);
+
+  // Keep ref in sync with state so callbacks can access the latest value
+  useEffect(() => {
+    editTokenRef.current = editToken;
+  }, [editToken]);
+
   const handleSnapshot = useCallback((data: string) => {
+    // Skip snapshot when in edit mode — local state takes precedence
+    if (editTokenRef.current) return;
     if (!apiRef.current) return;
     try {
       const snapshot = JSON.parse(data);
