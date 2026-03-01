@@ -6,7 +6,7 @@ This VM (ailearn) accesses Azure resources across different Azure AD tenants usi
 
 ```
 ailearn VM                          Target Tenant
-(tenant: 851207685qq)               (tenant: lingfeng009hotmail)
+(Tenant A)                          (Tenant B)
                                     
   az login                          App Registration
   --service-principal  ──────────>  "ailearn-vm-access"
