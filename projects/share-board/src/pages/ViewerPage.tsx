@@ -33,6 +33,7 @@ export function ViewerPage() {
   const [laserPoints, setLaserPoints] = useState<LaserPoint[]>([]);
   const appStateRef = useRef<AppState | null>(null);
   const laserCleanupRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const applyingRemoteRef = useRef(false);
 
   // Cleanup old laser points every 50ms
   useEffect(() => {
@@ -96,19 +97,21 @@ export function ViewerPage() {
   }, []);
 
   const handleUpdate = useCallback((data: string) => {
-    // Skip incoming updates when we have edit access — our local state takes precedence
-    if (editTokenRef.current) return;
     if (!apiRef.current) return;
     try {
       const snapshot = JSON.parse(data);
+      applyingRemoteRef.current = true;
       apiRef.current.updateScene({
         elements: snapshot.elements || [],
       });
       if (snapshot.files) {
         apiRef.current.addFiles(Object.values(snapshot.files) as any[]);
       }
+      requestAnimationFrame(() => {
+        applyingRemoteRef.current = false;
+      });
     } catch {
-      // Ignore malformed updates
+      applyingRemoteRef.current = false;
     }
   }, []);
 
@@ -174,6 +177,9 @@ export function ViewerPage() {
     ) => {
       // Track appState for coordinate conversion
       appStateRef.current = appState;
+
+      // Skip sending updates back when applying a remote update
+      if (applyingRemoteRef.current) return;
 
       const currentToken = editTokenRef.current;
       if (!currentToken || !id || !wsRef.current) return;
