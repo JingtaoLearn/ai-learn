@@ -37,6 +37,7 @@ export function EditorPage() {
   const [editRequests, setEditRequests] = useState<PendingEditRequest[]>([]);
   const laserActiveRef = useRef(false);
   const appStateRef = useRef<AppState | null>(null);
+  const applyingRemoteRef = useRef(false);
 
   const editToken = boardId ? getEditToken(boardId) : null;
 
@@ -93,6 +94,25 @@ export function EditorPage() {
           if (prev.some((r) => r.viewerId === viewerId)) return prev;
           return [...prev, { viewerId, timestamp: Date.now() }];
         });
+      } else if (type === "update") {
+        // Apply real-time updates from granted editors
+        if (!apiRef.current) return;
+        try {
+          const snapshot = JSON.parse(msg.data as string);
+          applyingRemoteRef.current = true;
+          apiRef.current.updateScene({
+            elements: snapshot.elements || [],
+          });
+          if (snapshot.files) {
+            apiRef.current.addFiles(Object.values(snapshot.files) as any[]);
+          }
+          // Reset flag after a tick to let onChange fire and be suppressed
+          requestAnimationFrame(() => {
+            applyingRemoteRef.current = false;
+          });
+        } catch {
+          applyingRemoteRef.current = false;
+        }
       }
     });
 
@@ -176,6 +196,9 @@ export function EditorPage() {
     ) => {
       // Track appState for coordinate conversion
       appStateRef.current = appState;
+
+      // Skip sending updates back when we're applying a remote update
+      if (applyingRemoteRef.current) return;
 
       const currentBoardId = localStorage.getItem("share-board:currentId");
       const currentToken = currentBoardId

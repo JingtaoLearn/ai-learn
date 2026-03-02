@@ -6,6 +6,7 @@ import db from "../db/index.js";
 
 interface BoardRoom {
   creator: WebSocket | null;
+  creatorViewerId: string | null;
   viewers: Map<string, WebSocket>;
   editToken: string | null;
   grantedEditors: Set<string>;
@@ -18,6 +19,7 @@ function getOrCreateRoom(boardId: string): BoardRoom {
   if (!room) {
     room = {
       creator: null,
+      creatorViewerId: null,
       viewers: new Map(),
       editToken: null,
       grantedEditors: new Set(),
@@ -69,12 +71,30 @@ export function setupWebSocket(server: Server) {
     }
 
     const room = getOrCreateRoom(boardId);
-    const viewerId = nanoid(12);
+    const existingViewerId = url.searchParams.get("viewerId");
+    const viewerId = existingViewerId && room.grantedEditors.has(existingViewerId)
+      ? existingViewerId
+      : nanoid(12);
+
+    // Clean up stale WebSocket if reconnecting with same viewerId
+    if (existingViewerId && existingViewerId === viewerId) {
+      const oldWs = room.viewers.get(viewerId);
+      if (oldWs && oldWs !== ws && oldWs.readyState !== WebSocket.CLOSED) {
+        oldWs.close();
+      }
+    }
+
     room.viewers.set(viewerId, ws);
+    const isReconnectedEditor = room.grantedEditors.has(viewerId);
 
     // Send current snapshot and viewer ID to newly connected client
-    ws.send(JSON.stringify({ type: "snapshot", data: board.snapshot }));
+    ws.send(JSON.stringify({ type: "snapshot", data: board.snapshot, isReconnect: isReconnectedEditor }));
     ws.send(JSON.stringify({ type: "viewer-id", viewerId }));
+
+    // Re-grant edit access if this was a granted editor reconnecting
+    if (isReconnectedEditor && room.editToken) {
+      ws.send(JSON.stringify({ type: "edit-granted", editToken: room.editToken }));
+    }
 
     ws.on("message", (raw) => {
       try {
@@ -90,8 +110,12 @@ export function setupWebSocket(server: Server) {
 
           if (!valid) return;
 
-          // Mark this ws as creator
-          room.creator = ws;
+          // Only set creator if this is the original owner (not a granted editor)
+          const isGrantedEditor = room.grantedEditors.has(viewerId);
+          if (!isGrantedEditor) {
+            room.creator = ws;
+            room.creatorViewerId = viewerId;
+          }
           room.editToken = msg.editToken;
 
           // Broadcast to all other viewers
@@ -118,7 +142,12 @@ export function setupWebSocket(server: Server) {
 
           if (!valid) return;
 
-          room.creator = ws;
+          // Only set creator if this is the original owner (not a granted editor)
+          const isGrantedEditor = room.grantedEditors.has(viewerId);
+          if (!isGrantedEditor) {
+            room.creator = ws;
+            room.creatorViewerId = viewerId;
+          }
           room.editToken = msg.editToken;
 
           // Broadcast laser pointer data to all viewers
@@ -181,19 +210,14 @@ export function setupWebSocket(server: Server) {
     });
 
     ws.on("close", () => {
-      room.grantedEditors.delete(viewerId);
       room.viewers.delete(viewerId);
-      if (room.creator === ws) {
+      room.grantedEditors.delete(viewerId);
+
+      if (room.creatorViewerId === viewerId) {
+        // Owner disconnected — clear creator reference but keep granted editors
+        // so they can continue editing. Owner reconnecting will restore the reference.
         room.creator = null;
-        room.editToken = null;
-        // Revoke all granted editors when owner disconnects
-        for (const editorId of room.grantedEditors) {
-          const editorWs = room.viewers.get(editorId);
-          if (editorWs && editorWs.readyState === WebSocket.OPEN) {
-            editorWs.send(JSON.stringify({ type: "edit-revoked" }));
-          }
-        }
-        room.grantedEditors.clear();
+        room.creatorViewerId = null;
       }
       cleanupRoom(boardId);
     });
