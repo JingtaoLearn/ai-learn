@@ -93,6 +93,20 @@ export function EditorPage() {
           if (prev.some((r) => r.viewerId === viewerId)) return prev;
           return [...prev, { viewerId, timestamp: Date.now() }];
         });
+      } else if (type === "update") {
+        // Apply real-time updates from granted editors
+        if (!apiRef.current) return;
+        try {
+          const snapshot = JSON.parse(msg.data as string);
+          apiRef.current.updateScene({
+            elements: snapshot.elements || [],
+          });
+          if (snapshot.files) {
+            apiRef.current.addFiles(Object.values(snapshot.files) as any[]);
+          }
+        } catch {
+          // Ignore malformed updates
+        }
       }
     });
 
