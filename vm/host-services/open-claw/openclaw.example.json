@@ -21,6 +21,11 @@
   },
   "models": {
     "providers": {
+      "openai": {
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "baseUrl": "https://litellm.us.jingtao.fun/v1",
+        "models": []
+      },
       "litellm": {
         "baseUrl": "https://litellm.us.jingtao.fun/",
         "apiKey": "${S_LITELLM_API_KEY}",
@@ -85,7 +90,7 @@
         "mode": "safeguard"
       },
       "heartbeat": {
-        "every": "5m",
+        "every": "30m",
         "activeHours": {
           "start": "08:00",
           "end": "24:00",
@@ -113,16 +118,51 @@
       "web_fetch",
       "web_search",
       "memory",
-      "cron"
+      "cron",
+      "tts"
     ],
     "deny": [],
     "exec": {
       "security": "full",
       "ask": "off"
+    },
+    "media": {
+      "audio": {
+        "enabled": true,
+        "models": [
+          {
+            "type": "provider",
+            "provider": "openai",
+            "model": "gpt-4o-transcribe",
+            "baseUrl": "https://litellm.us.jingtao.fun/v1",
+            "headers": {
+              "authorization": "Bearer ${S_LITELLM_API_KEY}"
+            },
+            "timeoutSeconds": 60
+          }
+        ]
+      }
     }
   },
   "messages": {
-    "ackReactionScope": "group-mentions"
+    "ackReactionScope": "group-mentions",
+    "tts": {
+      "auto": "tagged",
+      "mode": "final",
+      "provider": "openai",
+      "maxTextLength": 4000,
+      "timeoutMs": 30000,
+      "openai": {
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy"
+      },
+      "modelOverrides": {
+        "enabled": true,
+        "allowText": true,
+        "allowVoice": true
+      }
+    }
   },
   "commands": {
     "native": "auto",
@@ -136,7 +176,12 @@
   "hooks": {
     "enabled": true,
     "path": "/hooks",
-    "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    "token": "${OPENCLAW_GATEWAY_TOKEN}",
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": [
+      "hook:",
+      "cc-task:"
+    ]
   },
   "channels": {
     "discord": {

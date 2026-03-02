@@ -40,6 +40,39 @@ All available tools are enabled in the configuration:
 | `web_search` | Web search capability |
 | `memory` | Memory and embedding search |
 | `cron` | Scheduled task execution |
+| `tts` | Text-to-speech synthesis |
+
+### Media Settings
+
+```json
+{
+  "media": {
+    "audio": {
+      "enabled": true,
+      "models": [
+        {
+          "type": "provider",
+          "provider": "openai",
+          "model": "gpt-4o-transcribe",
+          "baseUrl": "https://litellm.us.jingtao.fun/v1",
+          "headers": {
+            "authorization": "Bearer ${S_LITELLM_API_KEY}"
+          },
+          "timeoutSeconds": 60
+        }
+      ]
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `media.audio.enabled` | Enable/disable audio transcription |
+| `media.audio.models` | List of transcription model configurations |
+| `model.provider` | Provider to use for transcription (e.g., `"openai"`) |
+| `model.model` | Transcription model name (e.g., `"gpt-4o-transcribe"`) |
+| `model.timeoutSeconds` | Timeout for transcription requests |
 
 ### Security Settings
 
@@ -135,7 +168,12 @@ openssl rand -base64 24
   "hooks": {
     "enabled": true,
     "path": "/hooks",
-    "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    "token": "${OPENCLAW_GATEWAY_TOKEN}",
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": [
+      "hook:",
+      "cc-task:"
+    ]
   }
 }
 ```
@@ -145,6 +183,8 @@ openssl rand -base64 24
 | `enabled` | Enable/disable webhook endpoint |
 | `path` | URL path for the hooks endpoint |
 | `token` | Authentication token for incoming webhooks |
+| `allowRequestSessionKey` | Allow incoming hooks to specify a session key for routing |
+| `allowedSessionKeyPrefixes` | List of allowed session key prefixes (e.g., `"hook:"`, `"cc-task:"`) |
 
 ## Gateway Settings
 
@@ -204,7 +244,7 @@ openssl rand -base64 24
         "mode": "safeguard"
       },
       "heartbeat": {
-        "every": "5m",
+        "every": "30m",
         "activeHours": {
           "start": "08:00",
           "end": "24:00",
@@ -228,7 +268,7 @@ openssl rand -base64 24
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
-| `heartbeat.every` | Heartbeat polling interval (e.g., `"5m"`, `"30m"`) |
+| `heartbeat.every` | Heartbeat polling interval (e.g., `"30m"`) |
 | `heartbeat.activeHours` | Time window for heartbeats (`start`/`end` in HH:MM, with `timezone`) |
 | `heartbeat.target` | Channel to deliver heartbeat responses (e.g., `"discord"`) |
 | `heartbeat.to` | Specific channel/user target (e.g., `"channel:<id>"`) |
@@ -302,6 +342,47 @@ openssl rand -base64 24
 | `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (default for guild) |
 | `guilds.<id>.users` | Allowed user IDs in the guild |
 | `guilds.<id>.channels` | Per-channel overrides (e.g., require mention in specific channels) |
+
+## Messages
+
+```json
+{
+  "messages": {
+    "ackReactionScope": "group-mentions",
+    "tts": {
+      "auto": "tagged",
+      "mode": "final",
+      "provider": "openai",
+      "maxTextLength": 4000,
+      "timeoutMs": 30000,
+      "openai": {
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy"
+      },
+      "modelOverrides": {
+        "enabled": true,
+        "allowText": true,
+        "allowVoice": true
+      }
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `ackReactionScope` | When to add ack reactions (`"group-mentions"` — only in groups when mentioned) |
+| `tts.auto` | TTS trigger mode (`"tagged"` — only when `[[tts:...]]` tags are present) |
+| `tts.mode` | TTS processing mode (`"final"` — generate audio from final response) |
+| `tts.provider` | TTS provider (`"openai"`) |
+| `tts.maxTextLength` | Maximum text length for TTS (4000 chars) |
+| `tts.timeoutMs` | TTS generation timeout in milliseconds |
+| `tts.openai.model` | OpenAI TTS model (`"gpt-4o-mini-tts"`) |
+| `tts.openai.voice` | Default voice (`"alloy"`, options: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer) |
+| `tts.modelOverrides.enabled` | Allow model override tags in messages |
+| `tts.modelOverrides.allowText` | Allow text content override via tags |
+| `tts.modelOverrides.allowVoice` | Allow voice selection override via tags |
 
 ## Commands
 
