@@ -1,0 +1,13 @@
+{
+  "name": "auth-demo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "express-session": "^1.18.0",
+    "jsonwebtoken": "^9.0.0"
+  }
+}

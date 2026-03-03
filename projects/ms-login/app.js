@@ -24,9 +24,33 @@ const REDIRECT_URI =
   "https://ms-login.ai.jingtao.fun/auth/callback";
 const SCOPES = ["openid", "profile", "email", "User.Read"];
 const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET;
-const NOTE_APP_CALLBACK_URL =
+const DEFAULT_CALLBACK_URL =
   process.env.NOTE_APP_CALLBACK_URL ||
   "https://note.ai.jingtao.fun/auth/callback";
+
+// Allowed callback URL patterns (whitelist)
+const ALLOWED_CALLBACKS = (process.env.ALLOWED_CALLBACKS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+// Always allow the default
+if (DEFAULT_CALLBACK_URL) ALLOWED_CALLBACKS.push(DEFAULT_CALLBACK_URL);
+
+function isAllowedCallback(url) {
+  try {
+    const parsed = new URL(url);
+    return ALLOWED_CALLBACKS.some((allowed) => {
+      try {
+        const a = new URL(allowed);
+        return parsed.origin === a.origin && parsed.pathname === a.pathname;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
 
 const cca = new msal.ConfidentialClientApplication(msalConfig);
 
@@ -59,6 +83,14 @@ app.get("/", (req, res) => {
 // Initiate Microsoft OAuth
 app.get("/auth/login", async (req, res) => {
   try {
+    // Store the caller's callback URL in session
+    const redirect = req.query.redirect;
+    if (redirect && isAllowedCallback(redirect)) {
+      req.session.callbackUrl = redirect;
+    } else {
+      req.session.callbackUrl = DEFAULT_CALLBACK_URL;
+    }
+
     const authCodeUrlParameters = {
       scopes: SCOPES,
       redirectUri: REDIRECT_URI,
@@ -114,7 +146,7 @@ app.get("/auth/callback", async (req, res) => {
       { expiresIn: "30s" }
     );
 
-    const callbackUrl = NOTE_APP_CALLBACK_URL;
+    const callbackUrl = req.session.callbackUrl || DEFAULT_CALLBACK_URL;
     res.send(`<!DOCTYPE html>
 <html><body>
 <form id="f" method="POST" action="${callbackUrl}">
