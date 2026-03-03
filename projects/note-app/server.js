@@ -3,10 +3,14 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
+const jwt = require('jsonwebtoken');
+const session = require('express-session');
 
 const app = express();
 const PORT = process.env.PORT || 80;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'notes.db');
+const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET;
+const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login-jingtao.azurewebsites.net/auth/login';
 
 // Ensure data directory exists
 const fs = require('fs');
@@ -74,7 +78,77 @@ db.exec(`
   );
 `);
 
+// Trust proxy (behind nginx-proxy)
+app.set('trust proxy', 1);
+
+// Session middleware
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'note-app-session-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 1000 * 60 * 60 * 24, // 24 hours
+  },
+}));
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Auth routes (public, no auth required)
+app.post('/auth/callback', (req, res) => {
+  const { token } = req.body;
+  if (!token) {
+    return res.status(400).send('Missing token');
+  }
+
+  try {
+    const payload = jwt.verify(token, AUTH_SHARED_SECRET);
+    req.session.user = {
+      email: payload.email,
+      displayName: payload.displayName,
+    };
+    res.redirect('/');
+  } catch (err) {
+    console.error('JWT verification failed:', err.message);
+    return res.status(401).send('Invalid or expired token');
+  }
+});
+
+app.get('/auth/status', (req, res) => {
+  if (req.session.user) {
+    res.json({
+      authenticated: true,
+      email: req.session.user.email,
+      displayName: req.session.user.displayName,
+    });
+  } else {
+    res.json({ authenticated: false });
+  }
+});
+
+app.get('/auth/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/');
+  });
+});
+
+// Auth middleware — protects all routes below
+app.use((req, res, next) => {
+  if (req.session.user) {
+    return next();
+  }
+
+  // API routes return 401 JSON
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // Page routes redirect to login
+  res.redirect(LOGIN_URL);
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Serve uploaded files

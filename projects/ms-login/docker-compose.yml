@@ -1,0 +1,14 @@
+services:
+  ms-login:
+    build: .
+    container_name: ms-login-app
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - VIRTUAL_HOST=ms-login.${S_DOMAIN}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=ms-login.${S_DOMAIN}
+      - NODE_ENV=production
+    expose:
+      - "3000"

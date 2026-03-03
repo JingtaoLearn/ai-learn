@@ -3,11 +3,14 @@ services:
     build: .
     container_name: note-app
     restart: always
+    env_file:
+      - .env
     environment:
       - VIRTUAL_HOST=note.${S_DOMAIN}
       - VIRTUAL_PORT=80
       - LETSENCRYPT_HOST=note.${S_DOMAIN}
       - DB_PATH=/data/notes.db
+      - NODE_ENV=production
     volumes:
       - note-data:/data
     expose:

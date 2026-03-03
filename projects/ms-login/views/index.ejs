@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in with Microsoft</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 min-h-screen flex items-center justify-center">
+  <div class="text-center">
+    <div class="bg-white/10 backdrop-blur-lg rounded-2xl p-10 shadow-2xl border border-white/20 max-w-md mx-auto">
+      <div class="mb-8">
+        <div class="w-16 h-16 bg-blue-500 rounded-xl mx-auto mb-4 flex items-center justify-center">
+          <svg class="w-10 h-10 text-white" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+            <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+            <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+            <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+          </svg>
+        </div>
+        <h1 class="text-3xl font-bold text-white mb-2">Microsoft Login</h1>
+        <p class="text-blue-200 text-sm">Sign in with your Microsoft account to continue</p>
+      </div>
+
+      <% if (user) { %>
+        <div class="mb-6 p-4 bg-green-500/20 rounded-lg border border-green-400/30">
+          <p class="text-green-200 text-sm">Signed in as <strong class="text-white"><%= user.displayName %></strong></p>
+        </div>
+        <div class="space-y-3">
+          <a href="/logout"
+             class="block w-full bg-white/10 hover:bg-white/20 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 border border-white/20">
+            Sign Out
+          </a>
+        </div>
+      <% } else { %>
+        <a href="/auth/login"
+           class="inline-flex items-center gap-3 bg-white hover:bg-gray-100 text-gray-800 font-semibold py-3 px-6 rounded-lg transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98]">
+          <svg class="w-5 h-5" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+            <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+            <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+            <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+          </svg>
+          Sign in with Microsoft
+        </a>
+        <p class="text-blue-300/60 text-xs mt-6">Works with personal, work, and school Microsoft accounts</p>
+      <% } %>
+    </div>
+
+    <p class="text-blue-300/40 text-xs mt-8">Microsoft Login &mdash; OAuth 2.0 Authorization Code Flow</p>
+  </div>
+</body>
+</html>
