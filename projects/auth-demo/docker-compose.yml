@@ -1,0 +1,14 @@
+services:
+  auth-demo:
+    build: .
+    container_name: auth-demo
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - VIRTUAL_HOST=auth-demo.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=auth-demo.${S_DOMAIN}
+      - NODE_ENV=production
+    expose:
+      - "80"
