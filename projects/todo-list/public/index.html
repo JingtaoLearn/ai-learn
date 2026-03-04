@@ -1212,6 +1212,169 @@
       .auth-container { margin-top: 40px; }
       .auth-card { padding: 28px 20px; }
     }
+
+    /* Microsoft sign-in button */
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .ms-login-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 12px 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      color: var(--text-primary);
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .ms-login-btn:hover {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+    .ms-login-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    /* API Keys management */
+    .api-keys-section {
+      margin-top: 24px;
+      padding: 20px;
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .api-keys-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      cursor: pointer;
+    }
+    .api-keys-header h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 0;
+    }
+    .api-keys-toggle {
+      font-size: 12px;
+      color: var(--text-muted);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+    .api-keys-content {
+      display: none;
+    }
+    .api-keys-content.visible {
+      display: block;
+    }
+    .api-key-form {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .api-key-form input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+    .api-key-form button {
+      padding: 8px 16px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .api-key-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .api-key-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .api-key-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .api-key-name {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .api-key-meta {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .api-key-delete {
+      background: none;
+      border: none;
+      color: var(--delete-color);
+      cursor: pointer;
+      padding: 4px 8px;
+      font-size: 13px;
+      border-radius: 4px;
+    }
+    .api-key-delete:hover {
+      background: rgba(239, 68, 68, 0.1);
+    }
+    .api-key-created {
+      background: var(--accent-light);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      word-break: break-all;
+    }
+    .api-key-created code {
+      display: block;
+      margin-top: 6px;
+      padding: 8px;
+      background: var(--bg-input);
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      user-select: all;
+    }
+    .api-key-created .warn {
+      color: var(--priority-high);
+      font-size: 12px;
+      margin-top: 6px;
+    }
   </style>
 </head>
 <body>
@@ -1235,6 +1398,13 @@
       <div class="auth-switch">
         <span id="auth-switch-text">Don't have an account?</span>
         <a id="auth-switch-link" onclick="toggleAuthMode()">Register</a>
+      </div>
+      <div id="ms-login-section" style="display:none">
+        <div class="auth-divider">or</div>
+        <button class="ms-login-btn" onclick="loginWithMicrosoft()" type="button">
+          <svg viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+          Sign in with Microsoft
+        </button>
       </div>
     </div>
   </div>
@@ -1291,6 +1461,22 @@
       <button class="tag-filter-btn active" data-tag="all" onclick="setTagFilter('all')">All</button>
     </div>
     <ul id="list"></ul>
+
+    <!-- API Keys management -->
+    <div class="api-keys-section">
+      <div class="api-keys-header" onclick="toggleApiKeys()">
+        <h3>API Keys</h3>
+        <button class="api-keys-toggle" id="api-keys-toggle">Show</button>
+      </div>
+      <div class="api-keys-content" id="api-keys-content">
+        <div id="api-key-created-msg"></div>
+        <div class="api-key-form">
+          <input id="api-key-name" type="text" placeholder="Key name (e.g. my-agent)" maxlength="100">
+          <button onclick="createApiKey()">Create</button>
+        </div>
+        <ul class="api-key-list" id="api-key-list"></ul>
+      </div>
+    </div>
   </div>
 
   <!-- Toast container -->
@@ -1338,6 +1524,7 @@
     </div>
   </div>
 
+  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
   <script>
     let todos = [];
     let currentFilter = 'all';
@@ -1442,6 +1629,128 @@
       }
       showAuth();
     }
+
+    // --- Microsoft Auth (MSAL.js) ---
+    let msalInstance = null;
+
+    async function initMicrosoftAuth() {
+      try {
+        const res = await fetch('/api/auth/config');
+        const config = await res.json();
+        if (!config.microsoftAuth.enabled) return;
+
+        document.getElementById('ms-login-section').style.display = 'block';
+
+        msalInstance = new msal.PublicClientApplication({
+          auth: {
+            clientId: config.microsoftAuth.clientId,
+            authority: `https://login.microsoftonline.com/${config.microsoftAuth.tenantId}`,
+            redirectUri: window.location.origin,
+          },
+          cache: {
+            cacheLocation: 'sessionStorage',
+          },
+        });
+        await msalInstance.initialize();
+      } catch (e) {
+        // Microsoft auth not available
+      }
+    }
+
+    async function loginWithMicrosoft() {
+      if (!msalInstance) return;
+      try {
+        const response = await msalInstance.loginPopup({
+          scopes: ['openid', 'profile', 'email'],
+        });
+        if (response.idToken) {
+          const res = await fetch('/api/auth/microsoft', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken: response.idToken }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            showApp(data.username);
+          } else {
+            showAuthError(data.error || 'Microsoft authentication failed');
+          }
+        }
+      } catch (e) {
+        if (e.errorCode !== 'user_cancelled') {
+          showAuthError('Microsoft sign-in failed');
+        }
+      }
+    }
+
+    initMicrosoftAuth();
+
+    // --- API Keys management ---
+    let apiKeys = [];
+
+    function toggleApiKeys() {
+      const content = document.getElementById('api-keys-content');
+      const toggle = document.getElementById('api-keys-toggle');
+      const isVisible = content.classList.contains('visible');
+      content.classList.toggle('visible');
+      toggle.textContent = isVisible ? 'Show' : 'Hide';
+      if (!isVisible) loadApiKeys();
+    }
+
+    async function loadApiKeys() {
+      const data = await api('/keys');
+      if (data) {
+        apiKeys = data;
+        renderApiKeys();
+      }
+    }
+
+    function renderApiKeys() {
+      const list = document.getElementById('api-key-list');
+      if (!apiKeys.length) {
+        list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0">No API keys yet. Create one to allow agents to access your todos.</div>';
+        return;
+      }
+      list.innerHTML = apiKeys.map(k => `
+        <li class="api-key-item">
+          <div class="api-key-info">
+            <span class="api-key-name">${esc(k.name)}</span>
+            <span class="api-key-meta">${esc(k.key_prefix)} &middot; created ${new Date(k.created_at + 'Z').toLocaleDateString()}${k.last_used_at ? ' &middot; last used ' + new Date(k.last_used_at + 'Z').toLocaleDateString() : ''}</span>
+          </div>
+          <button class="api-key-delete" onclick="deleteApiKey(${k.id})">Revoke</button>
+        </li>
+      `).join('');
+    }
+
+    async function createApiKey() {
+      const input = document.getElementById('api-key-name');
+      const name = input.value.trim();
+      if (!name) { showToast('Key name is required', 'error'); return; }
+      const data = await api('/keys', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      if (data) {
+        input.value = '';
+        document.getElementById('api-key-created-msg').innerHTML = `
+          <div class="api-key-created">
+            API key created. Copy it now — it won't be shown again.
+            <code>${esc(data.key)}</code>
+            <div class="warn">Store this key securely.</div>
+          </div>`;
+        await loadApiKeys();
+      }
+    }
+
+    async function deleteApiKey(id) {
+      await api('/keys/' + id, { method: 'DELETE' });
+      document.getElementById('api-key-created-msg').innerHTML = '';
+      await loadApiKeys();
+    }
+
+    document.getElementById('api-key-name').addEventListener('keydown', e => {
+      if (e.key === 'Enter') createApiKey();
+    });
 
     // Date helpers
     function getToday() {
