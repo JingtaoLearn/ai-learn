@@ -1382,29 +1382,27 @@
   <div class="auth-container" id="auth-container">
     <div class="auth-card">
       <h1 id="auth-title">Sign In</h1>
-      <p class="auth-subtitle" id="auth-subtitle">Enter your credentials to access your todos</p>
+      <p class="auth-subtitle" id="auth-subtitle">Sign in to access your todos</p>
       <div class="auth-error" id="auth-error"></div>
-      <form id="auth-form" onsubmit="handleAuth(event)">
-        <div class="auth-field">
-          <label for="auth-username">Username</label>
-          <input id="auth-username" type="text" placeholder="Enter username" autocomplete="username" required>
-        </div>
-        <div class="auth-field">
-          <label for="auth-password">Password</label>
-          <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password" required>
-        </div>
-        <button type="submit" class="auth-btn" id="auth-submit-btn">Sign In</button>
-      </form>
-      <div class="auth-switch">
-        <span id="auth-switch-text">Don't have an account?</span>
-        <a id="auth-switch-link" onclick="toggleAuthMode()">Register</a>
-      </div>
-      <div id="ms-login-section" style="display:none">
-        <div class="auth-divider">or</div>
+      <div id="ms-login-section">
         <button class="ms-login-btn" onclick="loginWithMicrosoft()" type="button">
           <svg viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
           Sign in with Microsoft
         </button>
+      </div>
+      <div id="local-login-section" style="display:none">
+        <div class="auth-divider">or sign in with username</div>
+        <form id="auth-form" onsubmit="handleAuth(event)">
+          <div class="auth-field">
+            <label for="auth-username">Username</label>
+            <input id="auth-username" type="text" placeholder="Enter username" autocomplete="username" required>
+          </div>
+          <div class="auth-field">
+            <label for="auth-password">Password</label>
+            <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="auth-btn" id="auth-submit-btn">Sign In</button>
+        </form>
       </div>
     </div>
   </div>
@@ -1637,9 +1635,12 @@
       try {
         const res = await fetch('/api/auth/config');
         const config = await res.json();
-        if (!config.microsoftAuth.enabled) return;
-
-        document.getElementById('ms-login-section').style.display = 'block';
+        if (!config.microsoftAuth.enabled) {
+          // Microsoft not configured — show local login as fallback
+          document.getElementById('ms-login-section').style.display = 'none';
+          document.getElementById('local-login-section').style.display = 'block';
+          return;
+        }
 
         msalInstance = new msal.PublicClientApplication({
           auth: {
@@ -1653,7 +1654,9 @@
         });
         await msalInstance.initialize();
       } catch (e) {
-        // Microsoft auth not available
+        // Microsoft auth not available — show local login as fallback
+        document.getElementById('ms-login-section').style.display = 'none';
+        document.getElementById('local-login-section').style.display = 'block';
       }
     }
 
