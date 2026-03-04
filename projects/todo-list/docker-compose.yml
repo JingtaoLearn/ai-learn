@@ -9,6 +9,8 @@ services:
       - LETSENCRYPT_HOST=todo.${S_DOMAIN}
       - DB_PATH=/data/todos.db
       - SESSION_SECRET=${SESSION_SECRET:-}
+      - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+      - MS_TENANT_ID=${MS_TENANT_ID:-common}
     volumes:
       - todo-data:/data
     expose:
