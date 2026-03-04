@@ -1653,6 +1653,12 @@
           },
         });
         await msalInstance.initialize();
+
+        // Auto-trigger Microsoft login when auth screen is shown
+        // (user is not logged in and MS auth is available)
+        if (document.getElementById('auth-container').classList.contains('visible')) {
+          loginWithMicrosoft();
+        }
       } catch (e) {
         // Microsoft auth not available — show local login as fallback
         document.getElementById('ms-login-section').style.display = 'none';
