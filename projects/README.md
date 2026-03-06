@@ -28,6 +28,7 @@ projects/
 | [todo-list](todo-list/) | `todo.${S_DOMAIN}` | Todo list app with SQLite backend |
 | [openclaw-explorer](openclaw-explorer/) | `oc.${S_DOMAIN}` | OpenClaw system prompt assembly flow visualizer |
 | [ms-login](ms-login/) | `ms-login.${S_DOMAIN}` | Microsoft Account OAuth 2.0 login demo |
+| [wedding-showcase](wedding-showcase/) | `wedding.${S_DOMAIN}` | Wedding garden party layout showcase website |
 
 ## Adding a New Project
 
