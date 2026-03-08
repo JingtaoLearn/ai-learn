@@ -1,0 +1,19 @@
+services:
+  image-hosting:
+    image: nginx:alpine
+    environment:
+      - VIRTUAL_HOST=img.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=img.${S_DOMAIN}
+      - LETSENCRYPT_EMAIL=${S_EMAIL}
+    volumes:
+      - ${S_CONTAINER_FOLDER_STATIC}/image-hosting:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: always
+    container_name: image-hosting
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true
