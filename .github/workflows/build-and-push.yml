@@ -1,0 +1,70 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed projects with Dockerfiles
+        id: set-matrix
+        run: |
+          # Get list of changed files between HEAD~1 and HEAD
+          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+
+          # Find which projects have changes AND have a Dockerfile
+          PROJECTS=()
+          for dir in projects/*/; do
+            project=$(basename "$dir")
+            if [ -f "${dir}Dockerfile" ]; then
+              # Check if any file in this project changed
+              if echo "$CHANGED" | grep -q "^projects/${project}/"; then
+                PROJECTS+=("$project")
+              fi
+            fi
+          done
+
+          if [ ${#PROJECTS[@]} -eq 0 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "matrix={\"project\":[]}" >> "$GITHUB_OUTPUT"
+            echo "No projects with Docker changes detected"
+          else
+            # Build JSON matrix
+            JSON=$(printf '%s\n' "${PROJECTS[@]}" | jq -R . | jq -sc '{project: .}')
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
+            echo "Projects to build: ${PROJECTS[*]}"
+          fi
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.project }}
+        uses: docker/build-push-action@v6
+        with:
+          context: projects/${{ matrix.project }}
+          push: true
+          tags: registry.us.jingtao.fun/${{ matrix.project }}:latest
+          cache-from: type=gha,scope=${{ matrix.project }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.project }}
