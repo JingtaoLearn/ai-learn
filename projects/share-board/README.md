@@ -120,3 +120,4 @@ share-board/
 ├── docker-compose.yml      Deployment configuration
 └── vite.config.ts          Vite build configuration
 ```
+
