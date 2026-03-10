@@ -7,3 +7,8 @@
 
 # Documentation paths that may contain example keys
 # docs/**/*-example.json
+
+# False positives: curl examples in README with placeholder "YOUR_API_KEY"
+projects/todo-list/README.md:curl-auth-header:116
+projects/todo-list/README.md:curl-auth-header:126
+projects/todo-list/README.md:curl-auth-header:130
