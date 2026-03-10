@@ -19,31 +19,34 @@ User → Downstream Service (no session)
        User sees protected content
 ```
 
-## Quick Deploy to Azure
+## Deployment (Docker + nginx-proxy)
+
+The service runs as a Docker container behind nginx-proxy with automatic HTTPS via Let's Encrypt.
 
 ```bash
-# 1. Copy and fill in your Azure AD credentials
-cp .env.azure.example .env.azure
-vim .env.azure
+# 1. Copy and configure environment
+cp .env.example .env
+vim .env   # Fill in AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, secrets
 
-# 2. Deploy (creates resource group, plan, webapp, configures env, deploys code)
-./deploy-azure.sh --env .env.azure
+# 2. Build and start the container
+docker compose up -d --build
+
+# 3. Verify
+docker compose logs -f
 ```
 
-Or fully non-interactive:
-
-```bash
-AZURE_CLIENT_ID=xxx AZURE_CLIENT_SECRET=xxx ./deploy-azure.sh --app-name my-auth --location westus2
-```
+The `docker-compose.yml` uses `S_DOMAIN` (set in `/etc/environment` on the server) for nginx-proxy integration:
+- `VIRTUAL_HOST=ms-login.${S_DOMAIN}`
+- `LETSENCRYPT_HOST=ms-login.${S_DOMAIN}`
 
 ## Azure AD App Registration Setup
 
-1. Go to [Azure Portal](https://portal.azure.com/) → **Azure Active Directory** → **App registrations**
+1. Go to [Azure Portal](https://portal.azure.com/) → **Microsoft Entra ID** → **App registrations**
 2. Click **New registration**
 3. Configure:
    - **Name**: `OAuth Proxy` (or any name)
    - **Supported account types**: "Accounts in any organizational directory and personal Microsoft accounts"
-   - **Redirect URI**: Web — `https://<app-name>.azurewebsites.net/auth/callback`
+   - **Redirect URI**: Web — `https://ms-login.<your-domain>/auth/callback`
 4. Note the **Application (client) ID**
 5. Go to **Certificates & secrets** → **New client secret** — copy the value
 6. **API permissions**: `openid`, `profile`, `email`, `User.Read`
@@ -55,7 +58,7 @@ Your downstream service needs:
 1. **Shared secret** — same `AUTH_SHARED_SECRET` as the proxy
 2. **Redirect to login** — when user is unauthenticated:
    ```
-   302 → https://<proxy>.azurewebsites.net/auth/login?redirect=https://your-service.com/auth/callback
+   302 → https://ms-login.<domain>/auth/login?redirect=https://your-service.<domain>/auth/callback
    ```
 3. **Receive callback** — `POST /auth/callback` with `token` in form body:
    ```js
@@ -68,13 +71,14 @@ Your downstream service needs:
 
 | Variable | Description | Required |
 |----------|-------------|----------|
+| `S_DOMAIN` | Base domain for nginx-proxy (e.g., `ai.jingtao.fun`) | ✅ |
 | `AZURE_CLIENT_ID` | Azure AD App client ID | ✅ |
 | `AZURE_CLIENT_SECRET` | Azure AD App client secret | ✅ |
 | `AUTH_SHARED_SECRET` | JWT signing secret (shared with downstream) | ✅ |
+| `SESSION_SECRET` | Express session secret | ✅ |
+| `AZURE_REDIRECT_URI` | OAuth callback URL | Defaults to `https://ms-login.<S_DOMAIN>/auth/callback` |
 | `ALLOWED_CALLBACKS` | Comma-separated whitelist of callback URLs | Recommended |
 | `NOTE_APP_CALLBACK_URL` | Default callback URL | Optional |
-| `SESSION_SECRET` | Express session secret | Auto-generated |
-| `AZURE_REDIRECT_URI` | OAuth callback URL (auto-set by deploy script) | Auto-set |
 
 ## Routes
 
