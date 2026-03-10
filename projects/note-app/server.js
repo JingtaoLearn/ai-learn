@@ -60,6 +60,7 @@ db.exec(`
     title TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
     pinned INTEGER NOT NULL DEFAULT 0,
+    owner_email TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -77,6 +78,12 @@ db.exec(`
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
   );
 `);
+
+// Migration: add owner_email column if it doesn't exist (for existing databases)
+const columns = db.prepare(`PRAGMA table_info(notes)`).all();
+if (!columns.some(col => col.name === 'owner_email')) {
+  db.exec(`ALTER TABLE notes ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''`);
+}
 
 // Trust proxy (behind nginx-proxy)
 app.set('trust proxy', 1);
@@ -181,13 +188,15 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-// GET /api/notes — list all notes with tags
+// GET /api/notes — list current user's notes with tags
 app.get('/api/notes', (req, res) => {
+  const ownerEmail = req.session.user.email;
   const notes = db.prepare(`
     SELECT id, title, content, pinned, created_at, updated_at
     FROM notes
+    WHERE owner_email = ?
     ORDER BY pinned DESC, updated_at DESC
-  `).all();
+  `).all(ownerEmail);
 
   const tagStmt = db.prepare(`
     SELECT t.id, t.name
@@ -207,6 +216,7 @@ app.get('/api/notes', (req, res) => {
 
 // POST /api/notes — create a note
 app.post('/api/notes', (req, res) => {
+  const ownerEmail = req.session.user.email;
   const title = (req.body.title || '').trim();
   const content = (req.body.content || '').trim();
   const tags = req.body.tags || [];
@@ -224,10 +234,10 @@ app.post('/api/notes', (req, res) => {
   const sanitizedTitle = escapeHtml(title);
 
   const insertNote = db.prepare(`
-    INSERT INTO notes (title, content) VALUES (?, ?)
+    INSERT INTO notes (title, content, owner_email) VALUES (?, ?, ?)
   `);
 
-  const result = insertNote.run(sanitizedTitle, content);
+  const result = insertNote.run(sanitizedTitle, content, ownerEmail);
   const noteId = result.lastInsertRowid;
 
   // Add tags
@@ -255,10 +265,11 @@ app.post('/api/notes', (req, res) => {
   res.status(201).json({ ...note, tags: noteTags });
 });
 
-// PUT /api/notes/:id — update a note
+// PUT /api/notes/:id — update a note (ownership required)
 app.put('/api/notes/:id', (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare(`SELECT * FROM notes WHERE id = ?`).get(id);
+  const ownerEmail = req.session.user.email;
+  const existing = db.prepare(`SELECT * FROM notes WHERE id = ? AND owner_email = ?`).get(id, ownerEmail);
 
   if (!existing) {
     return res.status(404).json({ error: 'Note not found' });
@@ -321,16 +332,17 @@ app.put('/api/notes/:id', (req, res) => {
   res.json({ ...note, tags });
 });
 
-// DELETE /api/notes/:id — delete a note
+// DELETE /api/notes/:id — delete a note (ownership required)
 app.delete('/api/notes/:id', (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare(`SELECT * FROM notes WHERE id = ?`).get(id);
+  const ownerEmail = req.session.user.email;
+  const existing = db.prepare(`SELECT * FROM notes WHERE id = ? AND owner_email = ?`).get(id, ownerEmail);
 
   if (!existing) {
     return res.status(404).json({ error: 'Note not found' });
   }
 
-  db.prepare(`DELETE FROM notes WHERE id = ?`).run(id);
+  db.prepare(`DELETE FROM notes WHERE id = ? AND owner_email = ?`).run(id, ownerEmail);
 
   // Clean up orphaned tags
   db.prepare(`
@@ -340,23 +352,27 @@ app.delete('/api/notes/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// GET /api/tags — list all tags with counts
+// GET /api/tags — list tags with counts (scoped to current user's notes)
 app.get('/api/tags', (req, res) => {
+  const ownerEmail = req.session.user.email;
   const tags = db.prepare(`
     SELECT t.id, t.name, COUNT(nt.note_id) as count
     FROM tags t
-    LEFT JOIN note_tags nt ON nt.tag_id = t.id
+    JOIN note_tags nt ON nt.tag_id = t.id
+    JOIN notes n ON n.id = nt.note_id
+    WHERE n.owner_email = ?
     GROUP BY t.id
     ORDER BY t.name
-  `).all();
+  `).all(ownerEmail);
 
   res.json(tags);
 });
 
-// POST /api/notes/:id/tags — add a tag to a note
+// POST /api/notes/:id/tags — add a tag to a note (ownership required)
 app.post('/api/notes/:id/tags', (req, res) => {
   const { id } = req.params;
-  const existing = db.prepare(`SELECT * FROM notes WHERE id = ?`).get(id);
+  const ownerEmail = req.session.user.email;
+  const existing = db.prepare(`SELECT * FROM notes WHERE id = ? AND owner_email = ?`).get(id, ownerEmail);
 
   if (!existing) {
     return res.status(404).json({ error: 'Note not found' });
@@ -377,9 +393,15 @@ app.post('/api/notes/:id/tags', (req, res) => {
   res.status(201).json(tag);
 });
 
-// DELETE /api/notes/:id/tags/:tagId — remove a tag from a note
+// DELETE /api/notes/:id/tags/:tagId — remove a tag from a note (ownership required)
 app.delete('/api/notes/:id/tags/:tagId', (req, res) => {
   const { id, tagId } = req.params;
+  const ownerEmail = req.session.user.email;
+  const existing = db.prepare(`SELECT * FROM notes WHERE id = ? AND owner_email = ?`).get(id, ownerEmail);
+
+  if (!existing) {
+    return res.status(404).json({ error: 'Note not found' });
+  }
 
   db.prepare(`DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?`).run(id, tagId);
 
