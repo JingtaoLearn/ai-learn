@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>English Number Listening Trainer</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <h1>English Number Listening Trainer</h1>
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="practice">Practice</button>
+        <button class="nav-tab" data-tab="analytics">Analytics</button>
+      </nav>
+    </header>
+
+    <!-- Practice Tab -->
+    <main id="practice-tab" class="tab-content active">
+      <!-- Range Configuration -->
+      <section class="card config-section">
+        <h2>Number Range</h2>
+        <div class="range-inputs">
+          <div class="input-group">
+            <label for="min-number">Min</label>
+            <input type="number" id="min-number" value="1" min="0" max="999999">
+          </div>
+          <span class="range-separator">&mdash;</span>
+          <div class="input-group">
+            <label for="max-number">Max</label>
+            <input type="number" id="max-number" value="100" min="0" max="999999">
+          </div>
+        </div>
+        <div class="preset-buttons">
+          <button class="preset-btn" data-min="1" data-max="20">1-20</button>
+          <button class="preset-btn" data-min="1" data-max="100">1-100</button>
+          <button class="preset-btn" data-min="100" data-max="999">100-999</button>
+          <button class="preset-btn" data-min="1000" data-max="9999">1000-9999</button>
+        </div>
+        <div class="auto-play-config">
+          <label for="auto-play-delay">Auto-play delay (seconds):</label>
+          <input type="number" id="auto-play-delay" value="1.5" min="0.5" max="5" step="0.5">
+        </div>
+      </section>
+
+      <!-- Play Area -->
+      <section class="card play-section">
+        <div class="play-controls">
+          <button id="play-btn" class="play-btn" title="Play number (Space)">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </button>
+          <button id="replay-btn" class="replay-btn" title="Replay (R)" disabled>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="answer-area">
+          <input type="text" id="answer-input" class="answer-input" placeholder="Type the number you heard..." disabled autocomplete="off" inputmode="numeric">
+          <div id="feedback" class="feedback hidden"></div>
+          <div id="reaction-time" class="reaction-time hidden"></div>
+        </div>
+      </section>
+
+      <!-- Session Statistics -->
+      <section class="card stats-section">
+        <h2>Session Stats</h2>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-value" id="stat-total">0</span>
+            <span class="stat-label">Total</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value correct" id="stat-correct">0</span>
+            <span class="stat-label">Correct</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value wrong" id="stat-wrong">0</span>
+            <span class="stat-label">Wrong</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-accuracy">0%</span>
+            <span class="stat-label">Accuracy</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-avg-time">--</span>
+            <span class="stat-label">Avg Time</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value" id="stat-streak">0</span>
+            <span class="stat-label">Streak</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Analytics Tab -->
+    <main id="analytics-tab" class="tab-content">
+      <section class="card">
+        <div class="analytics-header">
+          <h2>Analytics</h2>
+          <button id="clear-history-btn" class="clear-history-btn">Clear History</button>
+        </div>
+        <p id="analytics-empty" class="analytics-empty">No data yet. Start practicing to see your analytics!</p>
+      </section>
+
+      <section id="analytics-content" class="analytics-content hidden">
+        <!-- Summary -->
+        <section class="card">
+          <h3>Overall Summary</h3>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-value" id="analytics-total">0</span>
+              <span class="stat-label">Total Answers</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value" id="analytics-accuracy">0%</span>
+              <span class="stat-label">Accuracy</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value" id="analytics-avg-time">--</span>
+              <span class="stat-label">Avg Time</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Error Patterns -->
+        <section class="card">
+          <h3>Error Patterns</h3>
+          <div id="error-patterns" class="pattern-list"></div>
+        </section>
+
+        <!-- Slow Numbers -->
+        <section class="card">
+          <h3>Slowest Numbers</h3>
+          <div id="slow-numbers" class="pattern-list"></div>
+        </section>
+
+        <!-- Error Type Analysis -->
+        <section class="card">
+          <h3>Error Type Analysis</h3>
+          <canvas id="error-type-chart" height="250"></canvas>
+        </section>
+
+        <!-- Progress Over Time -->
+        <section class="card">
+          <h3>Accuracy Over Time</h3>
+          <canvas id="accuracy-chart" height="250"></canvas>
+        </section>
+
+        <section class="card">
+          <h3>Speed Over Time</h3>
+          <canvas id="speed-chart" height="250"></canvas>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/storage.js"></script>
+  <script src="js/tts.js"></script>
+  <script src="js/timer.js"></script>
+  <script src="js/analytics.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

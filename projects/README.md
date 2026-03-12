@@ -29,6 +29,7 @@ projects/
 | [openclaw-explorer](openclaw-explorer/) | `oc.${S_DOMAIN}` | OpenClaw system prompt assembly flow visualizer |
 | [ms-login](ms-login/) | `ms-login.${S_DOMAIN}` | Microsoft Account OAuth 2.0 login demo |
 | [wedding-showcase](wedding-showcase/) | `wedding.${S_DOMAIN}` | Wedding garden party layout showcase website |
+| [listen-english](listen-english/) | `listen.${S_DOMAIN}` | English number listening comprehension trainer |
 
 ## Adding a New Project
 
