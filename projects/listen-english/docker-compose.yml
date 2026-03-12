@@ -1,0 +1,11 @@
+services:
+  listen-english:
+    build: .
+    container_name: listen-english-app
+    restart: always
+    environment:
+      - VIRTUAL_HOST=listen.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=listen.${S_DOMAIN}
+    expose:
+      - "80"
