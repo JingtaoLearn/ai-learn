@@ -4,6 +4,9 @@ const App = (() => {
   // State
   let currentNumber = null;
   let isPlaying = false;
+  let isRunning = false; // whether auto-play loop is active
+  let autoAdvanceTimer = null;
+  let editLog = []; // tracks edits for current question: {action, value, timestamp}
   let session = {
     total: 0,
     correct: 0,
@@ -28,6 +31,7 @@ const App = (() => {
     els.maxNumber = document.getElementById('max-number');
     els.autoPlayDelay = document.getElementById('auto-play-delay');
     els.playBtn = document.getElementById('play-btn');
+    els.stopBtn = document.getElementById('stop-btn');
     els.replayBtn = document.getElementById('replay-btn');
     els.answerInput = document.getElementById('answer-input');
     els.feedback = document.getElementById('feedback');
@@ -42,6 +46,7 @@ const App = (() => {
     els.navTabs = document.querySelectorAll('.nav-tab');
     els.tabContents = document.querySelectorAll('.tab-content');
     els.presetBtns = document.querySelectorAll('.preset-btn');
+    els.numpadBtns = document.querySelectorAll('.numpad-btn');
   }
 
   function loadSettings() {
@@ -63,6 +68,9 @@ const App = (() => {
     // Play button
     els.playBtn.addEventListener('click', playNumber);
 
+    // Stop button
+    els.stopBtn.addEventListener('click', stopSession);
+
     // Replay button
     els.replayBtn.addEventListener('click', replayNumber);
 
@@ -72,6 +80,11 @@ const App = (() => {
         e.preventDefault();
         submitAnswer();
       }
+    });
+
+    // Track keyboard edits on the answer input
+    els.answerInput.addEventListener('input', () => {
+      editLog.push({ action: 'input', value: els.answerInput.value, ts: Date.now() });
     });
 
     // Keyboard shortcuts
@@ -115,6 +128,29 @@ const App = (() => {
         Analytics.render();
       }
     });
+
+    // Number pad
+    els.numpadBtns.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const value = btn.dataset.value;
+        const action = btn.dataset.action;
+        if (value !== undefined) {
+          // Digit button — append to input
+          if (!els.answerInput.disabled) {
+            els.answerInput.value += value;
+            editLog.push({ action: 'digit', value: els.answerInput.value, ts: Date.now() });
+          }
+        } else if (action === 'backspace') {
+          if (!els.answerInput.disabled) {
+            els.answerInput.value = els.answerInput.value.slice(0, -1);
+            editLog.push({ action: 'backspace', value: els.answerInput.value, ts: Date.now() });
+          }
+        } else if (action === 'submit') {
+          submitAnswer();
+        }
+      });
+    });
   }
 
   function switchTab(tabName) {
@@ -138,6 +174,7 @@ const App = (() => {
   async function playNumber() {
     if (isPlaying) return;
     isPlaying = true;
+    isRunning = true;
 
     // Generate new number
     currentNumber = getRandomNumber();
@@ -149,21 +186,48 @@ const App = (() => {
     els.reactionTime.classList.add('hidden');
     els.answerInput.disabled = false;
     els.replayBtn.disabled = false;
-    els.playBtn.disabled = true;
+    els.playBtn.style.display = 'none';
+    els.stopBtn.style.display = 'flex';
 
     Timer.reset();
+    editLog = [];
 
     try {
       // Speak the number, start timer when speech ends
       await TTS.speak(currentNumber);
       Timer.start();
-      els.answerInput.focus();
     } catch (err) {
       console.error('TTS error:', err);
     }
 
     isPlaying = false;
-    els.playBtn.disabled = false;
+  }
+
+  function stopSession() {
+    isRunning = false;
+    isPlaying = false;
+    currentNumber = null;
+
+    // Cancel any pending auto-advance
+    if (autoAdvanceTimer) {
+      clearTimeout(autoAdvanceTimer);
+      autoAdvanceTimer = null;
+    }
+
+    // Cancel any in-progress speech
+    TTS.cancel && TTS.cancel();
+    window.speechSynthesis && window.speechSynthesis.cancel();
+
+    Timer.reset();
+
+    // Reset UI
+    els.answerInput.value = '';
+    els.answerInput.disabled = true;
+    els.feedback.classList.add('hidden');
+    els.reactionTime.classList.add('hidden');
+    els.replayBtn.disabled = true;
+    els.playBtn.style.display = 'flex';
+    els.stopBtn.style.display = 'none';
   }
 
   async function replayNumber() {
@@ -172,11 +236,11 @@ const App = (() => {
     els.playBtn.disabled = true;
 
     Timer.reset();
+    editLog = [];
 
     try {
       await TTS.speak(currentNumber);
       Timer.start();
-      els.answerInput.focus();
     } catch (err) {
       console.error('TTS replay error:', err);
     }
@@ -216,6 +280,7 @@ const App = (() => {
       userAnswer: userAnswer,
       correct: correct,
       reactionTimeMs: reactionTimeMs,
+      edits: editLog.slice(), // copy of edit log
     });
 
     // Show feedback
@@ -227,11 +292,16 @@ const App = (() => {
     // Disable input while showing feedback
     els.answerInput.disabled = true;
 
-    // Auto-advance
-    const delay = (parseFloat(els.autoPlayDelay.value) || 1.5) * 1000;
-    setTimeout(() => {
-      playNumber();
-    }, delay);
+    // Auto-advance only if session is still running
+    if (isRunning) {
+      const delay = (parseFloat(els.autoPlayDelay.value) || 1.5) * 1000;
+      autoAdvanceTimer = setTimeout(() => {
+        autoAdvanceTimer = null;
+        if (isRunning) {
+          playNumber();
+        }
+      }, delay);
+    }
   }
 
   function showFeedback(correct, number, timeMs) {

@@ -158,6 +158,9 @@ const Analytics = (() => {
     // Slow numbers
     renderSlowNumbers(history);
 
+    // Edited/hesitated answers
+    renderEditedAnswers(history);
+
     // Charts
     destroyCharts();
     renderErrorTypeChart(history);
@@ -207,6 +210,52 @@ const Analytics = (() => {
             <div class="bar slow-bar" style="width: ${(s.avgTime / maxTime) * 100}%"></div>
           </div>
           <span class="detail">${(s.avgTime / 1000).toFixed(1)}s avg (${s.count} answers)</span>
+        </div>`;
+      })
+      .join('');
+  }
+
+  function renderEditedAnswers(history) {
+    const container = document.getElementById('edited-answers');
+    // Find records that have backspace actions in their edit log
+    const edited = history.filter((r) => r.edits && r.edits.some((e) => e.action === 'backspace'));
+
+    if (edited.length === 0) {
+      container.innerHTML = '<p class="pattern-empty">No edited answers yet — great confidence!</p>';
+      return;
+    }
+
+    // Group by number to find which numbers cause the most hesitation
+    const byNumber = {};
+    edited.forEach((r) => {
+      const key = r.number;
+      if (!byNumber[key]) {
+        byNumber[key] = { number: key, editCount: 0, records: [] };
+      }
+      byNumber[key].editCount++;
+      byNumber[key].records.push(r);
+    });
+
+    const sorted = Object.values(byNumber)
+      .sort((a, b) => b.editCount - a.editCount)
+      .slice(0, 10);
+
+    const maxEdits = sorted[0].editCount;
+    container.innerHTML = sorted
+      .map((item) => {
+        // Show what user first typed vs final answer for the most recent edit
+        const recent = item.records[item.records.length - 1];
+        const edits = recent.edits || [];
+        const backspaces = edits.filter((e) => e.action === 'backspace').length;
+        const firstValue = edits.length > 0 ? edits[0].value : '?';
+        const correctStr = recent.correct ? '✅' : '❌';
+
+        return `<div class="pattern-item">
+          <span class="number">${item.number}</span>
+          <div class="bar-container">
+            <div class="bar slow-bar" style="width: ${(item.editCount / maxEdits) * 100}%"></div>
+          </div>
+          <span class="detail">${item.editCount}x edited, ${backspaces} ⌫ last time ${correctStr}</span>
         </div>`;
       })
       .join('');

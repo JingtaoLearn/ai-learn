@@ -47,6 +47,7 @@ const Storage = (() => {
       userAnswer: record.userAnswer,
       correct: record.correct,
       reactionTimeMs: record.reactionTimeMs,
+      edits: record.edits || [],
       timestamp: Date.now(),
     });
     localStorage.setItem(KEYS.HISTORY, JSON.stringify(history));
