@@ -204,30 +204,24 @@ body {
   width: 80px;
 }
 
-/* Play Section */
+/* Play Section — Start button */
 .play-section {
   text-align: center;
-}
-
-.play-controls {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
+  padding: 32px 20px;
 }
 
 .play-btn {
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 36px;
+  border-radius: 40px;
   border: none;
   background: var(--color-primary);
   color: white;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  font-size: 1.1rem;
+  font-weight: 700;
   transition: all 0.2s;
   box-shadow: var(--shadow-lg);
 }
@@ -241,39 +235,69 @@ body {
   transform: scale(0.98);
 }
 
-.play-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
+.play-label {
+  font-size: 1.1rem;
 }
 
-.stop-btn {
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  border: none;
-  background: var(--color-wrong);
-  color: white;
-  cursor: pointer;
+/* Training Overlay */
+.training-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--color-bg);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
-  box-shadow: var(--shadow-lg);
+  padding: 16px;
 }
 
-.stop-btn:hover {
-  background: #dc2626;
-  transform: scale(1.05);
+.training-overlay.hidden {
+  display: none;
 }
 
-.stop-btn:active {
-  transform: scale(0.98);
+.training-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.replay-btn {
-  width: 44px;
-  height: 44px;
+/* Top bar */
+.training-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.training-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.tstats.correct { color: var(--color-correct); }
+.tstats-sep { color: var(--color-text-secondary); font-size: 1rem; }
+.tstats-pct {
+  margin-left: 8px;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.training-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.replay-btn-sm,
+.stop-btn-sm {
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: 2px solid var(--color-border);
   background: var(--color-surface);
@@ -285,32 +309,81 @@ body {
   transition: all 0.2s;
 }
 
-.replay-btn:hover:not(:disabled) {
+.replay-btn-sm:hover:not(:disabled) {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
 
-.replay-btn:disabled {
+.replay-btn-sm:disabled {
   opacity: 0.3;
   cursor: not-allowed;
 }
 
-/* Answer Area */
-.answer-area {
-  max-width: 320px;
-  margin: 0 auto;
+.stop-btn-sm {
+  border-color: var(--color-wrong);
+  color: var(--color-wrong);
+}
+
+.stop-btn-sm:hover {
+  background: var(--color-wrong);
+  color: white;
+}
+
+/* Feedback area — single row, fixed height */
+.training-feedback {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.feedback-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.training-feedback .feedback {
+  font-size: 1rem;
+  font-weight: 600;
+  text-align: center;
+  transition: color 0.2s;
+  color: transparent;
+}
+
+.training-feedback .feedback.correct {
+  color: var(--color-correct);
+}
+
+.training-feedback .feedback.wrong {
+  color: var(--color-wrong);
+}
+
+.training-feedback .reaction-time {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+/* Answer display in overlay */
+.training-answer {
+  display: flex;
+  justify-content: center;
 }
 
 .answer-input {
   width: 100%;
+  max-width: 320px;
   padding: 14px 16px;
   border: 2px solid var(--color-border);
   border-radius: var(--radius);
-  font-size: 1.5rem;
+  font-size: 2rem;
   text-align: center;
   outline: none;
   transition: border-color 0.2s;
-  letter-spacing: 1px;
+  letter-spacing: 2px;
+  background: var(--color-surface);
 }
 
 .answer-input:focus {
@@ -332,38 +405,13 @@ body {
   background: var(--color-wrong-bg);
 }
 
-/* Feedback */
-.feedback {
-  margin-top: 12px;
-  padding: 10px 16px;
-  border-radius: 8px;
-  font-size: 1rem;
-  font-weight: 600;
-  transition: all 0.3s;
-}
-
+/* Legacy feedback classes kept for JS compat */
 .feedback.correct {
-  background: var(--color-correct-bg);
   color: var(--color-correct);
 }
 
 .feedback.wrong {
-  background: var(--color-wrong-bg);
   color: var(--color-wrong);
-}
-
-.feedback.hidden {
-  display: none;
-}
-
-.reaction-time {
-  margin-top: 8px;
-  font-size: 0.85rem;
-  color: var(--color-text-secondary);
-}
-
-.reaction-time.hidden {
-  display: none;
 }
 
 /* Stats Grid */
@@ -513,8 +561,9 @@ body {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
+  width: 100%;
   max-width: 320px;
-  margin: 16px auto 0;
+  margin: 0 auto;
 }
 
 .numpad-btn {
@@ -586,13 +635,8 @@ body {
     justify-content: center;
   }
 
-  .answer-input {
-    font-size: 1.3rem;
-  }
-
   .play-btn {
-    width: 64px;
-    height: 64px;
+    padding: 14px 28px;
   }
 
   .auto-play-config {
@@ -602,5 +646,18 @@ body {
 
   .auto-play-config input {
     width: 100%;
+  }
+
+  .training-overlay {
+    padding: 12px;
+  }
+
+  .answer-input {
+    font-size: 1.6rem;
+  }
+
+  .numpad-btn {
+    padding: 14px 0;
+    font-size: 1.2rem;
   }
 }

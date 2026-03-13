@@ -46,30 +46,54 @@
         </div>
       </section>
 
-      <!-- Play Area -->
+      <!-- Start Button -->
       <section class="card play-section">
-        <div class="play-controls">
-          <button id="play-btn" class="play-btn" title="Play number (Space)">
-            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-          </button>
-          <button id="stop-btn" class="stop-btn" title="Stop" style="display:none;">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2"/>
-            </svg>
-          </button>
-          <button id="replay-btn" class="replay-btn" title="Replay (R)" disabled>
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-              <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
-            </svg>
-          </button>
+        <button id="play-btn" class="play-btn" title="Start Practice (Space)">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+          <span class="play-label">Start</span>
+        </button>
+      </section>
+
+    <!-- Training Overlay (fixed fullscreen card) -->
+    <div id="training-overlay" class="training-overlay hidden">
+      <div class="training-card">
+        <!-- Top bar: stats + stop -->
+        <div class="training-top">
+          <div class="training-stats">
+            <span id="overlay-correct" class="tstats correct">0</span>
+            <span class="tstats-sep">/</span>
+            <span id="overlay-total" class="tstats">0</span>
+            <span id="overlay-accuracy" class="tstats-pct">—</span>
+          </div>
+          <div class="training-controls">
+            <button id="replay-btn" class="replay-btn-sm" title="Replay (R)" disabled>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+              </svg>
+            </button>
+            <button id="stop-btn" class="stop-btn-sm" title="Stop">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            </button>
+          </div>
         </div>
-        <div class="answer-area">
-          <input type="text" id="answer-input" class="answer-input" placeholder="Type the number you heard..." disabled autocomplete="off" inputmode="none" readonly>
-          <div id="feedback" class="feedback hidden"></div>
-          <div id="reaction-time" class="reaction-time hidden"></div>
+
+        <!-- Feedback area (fixed height, no layout shift) -->
+        <div class="training-feedback">
+          <div class="feedback-row">
+            <span id="feedback" class="feedback">&nbsp;</span>
+            <span id="reaction-time" class="reaction-time">&nbsp;</span>
+          </div>
         </div>
+
+        <!-- Answer display -->
+        <div class="training-answer">
+          <input type="text" id="answer-input" class="answer-input" placeholder="?" disabled autocomplete="off" inputmode="none" readonly>
+        </div>
+
         <!-- Number Pad -->
         <div class="numpad">
           <button class="numpad-btn" data-value="1">1</button>
@@ -85,7 +109,8 @@
           <button class="numpad-btn" data-value="0">0</button>
           <button class="numpad-btn numpad-fn numpad-submit" data-action="submit">OK</button>
         </div>
-      </section>
+      </div>
+    </div>
 
       <!-- Session Statistics -->
       <section class="card stats-section">
