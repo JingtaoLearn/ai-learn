@@ -1,0 +1,12 @@
+services:
+  openclaw-intro:
+    build: ./
+    container_name: openclaw-intro-app
+    restart: always
+    environment:
+      - VIRTUAL_HOST=oc-intro.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=oc-intro.${S_DOMAIN}
+      - LETSENCRYPT_EMAIL=${S_EMAIL}
+    expose:
+      - "80"
