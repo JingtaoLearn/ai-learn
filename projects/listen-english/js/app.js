@@ -4,9 +4,9 @@ const App = (() => {
   // State
   let currentNumber = null;
   let isPlaying = false;
-  let isRunning = false; // whether auto-play loop is active
+  let isRunning = false;
   let autoAdvanceTimer = null;
-  let editLog = []; // tracks edits for current question: {action, value, timestamp}
+  let editLog = [];
   let session = {
     total: 0,
     correct: 0,
@@ -36,6 +36,12 @@ const App = (() => {
     els.answerInput = document.getElementById('answer-input');
     els.feedback = document.getElementById('feedback');
     els.reactionTime = document.getElementById('reaction-time');
+    els.overlay = document.getElementById('training-overlay');
+    // Overlay stats
+    els.overlayCorrect = document.getElementById('overlay-correct');
+    els.overlayTotal = document.getElementById('overlay-total');
+    els.overlayAccuracy = document.getElementById('overlay-accuracy');
+    // Main page stats
     els.statTotal = document.getElementById('stat-total');
     els.statCorrect = document.getElementById('stat-correct');
     els.statWrong = document.getElementById('stat-wrong');
@@ -65,8 +71,8 @@ const App = (() => {
   }
 
   function bindEvents() {
-    // Play button
-    els.playBtn.addEventListener('click', playNumber);
+    // Play button — opens overlay and starts
+    els.playBtn.addEventListener('click', startSession);
 
     // Stop button
     els.stopBtn.addEventListener('click', stopSession);
@@ -89,16 +95,18 @@ const App = (() => {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
-      // Don't trigger shortcuts when typing in inputs (except answer-input Enter handled above)
       if (e.target.tagName === 'INPUT' && e.target !== els.answerInput) return;
       if (e.target === els.answerInput && e.key !== ' ') return;
 
       if (e.key === ' ' && e.target !== els.answerInput) {
         e.preventDefault();
-        playNumber();
+        if (isRunning) return;
+        startSession();
       } else if ((e.key === 'r' || e.key === 'R') && e.target !== els.answerInput) {
         e.preventDefault();
         replayNumber();
+      } else if (e.key === 'Escape') {
+        stopSession();
       }
     });
 
@@ -136,7 +144,6 @@ const App = (() => {
         const value = btn.dataset.value;
         const action = btn.dataset.action;
         if (value !== undefined) {
-          // Digit button — append to input
           if (!els.answerInput.disabled) {
             els.answerInput.value += value;
             editLog.push({ action: 'digit', value: els.answerInput.value, ts: Date.now() });
@@ -171,29 +178,43 @@ const App = (() => {
     return Math.floor(Math.random() * (hi - lo + 1)) + lo;
   }
 
+  function startSession() {
+    // Reset session stats
+    session = { total: 0, correct: 0, wrong: 0, streak: 0, reactionTimes: [] };
+    // Show overlay
+    els.overlay.classList.remove('hidden');
+    // Prevent background scroll
+    document.body.style.overflow = 'hidden';
+    updateOverlayStats();
+    // Clear feedback
+    els.feedback.textContent = '\u00A0';
+    els.feedback.className = 'feedback';
+    els.reactionTime.textContent = '\u00A0';
+    // Start first number
+    playNumber();
+  }
+
   async function playNumber() {
     if (isPlaying) return;
     isPlaying = true;
     isRunning = true;
 
-    // Generate new number
     currentNumber = getRandomNumber();
 
-    // Reset UI
+    // Reset input
     els.answerInput.value = '';
-    els.feedback.classList.add('hidden');
-    els.feedback.className = 'feedback hidden';
-    els.reactionTime.classList.add('hidden');
     els.answerInput.disabled = false;
     els.replayBtn.disabled = false;
-    els.playBtn.style.display = 'none';
-    els.stopBtn.style.display = 'flex';
+
+    // Clear feedback text but keep space
+    els.feedback.textContent = '\u00A0';
+    els.feedback.className = 'feedback';
+    els.reactionTime.textContent = '\u00A0';
 
     Timer.reset();
     editLog = [];
 
     try {
-      // Speak the number, start timer when speech ends
       await TTS.speak(currentNumber);
       Timer.start();
     } catch (err) {
@@ -208,32 +229,31 @@ const App = (() => {
     isPlaying = false;
     currentNumber = null;
 
-    // Cancel any pending auto-advance
     if (autoAdvanceTimer) {
       clearTimeout(autoAdvanceTimer);
       autoAdvanceTimer = null;
     }
 
-    // Cancel any in-progress speech
     TTS.cancel && TTS.cancel();
     window.speechSynthesis && window.speechSynthesis.cancel();
-
     Timer.reset();
 
-    // Reset UI
+    // Hide overlay
+    els.overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+
+    // Reset
     els.answerInput.value = '';
     els.answerInput.disabled = true;
-    els.feedback.classList.add('hidden');
-    els.reactionTime.classList.add('hidden');
     els.replayBtn.disabled = true;
-    els.playBtn.style.display = 'flex';
-    els.stopBtn.style.display = 'none';
+
+    // Update main page stats
+    updateStats();
   }
 
   async function replayNumber() {
     if (currentNumber === null || isPlaying) return;
     isPlaying = true;
-    els.playBtn.disabled = true;
 
     Timer.reset();
     editLog = [];
@@ -246,7 +266,6 @@ const App = (() => {
     }
 
     isPlaying = false;
-    els.playBtn.disabled = false;
   }
 
   function submitAnswer() {
@@ -261,7 +280,6 @@ const App = (() => {
     const reactionTimeMs = Timer.stop();
     const correct = userAnswer === currentNumber;
 
-    // Update session stats
     session.total++;
     if (correct) {
       session.correct++;
@@ -274,25 +292,20 @@ const App = (() => {
       session.reactionTimes.push(reactionTimeMs);
     }
 
-    // Save to history
     Storage.addRecord({
       number: currentNumber,
       userAnswer: userAnswer,
       correct: correct,
       reactionTimeMs: reactionTimeMs,
-      edits: editLog.slice(), // copy of edit log
+      edits: editLog.slice(),
     });
 
-    // Show feedback
     showFeedback(correct, currentNumber, reactionTimeMs);
-
-    // Update stats display
+    updateOverlayStats();
     updateStats();
 
-    // Disable input while showing feedback
     els.answerInput.disabled = true;
 
-    // Auto-advance only if session is still running
     if (isRunning) {
       const delay = (parseFloat(els.autoPlayDelay.value) || 1.5) * 1000;
       autoAdvanceTimer = setTimeout(() => {
@@ -305,20 +318,29 @@ const App = (() => {
   }
 
   function showFeedback(correct, number, timeMs) {
-    els.feedback.classList.remove('hidden', 'correct', 'wrong');
+    els.feedback.className = 'feedback';
 
     if (correct) {
       els.feedback.classList.add('correct');
-      els.feedback.textContent = '✅ Correct!';
+      els.feedback.textContent = '✅ Correct';
     } else {
       els.feedback.classList.add('wrong');
-      els.feedback.textContent = `❌ Wrong — the answer was ${number}`;
+      els.feedback.textContent = `❌ ${number}`;
     }
 
-    // Show reaction time
     if (timeMs > 0) {
-      els.reactionTime.classList.remove('hidden');
       els.reactionTime.textContent = `⏱️ ${(timeMs / 1000).toFixed(2)}s`;
+    }
+  }
+
+  function updateOverlayStats() {
+    els.overlayCorrect.textContent = session.correct;
+    els.overlayTotal.textContent = session.total;
+    if (session.total > 0) {
+      els.overlayAccuracy.textContent =
+        Math.round((session.correct / session.total) * 100) + '%';
+    } else {
+      els.overlayAccuracy.textContent = '—';
     }
   }
 
@@ -348,7 +370,6 @@ const App = (() => {
   return { init };
 })();
 
-// Start the app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
   App.init();
 });
