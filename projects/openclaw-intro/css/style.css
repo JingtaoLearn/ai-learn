@@ -1,0 +1,911 @@
+/* ===== Reset & Variables ===== */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0a0a1a;
+  --text: #ffffff;
+  --text-muted: #8890a8;
+  --lobster-red: #E74C3C;
+  --ocean-blue: #3498DB;
+  --deep-blue: #2C3E50;
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-blur: 20px;
+  --font-sans: 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+html {
+  font-size: 16px;
+  scroll-snap-type: y mandatory;
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+strong {
+  color: var(--lobster-red);
+  font-weight: 700;
+}
+
+/* ===== Particle Canvas ===== */
+#particles {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ===== Slide Deck ===== */
+#deck {
+  position: relative;
+  z-index: 1;
+}
+
+.slide {
+  height: 100vh;
+  scroll-snap-align: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.slide-content {
+  max-width: 1100px;
+  width: 100%;
+  padding: 40px 48px;
+  text-align: center;
+  position: relative;
+  z-index: 2;
+}
+
+/* ===== Dot Navigation ===== */
+#dot-nav {
+  position: fixed;
+  right: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#dot-nav button {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.3s ease;
+}
+
+#dot-nav button:hover {
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+#dot-nav button.active {
+  background: var(--lobster-red);
+  border-color: var(--lobster-red);
+  transform: scale(1.3);
+}
+
+/* ===== Slide Counter ===== */
+#slide-counter {
+  position: fixed;
+  bottom: 24px;
+  right: 28px;
+  z-index: 1000;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.05em;
+}
+
+/* ===== Fullscreen Hint ===== */
+#fs-hint {
+  position: fixed;
+  bottom: 24px;
+  left: 28px;
+  z-index: 1000;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.25);
+  transition: opacity 0.5s;
+}
+
+#fs-hint kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+/* ===== Animations ===== */
+.anim-in {
+  opacity: 0;
+  transform: translateY(40px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+
+.anim-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.anim-in.delay-1 { transition-delay: 0.15s; }
+.anim-in.delay-2 { transition-delay: 0.3s; }
+.anim-in.delay-3 { transition-delay: 0.45s; }
+
+/* ===== Slide 1: Cover ===== */
+.slide-cover {
+  background: radial-gradient(ellipse at center, rgba(231, 76, 60, 0.08) 0%, transparent 60%);
+}
+
+.mega-title {
+  font-size: clamp(3.5rem, 10vw, 7rem);
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  margin-bottom: 24px;
+}
+
+.emoji-pop {
+  display: inline-block;
+  animation: float 3s ease-in-out infinite;
+}
+
+.tagline {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+  font-weight: 700;
+  color: var(--lobster-red);
+  margin-bottom: 12px;
+}
+
+.subtitle {
+  font-size: clamp(1rem, 2vw, 1.3rem);
+  color: var(--text-muted);
+  margin-bottom: 48px;
+}
+
+.speaker {
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.3);
+  font-weight: 500;
+  padding: 12px 32px;
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 50px;
+  display: inline-block;
+}
+
+/* ===== Slide 2: What is OpenClaw ===== */
+.hero-sentence {
+  font-size: clamp(1.3rem, 3vw, 1.8rem);
+  color: var(--text-muted);
+  line-height: 1.8;
+  margin-bottom: 48px;
+}
+
+.bullet-row {
+  display: flex;
+  gap: 32px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.bullet-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 36px 32px;
+  width: 240px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s, border-color 0.3s;
+}
+
+.bullet-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(52, 152, 219, 0.3);
+}
+
+.bullet-icon {
+  font-size: 2.5rem;
+  margin-bottom: 16px;
+}
+
+.bullet-text {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* ===== Slide headings ===== */
+.slide h2 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  margin-bottom: 16px;
+}
+
+.slide-tagline {
+  font-size: clamp(1rem, 2vw, 1.3rem);
+  color: var(--text-muted);
+  margin-bottom: 48px;
+}
+
+/* ===== Slide 3: Architecture ===== */
+.arch-diagram {
+  max-width: 950px;
+  margin: 0 auto;
+  padding: 24px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.arch-svg {
+  width: 100%;
+  height: auto;
+}
+
+.arch-svg text {
+  font-family: var(--font-sans);
+}
+
+.conn-line {
+  stroke-dasharray: 8 4;
+  animation: dash-flow 2s linear infinite;
+}
+
+.conn-right {
+  animation-direction: reverse;
+}
+
+@keyframes dash-flow {
+  to { stroke-dashoffset: -24; }
+}
+
+/* ===== Slide 4: Gateway — Feature Grid ===== */
+.feature-grid {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.feature-item {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 36px 28px;
+  width: 260px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s, border-color 0.3s;
+}
+
+.feature-item:hover {
+  transform: translateY(-4px);
+  border-color: rgba(230, 126, 34, 0.3);
+}
+
+.feature-icon {
+  font-size: 2.5rem;
+  margin-bottom: 16px;
+}
+
+.feature-label {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.feature-desc {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+
+/* ===== Slide 5: Agent Loop ===== */
+.agent-loop {
+  margin-bottom: 32px;
+}
+
+.loop-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.loop-step-item {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 20px 18px;
+  min-width: 90px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s;
+}
+
+.loop-step-item:hover {
+  transform: scale(1.08);
+}
+
+.loop-emoji {
+  display: block;
+  font-size: 1.8rem;
+  margin-bottom: 6px;
+}
+
+.loop-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.loop-arrow-text {
+  font-size: 1.5rem;
+  color: rgba(46, 204, 113, 0.5);
+  font-weight: 700;
+}
+
+.agent-files {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.file-tag {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 8px 20px;
+  border-radius: 50px;
+  background: rgba(46, 204, 113, 0.1);
+  border: 1px solid rgba(46, 204, 113, 0.25);
+  color: #2ECC71;
+}
+
+/* ===== Slide 6: Two Column Layout ===== */
+.two-col {
+  display: flex;
+  gap: 32px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.col-panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 40px 36px;
+  width: 380px;
+  text-align: left;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.col-panel h3 {
+  font-size: 1.5rem;
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.panel-desc {
+  font-size: 1rem;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.panel-list {
+  list-style: none;
+}
+
+.panel-list li {
+  font-size: 1.05rem;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+}
+
+.panel-list li:last-child {
+  border-bottom: none;
+}
+
+.panel-list.icon-list li {
+  font-size: 1.1rem;
+  padding: 10px 0;
+}
+
+/* ===== Slide 7: Memory Layers ===== */
+.memory-layers {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 40px;
+}
+
+.memory-layer {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 32px 28px;
+  width: 220px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.mem-icon {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+}
+
+.mem-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.mem-desc {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.memory-divider {
+  font-size: 2rem;
+  color: rgba(142, 68, 173, 0.5);
+  font-weight: 700;
+}
+
+.memory-timeline {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.timeline-tag {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  padding: 8px 20px;
+  border-radius: 50px;
+  background: rgba(142, 68, 173, 0.1);
+  border: 1px solid rgba(142, 68, 173, 0.25);
+  color: #8E44AD;
+}
+
+.timeline-arrow {
+  font-size: 1.2rem;
+  color: rgba(142, 68, 173, 0.4);
+}
+
+/* ===== Slide 8: Skills Tiers ===== */
+.skills-tiers {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 32px;
+}
+
+.tier-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 36px 32px;
+  width: 220px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s;
+}
+
+.tier-card:hover {
+  transform: translateY(-4px);
+}
+
+.tier-num {
+  font-size: 3rem;
+  font-weight: 900;
+  font-family: var(--font-mono);
+  color: var(--lobster-red);
+  line-height: 1;
+  margin-bottom: 12px;
+}
+
+.tier-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.tier-desc {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.standard-badge {
+  display: inline-block;
+}
+
+.badge-label {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  padding: 12px 32px;
+  border-radius: 50px;
+  background: rgba(231, 76, 60, 0.1);
+  border: 1px solid rgba(231, 76, 60, 0.25);
+  color: var(--lobster-red);
+  font-weight: 600;
+}
+
+/* ===== Slide 9: Multi-Agent ===== */
+.multi-agent-visual {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 36px;
+}
+
+.agent-persona {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 32px 28px;
+  width: 180px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s;
+}
+
+.agent-persona:hover {
+  transform: translateY(-4px);
+}
+
+.persona-avatar {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+
+.persona-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.multi-agent-features {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ma-tag {
+  font-size: 0.9rem;
+  padding: 8px 20px;
+  border-radius: 50px;
+  background: rgba(52, 152, 219, 0.1);
+  border: 1px solid rgba(52, 152, 219, 0.25);
+  color: var(--ocean-blue);
+}
+
+/* ===== Slide 10: Automation Grid ===== */
+.auto-grid {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.auto-item {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 40px 32px;
+  width: 200px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s;
+}
+
+.auto-item:hover {
+  transform: translateY(-4px);
+}
+
+.auto-icon {
+  font-size: 3rem;
+  margin-bottom: 16px;
+}
+
+.auto-label {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* ===== Slide 12: Platforms Grid ===== */
+.platform-grid {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.plat-item {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 32px 24px;
+  width: 170px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s;
+}
+
+.plat-item:hover {
+  transform: translateY(-4px);
+}
+
+.plat-icon {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+}
+
+.plat-name {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.plat-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ===== Slide 13: Summary ===== */
+.summary-grid {
+  display: flex;
+  gap: 28px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 40px;
+}
+
+.summary-item {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 36px 28px;
+  width: 210px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.summary-icon {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+}
+
+.summary-word {
+  font-size: 1.5rem;
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.summary-detail {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.summary-slogan {
+  font-size: clamp(1.2rem, 3vw, 1.8rem);
+  font-weight: 700;
+  color: var(--lobster-red);
+  letter-spacing: 0.05em;
+}
+
+/* ===== Slide 14: Thank You ===== */
+.slide-thankyou {
+  background: radial-gradient(ellipse at center, rgba(231, 76, 60, 0.06) 0%, transparent 60%);
+}
+
+.mega-thanks {
+  font-size: clamp(3rem, 8vw, 6rem) !important;
+  margin-bottom: 40px !important;
+}
+
+.thankyou-links {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 40px;
+}
+
+.link-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 1.1rem;
+  color: var(--text-muted);
+}
+
+.link-icon {
+  font-size: 1.3rem;
+}
+
+.qr-placeholder {
+  display: inline-block;
+}
+
+.qr-box {
+  width: 140px;
+  height: 140px;
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 0.9rem;
+  margin: 0 auto;
+}
+
+/* ===== Keyframes ===== */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-14px); }
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 900px) {
+  .slide-content {
+    padding: 32px 24px;
+  }
+
+  #dot-nav {
+    right: 10px;
+    gap: 7px;
+  }
+
+  #dot-nav button {
+    width: 8px;
+    height: 8px;
+  }
+
+  .mega-title {
+    font-size: clamp(2.5rem, 8vw, 4rem);
+  }
+
+  .bullet-row,
+  .feature-grid,
+  .skills-tiers,
+  .auto-grid,
+  .platform-grid,
+  .summary-grid {
+    gap: 16px;
+  }
+
+  .bullet-card,
+  .feature-item,
+  .memory-layer,
+  .tier-card,
+  .agent-persona,
+  .auto-item,
+  .plat-item,
+  .summary-item {
+    width: 100%;
+    max-width: 280px;
+  }
+
+  .col-panel {
+    width: 100%;
+    max-width: 360px;
+    padding: 28px 24px;
+  }
+
+  .arch-diagram {
+    padding: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .arch-svg {
+    min-width: 600px;
+  }
+
+  .loop-step-item {
+    padding: 14px 12px;
+    min-width: 70px;
+  }
+
+  .loop-emoji {
+    font-size: 1.4rem;
+  }
+
+  .loop-name {
+    font-size: 0.75rem;
+  }
+
+  .loop-arrow-text {
+    font-size: 1.1rem;
+  }
+}
+
+@media (max-width: 600px) {
+  .slide-content {
+    padding: 24px 16px;
+  }
+
+  .slide h2 {
+    font-size: 1.8rem;
+  }
+
+  .slide-tagline {
+    font-size: 1rem;
+    margin-bottom: 32px;
+  }
+
+  .mega-title {
+    font-size: 2.5rem;
+  }
+
+  .tagline {
+    font-size: 1.2rem;
+  }
+
+  .subtitle {
+    font-size: 0.9rem;
+  }
+
+  .hero-sentence {
+    font-size: 1.1rem;
+  }
+
+  .mega-thanks {
+    font-size: 2.5rem !important;
+  }
+
+  #slide-counter {
+    font-size: 0.7rem;
+    right: 16px;
+    bottom: 16px;
+  }
+
+  #fs-hint {
+    display: none;
+  }
+
+  .memory-divider {
+    font-size: 1.2rem;
+  }
+}

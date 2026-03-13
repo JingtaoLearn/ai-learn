@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw — 开源AI智能体网关框架</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<canvas id="particles"></canvas>
+
+<!-- Dot Navigation -->
+<nav id="dot-nav" aria-label="Slide navigation">
+  <button data-slide="0" class="active" aria-label="封面"></button>
+  <button data-slide="1" aria-label="什么是OpenClaw"></button>
+  <button data-slide="2" aria-label="架构总览"></button>
+  <button data-slide="3" aria-label="Gateway"></button>
+  <button data-slide="4" aria-label="Agent"></button>
+  <button data-slide="5" aria-label="Session & Context"></button>
+  <button data-slide="6" aria-label="Memory"></button>
+  <button data-slide="7" aria-label="Skills"></button>
+  <button data-slide="8" aria-label="Multi-Agent"></button>
+  <button data-slide="9" aria-label="Automation"></button>
+  <button data-slide="10" aria-label="Tools & Security"></button>
+  <button data-slide="11" aria-label="Platforms"></button>
+  <button data-slide="12" aria-label="总结"></button>
+  <button data-slide="13" aria-label="Thank You"></button>
+</nav>
+
+<!-- Slide Counter -->
+<div id="slide-counter">1 / 14</div>
+
+<!-- Fullscreen Hint -->
+<div id="fs-hint">按 <kbd>F</kbd> 全屏</div>
+
+<!-- ======================== SLIDES ======================== -->
+<div id="deck">
+
+  <!-- Slide 1: 封面 -->
+  <section class="slide slide-cover" data-accent="#E74C3C">
+    <div class="slide-content">
+      <h1 class="mega-title anim-in">OpenClaw <span class="emoji-pop">🦞</span></h1>
+      <p class="tagline anim-in delay-1">让AI成为你的全能私人助手</p>
+      <p class="subtitle anim-in delay-2">开源AI智能体网关框架</p>
+      <div class="speaker anim-in delay-3">演讲者姓名</div>
+    </div>
+  </section>
+
+  <!-- Slide 2: 什么是OpenClaw -->
+  <section class="slide" data-accent="#3498DB">
+    <div class="slide-content">
+      <h2 class="anim-in">什么是 OpenClaw？</h2>
+      <p class="hero-sentence anim-in delay-1">将大语言模型变成<br><strong>跨平台的持久化私人助手</strong></p>
+      <div class="bullet-row anim-in delay-2">
+        <div class="bullet-card">
+          <div class="bullet-icon">🌐</div>
+          <div class="bullet-text">一个网关<br>连接所有平台</div>
+        </div>
+        <div class="bullet-card">
+          <div class="bullet-icon">🧠</div>
+          <div class="bullet-text">持久化记忆<br>跨会话保留上下文</div>
+        </div>
+        <div class="bullet-card">
+          <div class="bullet-icon">🔧</div>
+          <div class="bullet-text">可扩展技能<br>无限能力扩展</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 3: 架构总览 -->
+  <section class="slide" data-accent="#9B59B6">
+    <div class="slide-content">
+      <h2 class="anim-in">架构总览</h2>
+      <div class="arch-diagram anim-in delay-1">
+        <svg viewBox="0 0 1000 420" xmlns="http://www.w3.org/2000/svg" class="arch-svg">
+          <defs>
+            <linearGradient id="line-grad-l" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#E74C3C" stop-opacity="0.6"/>
+              <stop offset="100%" stop-color="#9B59B6" stop-opacity="0.8"/>
+            </linearGradient>
+            <linearGradient id="line-grad-r" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#9B59B6" stop-opacity="0.8"/>
+              <stop offset="100%" stop-color="#3498DB" stop-opacity="0.6"/>
+            </linearGradient>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="6" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <!-- Connection lines (animated) -->
+          <g class="conn-lines">
+            <line x1="200" y1="55" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="200" y1="115" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="200" y1="175" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="200" y1="245" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="200" y1="305" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="200" y1="365" x2="400" y2="210" stroke="url(#line-grad-l)" stroke-width="2" class="conn-line"/>
+            <line x1="600" y1="210" x2="780" y2="100" stroke="url(#line-grad-r)" stroke-width="2" class="conn-line conn-right"/>
+            <line x1="600" y1="210" x2="780" y2="210" stroke="url(#line-grad-r)" stroke-width="2" class="conn-line conn-right"/>
+            <line x1="600" y1="210" x2="780" y2="320" stroke="url(#line-grad-r)" stroke-width="2" class="conn-line conn-right"/>
+          </g>
+
+          <!-- Left: Messaging Platforms -->
+          <g class="platform-group">
+            <rect x="40" y="30" width="160" height="50" rx="12" fill="rgba(37,211,102,0.1)" stroke="#25D366" stroke-width="1.5"/>
+            <text x="120" y="62" text-anchor="middle" fill="#25D366" font-size="15" font-weight="600">📱 WhatsApp</text>
+
+            <rect x="40" y="90" width="160" height="50" rx="12" fill="rgba(0,136,204,0.1)" stroke="#0088cc" stroke-width="1.5"/>
+            <text x="120" y="122" text-anchor="middle" fill="#0088cc" font-size="15" font-weight="600">✈️ Telegram</text>
+
+            <rect x="40" y="150" width="160" height="50" rx="12" fill="rgba(88,101,242,0.1)" stroke="#5865F2" stroke-width="1.5"/>
+            <text x="120" y="182" text-anchor="middle" fill="#5865F2" font-size="15" font-weight="600">🎮 Discord</text>
+
+            <rect x="40" y="210" width="160" height="50" rx="12" fill="rgba(58,120,242,0.1)" stroke="#3A78F2" stroke-width="1.5"/>
+            <text x="120" y="242" text-anchor="middle" fill="#3A78F2" font-size="15" font-weight="600">🔒 Signal</text>
+
+            <rect x="40" y="270" width="160" height="50" rx="12" fill="rgba(52,199,89,0.1)" stroke="#34C759" stroke-width="1.5"/>
+            <text x="120" y="302" text-anchor="middle" fill="#34C759" font-size="15" font-weight="600">💬 iMessage</text>
+
+            <rect x="40" y="330" width="160" height="50" rx="12" fill="rgba(224,30,90,0.1)" stroke="#E01E5A" stroke-width="1.5"/>
+            <text x="120" y="362" text-anchor="middle" fill="#E01E5A" font-size="15" font-weight="600">💼 Slack</text>
+          </g>
+
+          <!-- Center: Gateway -->
+          <rect x="390" y="130" width="220" height="160" rx="24" fill="rgba(231,76,60,0.1)" stroke="#E74C3C" stroke-width="2.5" filter="url(#glow)"/>
+          <text x="500" y="190" text-anchor="middle" fill="#E74C3C" font-size="24" font-weight="900">⚡ Gateway</text>
+          <text x="500" y="220" text-anchor="middle" fill="rgba(231,76,60,0.7)" font-size="14">网关</text>
+          <text x="500" y="265" text-anchor="middle" fill="rgba(231,76,60,0.5)" font-size="12">统一路由 · 实时通信</text>
+
+          <!-- Right: Components -->
+          <g class="component-group">
+            <rect x="770" y="65" width="190" height="70" rx="14" fill="rgba(52,152,219,0.1)" stroke="#3498DB" stroke-width="1.5"/>
+            <text x="865" y="100" text-anchor="middle" fill="#3498DB" font-size="16" font-weight="700">🤖 Agent</text>
+            <text x="865" y="122" text-anchor="middle" fill="rgba(52,152,219,0.6)" font-size="12">智能体</text>
+
+            <rect x="770" y="175" width="190" height="70" rx="14" fill="rgba(52,152,219,0.1)" stroke="#3498DB" stroke-width="1.5"/>
+            <text x="865" y="210" text-anchor="middle" fill="#3498DB" font-size="16" font-weight="700">🧩 Skills</text>
+            <text x="865" y="232" text-anchor="middle" fill="rgba(52,152,219,0.6)" font-size="12">技能系统</text>
+
+            <rect x="770" y="285" width="190" height="70" rx="14" fill="rgba(52,152,219,0.1)" stroke="#3498DB" stroke-width="1.5"/>
+            <text x="865" y="320" text-anchor="middle" fill="#3498DB" font-size="16" font-weight="700">🔧 Tools</text>
+            <text x="865" y="342" text-anchor="middle" fill="rgba(52,152,219,0.6)" font-size="12">工具集</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 4: Gateway 网关 -->
+  <section class="slide" data-accent="#E67E22">
+    <div class="slide-content">
+      <h2 class="anim-in">Gateway 网关</h2>
+      <p class="slide-tagline anim-in delay-1">所有消息的统一入口</p>
+      <div class="feature-grid anim-in delay-2">
+        <div class="feature-item">
+          <div class="feature-icon">⚡</div>
+          <div class="feature-label">WebSocket 实时通信</div>
+          <div class="feature-desc">双向消息流，毫秒级响应</div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">🏗️</div>
+          <div class="feature-label">单守护进程</div>
+          <div class="feature-desc">一个进程服务所有平台</div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">🔀</div>
+          <div class="feature-label">统一路由</div>
+          <div class="feature-desc">智能分发，Bindings 映射</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 5: Agent 智能体 -->
+  <section class="slide" data-accent="#2ECC71">
+    <div class="slide-content">
+      <h2 class="anim-in">Agent 智能体</h2>
+      <p class="slide-tagline anim-in delay-1">有灵魂、有记忆、有工具</p>
+      <div class="agent-loop anim-in delay-2">
+        <div class="loop-steps">
+          <div class="loop-step-item">
+            <span class="loop-emoji">📥</span>
+            <span class="loop-name">Intake</span>
+          </div>
+          <span class="loop-arrow-text">→</span>
+          <div class="loop-step-item">
+            <span class="loop-emoji">📋</span>
+            <span class="loop-name">Context</span>
+          </div>
+          <span class="loop-arrow-text">→</span>
+          <div class="loop-step-item">
+            <span class="loop-emoji">🧠</span>
+            <span class="loop-name">Inference</span>
+          </div>
+          <span class="loop-arrow-text">→</span>
+          <div class="loop-step-item">
+            <span class="loop-emoji">🔧</span>
+            <span class="loop-name">Tools</span>
+          </div>
+          <span class="loop-arrow-text">→</span>
+          <div class="loop-step-item">
+            <span class="loop-emoji">💬</span>
+            <span class="loop-name">Reply</span>
+          </div>
+          <span class="loop-arrow-text">→</span>
+          <div class="loop-step-item">
+            <span class="loop-emoji">💾</span>
+            <span class="loop-name">Persist</span>
+          </div>
+        </div>
+      </div>
+      <div class="agent-files anim-in delay-3">
+        <span class="file-tag">SOUL.md</span>
+        <span class="file-tag">MEMORY.md</span>
+        <span class="file-tag">Tools</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 6: Session & Context -->
+  <section class="slide" data-accent="#1ABC9C">
+    <div class="slide-content">
+      <h2 class="anim-in">Session & Context</h2>
+      <div class="two-col anim-in delay-1">
+        <div class="col-panel">
+          <h3>Session 会话</h3>
+          <p class="panel-desc">跨消息的记忆线程</p>
+          <ul class="panel-list">
+            <li>消息历史持久化</li>
+            <li>智能重置策略</li>
+            <li>多会话并行管理</li>
+          </ul>
+        </div>
+        <div class="col-panel">
+          <h3>Context 上下文</h3>
+          <p class="panel-desc">模型实际看到的内容</p>
+          <ul class="panel-list">
+            <li>动态上下文组装</li>
+            <li>Token 预算管理</li>
+            <li>自动压缩 Compaction</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 7: Memory 记忆系统 -->
+  <section class="slide" data-accent="#8E44AD">
+    <div class="slide-content">
+      <h2 class="anim-in">Memory 记忆系统</h2>
+      <p class="slide-tagline anim-in delay-1">像人类一样记忆与遗忘</p>
+      <div class="memory-layers anim-in delay-2">
+        <div class="memory-layer">
+          <div class="mem-icon">📝</div>
+          <div class="mem-title">Markdown 文件</div>
+          <div class="mem-desc">结构化长期记忆</div>
+        </div>
+        <div class="memory-divider">+</div>
+        <div class="memory-layer">
+          <div class="mem-icon">🔍</div>
+          <div class="mem-title">向量搜索</div>
+          <div class="mem-desc">语义相似性检索</div>
+        </div>
+        <div class="memory-divider">+</div>
+        <div class="memory-layer">
+          <div class="mem-icon">⏳</div>
+          <div class="mem-title">时间衰减</div>
+          <div class="mem-desc">自然遗忘曲线</div>
+        </div>
+      </div>
+      <div class="memory-timeline anim-in delay-3">
+        <span class="timeline-tag">每日日志</span>
+        <span class="timeline-arrow">→</span>
+        <span class="timeline-tag">压缩整理</span>
+        <span class="timeline-arrow">→</span>
+        <span class="timeline-tag">长期记忆</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 8: Skills & ClawHub -->
+  <section class="slide" data-accent="#E74C3C">
+    <div class="slide-content">
+      <h2 class="anim-in">Skills & ClawHub</h2>
+      <p class="slide-tagline anim-in delay-1">即插即用的能力模块</p>
+      <div class="skills-tiers anim-in delay-2">
+        <div class="tier-card">
+          <div class="tier-num">1</div>
+          <div class="tier-name">Built-in</div>
+          <div class="tier-desc">内置核心技能</div>
+        </div>
+        <div class="tier-card">
+          <div class="tier-num">2</div>
+          <div class="tier-name">User</div>
+          <div class="tier-desc">用户自定义技能</div>
+        </div>
+        <div class="tier-card">
+          <div class="tier-num">3</div>
+          <div class="tier-name">ClawHub</div>
+          <div class="tier-desc">社区市场分发</div>
+        </div>
+      </div>
+      <div class="standard-badge anim-in delay-3">
+        <span class="badge-label">AgentSkills 标准</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 9: Multi-Agent 多智能体 -->
+  <section class="slide" data-accent="#3498DB">
+    <div class="slide-content">
+      <h2 class="anim-in">Multi-Agent 多智能体</h2>
+      <p class="slide-tagline anim-in delay-1">一个网关，多个人格</p>
+      <div class="multi-agent-visual anim-in delay-2">
+        <div class="agent-persona">
+          <div class="persona-avatar">🤖</div>
+          <div class="persona-name">工作助手</div>
+        </div>
+        <div class="agent-persona">
+          <div class="persona-avatar">🎨</div>
+          <div class="persona-name">创意伙伴</div>
+        </div>
+        <div class="agent-persona">
+          <div class="persona-avatar">📚</div>
+          <div class="persona-name">学习导师</div>
+        </div>
+        <div class="agent-persona">
+          <div class="persona-avatar">🏠</div>
+          <div class="persona-name">生活管家</div>
+        </div>
+      </div>
+      <div class="multi-agent-features anim-in delay-3">
+        <span class="ma-tag">Bindings 路由</span>
+        <span class="ma-tag">独立沙箱</span>
+        <span class="ma-tag">个性化记忆</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 10: Automation 自动化 -->
+  <section class="slide" data-accent="#F39C12">
+    <div class="slide-content">
+      <h2 class="anim-in">Automation 自动化</h2>
+      <p class="slide-tagline anim-in delay-1">AI 主动行动，而非被动等待</p>
+      <div class="auto-grid anim-in delay-2">
+        <div class="auto-item">
+          <div class="auto-icon">⏰</div>
+          <div class="auto-label">Cron 定时任务</div>
+        </div>
+        <div class="auto-item">
+          <div class="auto-icon">💓</div>
+          <div class="auto-label">Heartbeat 心跳</div>
+        </div>
+        <div class="auto-item">
+          <div class="auto-icon">🪝</div>
+          <div class="auto-label">Hooks 钩子</div>
+        </div>
+        <div class="auto-item">
+          <div class="auto-icon">🔗</div>
+          <div class="auto-label">Webhooks 回调</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 11: Tools & Security -->
+  <section class="slide" data-accent="#2C3E50">
+    <div class="slide-content">
+      <h2 class="anim-in">Tools & Security</h2>
+      <div class="two-col anim-in delay-1">
+        <div class="col-panel">
+          <h3>🔧 工具集</h3>
+          <ul class="panel-list icon-list">
+            <li>📁 文件操作</li>
+            <li>🌐 浏览器控制</li>
+            <li>🤖 子智能体</li>
+            <li>🔊 TTS 语音合成</li>
+          </ul>
+        </div>
+        <div class="col-panel">
+          <h3>🛡️ 安全体系</h3>
+          <ul class="panel-list icon-list">
+            <li>📱 设备配对</li>
+            <li>✅ 白名单机制</li>
+            <li>📦 沙箱隔离</li>
+            <li>🔐 工具策略</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 12: Platforms 多平台 -->
+  <section class="slide" data-accent="#16A085">
+    <div class="slide-content">
+      <h2 class="anim-in">Platforms 多平台</h2>
+      <p class="slide-tagline anim-in delay-1">随时随地，无处不在</p>
+      <div class="platform-grid anim-in delay-2">
+        <div class="plat-item">
+          <div class="plat-icon">🍎</div>
+          <div class="plat-name">macOS</div>
+          <div class="plat-desc">菜单栏常驻</div>
+        </div>
+        <div class="plat-item">
+          <div class="plat-icon">📱</div>
+          <div class="plat-name">iOS / Android</div>
+          <div class="plat-desc">移动节点</div>
+        </div>
+        <div class="plat-item">
+          <div class="plat-icon">🐧</div>
+          <div class="plat-name">Linux</div>
+          <div class="plat-desc">Headless 服务器</div>
+        </div>
+        <div class="plat-item">
+          <div class="plat-icon">💻</div>
+          <div class="plat-name">WebChat</div>
+          <div class="plat-desc">网页即用</div>
+        </div>
+        <div class="plat-item">
+          <div class="plat-icon">⌨️</div>
+          <div class="plat-name">CLI</div>
+          <div class="plat-desc">命令行工具</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 13: 总结 -->
+  <section class="slide" data-accent="#E74C3C">
+    <div class="slide-content">
+      <h2 class="anim-in">总结</h2>
+      <div class="summary-grid anim-in delay-1">
+        <div class="summary-item">
+          <div class="summary-icon">🔓</div>
+          <div class="summary-word">开源</div>
+          <div class="summary-detail">代码透明，社区驱动</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-icon">🌍</div>
+          <div class="summary-word">跨平台</div>
+          <div class="summary-detail">一个网关连接所有渠道</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-icon">💾</div>
+          <div class="summary-word">持久化</div>
+          <div class="summary-detail">记忆不丢失，越用越聪明</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-icon">🧩</div>
+          <div class="summary-word">可扩展</div>
+          <div class="summary-detail">技能即插即用，无限可能</div>
+        </div>
+      </div>
+      <div class="summary-slogan anim-in delay-2">
+        开源 · 跨平台 · 持久化 · 可扩展
+      </div>
+    </div>
+  </section>
+
+  <!-- Slide 14: Thank You -->
+  <section class="slide slide-thankyou" data-accent="#E74C3C">
+    <div class="slide-content">
+      <h2 class="mega-thanks anim-in">谢谢 🦞</h2>
+      <div class="thankyou-links anim-in delay-1">
+        <div class="link-item">
+          <span class="link-icon">🐙</span>
+          <span class="link-text">github.com/anthropics/openclaw</span>
+        </div>
+        <div class="link-item">
+          <span class="link-icon">📖</span>
+          <span class="link-text">docs.openclaw.dev</span>
+        </div>
+        <div class="link-item">
+          <span class="link-icon">💬</span>
+          <span class="link-text">community.openclaw.dev</span>
+        </div>
+      </div>
+      <div class="qr-placeholder anim-in delay-2">
+        <div class="qr-box">QR Code</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="js/main.js"></script>
+</body>
+</html>
