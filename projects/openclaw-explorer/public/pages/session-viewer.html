@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Viewer - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/session-viewer.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Session Viewer</h1>
+  <div class="header-controls">
+    <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+    <span id="userInfo" style="font-size:13px;color:var(--text-secondary)"></span>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<div class="sv-container" id="appContainer">
+  <!-- Login screen (shown when not authenticated) -->
+  <div class="sv-login" id="loginScreen" style="display:none;width:100%">
+    <div class="sv-login-icon">&#128274;</div>
+    <h2 style="color:var(--text);margin:0">Session Viewer</h2>
+    <p style="max-width:400px;text-align:center">Sign in to view OpenClaw agent session timelines. This feature requires authentication.</p>
+    <a class="sv-login-btn" id="loginBtn" href="#">&#127759; Login with Microsoft</a>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sv-sidebar" id="sidebar" style="display:none">
+    <div class="sv-sidebar-header">
+      <a class="back-link" href="../">&larr; Back to Topics</a>
+      <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
+    </div>
+    <div class="sv-session-list" id="sessionList">
+      <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
+    </div>
+  </nav>
+
+  <!-- Main area -->
+  <div class="sv-main" id="mainArea" style="display:none">
+    <!-- Stats bar -->
+    <div class="sv-stats" id="statsBar" style="display:none">
+      <div class="sv-stat">Events: <span class="sv-stat-value" id="statEvents">0</span></div>
+      <div class="sv-stat">Tool calls: <span class="sv-stat-value" id="statTools">0</span></div>
+      <div class="sv-stat">Duration: <span class="sv-stat-value" id="statDuration">-</span></div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="sv-filters" id="filterBar" style="display:none">
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="user"> User</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="assistant"> Assistant</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="tool-call"> Tool Call</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="tool-result"> Tool Result</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="other"> Other</label>
+      <input class="sv-search" id="searchInput" type="text" placeholder="Search events...">
+    </div>
+
+    <!-- Timeline -->
+    <div class="sv-timeline" id="timeline">
+      <div class="sv-timeline-empty">
+        <div class="sv-timeline-empty-icon">&#128203;</div>
+        <p>Select a session from the sidebar to view its timeline.</p>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div class="sv-pagination" id="pagination" style="display:none">
+      <button id="prevPage">&larr; Previous</button>
+      <span id="pageInfo"></span>
+      <button id="nextPage">Next &rarr;</button>
+    </div>
+  </div>
+</div>
+
+<script src="../js/main.js"></script>
+<script>
+(function() {
+  const EVENTS_PER_PAGE = 200;
+
+  // State
+  let authenticated = false;
+  let sessions = [];
+  let currentSessionId = null;
+  let allEvents = [];
+  let filteredEvents = [];
+  let currentPage = 1;
+  let totalPages = 1;
+
+  // DOM refs
+  const loginScreen = document.getElementById('loginScreen');
+  const loginBtn = document.getElementById('loginBtn');
+  const sidebarEl = document.getElementById('sidebar');
+  const mainArea = document.getElementById('mainArea');
+  const sessionList = document.getElementById('sessionList');
+  const timeline = document.getElementById('timeline');
+  const statsBar = document.getElementById('statsBar');
+  const filterBar = document.getElementById('filterBar');
+  const pagination = document.getElementById('pagination');
+  const searchInput = document.getElementById('searchInput');
+  const userInfo = document.getElementById('userInfo');
+
+  // Check auth on page load
+  checkAuth();
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me');
+      const data = await res.json();
+      if (data.authenticated) {
+        authenticated = true;
+        userInfo.textContent = data.user.name || data.user.email;
+        showApp();
+        loadSessions();
+      } else {
+        showLogin();
+      }
+    } catch {
+      showLogin();
+    }
+  }
+
+  function showLogin() {
+    loginScreen.style.display = '';
+    sidebarEl.style.display = 'none';
+    mainArea.style.display = 'none';
+
+    const loginUrl = getLoginUrl();
+    loginBtn.href = loginUrl;
+  }
+
+  function getLoginUrl() {
+    // ms-login expects ?redirect= parameter pointing to our POST /auth/callback
+    const callbackUrl = window.location.origin + '/auth/callback';
+    return `https://ms-login.ai.jingtao.fun/auth/login?redirect=${encodeURIComponent(callbackUrl)}`;
+  }
+
+  function showApp() {
+    loginScreen.style.display = 'none';
+    sidebarEl.style.display = '';
+    mainArea.style.display = '';
+  }
+
+  // Load sessions list
+  async function loadSessions() {
+    sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error('Failed');
+      sessions = await res.json();
+      renderSessionList();
+    } catch {
+      sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+    }
+  }
+
+  function getSessionIcon(key) {
+    if (key.startsWith('discord:channel:')) return '&#128172;'; // chat bubble
+    if (key.startsWith('cron:')) return '&#128344;'; // clock
+    if (key.startsWith('hook:')) return '&#128279;'; // link/hook
+    if (key.startsWith('direct:')) return '&#128100;'; // person
+    return '&#128196;'; // document
+  }
+
+  function getSessionLabel(key) {
+    // Truncate long keys for display
+    if (key.length > 40) return key.substring(0, 37) + '...';
+    return key;
+  }
+
+  function relativeTime(dateStr) {
+    const now = new Date();
+    const then = new Date(dateStr);
+    const diff = now - then;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    if (days < 30) return days + 'd ago';
+    return then.toLocaleDateString();
+  }
+
+  function renderSessionList() {
+    if (sessions.length === 0) {
+      sessionList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No sessions found.</div>';
+      return;
+    }
+    sessionList.innerHTML = sessions.map(s => `
+      <div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}">
+        <span class="sv-session-icon">${getSessionIcon(s.key)}</span>
+        <div class="sv-session-info">
+          <div class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(getSessionLabel(s.key))}</div>
+          <div class="sv-session-time">${relativeTime(s.updatedAt)}</div>
+        </div>
+      </div>
+    `).join('');
+
+    // Click handlers
+    sessionList.querySelectorAll('.sv-session-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.dataset.id;
+        loadSession(id);
+        // Close sidebar on mobile
+        if (window.innerWidth <= 900) {
+          sidebarEl.classList.remove('open');
+        }
+      });
+    });
+  }
+
+  // Load single session
+  async function loadSession(sessionId) {
+    currentSessionId = sessionId;
+    currentPage = 1;
+    renderSessionList(); // Update active highlight
+
+    timeline.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading events...</div>';
+    statsBar.style.display = 'none';
+    filterBar.style.display = 'none';
+    pagination.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      if (!res.ok) throw new Error('Failed');
+      allEvents = await res.json();
+      applyFilters();
+      showStatsAndFilters();
+    } catch {
+      timeline.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load session events.</div>';
+    }
+  }
+
+  function showStatsAndFilters() {
+    statsBar.style.display = '';
+    filterBar.style.display = '';
+
+    // Compute stats
+    const totalEvents = allEvents.length;
+    let toolCalls = 0;
+    let firstTime = null;
+    let lastTime = null;
+
+    for (const evt of allEvents) {
+      const ts = getEventTimestamp(evt);
+      if (ts) {
+        if (!firstTime || ts < firstTime) firstTime = ts;
+        if (!lastTime || ts > lastTime) lastTime = ts;
+      }
+      if (evt.type === 'message' && evt.message && evt.message.role === 'assistant') {
+        const content = evt.message.content;
+        if (Array.isArray(content)) {
+          toolCalls += content.filter(p => p.type === 'toolCall').length;
+        }
+      }
+    }
+
+    document.getElementById('statEvents').textContent = totalEvents;
+    document.getElementById('statTools').textContent = toolCalls;
+
+    if (firstTime && lastTime) {
+      const durMs = new Date(lastTime) - new Date(firstTime);
+      document.getElementById('statDuration').textContent = formatDuration(durMs);
+    } else {
+      document.getElementById('statDuration').textContent = '-';
+    }
+  }
+
+  function formatDuration(ms) {
+    const secs = Math.floor(ms / 1000);
+    if (secs < 60) return secs + 's';
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    if (mins < 60) return mins + 'm ' + remSecs + 's';
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return hours + 'h ' + remMins + 'm';
+  }
+
+  function getEventTimestamp(evt) {
+    if (evt.timestamp) return evt.timestamp;
+    if (evt.message && evt.message.timestamp) return evt.message.timestamp;
+    return null;
+  }
+
+  // Filtering
+  function applyFilters() {
+    const filters = {};
+    document.querySelectorAll('[data-filter]').forEach(cb => {
+      filters[cb.dataset.filter] = cb.checked;
+    });
+    const search = searchInput.value.toLowerCase().trim();
+
+    filteredEvents = allEvents.filter(evt => {
+      const cat = categorizeEvent(evt);
+      if (!filters[cat]) return false;
+      if (search && !eventMatchesSearch(evt, search)) return false;
+      return true;
+    });
+
+    totalPages = Math.max(1, Math.ceil(filteredEvents.length / EVENTS_PER_PAGE));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    renderTimeline();
+    renderPagination();
+  }
+
+  function categorizeEvent(evt) {
+    if (evt.type === 'message') {
+      const role = evt.message && evt.message.role;
+      if (role === 'user') return 'user';
+      if (role === 'assistant') return 'assistant';
+      if (role === 'toolResult') return 'tool-result';
+    }
+    if (evt.type === 'thinking_level_change' || evt.type === 'session' ||
+        (evt.type === 'custom' && evt.customType === 'model-snapshot')) {
+      return 'other';
+    }
+    return 'other';
+  }
+
+  function eventMatchesSearch(evt, search) {
+    const json = JSON.stringify(evt).toLowerCase();
+    return json.includes(search);
+  }
+
+  // Filter event listeners
+  document.querySelectorAll('[data-filter]').forEach(cb => {
+    cb.addEventListener('change', () => { currentPage = 1; applyFilters(); });
+  });
+
+  let searchTimeout;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => { currentPage = 1; applyFilters(); }, 250);
+  });
+
+  // Pagination
+  function renderPagination() {
+    if (totalPages <= 1) {
+      pagination.style.display = 'none';
+      return;
+    }
+    pagination.style.display = '';
+    document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+    document.getElementById('prevPage').disabled = currentPage <= 1;
+    document.getElementById('nextPage').disabled = currentPage >= totalPages;
+  }
+
+  document.getElementById('prevPage').addEventListener('click', () => {
+    if (currentPage > 1) { currentPage--; renderTimeline(); renderPagination(); scrollTimelineTop(); }
+  });
+
+  document.getElementById('nextPage').addEventListener('click', () => {
+    if (currentPage < totalPages) { currentPage++; renderTimeline(); renderPagination(); scrollTimelineTop(); }
+  });
+
+  function scrollTimelineTop() {
+    timeline.scrollTop = 0;
+  }
+
+  // Render timeline
+  function renderTimeline() {
+    const start = (currentPage - 1) * EVENTS_PER_PAGE;
+    const end = start + EVENTS_PER_PAGE;
+    const pageEvents = filteredEvents.slice(start, end);
+
+    if (pageEvents.length === 0) {
+      timeline.innerHTML = '<div class="sv-timeline-empty"><div class="sv-timeline-empty-icon">&#128269;</div><p>No events match your filters.</p></div>';
+      return;
+    }
+
+    const html = [];
+    let i = 0;
+    while (i < pageEvents.length) {
+      const evt = pageEvents[i];
+
+      // Check if assistant message has tool calls - group them with results
+      if (evt.type === 'message' && evt.message && evt.message.role === 'assistant') {
+        const content = evt.message.content;
+        if (Array.isArray(content)) {
+          const textParts = content.filter(p => p.type === 'text' && p.text && p.text.trim());
+          const toolCalls = content.filter(p => p.type === 'toolCall');
+
+          // Render text parts as assistant message
+          if (textParts.length > 0) {
+            html.push(renderAssistantText(evt, textParts));
+          }
+
+          // Render tool calls in a group
+          if (toolCalls.length > 0) {
+            const toolGroup = ['<div class="sv-tool-group">'];
+            for (const tc of toolCalls) {
+              toolGroup.push(renderToolCall(evt, tc));
+              // Look ahead for matching tool result
+              const resultIdx = findToolResult(pageEvents, i + 1, tc.id);
+              if (resultIdx !== -1) {
+                toolGroup.push(renderToolResult(pageEvents[resultIdx]));
+              }
+            }
+            toolGroup.push('</div>');
+            html.push(toolGroup.join(''));
+          }
+        }
+        i++;
+        continue;
+      }
+
+      // Tool results that weren't grouped (e.g. on a different page from their call)
+      if (evt.type === 'message' && evt.message && evt.message.role === 'toolResult') {
+        html.push(renderToolResultEvent(evt));
+        i++;
+        continue;
+      }
+
+      // Other event types
+      html.push(renderEvent(evt));
+      i++;
+    }
+
+    timeline.innerHTML = html.join('');
+
+    // Auto-scroll to bottom if on last page
+    if (currentPage === totalPages) {
+      requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+    }
+  }
+
+  function findToolResult(events, startIdx, toolCallId) {
+    // Search within a reasonable range for the matching tool result
+    for (let j = startIdx; j < Math.min(startIdx + 20, events.length); j++) {
+      const e = events[j];
+      if (e.type === 'message' && e.message && e.message.role === 'toolResult' && e.message.toolCallId === toolCallId) {
+        return j;
+      }
+    }
+    return -1;
+  }
+
+  function renderEvent(evt) {
+    if (evt.type === 'session') {
+      return renderSessionStart(evt);
+    }
+    if (evt.type === 'thinking_level_change') {
+      return renderThinkingChange(evt);
+    }
+    if (evt.type === 'custom' && evt.customType === 'model-snapshot') {
+      return renderModelSnapshot(evt);
+    }
+    if (evt.type === 'message' && evt.message) {
+      if (evt.message.role === 'user') return renderUserMessage(evt);
+      if (evt.message.role === 'assistant') return renderAssistantText(evt, null);
+    }
+    // Unknown type
+    return `<div class="sv-event session-start">
+      <div class="sv-event-header"><span class="sv-event-type">${escapeHtml(evt.type || 'unknown')}</span>
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span></div>
+      <div class="sv-event-body"><details class="sv-details"><summary>Raw data</summary><pre><code>${escapeHtml(JSON.stringify(evt, null, 2))}</code></pre></details></div>
+    </div>`;
+  }
+
+  function renderSessionStart(evt) {
+    const ts = evt.timestamp || '';
+    return `<div class="sv-event session-start">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Session Start</span>
+        <span class="sv-event-time">${formatTimestamp(ts)}</span>
+      </div>
+      <div class="sv-event-body">
+        <div style="font-size:13px;color:var(--text-secondary)">
+          ${evt.sessionId ? '<div>ID: <code>' + escapeHtml(evt.sessionId) + '</code></div>' : ''}
+          ${evt.version ? '<div>Version: ' + escapeHtml(evt.version) + '</div>' : ''}
+          ${evt.cwd ? '<div>CWD: <code>' + escapeHtml(evt.cwd) + '</code></div>' : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderUserMessage(evt) {
+    const msg = evt.message;
+    let text = '';
+    if (Array.isArray(msg.content)) {
+      text = msg.content.map(p => {
+        if (p.type === 'text') return p.text || '';
+        return '[' + (p.type || 'content') + ']';
+      }).join('\n');
+    } else if (typeof msg.content === 'string') {
+      text = msg.content;
+    }
+
+    return `<div class="sv-event user">
+      <div class="sv-event-header">
+        <span class="sv-event-type">User</span>
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body"><div class="sv-text-content">${escapeHtml(text)}</div></div>
+    </div>`;
+  }
+
+  function renderAssistantText(evt, textParts) {
+    const msg = evt.message;
+    let parts = textParts;
+    if (!parts && Array.isArray(msg.content)) {
+      parts = msg.content.filter(p => p.type === 'text' && p.text && p.text.trim());
+    }
+    if (!parts || parts.length === 0) return '';
+
+    const text = parts.map(p => p.text).join('\n');
+    return `<div class="sv-event assistant">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Assistant</span>
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body"><div class="sv-text-content">${escapeHtml(text)}</div></div>
+    </div>`;
+  }
+
+  function renderToolCall(evt, toolCall) {
+    let argsStr = '';
+    try {
+      const args = typeof toolCall.arguments === 'string' ? JSON.parse(toolCall.arguments) : toolCall.arguments;
+      argsStr = JSON.stringify(args, null, 2);
+    } catch {
+      argsStr = typeof toolCall.arguments === 'string' ? toolCall.arguments : JSON.stringify(toolCall.arguments);
+    }
+
+    return `<div class="sv-event tool-call">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Tool Call</span>
+        <span class="sv-tool-name">${escapeHtml(toolCall.name || 'unknown')}</span>
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body">
+        <details class="sv-details"><summary>Arguments</summary><pre><code>${escapeHtml(argsStr)}</code></pre></details>
+      </div>
+    </div>`;
+  }
+
+  // Store full tool result content for "show more" expansion
+  const toolResultStore = {};
+
+  function renderToolResult(evt) {
+    const msg = evt.message || evt;
+    const toolName = msg.toolName || '';
+    let contentText = '';
+    if (Array.isArray(msg.content)) {
+      contentText = msg.content.map(p => {
+        if (p.type === 'text') return p.text || '';
+        return '[' + (p.type || 'content') + ']';
+      }).join('\n');
+    } else if (typeof msg.content === 'string') {
+      contentText = msg.content;
+    }
+
+    const truncated = contentText.length > 500;
+    const displayText = truncated ? contentText.substring(0, 500) + '...' : contentText;
+    const storeKey = 'tr-' + Math.random().toString(36).substring(2, 10);
+
+    if (truncated) {
+      toolResultStore[storeKey] = contentText;
+    }
+
+    return `<div class="sv-event tool-result">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Result</span>
+        ${toolName ? '<span style="font-size:12px;color:var(--text-secondary)">' + escapeHtml(toolName) + '</span>' : ''}
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body">
+        <details class="sv-details">
+          <summary>Output${contentText.length > 0 ? ' (' + contentText.length + ' chars)' : ''}</summary>
+          <pre><code>${escapeHtml(displayText)}</code></pre>
+          ${truncated ? '<button class="sv-show-more" data-store-key="' + storeKey + '">Show all ' + contentText.length + ' chars</button>' : ''}
+        </details>
+      </div>
+    </div>`;
+  }
+
+  function renderToolResultEvent(evt) {
+    return renderToolResult(evt);
+  }
+
+  function renderThinkingChange(evt) {
+    const level = evt.thinkingLevel || evt.level || 'unknown';
+    return `<div class="sv-event thinking-change">
+      &#129504; Thinking: <strong>${escapeHtml(String(level))}</strong>
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>`;
+  }
+
+  function renderModelSnapshot(evt) {
+    const data = evt.data || {};
+    const model = data.modelId || (evt.model && evt.model.name) || 'unknown';
+    const provider = data.provider || '';
+    return `<div class="sv-event model-snapshot">
+      &#9432; Model: <strong>${escapeHtml(String(model))}</strong>${provider ? ' <span style="font-size:11px;opacity:0.7">(' + escapeHtml(provider) + ')</span>' : ''}
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>`;
+  }
+
+  function formatTimestamp(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return '';
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Mobile sidebar toggle
+  const sidebarToggleBtn = document.getElementById('sidebarToggle');
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      sidebarEl.classList.toggle('open');
+    });
+  }
+
+  // "Show more" delegation for tool results
+  timeline.addEventListener('click', (e) => {
+    const btn = e.target.closest('.sv-show-more');
+    if (!btn) return;
+    const key = btn.dataset.storeKey;
+    if (key && toolResultStore[key]) {
+      const codeEl = btn.previousElementSibling.querySelector('code');
+      if (codeEl) codeEl.textContent = toolResultStore[key];
+      delete toolResultStore[key];
+      btn.remove();
+    }
+  });
+
+  // Logout
+  const logoutLink = document.getElementById('logoutLink');
+  if (logoutLink) {
+    logoutLink.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await fetch('/auth/logout');
+      window.location.reload();
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
