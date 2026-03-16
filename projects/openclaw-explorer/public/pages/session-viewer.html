@@ -526,11 +526,9 @@
           if (toolCalls.length > 0) {
             const toolGroup = ['<div class="sv-tool-group">'];
             for (const tc of toolCalls) {
-              toolGroup.push(renderToolCall(evt, tc));
               const resultIdx = findToolResult(pageEvents, i + 1, tc.id);
-              if (resultIdx !== -1) {
-                toolGroup.push(renderToolResult(pageEvents[resultIdx]));
-              }
+              const resultEvt = resultIdx !== -1 ? pageEvents[resultIdx] : null;
+              toolGroup.push(renderToolPair(evt, tc, resultEvt));
             }
             toolGroup.push('</div>');
             html.push(toolGroup.join(''));
@@ -655,21 +653,23 @@
       argsStr = typeof toolCall.arguments === 'string' ? toolCall.arguments : JSON.stringify(toolCall.arguments);
     }
 
-    return `<div class="sv-event tool-call">
-      <div class="sv-event-header">
-        <span class="sv-event-type">Tool Call</span>
-        <span class="sv-tool-name">${escapeHtml(toolCall.name || 'unknown')}</span>
-        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
-      </div>
-      <div class="sv-event-body">
-        <details class="sv-details"><summary>Arguments</summary><pre><code>${escapeHtml(argsStr)}</code></pre></details>
-      </div>
+    // Compact inline preview (~100 chars)
+    const argsOneLine = argsStr.replace(/\n\s*/g, ' ').trim();
+    const preview = argsOneLine.length > 100 ? argsOneLine.substring(0, 100) + '...' : argsOneLine;
+    const uid = 'tc-' + Math.random().toString(36).substring(2, 10);
+
+    return `<div class="sv-tool-call-row" data-expand-target="${uid}">
+      <span class="sv-tc-icon">&#128295;</span>
+      <span class="sv-tc-name">${escapeHtml(toolCall.name || 'unknown')}</span>
+      <span class="sv-tc-preview">&#9656; ${escapeHtml(preview)}</span>
+      <span class="sv-tc-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>
+    <div class="sv-tool-expanded call-expanded" id="${uid}">
+      <pre><code>${escapeHtml(argsStr)}</code></pre>
     </div>`;
   }
 
-  const toolResultStore = {};
-
-  function renderToolResult(evt) {
+  function renderToolResultInline(evt) {
     const msg = evt.message || evt;
     const toolName = msg.toolName || '';
     let contentText = '';
@@ -682,32 +682,51 @@
       contentText = msg.content;
     }
 
+    const isError = contentText.toLowerCase().startsWith('error') || (msg.isError === true);
+    const charCount = contentText.length;
+    // Inline preview: first ~100 chars, single line
+    const previewText = contentText.replace(/\n/g, ' ').trim();
+    const preview = previewText.length > 100 ? previewText.substring(0, 100) + '...' : previewText;
+
     const truncated = contentText.length > 500;
     const displayText = truncated ? contentText.substring(0, 500) + '...' : contentText;
     const storeKey = 'tr-' + Math.random().toString(36).substring(2, 10);
+    const uid = 'tr-' + Math.random().toString(36).substring(2, 10);
 
     if (truncated) {
       toolResultStore[storeKey] = contentText;
     }
 
-    return `<div class="sv-event tool-result">
-      <div class="sv-event-header">
-        <span class="sv-event-type">Result</span>
-        ${toolName ? '<span style="font-size:12px;color:var(--text-secondary)">' + escapeHtml(toolName) + '</span>' : ''}
-        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
-      </div>
-      <div class="sv-event-body">
-        <details class="sv-details">
-          <summary>Output${contentText.length > 0 ? ' (' + contentText.length + ' chars)' : ''}</summary>
-          <pre><code>${escapeHtml(displayText)}</code></pre>
-          ${truncated ? '<button class="sv-show-more" data-store-key="' + storeKey + '">Show all ' + contentText.length + ' chars</button>' : ''}
-        </details>
-      </div>
+    return `<div class="sv-tool-result-row${isError ? ' error' : ''}" data-expand-target="${uid}">
+      <span class="sv-tr-icon">&#8594;</span>
+      <span class="sv-tr-name">${escapeHtml(toolName)}${isError ? ': error' : ''}</span>
+      <span class="sv-tr-preview">(${charCount} chars) ${escapeHtml(preview)}</span>
+    </div>
+    <div class="sv-tool-expanded result-expanded" id="${uid}">
+      <pre><code>${escapeHtml(displayText)}</code></pre>
+      ${truncated ? '<button class="sv-show-more" data-store-key="' + storeKey + '">Show all ' + charCount + ' chars</button>' : ''}
     </div>`;
   }
 
+  function renderToolPair(evt, toolCall, resultEvt) {
+    let html = '<div class="sv-tool-pair">';
+    html += renderToolCall(evt, toolCall);
+    if (resultEvt) {
+      html += renderToolResultInline(resultEvt);
+    }
+    html += '</div>';
+    return html;
+  }
+
+  const toolResultStore = {};
+
+  function renderToolResult(evt) {
+    return renderToolResultInline(evt);
+  }
+
   function renderToolResultEvent(evt) {
-    return renderToolResult(evt);
+    // Ungrouped tool result - wrap in a tool-pair for consistent styling
+    return '<div class="sv-tool-pair" style="margin-left:24px">' + renderToolResultInline(evt) + '</div>';
   }
 
   function renderThinkingChange(evt) {
@@ -755,16 +774,31 @@
     });
   }
 
-  // "Show more" delegation for tool results
+  // "Show more" and expand/collapse delegation for tool rows
   timeline.addEventListener('click', (e) => {
+    // Show more button for truncated output
     const btn = e.target.closest('.sv-show-more');
-    if (!btn) return;
-    const key = btn.dataset.storeKey;
-    if (key && toolResultStore[key]) {
-      const codeEl = btn.previousElementSibling.querySelector('code');
-      if (codeEl) codeEl.textContent = toolResultStore[key];
-      delete toolResultStore[key];
-      btn.remove();
+    if (btn) {
+      const key = btn.dataset.storeKey;
+      if (key && toolResultStore[key]) {
+        const codeEl = btn.previousElementSibling.querySelector('code');
+        if (codeEl) codeEl.textContent = toolResultStore[key];
+        delete toolResultStore[key];
+        btn.remove();
+      }
+      return;
+    }
+
+    // Compact row expand/collapse
+    const row = e.target.closest('.sv-tool-call-row, .sv-tool-result-row');
+    if (row) {
+      const targetId = row.dataset.expandTarget;
+      if (targetId) {
+        const expanded = document.getElementById(targetId);
+        if (expanded) {
+          expanded.classList.toggle('open');
+        }
+      }
     }
   });
 
