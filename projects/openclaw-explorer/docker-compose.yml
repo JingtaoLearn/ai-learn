@@ -12,3 +12,4 @@ services:
       - "80"
     volumes:
       - /home/jingtao/.openclaw/agents/main/sessions:/data/sessions:ro
+      - /home/jingtao/.openclaw/data/channel-names.json:/data/channel-names.json:ro

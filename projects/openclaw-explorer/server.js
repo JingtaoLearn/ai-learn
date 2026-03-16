@@ -15,29 +15,26 @@ const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '851207685@qq.com').split(
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
 
 // Discord channel ID to human-readable name mapping
-const CHANNEL_NAMES = {
-  '1471415769702338693': '#project-todo-list',
-  '1471417838597046282': '#general',
-  '1471431883111006228': '#ai-collab',
-  '1471435262704877731': '#travel',
-  '1471440043020255307': '#test',
-  '1471447483799441512': '#life',
-  '1471461335047868447': '#maintain',
-  '1471473007556956285': '#auto-issue-dev',
-  '1471477049108729926': '#zhang-logs',
-  '1471492750007599201': '#project-wedding',
-  '1471527108990861312': '#market-watch',
-  '1471661524069122159': '#music',
-  '1471686661116264632': '#automation-logs',
-  '1471752874982768794': '#brainstorm',
-  '1471820146988548097': '#coding-tasks',
-  '1476763875939717294': '#skill-lab',
-  '1476778639860305970': '#security',
-  '1476782643763875910': '#ideas',
-  '1477655095653957693': '#project-listen-english',
-  '1478245402250842294': '#blog',
-  '1479462804934103100': '#project-openclaw-intro'
-};
+// Loaded from external file (synced by OpenClaw cron) with in-memory cache
+const CHANNEL_NAMES_FILE = process.env.CHANNEL_NAMES_FILE || '/data/channel-names.json';
+let _channelNamesCache = {};
+let _channelNamesMtime = 0;
+
+function getChannelNames() {
+  try {
+    const stat = fs.statSync(CHANNEL_NAMES_FILE);
+    if (stat.mtimeMs !== _channelNamesMtime) {
+      _channelNamesCache = JSON.parse(fs.readFileSync(CHANNEL_NAMES_FILE, 'utf8'));
+      _channelNamesMtime = stat.mtimeMs;
+      console.log(`Loaded ${Object.keys(_channelNamesCache).length} channel names from ${CHANNEL_NAMES_FILE}`);
+    }
+  } catch (err) {
+    if (Object.keys(_channelNamesCache).length === 0) {
+      console.warn(`Channel names file not found: ${CHANNEL_NAMES_FILE}`);
+    }
+  }
+  return _channelNamesCache;
+}
 
 app.set('trust proxy', 1);
 
@@ -103,16 +100,17 @@ app.use('/api', requireAuth);
 
 // API routes
 app.get('/api/channel-names', (req, res) => {
-  res.json(CHANNEL_NAMES);
+  res.json(getChannelNames());
 });
 
 function computeTags(key, sessionData) {
   const tags = [];
+  const channelNames = getChannelNames();
   if (key.includes('discord:channel:')) {
     tags.push('discord');
     const match = key.match(/discord:channel:(\d+)/);
-    if (match && CHANNEL_NAMES[match[1]]) {
-      tags.push(CHANNEL_NAMES[match[1]]);
+    if (match && channelNames[match[1]]) {
+      tags.push(channelNames[match[1]]);
     }
   } else if (key.includes('cron:')) {
     tags.push('cron');
