@@ -106,6 +106,29 @@ app.get('/api/channel-names', (req, res) => {
   res.json(CHANNEL_NAMES);
 });
 
+function computeTags(key, sessionData) {
+  const tags = [];
+  if (key.includes('discord:channel:')) {
+    tags.push('discord');
+    const match = key.match(/discord:channel:(\d+)/);
+    if (match && CHANNEL_NAMES[match[1]]) {
+      tags.push(CHANNEL_NAMES[match[1]]);
+    }
+  } else if (key.includes('cron:')) {
+    tags.push('cron');
+    if (sessionData.label) {
+      const name = sessionData.label.replace(/^Cron:\s*/, '');
+      tags.push(name);
+    }
+    if (key.includes(':run:')) tags.push('run');
+  } else if (key.includes('hook:')) {
+    tags.push('hook');
+  } else if (key.includes('direct:')) {
+    tags.push('dm');
+  }
+  return tags;
+}
+
 app.get('/api/sessions', (req, res) => {
   const sessionsFile = path.join(SESSIONS_DIR, 'sessions.json');
   try {
@@ -114,7 +137,8 @@ app.get('/api/sessions', (req, res) => {
       key,
       sessionId: value.sessionId,
       updatedAt: value.updatedAt,
-      label: value.label || null
+      label: value.label || null,
+      tags: computeTags(key, value)
     }));
     sessions.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     res.json(sessions);

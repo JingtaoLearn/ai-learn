@@ -34,6 +34,7 @@
       <a class="back-link" href="../">&larr; Back to Topics</a>
       <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
     </div>
+    <div class="sv-tag-filter" id="tagFilter"></div>
     <div class="sv-session-list" id="sessionList">
       <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
     </div>
@@ -83,12 +84,14 @@
   // State
   let authenticated = false;
   let sessions = [];
-  let channelNames = {};
   let currentSessionId = null;
   let allEvents = [];
   let filteredEvents = [];
   let currentPage = 1;
   let totalPages = 1;
+
+  // Tag filter state: map of tag -> 'include' | 'exclude' | null
+  let tagFilters = {};
 
   // DOM refs
   const loginScreen = document.getElementById('loginScreen');
@@ -96,6 +99,7 @@
   const sidebarEl = document.getElementById('sidebar');
   const mainArea = document.getElementById('mainArea');
   const sessionList = document.getElementById('sessionList');
+  const tagFilterEl = document.getElementById('tagFilter');
   const timeline = document.getElementById('timeline');
   const statsBar = document.getElementById('statsBar');
   const filterBar = document.getElementById('filterBar');
@@ -143,31 +147,31 @@
     mainArea.style.display = '';
   }
 
-  // Load sessions list and channel names
+  // Tag color mapping
+  function getTagColor(tag) {
+    if (tag === 'discord') return 'blue';
+    if (tag === 'cron') return 'purple';
+    if (tag === 'hook') return 'gray';
+    if (tag === 'dm') return 'green';
+    if (tag === 'run') return 'orange';
+    if (tag.startsWith('#')) return 'blue-alt';
+    // Cron job names (not one of the known tags) - purple variant
+    return 'purple-alt';
+  }
+
+  // Load sessions list
   async function loadSessions() {
     sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
     try {
-      const [sessRes, chRes] = await Promise.all([
-        fetch('/api/sessions'),
-        fetch('/api/channel-names')
-      ]);
-      if (!sessRes.ok) throw new Error('Failed');
-      sessions = await sessRes.json();
-      if (chRes.ok) channelNames = await chRes.json();
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error('Failed');
+      sessions = await res.json();
+      renderTagFilter();
       renderSessionList();
-      // After rendering, check hash for deep-link navigation
       navigateFromHash();
     } catch {
       sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
     }
-  }
-
-  function getSessionIcon(key) {
-    if (key.startsWith('discord:channel:')) return '&#128172;';
-    if (key.startsWith('cron:')) return '&#128344;';
-    if (key.startsWith('hook:')) return '&#128279;';
-    if (key.startsWith('direct:')) return '&#128100;';
-    return '&#128196;';
   }
 
   function relativeTime(dateStr) {
@@ -184,119 +188,158 @@
     return then.toLocaleDateString();
   }
 
-  // Grouping logic
-  function getGroupKey(session) {
-    const key = session.key;
-    // Discord channel sessions: agent:main:discord:channel:<id> or just discord:channel:<id>
-    const discordMatch = key.match(/discord:channel:(\d+)/);
-    if (discordMatch) {
-      const channelId = discordMatch[1];
-      const name = channelNames[channelId];
-      return name || '#unknown-' + channelId;
+  // Collect all unique tags from sessions
+  function getAllTags() {
+    const tagSet = new Set();
+    for (const s of sessions) {
+      if (s.tags) s.tags.forEach(t => tagSet.add(t));
     }
-    // Cron sessions: use label if available, else extract job name
-    if (key.includes('cron:')) {
-      if (session.label) return 'Cron: ' + session.label;
-      const cronMatch = key.match(/cron:([^:]+)/);
-      return cronMatch ? 'Cron: ' + cronMatch[1] : 'Cron';
-    }
-    // Hook sessions
-    if (key.includes('hook:')) return 'Hooks';
-    // Direct/DM sessions
-    if (key.includes('direct:')) return 'Direct Messages';
-    return 'Other';
+    // Sort: source-type tags first, then alphabetical
+    const sourceOrder = ['discord', 'cron', 'hook', 'dm', 'run'];
+    return Array.from(tagSet).sort((a, b) => {
+      const ai = sourceOrder.indexOf(a);
+      const bi = sourceOrder.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return a.localeCompare(b);
+    });
   }
 
-  function getGroupIcon(groupName) {
-    if (groupName.startsWith('#')) return '&#128172;';
-    if (groupName.startsWith('Cron')) return '&#128344;';
-    if (groupName === 'Hooks') return '&#128279;';
-    if (groupName === 'Direct Messages') return '&#128100;';
-    return '&#128196;';
-  }
-
-  function toSlug(groupName) {
-    // "#project-todo-list" -> "project-todo-list"
-    // "Cron: auto-issue-fix" -> "cron-auto-issue-fix"
-    return groupName.replace(/^#/, '').replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
-  }
-
-  // Build lookup: slug -> groupName
-  let slugToGroup = {};
-
-  function renderSessionList() {
-    if (sessions.length === 0) {
-      sessionList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No sessions found.</div>';
+  function renderTagFilter() {
+    const allTags = getAllTags();
+    if (allTags.length === 0) {
+      tagFilterEl.innerHTML = '';
       return;
     }
 
-    // Group sessions
-    const groups = {};
-    for (const s of sessions) {
-      const group = getGroupKey(s);
-      if (!groups[group]) groups[group] = [];
-      groups[group].push(s);
-    }
+    const hasActive = Object.values(tagFilters).some(v => v);
 
-    // Sort groups: channels alphabetically, then Cron, Hooks, DMs, Other
-    const groupOrder = Object.keys(groups).sort((a, b) => {
-      const rank = (g) => {
-        if (g.startsWith('#')) return 0;
-        if (g.startsWith('Cron')) return 1;
-        if (g === 'Hooks') return 2;
-        if (g === 'Direct Messages') return 3;
-        return 4;
-      };
-      const ra = rank(a), rb = rank(b);
-      if (ra !== rb) return ra - rb;
-      return a.localeCompare(b);
+    let html = '';
+    for (const tag of allTags) {
+      const state = tagFilters[tag] || null;
+      const color = getTagColor(tag);
+      let stateClass = '';
+      if (state === 'include') stateClass = ' included';
+      else if (state === 'exclude') stateClass = ' excluded';
+      html += `<button class="sv-tag-pill ${color}${stateClass}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`;
+    }
+    if (hasActive) {
+      html += `<button class="sv-tag-clear" id="clearFilters">Clear</button>`;
+    }
+    tagFilterEl.innerHTML = html;
+
+    // Attach click handlers
+    tagFilterEl.querySelectorAll('.sv-tag-pill').forEach(pill => {
+      pill.addEventListener('click', (e) => {
+        e.preventDefault();
+        const tag = pill.dataset.tag;
+        cycleTagFilter(tag);
+      });
+      pill.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const tag = pill.dataset.tag;
+        const current = tagFilters[tag] || null;
+        if (current === null) {
+          // Right-click from neutral -> exclude
+          tagFilters[tag] = 'exclude';
+        } else if (current === 'include') {
+          // Right-click on included -> exclude
+          tagFilters[tag] = 'exclude';
+        } else {
+          tagFilters[tag] = null;
+        }
+        onTagFilterChanged();
+      });
     });
 
-    slugToGroup = {};
-    const html = [];
-    for (const groupName of groupOrder) {
-      const groupSessions = groups[groupName];
-      const slug = toSlug(groupName);
-      slugToGroup[slug] = groupName;
-      const icon = getGroupIcon(groupName);
+    const clearBtn = document.getElementById('clearFilters');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        tagFilters = {};
+        onTagFilterChanged();
+      });
+    }
+  }
 
-      html.push(`<div class="sv-group" data-group-slug="${slug}">`);
-      html.push(`<div class="sv-group-header" data-group-slug="${slug}">
-        <span class="sv-group-icon">${icon}</span>
-        <span>${escapeHtml(groupName)}</span>
-        <span class="sv-group-count">${groupSessions.length}</span>
-        <span class="sv-group-chevron">&#9660;</span>
-      </div>`);
-      html.push('<div class="sv-group-sessions">');
-      for (const s of groupSessions) {
-        const shortId = s.sessionId.length > 12 ? s.sessionId.substring(0, 12) + '...' : s.sessionId;
-        html.push(`<div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}" data-group-slug="${slug}">
-          <div class="sv-session-info">
-            <div class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(shortId)}</div>
-            <div class="sv-session-time">${relativeTime(s.updatedAt)}</div>
-          </div>
-        </div>`);
+  function cycleTagFilter(tag) {
+    const current = tagFilters[tag] || null;
+    if (current === null) {
+      tagFilters[tag] = 'include';
+    } else if (current === 'include') {
+      tagFilters[tag] = 'exclude';
+    } else {
+      tagFilters[tag] = null;
+    }
+    onTagFilterChanged();
+  }
+
+  function onTagFilterChanged() {
+    // Clean up null entries
+    for (const k of Object.keys(tagFilters)) {
+      if (!tagFilters[k]) delete tagFilters[k];
+    }
+    renderTagFilter();
+    renderSessionList();
+    updateHashFromState();
+  }
+
+  function getFilteredSessions() {
+    const includes = Object.entries(tagFilters).filter(([, v]) => v === 'include').map(([k]) => k);
+    const excludes = Object.entries(tagFilters).filter(([, v]) => v === 'exclude').map(([k]) => k);
+
+    return sessions.filter(s => {
+      const tags = s.tags || [];
+      // If any includes active, session must have ALL included tags
+      if (includes.length > 0) {
+        for (const inc of includes) {
+          if (!tags.includes(inc)) return false;
+        }
       }
-      html.push('</div></div>');
+      // Exclude: hide sessions with any excluded tag
+      for (const exc of excludes) {
+        if (tags.includes(exc)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderSessionList() {
+    const filtered = getFilteredSessions();
+
+    if (filtered.length === 0) {
+      sessionList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No sessions match filters.</div>';
+      return;
+    }
+
+    const html = [];
+    for (const s of filtered) {
+      const label = s.label || s.key;
+      const truncLabel = label.length > 40 ? label.substring(0, 40) + '...' : label;
+      const tagHtml = (s.tags || []).map(t => {
+        const color = getTagColor(t);
+        return `<span class="sv-session-tag ${color}">${escapeHtml(t)}</span>`;
+      }).join('');
+
+      html.push(`<div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}">
+        <div class="sv-session-info">
+          <div class="sv-session-top">
+            <span class="sv-session-time">${relativeTime(s.updatedAt)}</span>
+            <span class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(truncLabel)}</span>
+          </div>
+          <div class="sv-session-tags">${tagHtml}</div>
+        </div>
+      </div>`);
     }
 
     sessionList.innerHTML = html.join('');
 
-    // Group collapse/expand handlers
-    sessionList.querySelectorAll('.sv-group-header').forEach(header => {
-      header.addEventListener('click', () => {
-        header.parentElement.classList.toggle('collapsed');
-      });
-    });
-
     // Session click handlers
     sessionList.querySelectorAll('.sv-session-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
+      item.addEventListener('click', () => {
         const id = item.dataset.id;
-        const slug = item.dataset.groupSlug;
-        updateHash(slug, id);
         loadSession(id);
+        updateHashFromState();
         if (window.innerWidth <= 900) {
           sidebarEl.classList.remove('open');
         }
@@ -305,40 +348,88 @@
   }
 
   // Hash-based routing
-  function updateHash(groupSlug, sessionId) {
-    const hash = '#/' + encodeURIComponent(groupSlug) + '/' + encodeURIComponent(sessionId);
-    if (window.location.hash !== hash) {
-      history.pushState(null, '', hash);
+  function updateHashFromState() {
+    const activeTags = Object.entries(tagFilters)
+      .filter(([, v]) => v)
+      .map(([k, v]) => (v === 'exclude' ? '-' : '') + k);
+
+    if (currentSessionId && activeTags.length > 0) {
+      const hash = '#/session/' + encodeURIComponent(currentSessionId) + '?tags=' + activeTags.map(encodeURIComponent).join(',');
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else if (currentSessionId) {
+      const hash = '#/session/' + encodeURIComponent(currentSessionId);
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else if (activeTags.length > 0) {
+      const hash = '#/filter/' + activeTags.map(encodeURIComponent).join(',');
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else {
+      if (window.location.hash) history.pushState(null, '', window.location.pathname);
     }
   }
 
   function parseHash() {
     const hash = window.location.hash;
-    if (!hash || !hash.startsWith('#/')) return null;
+    if (!hash || !hash.startsWith('#/')) return { sessionId: null, tags: {} };
+
+    let sessionId = null;
+    let tags = {};
+
+    // Match #/session/<id>?tags=...
+    const sessionMatch = hash.match(/^#\/session\/([^?]+)(\?tags=(.+))?$/);
+    if (sessionMatch) {
+      sessionId = decodeURIComponent(sessionMatch[1]);
+      if (sessionMatch[3]) {
+        tags = parseTagsParam(sessionMatch[3]);
+      }
+      return { sessionId, tags };
+    }
+
+    // Match #/filter/tag1,tag2
+    const filterMatch = hash.match(/^#\/filter\/(.+)$/);
+    if (filterMatch) {
+      tags = parseTagsParam(filterMatch[1]);
+      return { sessionId: null, tags };
+    }
+
+    // Legacy format: #/<groupSlug>/<sessionId> - try to find session by ID
     const parts = hash.substring(2).split('/');
     if (parts.length >= 2) {
-      return {
-        groupSlug: decodeURIComponent(parts[0]),
-        sessionId: decodeURIComponent(parts[1])
-      };
+      sessionId = decodeURIComponent(parts[1]);
+      return { sessionId, tags: {} };
     }
-    return null;
+
+    return { sessionId: null, tags: {} };
+  }
+
+  function parseTagsParam(param) {
+    const tags = {};
+    const parts = param.split(',').map(decodeURIComponent);
+    for (const p of parts) {
+      if (p.startsWith('-')) {
+        tags[p.substring(1)] = 'exclude';
+      } else {
+        tags[p] = 'include';
+      }
+    }
+    return tags;
   }
 
   function navigateFromHash() {
     const parsed = parseHash();
-    if (!parsed) return;
 
-    // Expand the target group
-    const groupEl = sessionList.querySelector(`.sv-group[data-group-slug="${parsed.groupSlug}"]`);
-    if (groupEl) {
-      groupEl.classList.remove('collapsed');
+    // Restore tag filters
+    if (Object.keys(parsed.tags).length > 0) {
+      tagFilters = parsed.tags;
+      renderTagFilter();
+      renderSessionList();
     }
 
-    // Find and load the session
-    const session = sessions.find(s => s.sessionId === parsed.sessionId);
-    if (session) {
-      loadSession(parsed.sessionId);
+    // Load session if specified
+    if (parsed.sessionId) {
+      const session = sessions.find(s => s.sessionId === parsed.sessionId);
+      if (session) {
+        loadSession(parsed.sessionId);
+      }
     }
   }
 
@@ -420,7 +511,7 @@
     return null;
   }
 
-  // Filtering
+  // Filtering (timeline event filters)
   function applyFilters() {
     const filters = {};
     document.querySelectorAll('[data-filter]').forEach(cb => {
