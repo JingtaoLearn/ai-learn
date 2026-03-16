@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jingtao's Services</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --bg-card: #1a1d27;
+      --bg-card-hover: #222634;
+      --text: #e4e6eb;
+      --text-secondary: #9ca3af;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.15);
+      --border: #2a2d3a;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --radius: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.3);
+      --transition: 0.2s ease;
+    }
+
+    :root.light {
+      --bg: #f3f4f6;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f9fafb;
+      --text: #111827;
+      --text-secondary: #6b7280;
+      --accent: #4f46e5;
+      --accent-glow: rgba(79, 70, 229, 0.08);
+      --border: #e5e7eb;
+      --shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+        'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+      transition: background var(--transition), color var(--transition);
+    }
+
+    /* Header */
+    .header {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 1rem;
+    }
+
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .last-updated {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .theme-toggle {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      transition: all var(--transition);
+    }
+
+    .theme-toggle:hover {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    /* Search */
+    .search-bar {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1.5rem 1.5rem;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 0.75rem 1rem 0.75rem 2.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: all var(--transition);
+    }
+
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    .search-input::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .search-wrapper {
+      position: relative;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 0.9rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-secondary);
+      font-size: 1rem;
+      pointer-events: none;
+    }
+
+    /* Main content */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1.5rem 3rem;
+    }
+
+    /* Category sections */
+    .category-section {
+      margin-bottom: 2rem;
+    }
+
+    .category-header {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 0.75rem;
+      padding-left: 0.25rem;
+    }
+
+    .category-count {
+      font-weight: 400;
+      opacity: 0.7;
+      margin-left: 0.5rem;
+    }
+
+    /* Card grid */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+
+    /* Service card */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+      transition: all var(--transition);
+      position: relative;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(12px);
+      animation: cardIn 0.4s ease forwards;
+    }
+
+    .card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent);
+      box-shadow: var(--shadow);
+      transform: translateY(-2px);
+    }
+
+    .card-top {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .card-emoji {
+      font-size: 1.6rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .card-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .card-badges {
+      display: flex;
+      gap: 0.4rem;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+    }
+
+    .badge-status {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      color: var(--green);
+      background: rgba(34, 197, 94, 0.1);
+    }
+
+    .badge-status .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .badge-preview {
+      color: var(--yellow);
+      background: rgba(234, 179, 8, 0.1);
+    }
+
+    .card-description {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.75rem;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .card-uptime {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .card-host {
+      opacity: 0.6;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 180px;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 4rem 1rem;
+      color: var(--text-secondary);
+    }
+
+    .empty-state-icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      opacity: 0.5;
+    }
+
+    .empty-state-text {
+      font-size: 1rem;
+    }
+
+    /* Loading skeleton */
+    .skeleton-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+
+    .skeleton-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      height: 140px;
+    }
+
+    .skeleton-line {
+      height: 14px;
+      background: var(--border);
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+      animation: shimmer 1.5s ease-in-out infinite;
+    }
+
+    .skeleton-line:nth-child(1) { width: 60%; height: 18px; }
+    .skeleton-line:nth-child(2) { width: 90%; }
+    .skeleton-line:nth-child(3) { width: 40%; }
+
+    /* Animations */
+    @keyframes cardIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    @keyframes shimmer {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.6; }
+    }
+
+    /* Error banner */
+    .error-banner {
+      max-width: 1200px;
+      margin: 0 auto 1rem;
+      padding: 0.75rem 1.5rem;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: var(--radius);
+      color: #f87171;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    .error-banner.visible { display: block; }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .header { padding: 1.5rem 1rem 0.75rem; }
+      .header h1 { font-size: 1.35rem; }
+      .search-bar { padding: 0 1rem 1rem; }
+      .container { padding: 0 1rem 2rem; }
+      .card-grid { grid-template-columns: 1fr; }
+      .last-updated { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-top">
+      <h1>Jingtao's Services</h1>
+      <div class="header-right">
+        <span class="last-updated" id="lastUpdated"></span>
+        <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme"></button>
+      </div>
+    </div>
+  </header>
+
+  <div class="search-bar">
+    <div class="search-wrapper">
+      <span class="search-icon">\uD83D\uDD0D</span>
+      <input type="text" class="search-input" id="searchInput"
+        placeholder="Search services..." autocomplete="off" />
+    </div>
+  </div>
+
+  <div class="error-banner" id="errorBanner">
+    Failed to load services. Retrying...
+  </div>
+
+  <main class="container" id="main">
+    <div class="skeleton-grid" id="skeleton">
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      <div class="skeleton-card"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+    </div>
+  </main>
+
+  <script>
+    // Theme management
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('themeToggle');
+    let dark = localStorage.getItem('theme') !== 'light';
+
+    function applyTheme() {
+      root.classList.toggle('light', !dark);
+      themeBtn.textContent = dark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+    }
+
+    themeBtn.addEventListener('click', () => {
+      dark = !dark;
+      localStorage.setItem('theme', dark ? 'dark' : 'light');
+      applyTheme();
+    });
+
+    applyTheme();
+
+    // State
+    let allServices = [];
+    const mainEl = document.getElementById('main');
+    const skeletonEl = document.getElementById('skeleton');
+    const searchInput = document.getElementById('searchInput');
+    const lastUpdatedEl = document.getElementById('lastUpdated');
+    const errorBanner = document.getElementById('errorBanner');
+
+    // Fetch services
+    async function fetchServices() {
+      try {
+        const res = await fetch('/api/services');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        allServices = data.services;
+        errorBanner.classList.remove('visible');
+
+        const ts = new Date(data.lastUpdated);
+        lastUpdatedEl.textContent = 'Updated ' + ts.toLocaleTimeString([], {
+          hour: '2-digit', minute: '2-digit'
+        });
+
+        render();
+      } catch (err) {
+        console.error('Fetch error:', err);
+        errorBanner.classList.add('visible');
+        // If first load, keep skeleton
+        if (allServices.length === 0) return;
+      }
+    }
+
+    // Search filter
+    function getFiltered() {
+      const q = searchInput.value.toLowerCase().trim();
+      if (!q) return allServices;
+      return allServices.filter(s =>
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        s.category.toLowerCase().includes(q) ||
+        s.containerName.toLowerCase().includes(q)
+      );
+    }
+
+    // Group by category
+    function groupByCategory(services) {
+      const groups = {};
+      for (const s of services) {
+        if (!groups[s.category]) groups[s.category] = [];
+        groups[s.category].push(s);
+      }
+      return groups;
+    }
+
+    // Render
+    function render() {
+      const filtered = getFiltered();
+
+      if (allServices.length === 0) {
+        // Still loading
+        return;
+      }
+
+      if (filtered.length === 0) {
+        mainEl.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">\uD83D\uDD0D</div>
+            <div class="empty-state-text">No services match your search</div>
+          </div>`;
+        return;
+      }
+
+      const groups = groupByCategory(filtered);
+      const categoryOrder = ['Apps', 'Other', 'Infrastructure'];
+      const sortedCategories = Object.keys(groups).sort((a, b) => {
+        const ia = categoryOrder.indexOf(a);
+        const ib = categoryOrder.indexOf(b);
+        return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+      });
+
+      let html = '';
+      let cardIndex = 0;
+
+      for (const cat of sortedCategories) {
+        const services = groups[cat];
+        html += `
+          <section class="category-section">
+            <h2 class="category-header">${esc(cat)}<span class="category-count">${services.length}</span></h2>
+            <div class="card-grid">`;
+
+        for (const s of services) {
+          const delay = Math.min(cardIndex * 50, 400);
+          html += `
+              <a class="card" href="${esc(s.url)}" target="_blank" rel="noopener"
+                style="animation-delay: ${delay}ms">
+                <div class="card-top">
+                  <span class="card-emoji">${s.emoji}</span>
+                  <span class="card-name">${esc(s.name)}</span>
+                  <div class="card-badges">
+                    ${s.isPreview ? '<span class="badge badge-preview">Preview</span>' : ''}
+                    <span class="badge badge-status"><span class="dot"></span>${esc(s.status)}</span>
+                  </div>
+                </div>
+                ${s.description ? `<p class="card-description">${esc(s.description)}</p>` : ''}
+                <div class="card-footer">
+                  <span class="card-uptime">\u23F1 ${esc(s.uptime)}</span>
+                  <span class="card-host">${esc(s.url.replace('https://', ''))}</span>
+                </div>
+              </a>`;
+          cardIndex++;
+        }
+
+        html += `
+            </div>
+          </section>`;
+      }
+
+      mainEl.innerHTML = html;
+    }
+
+    // Escape HTML
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    // Event listeners
+    searchInput.addEventListener('input', render);
+
+    // Keyboard shortcut: / to focus search
+    document.addEventListener('keydown', (e) => {
+      if (e.key === '/' && document.activeElement !== searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+      if (e.key === 'Escape') {
+        searchInput.value = '';
+        searchInput.blur();
+        render();
+      }
+    });
+
+    // Initial fetch + auto-refresh
+    fetchServices();
+    setInterval(fetchServices, 30000);
+  </script>
+</body>
+</html>

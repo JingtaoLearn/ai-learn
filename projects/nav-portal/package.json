@@ -1,0 +1,13 @@
+{
+  "name": "nav-portal",
+  "version": "1.0.0",
+  "description": "Navigation portal that auto-discovers Docker services",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.0",
+    "express": "^4.21.0"
+  }
+}
