@@ -83,6 +83,7 @@
   // State
   let authenticated = false;
   let sessions = [];
+  let channelNames = {};
   let currentSessionId = null;
   let allEvents = [];
   let filteredEvents = [];
@@ -113,7 +114,7 @@
         authenticated = true;
         userInfo.textContent = data.user.name || data.user.email;
         showApp();
-        loadSessions();
+        await loadSessions();
       } else {
         showLogin();
       }
@@ -132,7 +133,6 @@
   }
 
   function getLoginUrl() {
-    // ms-login expects ?redirect= parameter pointing to our POST /auth/callback
     const callbackUrl = window.location.origin + '/auth/callback';
     return `https://ms-login.ai.jingtao.fun/auth/login?redirect=${encodeURIComponent(callbackUrl)}`;
   }
@@ -143,31 +143,31 @@
     mainArea.style.display = '';
   }
 
-  // Load sessions list
+  // Load sessions list and channel names
   async function loadSessions() {
     sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
     try {
-      const res = await fetch('/api/sessions');
-      if (!res.ok) throw new Error('Failed');
-      sessions = await res.json();
+      const [sessRes, chRes] = await Promise.all([
+        fetch('/api/sessions'),
+        fetch('/api/channel-names')
+      ]);
+      if (!sessRes.ok) throw new Error('Failed');
+      sessions = await sessRes.json();
+      if (chRes.ok) channelNames = await chRes.json();
       renderSessionList();
+      // After rendering, check hash for deep-link navigation
+      navigateFromHash();
     } catch {
       sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
     }
   }
 
   function getSessionIcon(key) {
-    if (key.startsWith('discord:channel:')) return '&#128172;'; // chat bubble
-    if (key.startsWith('cron:')) return '&#128344;'; // clock
-    if (key.startsWith('hook:')) return '&#128279;'; // link/hook
-    if (key.startsWith('direct:')) return '&#128100;'; // person
-    return '&#128196;'; // document
-  }
-
-  function getSessionLabel(key) {
-    // Truncate long keys for display
-    if (key.length > 40) return key.substring(0, 37) + '...';
-    return key;
+    if (key.startsWith('discord:channel:')) return '&#128172;';
+    if (key.startsWith('cron:')) return '&#128344;';
+    if (key.startsWith('hook:')) return '&#128279;';
+    if (key.startsWith('direct:')) return '&#128100;';
+    return '&#128196;';
   }
 
   function relativeTime(dateStr) {
@@ -184,33 +184,168 @@
     return then.toLocaleDateString();
   }
 
+  // Grouping logic
+  function getGroupKey(session) {
+    const key = session.key;
+    // Discord channel sessions: agent:main:discord:channel:<id> or just discord:channel:<id>
+    const discordMatch = key.match(/discord:channel:(\d+)/);
+    if (discordMatch) {
+      const channelId = discordMatch[1];
+      const name = channelNames[channelId];
+      return name || '#unknown-' + channelId;
+    }
+    // Cron sessions: use label if available, else extract job name
+    if (key.includes('cron:')) {
+      if (session.label) return 'Cron: ' + session.label;
+      const cronMatch = key.match(/cron:([^:]+)/);
+      return cronMatch ? 'Cron: ' + cronMatch[1] : 'Cron';
+    }
+    // Hook sessions
+    if (key.includes('hook:')) return 'Hooks';
+    // Direct/DM sessions
+    if (key.includes('direct:')) return 'Direct Messages';
+    return 'Other';
+  }
+
+  function getGroupIcon(groupName) {
+    if (groupName.startsWith('#')) return '&#128172;';
+    if (groupName.startsWith('Cron')) return '&#128344;';
+    if (groupName === 'Hooks') return '&#128279;';
+    if (groupName === 'Direct Messages') return '&#128100;';
+    return '&#128196;';
+  }
+
+  function toSlug(groupName) {
+    // "#project-todo-list" -> "project-todo-list"
+    // "Cron: auto-issue-fix" -> "cron-auto-issue-fix"
+    return groupName.replace(/^#/, '').replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  }
+
+  // Build lookup: slug -> groupName
+  let slugToGroup = {};
+
   function renderSessionList() {
     if (sessions.length === 0) {
       sessionList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No sessions found.</div>';
       return;
     }
-    sessionList.innerHTML = sessions.map(s => `
-      <div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}">
-        <span class="sv-session-icon">${getSessionIcon(s.key)}</span>
-        <div class="sv-session-info">
-          <div class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(getSessionLabel(s.key))}</div>
-          <div class="sv-session-time">${relativeTime(s.updatedAt)}</div>
-        </div>
-      </div>
-    `).join('');
 
-    // Click handlers
+    // Group sessions
+    const groups = {};
+    for (const s of sessions) {
+      const group = getGroupKey(s);
+      if (!groups[group]) groups[group] = [];
+      groups[group].push(s);
+    }
+
+    // Sort groups: channels alphabetically, then Cron, Hooks, DMs, Other
+    const groupOrder = Object.keys(groups).sort((a, b) => {
+      const rank = (g) => {
+        if (g.startsWith('#')) return 0;
+        if (g.startsWith('Cron')) return 1;
+        if (g === 'Hooks') return 2;
+        if (g === 'Direct Messages') return 3;
+        return 4;
+      };
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      return a.localeCompare(b);
+    });
+
+    slugToGroup = {};
+    const html = [];
+    for (const groupName of groupOrder) {
+      const groupSessions = groups[groupName];
+      const slug = toSlug(groupName);
+      slugToGroup[slug] = groupName;
+      const icon = getGroupIcon(groupName);
+
+      html.push(`<div class="sv-group" data-group-slug="${slug}">`);
+      html.push(`<div class="sv-group-header" data-group-slug="${slug}">
+        <span class="sv-group-icon">${icon}</span>
+        <span>${escapeHtml(groupName)}</span>
+        <span class="sv-group-count">${groupSessions.length}</span>
+        <span class="sv-group-chevron">&#9660;</span>
+      </div>`);
+      html.push('<div class="sv-group-sessions">');
+      for (const s of groupSessions) {
+        const shortId = s.sessionId.length > 12 ? s.sessionId.substring(0, 12) + '...' : s.sessionId;
+        html.push(`<div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}" data-group-slug="${slug}">
+          <div class="sv-session-info">
+            <div class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(shortId)}</div>
+            <div class="sv-session-time">${relativeTime(s.updatedAt)}</div>
+          </div>
+        </div>`);
+      }
+      html.push('</div></div>');
+    }
+
+    sessionList.innerHTML = html.join('');
+
+    // Group collapse/expand handlers
+    sessionList.querySelectorAll('.sv-group-header').forEach(header => {
+      header.addEventListener('click', () => {
+        header.parentElement.classList.toggle('collapsed');
+      });
+    });
+
+    // Session click handlers
     sessionList.querySelectorAll('.sv-session-item').forEach(item => {
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
         const id = item.dataset.id;
+        const slug = item.dataset.groupSlug;
+        updateHash(slug, id);
         loadSession(id);
-        // Close sidebar on mobile
         if (window.innerWidth <= 900) {
           sidebarEl.classList.remove('open');
         }
       });
     });
   }
+
+  // Hash-based routing
+  function updateHash(groupSlug, sessionId) {
+    const hash = '#/' + encodeURIComponent(groupSlug) + '/' + encodeURIComponent(sessionId);
+    if (window.location.hash !== hash) {
+      history.pushState(null, '', hash);
+    }
+  }
+
+  function parseHash() {
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#/')) return null;
+    const parts = hash.substring(2).split('/');
+    if (parts.length >= 2) {
+      return {
+        groupSlug: decodeURIComponent(parts[0]),
+        sessionId: decodeURIComponent(parts[1])
+      };
+    }
+    return null;
+  }
+
+  function navigateFromHash() {
+    const parsed = parseHash();
+    if (!parsed) return;
+
+    // Expand the target group
+    const groupEl = sessionList.querySelector(`.sv-group[data-group-slug="${parsed.groupSlug}"]`);
+    if (groupEl) {
+      groupEl.classList.remove('collapsed');
+    }
+
+    // Find and load the session
+    const session = sessions.find(s => s.sessionId === parsed.sessionId);
+    if (session) {
+      loadSession(parsed.sessionId);
+    }
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (!authenticated || sessions.length === 0) return;
+    navigateFromHash();
+  });
 
   // Load single session
   async function loadSession(sessionId) {
@@ -238,7 +373,6 @@
     statsBar.style.display = '';
     filterBar.style.display = '';
 
-    // Compute stats
     const totalEvents = allEvents.length;
     let toolCalls = 0;
     let firstTime = null;
@@ -385,17 +519,14 @@
           const textParts = content.filter(p => p.type === 'text' && p.text && p.text.trim());
           const toolCalls = content.filter(p => p.type === 'toolCall');
 
-          // Render text parts as assistant message
           if (textParts.length > 0) {
             html.push(renderAssistantText(evt, textParts));
           }
 
-          // Render tool calls in a group
           if (toolCalls.length > 0) {
             const toolGroup = ['<div class="sv-tool-group">'];
             for (const tc of toolCalls) {
               toolGroup.push(renderToolCall(evt, tc));
-              // Look ahead for matching tool result
               const resultIdx = findToolResult(pageEvents, i + 1, tc.id);
               if (resultIdx !== -1) {
                 toolGroup.push(renderToolResult(pageEvents[resultIdx]));
@@ -409,7 +540,7 @@
         continue;
       }
 
-      // Tool results that weren't grouped (e.g. on a different page from their call)
+      // Tool results that weren't grouped
       if (evt.type === 'message' && evt.message && evt.message.role === 'toolResult') {
         html.push(renderToolResultEvent(evt));
         i++;
@@ -423,14 +554,12 @@
 
     timeline.innerHTML = html.join('');
 
-    // Auto-scroll to bottom if on last page
     if (currentPage === totalPages) {
       requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
     }
   }
 
   function findToolResult(events, startIdx, toolCallId) {
-    // Search within a reasonable range for the matching tool result
     for (let j = startIdx; j < Math.min(startIdx + 20, events.length); j++) {
       const e = events[j];
       if (e.type === 'message' && e.message && e.message.role === 'toolResult' && e.message.toolCallId === toolCallId) {
@@ -454,7 +583,6 @@
       if (evt.message.role === 'user') return renderUserMessage(evt);
       if (evt.message.role === 'assistant') return renderAssistantText(evt, null);
     }
-    // Unknown type
     return `<div class="sv-event session-start">
       <div class="sv-event-header"><span class="sv-event-type">${escapeHtml(evt.type || 'unknown')}</span>
       <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span></div>
@@ -539,7 +667,6 @@
     </div>`;
   }
 
-  // Store full tool result content for "show more" expansion
   const toolResultStore = {};
 
   function renderToolResult(evt) {
