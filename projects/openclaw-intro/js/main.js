@@ -1,12 +1,12 @@
 // ===== Particle Background =====
 (function initParticles() {
-  const canvas = document.getElementById('particles');
+  var canvas = document.getElementById('particles');
   if (!canvas) return;
-  const ctx = canvas.getContext('2d');
+  var ctx = canvas.getContext('2d');
 
-  let width, height, particles;
-  const PARTICLE_COUNT = 30;
-  const CONNECT_DIST = 100;
+  var width, height, particles;
+  var PARTICLE_COUNT = 30;
+  var CONNECT_DIST = 100;
 
   function resize() {
     width = canvas.width = window.innerWidth;
@@ -31,14 +31,14 @@
 
   function draw() {
     ctx.clearRect(0, 0, width, height);
-    for (let i = 0; i < particles.length; i++) {
-      for (let j = i + 1; j < particles.length; j++) {
-        const dx = particles[i].x - particles[j].x;
-        const dy = particles[i].y - particles[j].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+    for (var i = 0; i < particles.length; i++) {
+      for (var j = i + 1; j < particles.length; j++) {
+        var dx = particles[i].x - particles[j].x;
+        var dy = particles[i].y - particles[j].y;
+        var dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < CONNECT_DIST) {
-          const alpha = (1 - dist / CONNECT_DIST) * 0.12;
-          ctx.strokeStyle = `rgba(52, 152, 219, ${alpha})`;
+          var alpha = (1 - dist / CONNECT_DIST) * 0.12;
+          ctx.strokeStyle = 'rgba(52, 152, 219, ' + alpha + ')';
           ctx.lineWidth = 0.5;
           ctx.beginPath();
           ctx.moveTo(particles[i].x, particles[i].y);
@@ -47,16 +47,18 @@
         }
       }
     }
-    for (const p of particles) {
+    for (var k = 0; k < particles.length; k++) {
+      var p = particles[k];
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(52, 152, 219, ${p.opacity})`;
+      ctx.fillStyle = 'rgba(52, 152, 219, ' + p.opacity + ')';
       ctx.fill();
     }
   }
 
   function update() {
-    for (const p of particles) {
+    for (var k = 0; k < particles.length; k++) {
+      var p = particles[k];
       p.y += p.speedY;
       p.x += p.speedX;
       if (p.y < -10) { p.y = height + 10; p.x = Math.random() * width; }
@@ -78,52 +80,61 @@
 
 // ===== Slide Navigation Core =====
 (function initDeck() {
-  const deck = document.getElementById('deck');
-  const slides = document.querySelectorAll('.slide');
-  const dots = document.querySelectorAll('#dot-nav button');
-  const counter = document.getElementById('slide-counter');
-  const total = slides.length;
-  let currentSlide = 0;
+  var deck = document.getElementById('deck');
+  var slides = deck.querySelectorAll('.slide');
+  var dots = document.querySelectorAll('#dot-nav button');
+  var counter = document.getElementById('slide-counter');
+  var total = slides.length;
+  var currentSlide = 0;
+  var isScrolling = false;
 
   function goToSlide(index) {
-    if (index < 0 || index >= total) return;
-    slides[index].scrollIntoView({ behavior: 'smooth' });
+    if (index < 0 || index >= total || isScrolling) return;
+    isScrolling = true;
+    currentSlide = index;
+    updateUI(index);
+
+    // Scroll the slide into view within #deck
+    slides[index].scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    // Reset scrolling lock after animation
+    setTimeout(function() { isScrolling = false; }, 800);
   }
 
-  // Update active state via IntersectionObserver
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          const idx = Array.from(slides).indexOf(entry.target);
-          if (idx !== -1) {
-            currentSlide = idx;
-            dots.forEach((d, i) => d.classList.toggle('active', i === idx));
-            counter.textContent = `${idx + 1} / ${total}`;
+  function updateUI(idx) {
+    dots.forEach(function(d, i) { d.classList.toggle('active', i === idx); });
+    counter.textContent = (idx + 1) + ' / ' + total;
 
-            // Trigger anim-in elements in this slide
-            entry.target.querySelectorAll('.anim-in').forEach((el) => {
-              el.classList.add('visible');
-            });
-          }
-        }
-      });
-    },
-    { threshold: 0.5 }
-  );
+    // Trigger animations for current slide
+    slides[idx].querySelectorAll('.anim-in').forEach(function(el) {
+      el.classList.add('visible');
+    });
+  }
 
-  slides.forEach((s) => observer.observe(s));
+  // Detect current slide from scroll position
+  deck.addEventListener('scroll', function() {
+    var scrollTop = deck.scrollTop;
+    var slideHeight = deck.clientHeight;
+    var idx = Math.round(scrollTop / slideHeight);
+    if (idx !== currentSlide && idx >= 0 && idx < total) {
+      currentSlide = idx;
+      updateUI(idx);
+    }
+  }, { passive: true });
+
+  // Initialize first slide
+  updateUI(0);
 
   // Dot click navigation
-  dots.forEach((dot) => {
-    dot.addEventListener('click', () => {
-      const idx = parseInt(dot.dataset.slide, 10);
+  dots.forEach(function(dot) {
+    dot.addEventListener('click', function() {
+      var idx = parseInt(dot.dataset.slide, 10);
       goToSlide(idx);
     });
   });
 
   // Keyboard navigation
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', function(e) {
     switch (e.key) {
       case 'ArrowDown':
       case 'ArrowRight':
@@ -153,21 +164,27 @@
     }
   });
 
-  // Touch swipe support
-  let touchStartY = 0;
-  let touchStartX = 0;
+  // Mouse wheel — prevent free scroll, snap to slides
+  deck.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    if (isScrolling) return;
+    if (e.deltaY > 0) {
+      goToSlide(currentSlide + 1);
+    } else if (e.deltaY < 0) {
+      goToSlide(currentSlide - 1);
+    }
+  }, { passive: false });
 
-  document.addEventListener('touchstart', (e) => {
+  // Touch swipe support
+  var touchStartY = 0;
+
+  deck.addEventListener('touchstart', function(e) {
     touchStartY = e.touches[0].clientY;
-    touchStartX = e.touches[0].clientX;
   }, { passive: true });
 
-  document.addEventListener('touchend', (e) => {
-    const dy = touchStartY - e.changedTouches[0].clientY;
-    const dx = touchStartX - e.changedTouches[0].clientX;
-
-    // Only trigger on vertical swipes (not horizontal)
-    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 50) {
+  deck.addEventListener('touchend', function(e) {
+    var dy = touchStartY - e.changedTouches[0].clientY;
+    if (Math.abs(dy) > 50) {
       if (dy > 0) {
         goToSlide(currentSlide + 1);
       } else {
@@ -179,7 +196,7 @@
   // Fullscreen toggle
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen().catch(function() {});
     } else {
       document.exitFullscreen();
     }

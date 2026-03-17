@@ -23,8 +23,8 @@
 
 html {
   font-size: 16px;
-  scroll-snap-type: y mandatory;
-  overflow-x: hidden;
+  overflow: hidden;
+  height: 100%;
 }
 
 body {
@@ -33,7 +33,9 @@ body {
   color: var(--text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow: hidden;
+  height: 100%;
+  margin: 0;
 }
 
 strong {
@@ -56,11 +58,21 @@ strong {
 #deck {
   position: relative;
   z-index: 1;
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
 }
 
 .slide {
   height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
   scroll-snap-align: start;
+  scroll-snap-stop: always;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -71,11 +83,17 @@ strong {
 .slide-content {
   max-width: 1100px;
   width: 100%;
-  padding: 40px 48px;
+  padding: 24px 48px;
   text-align: center;
   position: relative;
   z-index: 2;
+  max-height: 100vh;
+  max-height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
 }
+.slide-content::-webkit-scrollbar { display: none; }
 
 /* ===== Dot Navigation ===== */
 #dot-nav {
@@ -186,7 +204,7 @@ strong {
 .subtitle {
   font-size: clamp(1rem, 2vw, 1.3rem);
   color: var(--text-muted);
-  margin-bottom: 48px;
+  margin-bottom: 32px;
 }
 
 .speaker {
@@ -204,7 +222,7 @@ strong {
   font-size: clamp(1.3rem, 3vw, 1.8rem);
   color: var(--text-muted);
   line-height: 1.8;
-  margin-bottom: 48px;
+  margin-bottom: 32px;
 }
 
 .bullet-row {
@@ -217,9 +235,9 @@ strong {
 .bullet-card {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 36px 32px;
-  width: 240px;
+  border-radius: 16px;
+  padding: 24px 24px;
+  width: 220px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s, border-color 0.3s;
@@ -231,13 +249,13 @@ strong {
 }
 
 .bullet-icon {
-  font-size: 2.5rem;
-  margin-bottom: 16px;
+  font-size: 2rem;
+  margin-bottom: 10px;
 }
 
 .bullet-text {
-  font-size: 1.05rem;
-  line-height: 1.6;
+  font-size: 0.95rem;
+  line-height: 1.5;
   color: var(--text-muted);
 }
 
@@ -252,7 +270,7 @@ strong {
 .slide-tagline {
   font-size: clamp(1rem, 2vw, 1.3rem);
   color: var(--text-muted);
-  margin-bottom: 48px;
+  margin-bottom: 28px;
 }
 
 /* ===== Slide 3: Architecture ===== */
@@ -300,9 +318,9 @@ strong {
 .feature-item {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 36px 28px;
-  width: 260px;
+  border-radius: 16px;
+  padding: 24px 24px;
+  width: 240px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s, border-color 0.3s;
@@ -314,8 +332,8 @@ strong {
 }
 
 .feature-icon {
-  font-size: 2.5rem;
-  margin-bottom: 16px;
+  font-size: 2rem;
+  margin-bottom: 10px;
 }
 
 .feature-label {
@@ -331,23 +349,23 @@ strong {
 
 /* ===== Slide 5: Agent Loop ===== */
 .agent-loop {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .loop-steps {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .loop-step-item {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  padding: 20px 18px;
-  min-width: 90px;
+  border-radius: 14px;
+  padding: 14px 14px;
+  min-width: 80px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s;
@@ -404,24 +422,24 @@ strong {
 .col-panel {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 40px 36px;
-  width: 380px;
+  border-radius: 16px;
+  padding: 28px 28px;
+  width: 360px;
   text-align: left;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .col-panel h3 {
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: 900;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .panel-desc {
-  font-size: 1rem;
+  font-size: 0.92rem;
   color: var(--text-muted);
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .panel-list {
@@ -429,8 +447,8 @@ strong {
 }
 
 .panel-list li {
-  font-size: 1.05rem;
-  padding: 8px 0;
+  font-size: 0.95rem;
+  padding: 6px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   color: var(--text-muted);
 }
@@ -447,26 +465,26 @@ strong {
 /* ===== Slide 7: Memory Layers ===== */
 .memory-layers {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 40px;
+  margin-bottom: 28px;
 }
 
 .memory-layer {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 32px 28px;
-  width: 220px;
+  border-radius: 16px;
+  padding: 24px 22px;
+  width: 200px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .mem-icon {
-  font-size: 2.5rem;
-  margin-bottom: 12px;
+  font-size: 2rem;
+  margin-bottom: 8px;
 }
 
 .mem-title {
@@ -512,18 +530,18 @@ strong {
 /* ===== Slide 8: Skills Tiers ===== */
 .skills-tiers {
   display: flex;
-  gap: 28px;
+  gap: 24px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .tier-card {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 36px 32px;
-  width: 220px;
+  border-radius: 16px;
+  padding: 28px 28px;
+  width: 200px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s;
@@ -534,7 +552,7 @@ strong {
 }
 
 .tier-num {
-  font-size: 3rem;
+  font-size: 2.2rem;
   font-weight: 900;
   font-family: var(--font-mono);
   color: var(--lobster-red);
@@ -571,18 +589,18 @@ strong {
 /* ===== Slide 9: Multi-Agent ===== */
 .multi-agent-visual {
   display: flex;
-  gap: 28px;
+  gap: 20px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 36px;
+  margin-bottom: 24px;
 }
 
 .agent-persona {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 32px 28px;
-  width: 180px;
+  border-radius: 16px;
+  padding: 24px 22px;
+  width: 160px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s;
@@ -593,8 +611,8 @@ strong {
 }
 
 .persona-avatar {
-  font-size: 3rem;
-  margin-bottom: 12px;
+  font-size: 2.5rem;
+  margin-bottom: 8px;
 }
 
 .persona-name {
@@ -630,9 +648,9 @@ strong {
 .auto-item {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 40px 32px;
-  width: 200px;
+  border-radius: 16px;
+  padding: 28px 24px;
+  width: 180px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s;
@@ -643,8 +661,8 @@ strong {
 }
 
 .auto-icon {
-  font-size: 3rem;
-  margin-bottom: 16px;
+  font-size: 2.5rem;
+  margin-bottom: 10px;
 }
 
 .auto-label {
@@ -663,9 +681,9 @@ strong {
 .plat-item {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 32px 24px;
-  width: 170px;
+  border-radius: 16px;
+  padding: 22px 18px;
+  width: 150px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   transition: transform 0.3s;
@@ -676,8 +694,8 @@ strong {
 }
 
 .plat-icon {
-  font-size: 2.5rem;
-  margin-bottom: 12px;
+  font-size: 2rem;
+  margin-bottom: 8px;
 }
 
 .plat-name {
@@ -694,29 +712,29 @@ strong {
 /* ===== Slide 13: Summary ===== */
 .summary-grid {
   display: flex;
-  gap: 28px;
+  gap: 20px;
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: 40px;
+  margin-bottom: 28px;
 }
 
 .summary-item {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 36px 28px;
-  width: 210px;
+  border-radius: 16px;
+  padding: 24px 22px;
+  width: 190px;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 .summary-icon {
-  font-size: 2.5rem;
-  margin-bottom: 12px;
+  font-size: 2rem;
+  margin-bottom: 8px;
 }
 
 .summary-word {
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: 900;
   margin-bottom: 8px;
 }
@@ -739,16 +757,16 @@ strong {
 }
 
 .mega-thanks {
-  font-size: clamp(3rem, 8vw, 6rem) !important;
-  margin-bottom: 40px !important;
+  font-size: clamp(3rem, 8vw, 5rem) !important;
+  margin-bottom: 28px !important;
 }
 
 .thankyou-links {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   align-items: center;
-  margin-bottom: 40px;
+  margin-bottom: 28px;
 }
 
 .link-item {
@@ -768,8 +786,8 @@ strong {
 }
 
 .qr-box {
-  width: 140px;
-  height: 140px;
+  width: 110px;
+  height: 110px;
   border: 2px dashed rgba(255, 255, 255, 0.15);
   border-radius: 12px;
   display: flex;
@@ -786,7 +804,49 @@ strong {
   50% { transform: translateY(-14px); }
 }
 
-/* ===== Responsive ===== */
+/* ===== Short viewport (laptops 768px height) ===== */
+@media (max-height: 800px) {
+  .slide-content {
+    padding: 16px 40px;
+  }
+  .slide h2 {
+    font-size: clamp(1.6rem, 4vw, 2.5rem);
+    margin-bottom: 8px;
+  }
+  .slide-tagline {
+    margin-bottom: 18px;
+    font-size: 1rem;
+  }
+  .mega-title {
+    font-size: clamp(2.8rem, 8vw, 5rem);
+    margin-bottom: 14px;
+  }
+  .tagline { font-size: 1.3rem; margin-bottom: 8px; }
+  .subtitle { margin-bottom: 24px; }
+  .speaker { padding: 8px 24px; }
+  .hero-sentence { margin-bottom: 24px; font-size: 1.2rem; }
+  .bullet-card, .feature-item, .tier-card, .auto-item, .plat-item, .summary-item {
+    padding: 18px 18px;
+  }
+  .bullet-icon, .feature-icon, .mem-icon, .auto-icon, .plat-icon, .summary-icon {
+    font-size: 1.6rem;
+    margin-bottom: 6px;
+  }
+  .col-panel { padding: 20px 22px; }
+  .col-panel h3 { font-size: 1.1rem; }
+  .panel-list li { padding: 4px 0; font-size: 0.88rem; }
+  .memory-layer { padding: 18px 16px; }
+  .persona-avatar { font-size: 2rem; }
+  .loop-step-item { padding: 10px 10px; min-width: 70px; }
+  .loop-emoji { font-size: 1.3rem; }
+  .loop-name { font-size: 0.72rem; }
+  .loop-arrow-text { font-size: 1.1rem; }
+  .arch-diagram { padding: 12px; }
+  .mega-thanks { font-size: 3rem !important; margin-bottom: 20px !important; }
+  .qr-box { width: 90px; height: 90px; }
+}
+
+/* ===== Responsive (width) ===== */
 @media (max-width: 900px) {
   .slide-content {
     padding: 32px 24px;
@@ -908,4 +968,198 @@ strong {
   .memory-divider {
     font-size: 1.2rem;
   }
+}
+
+/* ===== Slide 11: Tools Grid ===== */
+.tools-grid {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.tool-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 22px 18px;
+  width: 170px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s, border-color 0.3s;
+}
+
+.tool-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(44, 62, 80, 0.4);
+}
+
+.tool-icon {
+  font-size: 2rem;
+  margin-bottom: 8px;
+}
+
+.tool-name {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.tool-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* ===== Slide 12: Security — Trust Boundary Visualization ===== */
+.trust-boundary {
+  max-width: 780px;
+  margin: 0 auto 20px;
+}
+
+.tb-layer {
+  border-radius: 16px;
+  padding: 14px 16px 12px;
+  position: relative;
+}
+
+.tb-layer-1 {
+  border: 2px solid rgba(231, 76, 60, 0.7);
+  background: rgba(231, 76, 60, 0.04);
+}
+
+.tb-layer-2 {
+  border: 2px solid rgba(155, 89, 182, 0.7);
+  background: rgba(155, 89, 182, 0.04);
+  margin-top: 6px;
+}
+
+.tb-layer-3 {
+  border: 2px solid rgba(52, 152, 219, 0.7);
+  background: rgba(52, 152, 219, 0.04);
+  margin-top: 6px;
+}
+
+.tb-layer-4 {
+  border: 2px solid rgba(46, 204, 113, 0.7);
+  background: rgba(46, 204, 113, 0.04);
+  margin-top: 6px;
+}
+
+.tb-layer-5 {
+  border: 2px solid rgba(241, 196, 15, 0.7);
+  background: rgba(241, 196, 15, 0.06);
+  margin-top: 6px;
+}
+
+.tb-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: left;
+  margin-bottom: 2px;
+}
+
+.tb-layer-1 > .tb-label { color: #E74C3C; }
+.tb-layer-2 > .tb-label { color: #9B59B6; }
+.tb-layer-3 > .tb-label { color: #3498DB; }
+.tb-layer-4 > .tb-label { color: #2ECC71; }
+.tb-layer-5 > .tb-label { color: #F1C40F; }
+
+.tb-features {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-align: left;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Security badges */
+.security-badges {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.sec-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--glass-bg);
+  border: 1px solid rgba(192, 57, 43, 0.25);
+  border-radius: 50px;
+  padding: 10px 22px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: transform 0.3s, border-color 0.3s;
+}
+
+.sec-badge:hover {
+  transform: translateY(-3px);
+  border-color: rgba(192, 57, 43, 0.5);
+}
+
+.sec-badge-icon {
+  font-size: 1.4rem;
+}
+
+.sec-badge-text {
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: left;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.sec-badge-text small {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+/* ===== Security & Tools — Short viewport ===== */
+@media (max-height: 800px) {
+  .tool-card {
+    padding: 16px 14px;
+    width: 150px;
+  }
+  .tool-icon {
+    font-size: 1.5rem;
+    margin-bottom: 4px;
+  }
+  .tool-name { font-size: 0.88rem; }
+  .tool-desc { font-size: 0.72rem; }
+  .tb-layer { padding: 10px 12px 8px; }
+  .tb-label { font-size: 0.72rem; }
+  .tb-features { font-size: 0.65rem; }
+  .sec-badge { padding: 8px 16px; }
+  .sec-badge-icon { font-size: 1.1rem; }
+  .sec-badge-text { font-size: 0.72rem; }
+  .sec-badge-text small { font-size: 0.62rem; }
+  .security-badges { gap: 12px; }
+}
+
+/* ===== Security & Tools — Responsive width ===== */
+@media (max-width: 900px) {
+  .tools-grid { gap: 12px; }
+  .tool-card {
+    width: 100%;
+    max-width: 200px;
+  }
+  .trust-boundary { max-width: 100%; }
+}
+
+@media (max-width: 600px) {
+  .tool-card {
+    max-width: 140px;
+    padding: 14px 10px;
+  }
+  .tool-name { font-size: 0.85rem; }
+  .tool-desc { font-size: 0.7rem; }
+  .tb-layer { padding: 8px 8px 6px; }
+  .tb-label { font-size: 0.68rem; }
+  .tb-features { font-size: 0.6rem; }
+  .sec-badge { padding: 8px 14px; }
+  .sec-badge-icon { font-size: 1rem; }
+  .sec-badge-text { font-size: 0.7rem; }
 }
