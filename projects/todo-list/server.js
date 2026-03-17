@@ -2,9 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const BetterSqlite3SessionStore = require('better-sqlite3-session-store');
 const Database = require('better-sqlite3');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const jwksRsa = require('jwks-rsa');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -12,17 +10,8 @@ const app = express();
 const PORT = process.env.PORT || 80;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'todos.db');
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-
-// Microsoft Auth (Azure AD) configuration
-const MS_CLIENT_ID = process.env.MS_CLIENT_ID || '';
-const MS_TENANT_ID = process.env.MS_TENANT_ID || 'common';
-
-// JWKS client for verifying Microsoft tokens
-const jwksClient = jwksRsa({
-  jwksUri: `https://login.microsoftonline.com/${MS_TENANT_ID}/discovery/v2.0/keys`,
-  cache: true,
-  cacheMaxAge: 86400000,
-});
+const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET;
+const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth/login';
 
 // Ensure data directory exists
 const fs = require('fs');
@@ -91,10 +80,6 @@ try {
   // Column already exists, ignore
 }
 
-// Migration: make password_hash nullable (Microsoft users don't have passwords)
-// SQLite doesn't support ALTER COLUMN, but the NOT NULL constraint only applies to new inserts.
-// We handle this by using a default empty string for Microsoft-only users.
-
 // API keys table for agent-friendly API
 db.exec(`
   CREATE TABLE IF NOT EXISTS api_keys (
@@ -158,8 +143,32 @@ function syncTags(todoId, tagNames) {
   }
 }
 
+// Helper: find or create user by email
+function findOrCreateUser(email, displayName) {
+  let user = db.prepare('SELECT id, username FROM users WHERE email = ?').get(email);
+  if (user) return user;
+
+  let baseUsername = (email ? email.split('@')[0] : displayName || 'user')
+    .toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 40);
+  let username = baseUsername;
+  let suffix = 1;
+  while (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
+    username = baseUsername + '-' + suffix;
+    suffix++;
+  }
+
+  const result = db.prepare(
+    'INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)'
+  ).run(username, '', email);
+  return { id: result.lastInsertRowid, username };
+}
+
+// Trust proxy (behind nginx-proxy)
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Session setup
 const SqliteStore = BetterSqlite3SessionStore(session);
@@ -169,29 +178,72 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
+    secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
     sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   },
 }));
 
-app.use(express.static(path.join(__dirname, 'public')));
+// --- Auth routes (public, no auth required) ---
 
-// Auth middleware - protects all /api routes except auth endpoints
-function requireAuth(req, res, next) {
-  if (req.session && req.session.userId) {
-    return next();
+// POST /auth/callback — receives JWT from ms-login proxy, sets session
+app.post('/auth/callback', (req, res) => {
+  const { token } = req.body;
+  if (!token) {
+    return res.status(400).send('Missing token');
   }
-  res.status(401).json({ error: 'Authentication required' });
-}
 
-// Combined auth: session OR API key
-function requireAnyAuth(req, res, next) {
-  // Check session first
+  try {
+    const payload = jwt.verify(token, AUTH_SHARED_SECRET);
+    const email = payload.email;
+    const displayName = payload.displayName || '';
+    const user = findOrCreateUser(email, displayName);
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    req.session.email = email;
+    req.session.displayName = displayName;
+    res.redirect('/');
+  } catch (err) {
+    console.error('JWT verification failed:', err.message);
+    return res.status(401).send('Invalid or expired token');
+  }
+});
+
+// GET /auth/status — check if user is authenticated
+app.get('/auth/status', (req, res) => {
+  if (req.session && req.session.userId) {
+    res.json({
+      authenticated: true,
+      username: req.session.username,
+      email: req.session.email,
+      displayName: req.session.displayName,
+    });
+  } else {
+    res.json({ authenticated: false });
+  }
+});
+
+// GET /auth/logout — destroy session and redirect to home
+app.get('/auth/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/');
+  });
+});
+
+// --- Health endpoint (public) ---
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Auth middleware — protects all routes below
+app.use((req, res, next) => {
+  // Check session
   if (req.session && req.session.userId) {
     req.authUserId = req.session.userId;
     return next();
   }
+
   // Check API key
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -204,151 +256,26 @@ function requireAnyAuth(req, res, next) {
       return next();
     }
   }
+
+  // API routes return 401 JSON
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // Page routes redirect to ms-login proxy
+  const callbackUrl = `${req.protocol}://${req.get('host')}/auth/callback`;
+  res.redirect(`${LOGIN_URL}?redirect=${encodeURIComponent(callbackUrl)}`);
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Auth middleware for session-only routes (API keys management)
+function requireAuth(req, res, next) {
+  if (req.session && req.session.userId) {
+    return next();
+  }
   res.status(401).json({ error: 'Authentication required' });
 }
-
-// Helper: verify Microsoft ID token
-function verifyMicrosoftToken(token) {
-  return new Promise((resolve, reject) => {
-    const getKey = (header, callback) => {
-      jwksClient.getSigningKey(header.kid, (err, key) => {
-        if (err) return callback(err);
-        callback(null, key.getPublicKey());
-      });
-    };
-    const options = {
-      audience: MS_CLIENT_ID,
-      issuer: [
-        `https://login.microsoftonline.com/${MS_TENANT_ID}/v2.0`,
-        `https://sts.windows.net/${MS_TENANT_ID}/`,
-      ],
-      algorithms: ['RS256'],
-    };
-    // If tenant is 'common', accept any issuer from Microsoft
-    if (MS_TENANT_ID === 'common') {
-      delete options.issuer;
-    }
-    jwt.verify(token, getKey, options, (err, decoded) => {
-      if (err) return reject(err);
-      resolve(decoded);
-    });
-  });
-}
-
-// Helper: find or create user from Microsoft identity
-function findOrCreateMicrosoftUser(microsoftId, email, displayName) {
-  let user = db.prepare('SELECT id, username FROM users WHERE microsoft_id = ?').get(microsoftId);
-  if (user) return user;
-
-  // Generate a username from email or displayName
-  let baseUsername = (email ? email.split('@')[0] : displayName || 'user')
-    .toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 40);
-  let username = baseUsername;
-  let suffix = 1;
-  while (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
-    username = baseUsername + '-' + suffix;
-    suffix++;
-  }
-
-  const result = db.prepare(
-    'INSERT INTO users (username, password_hash, microsoft_id, email) VALUES (?, ?, ?, ?)'
-  ).run(username, '', microsoftId, email || null);
-  return { id: result.lastInsertRowid, username };
-}
-
-// --- Auth routes ---
-
-// POST /api/auth/register
-app.post('/api/auth/register', (req, res) => {
-  const { username, password } = req.body;
-  if (!username || typeof username !== 'string' || !username.trim()) {
-    return res.status(400).json({ error: 'Username is required' });
-  }
-  if (!password || typeof password !== 'string' || password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  }
-  const trimmedUsername = username.trim().toLowerCase();
-  if (trimmedUsername.length > 50) {
-    return res.status(400).json({ error: 'Username must be 50 characters or fewer' });
-  }
-  if (!/^[a-z0-9_-]+$/.test(trimmedUsername)) {
-    return res.status(400).json({ error: 'Username can only contain letters, numbers, hyphens, and underscores' });
-  }
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(trimmedUsername);
-  if (existing) {
-    return res.status(409).json({ error: 'Username already taken' });
-  }
-  const passwordHash = bcrypt.hashSync(password, 10);
-  const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(trimmedUsername, passwordHash);
-  req.session.userId = result.lastInsertRowid;
-  req.session.username = trimmedUsername;
-  res.status(201).json({ username: trimmedUsername });
-});
-
-// POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
-  }
-  const trimmedUsername = username.trim().toLowerCase();
-  const user = db.prepare('SELECT id, username, password_hash FROM users WHERE username = ?').get(trimmedUsername);
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: 'Invalid username or password' });
-  }
-  req.session.userId = user.id;
-  req.session.username = user.username;
-  res.json({ username: user.username });
-});
-
-// POST /api/auth/logout
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.json({ ok: true });
-  });
-});
-
-// GET /api/auth/me - check current session
-app.get('/api/auth/me', (req, res) => {
-  if (req.session && req.session.userId) {
-    return res.json({ username: req.session.username });
-  }
-  res.status(401).json({ error: 'Not authenticated' });
-});
-
-// GET /api/auth/config - return Microsoft auth configuration for frontend
-app.get('/api/auth/config', (req, res) => {
-  res.json({
-    microsoftAuth: {
-      enabled: !!MS_CLIENT_ID,
-      clientId: MS_CLIENT_ID,
-      tenantId: MS_TENANT_ID,
-    },
-  });
-});
-
-// POST /api/auth/microsoft - authenticate with Microsoft ID token
-app.post('/api/auth/microsoft', async (req, res) => {
-  if (!MS_CLIENT_ID) {
-    return res.status(400).json({ error: 'Microsoft authentication is not configured' });
-  }
-  const { idToken } = req.body;
-  if (!idToken) {
-    return res.status(400).json({ error: 'ID token is required' });
-  }
-  try {
-    const decoded = await verifyMicrosoftToken(idToken);
-    const microsoftId = decoded.oid || decoded.sub;
-    const email = decoded.preferred_username || decoded.email || '';
-    const displayName = decoded.name || '';
-    const user = findOrCreateMicrosoftUser(microsoftId, email, displayName);
-    req.session.userId = user.id;
-    req.session.username = user.username;
-    res.json({ username: user.username });
-  } catch (err) {
-    res.status(401).json({ error: 'Invalid Microsoft token' });
-  }
-});
 
 // --- API key management routes (require session auth) ---
 
@@ -394,15 +321,10 @@ app.delete('/api/keys/:id', requireAuth, (req, res) => {
   res.status(204).end();
 });
 
-// --- Health endpoint ---
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// --- Protected API routes (session or API key auth) ---
+// --- Protected API routes ---
 
 // GET /api/todos - list user's todos
-app.get('/api/todos', requireAnyAuth, (req, res) => {
+app.get('/api/todos', (req, res) => {
   const userId = req.authUserId;
   const { status, priority, tag, due, search } = req.query;
 
@@ -453,7 +375,7 @@ app.get('/api/todos', requireAnyAuth, (req, res) => {
 });
 
 // GET /api/tags - list tags for user's todos
-app.get('/api/tags', requireAnyAuth, (req, res) => {
+app.get('/api/tags', (req, res) => {
   const userId = req.authUserId;
   const tags = db.prepare(`
     SELECT t.id, t.name, COUNT(tt.todo_id) AS count
@@ -466,7 +388,7 @@ app.get('/api/tags', requireAnyAuth, (req, res) => {
 });
 
 // POST /api/todos - create a new todo
-app.post('/api/todos', requireAnyAuth, (req, res) => {
+app.post('/api/todos', (req, res) => {
   const userId = req.authUserId;
   const { text, priority, due_date, tags } = req.body;
   if (!text || typeof text !== 'string' || !text.trim()) {
@@ -488,7 +410,7 @@ app.post('/api/todos', requireAnyAuth, (req, res) => {
 });
 
 // PUT /api/todos/:id - update a todo
-app.put('/api/todos/:id', requireAnyAuth, (req, res) => {
+app.put('/api/todos/:id', (req, res) => {
   const { id } = req.params;
   const userId = req.authUserId;
   const existing = db.prepare('SELECT id, text, done, priority, due_date FROM todos WHERE id = ? AND user_id = ?').get(id, userId);
@@ -519,7 +441,7 @@ app.put('/api/todos/:id', requireAnyAuth, (req, res) => {
 });
 
 // DELETE /api/todos/:id - delete a todo
-app.delete('/api/todos/:id', requireAnyAuth, (req, res) => {
+app.delete('/api/todos/:id', (req, res) => {
   const { id } = req.params;
   const userId = req.authUserId;
   const result = db.prepare('DELETE FROM todos WHERE id = ? AND user_id = ?').run(id, userId);

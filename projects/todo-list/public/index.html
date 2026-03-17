@@ -1034,132 +1034,6 @@
       box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-glow);
     }
 
-    /* Auth screen */
-    .auth-container {
-      display: none;
-      max-width: 400px;
-      margin: 80px auto;
-      padding: 0 20px;
-    }
-
-    .auth-container.visible {
-      display: block;
-    }
-
-    .auth-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: 36px 32px;
-      box-shadow: var(--shadow-lg);
-    }
-
-    .auth-card h1 {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 4px;
-      color: var(--text-primary);
-    }
-
-    .auth-card .auth-subtitle {
-      font-size: 14px;
-      color: var(--text-secondary);
-      margin-bottom: 28px;
-    }
-
-    .auth-field {
-      margin-bottom: 16px;
-    }
-
-    .auth-field label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      margin-bottom: 6px;
-    }
-
-    .auth-field input {
-      width: 100%;
-      padding: 12px 16px;
-      border: 2px solid var(--border);
-      border-radius: var(--radius);
-      font-size: 15px;
-      font-family: inherit;
-      background: var(--bg-input);
-      color: var(--text-primary);
-      outline: none;
-      transition: border-color var(--transition), box-shadow var(--transition);
-      box-sizing: border-box;
-    }
-
-    .auth-field input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
-    }
-
-    .auth-btn {
-      width: 100%;
-      padding: 12px;
-      border: none;
-      border-radius: var(--radius);
-      background: var(--accent);
-      color: #fff;
-      font-size: 15px;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      transition: background var(--transition);
-      margin-top: 8px;
-    }
-
-    .auth-btn:hover {
-      background: var(--accent-hover);
-    }
-
-    .auth-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    .auth-switch {
-      text-align: center;
-      margin-top: 20px;
-      font-size: 14px;
-      color: var(--text-secondary);
-    }
-
-    .auth-switch a {
-      color: #fff;
-      cursor: pointer;
-      font-weight: 600;
-      text-decoration: none;
-      background: var(--accent);
-      padding: 8px 20px;
-      border-radius: 6px;
-      display: inline-block;
-      margin-top: 8px;
-      transition: opacity 0.2s;
-    }
-
-    .auth-switch a:hover {
-      opacity: 0.85;
-    }
-
-    .auth-error {
-      background: var(--priority-high-bg);
-      color: var(--priority-high);
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 13px;
-      margin-bottom: 16px;
-      display: none;
-    }
-
-    .auth-error.visible {
-      display: block;
-    }
-
     /* User info in header */
     .user-info {
       font-size: 13px;
@@ -1208,50 +1082,6 @@
       li { padding: 12px 14px; }
 
       .stats { font-size: 12px; }
-
-      .auth-container { margin-top: 40px; }
-      .auth-card { padding: 28px 20px; }
-    }
-
-    /* Microsoft sign-in button */
-    .auth-divider {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin: 20px 0;
-      color: var(--text-muted);
-      font-size: 13px;
-    }
-    .auth-divider::before,
-    .auth-divider::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--border);
-    }
-    .ms-login-btn {
-      width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 12px 20px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg-card);
-      color: var(--text-primary);
-      font-size: 15px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all var(--transition);
-    }
-    .ms-login-btn:hover {
-      border-color: var(--accent);
-      background: var(--accent-light);
-    }
-    .ms-login-btn svg {
-      width: 20px;
-      height: 20px;
     }
 
     /* API Keys management */
@@ -1378,37 +1208,8 @@
   </style>
 </head>
 <body>
-  <!-- Auth screen -->
-  <div class="auth-container" id="auth-container">
-    <div class="auth-card">
-      <h1 id="auth-title">Sign In</h1>
-      <p class="auth-subtitle" id="auth-subtitle">Sign in to access your todos</p>
-      <div class="auth-error" id="auth-error"></div>
-      <div id="ms-login-section">
-        <button class="ms-login-btn" onclick="loginWithMicrosoft()" type="button">
-          <svg viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
-          Sign in with Microsoft
-        </button>
-      </div>
-      <div id="local-login-section" style="display:none">
-        <div class="auth-divider">or sign in with username</div>
-        <form id="auth-form" onsubmit="handleAuth(event)">
-          <div class="auth-field">
-            <label for="auth-username">Username</label>
-            <input id="auth-username" type="text" placeholder="Enter username" autocomplete="username" required>
-          </div>
-          <div class="auth-field">
-            <label for="auth-password">Password</label>
-            <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password" required>
-          </div>
-          <button type="submit" class="auth-btn" id="auth-submit-btn">Sign In</button>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <!-- Main app (hidden until authenticated) -->
-  <div class="container" id="app-container" style="display:none">
+  <!-- Main app -->
+  <div class="container" id="app-container">
     <div class="header">
       <h1>Todo List</h1>
       <div style="display: flex; gap: 8px; align-items: center;">
@@ -1522,7 +1323,6 @@
     </div>
   </div>
 
-  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
   <script>
     let todos = [];
     let currentFilter = 'all';
@@ -1532,167 +1332,32 @@
     let allTags = [];
     let openDropdownIndex = null;
     const MAX_TEXT_LENGTH = 500;
-    let authMode = 'login'; // 'login' or 'register'
-
     // Auth functions
-    function showAuth() {
-      document.getElementById('auth-container').classList.add('visible');
-      document.getElementById('app-container').style.display = 'none';
-    }
-
-    function showApp(username) {
-      document.getElementById('auth-container').classList.remove('visible');
+    function showApp(displayName) {
       document.getElementById('app-container').style.display = '';
-      document.getElementById('display-username').textContent = username;
+      document.getElementById('display-username').textContent = displayName;
       loadTodos();
     }
 
-    function toggleAuthMode() {
-      authMode = authMode === 'login' ? 'register' : 'login';
-      document.getElementById('auth-title').textContent = authMode === 'login' ? 'Sign In' : 'Create Account';
-      document.getElementById('auth-subtitle').textContent = authMode === 'login'
-        ? 'Enter your credentials to access your todos'
-        : 'Choose a username and password to get started';
-      document.getElementById('auth-submit-btn').textContent = authMode === 'login' ? 'Sign In' : 'Create Account';
-      document.getElementById('auth-switch-text').textContent = authMode === 'login'
-        ? "Don't have an account?"
-        : 'Already have an account?';
-      document.getElementById('auth-switch-link').textContent = authMode === 'login' ? 'Register' : 'Sign In';
-      document.getElementById('auth-password').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
-      hideAuthError();
-    }
-
-    function showAuthError(msg) {
-      const el = document.getElementById('auth-error');
-      el.textContent = msg;
-      el.classList.add('visible');
-    }
-
-    function hideAuthError() {
-      document.getElementById('auth-error').classList.remove('visible');
-    }
-
-    async function handleAuth(e) {
-      e.preventDefault();
-      const username = document.getElementById('auth-username').value.trim();
-      const password = document.getElementById('auth-password').value;
-      if (!username || !password) return;
-
-      hideAuthError();
-      const btn = document.getElementById('auth-submit-btn');
-      btn.disabled = true;
-
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      try {
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          showAuthError(data.error || 'Authentication failed');
-          btn.disabled = false;
-          return;
-        }
-        document.getElementById('auth-form').reset();
-        showApp(data.username);
-      } catch (err) {
-        showAuthError('Network error: could not reach server');
-      }
-      btn.disabled = false;
-    }
-
-    async function logout() {
-      try {
-        await fetch('/api/auth/logout', { method: 'POST' });
-      } catch (e) {
-        // ignore
-      }
-      todos = [];
-      allTags = [];
-      showAuth();
+    function logout() {
+      window.location.href = '/auth/logout';
     }
 
     async function checkAuth() {
       try {
-        const res = await fetch('/api/auth/me');
-        if (res.ok) {
-          const data = await res.json();
-          showApp(data.username);
+        const res = await fetch('/auth/status');
+        const data = await res.json();
+        if (data.authenticated) {
+          showApp(data.displayName || data.username);
           return;
         }
       } catch (e) {
         // ignore
       }
-      showAuth();
+      // Not authenticated — server-side middleware will redirect on page load,
+      // but if we got here via SPA navigation, redirect explicitly
+      window.location.href = '/auth/status';
     }
-
-    // --- Microsoft Auth (MSAL.js) ---
-    let msalInstance = null;
-
-    async function initMicrosoftAuth() {
-      try {
-        const res = await fetch('/api/auth/config');
-        const config = await res.json();
-        if (!config.microsoftAuth.enabled) {
-          // Microsoft not configured — show local login as fallback
-          document.getElementById('ms-login-section').style.display = 'none';
-          document.getElementById('local-login-section').style.display = 'block';
-          return;
-        }
-
-        msalInstance = new msal.PublicClientApplication({
-          auth: {
-            clientId: config.microsoftAuth.clientId,
-            authority: `https://login.microsoftonline.com/${config.microsoftAuth.tenantId}`,
-            redirectUri: window.location.origin,
-          },
-          cache: {
-            cacheLocation: 'sessionStorage',
-          },
-        });
-        await msalInstance.initialize();
-
-        // Auto-trigger Microsoft login when auth screen is shown
-        // (user is not logged in and MS auth is available)
-        if (document.getElementById('auth-container').classList.contains('visible')) {
-          loginWithMicrosoft();
-        }
-      } catch (e) {
-        // Microsoft auth not available — show local login as fallback
-        document.getElementById('ms-login-section').style.display = 'none';
-        document.getElementById('local-login-section').style.display = 'block';
-      }
-    }
-
-    async function loginWithMicrosoft() {
-      if (!msalInstance) return;
-      try {
-        const response = await msalInstance.loginPopup({
-          scopes: ['openid', 'profile', 'email'],
-        });
-        if (response.idToken) {
-          const res = await fetch('/api/auth/microsoft', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken: response.idToken }),
-          });
-          const data = await res.json();
-          if (res.ok) {
-            showApp(data.username);
-          } else {
-            showAuthError(data.error || 'Microsoft authentication failed');
-          }
-        }
-      } catch (e) {
-        if (e.errorCode !== 'user_cancelled') {
-          showAuthError('Microsoft sign-in failed');
-        }
-      }
-    }
-
-    initMicrosoftAuth();
 
     // --- API Keys management ---
     let apiKeys = [];
@@ -1821,7 +1486,7 @@
           ...options,
         });
         if (res.status === 401) {
-          showAuth();
+          window.location.reload();
           return null;
         }
         if (res.status === 204) return null;

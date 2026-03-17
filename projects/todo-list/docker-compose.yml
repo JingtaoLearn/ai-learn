@@ -9,8 +9,8 @@ services:
       - LETSENCRYPT_HOST=todo.${S_DOMAIN}
       - DB_PATH=/data/todos.db
       - SESSION_SECRET=${SESSION_SECRET:-}
-      - MS_CLIENT_ID=${MS_CLIENT_ID:-}
-      - MS_TENANT_ID=${MS_TENANT_ID:-common}
+      - AUTH_SHARED_SECRET=${AUTH_SHARED_SECRET:-}
+      - LOGIN_URL=${LOGIN_URL:-https://ms-login.ai.jingtao.fun/auth/login}
     volumes:
       - todo-data:/data
     expose:
