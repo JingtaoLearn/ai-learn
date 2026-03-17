@@ -30,6 +30,7 @@ projects/
 | [ms-login](ms-login/) | `ms-login.${S_DOMAIN}` | Microsoft Account OAuth 2.0 login demo |
 | [wedding-showcase](wedding-showcase/) | `wedding.${S_DOMAIN}` | Wedding garden party layout showcase website |
 | [listen-english](listen-english/) | `listen.${S_DOMAIN}` | English number listening comprehension trainer |
+| [nav-portal](nav-portal/) | `nav.${S_DOMAIN}` | Navigation dashboard with Docker service auto-discovery |
 
 ## Adding a New Project
 
