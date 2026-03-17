@@ -6,6 +6,7 @@
 <title>Session Viewer - OpenClaw Explorer</title>
 <link rel="stylesheet" href="../css/style.css">
 <link rel="stylesheet" href="../css/session-viewer.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
 </head>
 <body>
 
@@ -713,7 +714,7 @@
         <span class="sv-event-type">User</span>
         <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
       </div>
-      <div class="sv-event-body"><div class="sv-text-content">${escapeHtml(text)}</div></div>
+      <div class="sv-event-body"><div class="sv-text-content">${renderMarkdown(text)}</div></div>
     </div>`;
   }
 
@@ -731,7 +732,7 @@
         <span class="sv-event-type">Assistant</span>
         <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
       </div>
-      <div class="sv-event-body"><div class="sv-text-content">${escapeHtml(text)}</div></div>
+      <div class="sv-event-body"><div class="sv-text-content">${renderMarkdown(text)}</div></div>
     </div>`;
   }
 
@@ -857,6 +858,37 @@
       .replace(/"/g, '&quot;');
   }
 
+  // Markdown rendering with collapsible code blocks
+  const markedInstance = new marked.Marked({
+    breaks: true,
+    gfm: true,
+  });
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    let html = markedInstance.parse(text);
+    html = wrapCollapsibleCodeBlocks(html);
+    return html;
+  }
+
+  const CODE_LINE_THRESHOLD = 10;
+
+  function wrapCollapsibleCodeBlocks(html) {
+    // Wrap <pre><code>...</code></pre> blocks that exceed the line threshold
+    return html.replace(/<pre><code(?:\s+class="([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g,
+      function(match, langClass, code) {
+        const lineCount = code.split('\n').length;
+        if (lineCount <= CODE_LINE_THRESHOLD) return match;
+        const lang = langClass ? langClass.replace(/^language-/, '') : '';
+        const label = lang ? lang + ' · ' + lineCount + ' lines' : lineCount + ' lines';
+        return '<div class="sv-code-wrapper collapsed">'
+          + '<pre><code' + (langClass ? ' class="' + langClass + '"' : '') + '>' + code + '</code></pre>'
+          + '<button class="sv-code-toggle" data-label-show="Show code (' + label + ')" data-label-hide="Hide code (' + label + ')">Show code (' + label + ')</button>'
+          + '</div>';
+      }
+    );
+  }
+
   // Mobile sidebar toggle
   const sidebarToggleBtn = document.getElementById('sidebarToggle');
   if (sidebarToggleBtn) {
@@ -865,8 +897,19 @@
     });
   }
 
-  // "Show more" and expand/collapse delegation for tool rows
+  // "Show more", code-block toggle, and expand/collapse delegation for tool rows
   timeline.addEventListener('click', (e) => {
+    // Collapsible code block toggle
+    const toggle = e.target.closest('.sv-code-toggle');
+    if (toggle) {
+      const wrapper = toggle.closest('.sv-code-wrapper');
+      if (wrapper) {
+        const isCollapsed = wrapper.classList.toggle('collapsed');
+        toggle.textContent = isCollapsed ? toggle.dataset.labelShow : toggle.dataset.labelHide;
+      }
+      return;
+    }
+
     // Show more button for truncated output
     const btn = e.target.closest('.sv-show-more');
     if (btn) {
