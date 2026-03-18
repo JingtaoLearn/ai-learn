@@ -671,6 +671,35 @@
 }
 .sv-code-toggle:hover { color: var(--accent-hover, var(--accent)); background: var(--bg-tertiary); }
 
+/* Untrusted context blocks (OpenClaw <<<EXTERNAL_UNTRUSTED_CONTENT>>>) */
+.sv-untrusted-block {
+  margin: 0.4em 0;
+  border: 1px solid rgba(139, 148, 158, 0.25);
+  border-radius: 6px;
+  background: rgba(139, 148, 158, 0.06);
+  font-size: 0.9em;
+}
+
+.sv-untrusted-block summary {
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.sv-untrusted-block summary:hover {
+  color: var(--text);
+  background: rgba(139, 148, 158, 0.1);
+  border-radius: 6px 6px 0 0;
+}
+
+.sv-untrusted-block > :not(summary) {
+  padding: 0 10px 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .sv-show-more {
   display: inline-block;
   margin-top: 4px;

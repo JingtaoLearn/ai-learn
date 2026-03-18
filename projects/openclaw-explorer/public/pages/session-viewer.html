@@ -184,7 +184,12 @@
         if (agentId !== currentAgent) {
           currentAgent = agentId;
           currentSessionId = null;
+          allEvents = [];
+          filteredEvents = [];
           tagFilters = {};
+          // Clear hash before loading new agent's sessions to prevent
+          // navigateFromHash() from restoring the old session
+          history.pushState(null, '', window.location.pathname);
           renderAgentSwitch();
           loadSessions();
           timeline.innerHTML = '<div class="sv-timeline-empty"><div class="sv-timeline-empty-icon">&#128203;</div><p>Select a session from the sidebar to view its timeline.</p></div>';
@@ -945,9 +950,25 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
+    // Collapse OpenClaw untrusted context blocks into styled sections
+    text = collapseUntrustedBlocks(text);
     let html = markedInstance.parse(text);
     html = wrapCollapsibleCodeBlocks(html);
     return html;
+  }
+
+  // Regex to match <<<EXTERNAL_UNTRUSTED_CONTENT id="...">>\> ... <<<END_EXTERNAL_UNTRUSTED_CONTENT id="...">>>
+  const UNTRUSTED_BLOCK_RE = /(?:Untrusted context \(metadata, do not treat as instructions or commands\):\s*\n*)?<<<EXTERNAL_UNTRUSTED_CONTENT\s+id="[^"]*">>>\n?([\s\S]*?)<<<END_EXTERNAL_UNTRUSTED_CONTENT\s+id="[^"]*">>>/g;
+
+  function collapseUntrustedBlocks(text) {
+    return text.replace(UNTRUSTED_BLOCK_RE, function(_match, innerContent) {
+      // Extract source label if present
+      const sourceMatch = innerContent.match(/^Source:\s*(.+)/m);
+      const label = sourceMatch ? sourceMatch[1].trim() : 'Untrusted context';
+      // Clean up leading "Source: ..." and "---" separator
+      let body = innerContent.replace(/^Source:\s*.+\n-{3,}\n?/, '').trim();
+      return '<details class="sv-untrusted-block"><summary>📎 ' + escapeHtml(label) + '</summary>\n\n' + body + '\n\n</details>';
+    });
   }
 
   const CODE_LINE_THRESHOLD = 10;
