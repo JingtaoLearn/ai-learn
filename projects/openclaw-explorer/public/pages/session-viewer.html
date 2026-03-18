@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Viewer - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/session-viewer.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Session Viewer</h1>
+  <div class="header-controls">
+    <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+    <span id="userInfo" style="font-size:13px;color:var(--text-secondary)"></span>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<div class="sv-container" id="appContainer">
+  <!-- Login screen (shown when not authenticated) -->
+  <div class="sv-login" id="loginScreen" style="display:none;width:100%">
+    <div class="sv-login-icon">&#128274;</div>
+    <h2 style="color:var(--text);margin:0">Session Viewer</h2>
+    <p style="max-width:400px;text-align:center">Sign in to view OpenClaw agent session timelines. This feature requires authentication.</p>
+    <a class="sv-login-btn" id="loginBtn" href="#">&#127759; Login with Microsoft</a>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sv-sidebar" id="sidebar" style="display:none">
+    <div class="sv-sidebar-header">
+      <a class="back-link" href="../">&larr; Back to Topics</a>
+      <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
+    </div>
+    <div class="sv-tag-filter" id="tagFilter"></div>
+    <div class="sv-session-list" id="sessionList">
+      <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
+    </div>
+  </nav>
+
+  <!-- Main area -->
+  <div class="sv-main" id="mainArea" style="display:none">
+    <!-- Stats bar -->
+    <div class="sv-stats" id="statsBar" style="display:none">
+      <div class="sv-stat">Events: <span class="sv-stat-value" id="statEvents">0</span></div>
+      <div class="sv-stat">Tool calls: <span class="sv-stat-value" id="statTools">0</span></div>
+      <div class="sv-stat">Duration: <span class="sv-stat-value" id="statDuration">-</span></div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="sv-filters" id="filterBar" style="display:none">
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="user"> User</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="assistant"> Assistant</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="tool-call"> Tool Call</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="tool-result"> Tool Result</label>
+      <label class="sv-filter-check"><input type="checkbox" checked data-filter="other"> Other</label>
+      <input class="sv-search" id="searchInput" type="text" placeholder="Search events...">
+    </div>
+
+    <!-- Timeline -->
+    <div class="sv-timeline" id="timeline">
+      <div class="sv-timeline-empty">
+        <div class="sv-timeline-empty-icon">&#128203;</div>
+        <p>Select a session from the sidebar to view its timeline.</p>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div class="sv-pagination" id="pagination" style="display:none">
+      <button id="prevPage">&larr; Previous</button>
+      <span id="pageInfo"></span>
+      <button id="nextPage">Next &rarr;</button>
+    </div>
+  </div>
+</div>
+
+<script src="../js/main.js"></script>
+<script>
+(function() {
+  const EVENTS_PER_PAGE = 200;
+
+  // State
+  let authenticated = false;
+  let sessions = [];
+  let currentSessionId = null;
+  let allEvents = [];
+  let filteredEvents = [];
+  let currentPage = 1;
+  let totalPages = 1;
+
+  // Tag filter state: map of tag -> 'include' | 'exclude' | null
+  let tagFilters = {};
+
+  // DOM refs
+  const loginScreen = document.getElementById('loginScreen');
+  const loginBtn = document.getElementById('loginBtn');
+  const sidebarEl = document.getElementById('sidebar');
+  const mainArea = document.getElementById('mainArea');
+  const sessionList = document.getElementById('sessionList');
+  const tagFilterEl = document.getElementById('tagFilter');
+  const timeline = document.getElementById('timeline');
+  const statsBar = document.getElementById('statsBar');
+  const filterBar = document.getElementById('filterBar');
+  const pagination = document.getElementById('pagination');
+  const searchInput = document.getElementById('searchInput');
+  const userInfo = document.getElementById('userInfo');
+
+  // Check auth on page load
+  checkAuth();
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me');
+      const data = await res.json();
+      if (data.authenticated) {
+        authenticated = true;
+        userInfo.textContent = data.user.name || data.user.email;
+        showApp();
+        await loadSessions();
+      } else {
+        showLogin();
+      }
+    } catch {
+      showLogin();
+    }
+  }
+
+  function showLogin() {
+    loginScreen.style.display = '';
+    sidebarEl.style.display = 'none';
+    mainArea.style.display = 'none';
+
+    const loginUrl = getLoginUrl();
+    loginBtn.href = loginUrl;
+  }
+
+  function getLoginUrl() {
+    const callbackUrl = window.location.origin + '/auth/callback';
+    return `https://ms-login.ai.jingtao.fun/auth/login?redirect=${encodeURIComponent(callbackUrl)}`;
+  }
+
+  function showApp() {
+    loginScreen.style.display = 'none';
+    sidebarEl.style.display = '';
+    mainArea.style.display = '';
+  }
+
+  // Tag color mapping
+  function getTagColor(tag) {
+    if (tag === 'discord') return 'blue';
+    if (tag === 'cron') return 'purple';
+    if (tag === 'hook') return 'gray';
+    if (tag === 'dm') return 'green';
+    if (tag === 'run') return 'orange';
+    if (tag.startsWith('#')) return 'blue-alt';
+    // Cron job names (not one of the known tags) - purple variant
+    return 'purple-alt';
+  }
+
+  // Load sessions list
+  async function loadSessions() {
+    sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error('Failed');
+      sessions = await res.json();
+      renderTagFilter();
+      renderSessionList();
+      navigateFromHash();
+    } catch {
+      sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+    }
+  }
+
+  function relativeTime(dateStr) {
+    const now = new Date();
+    const then = new Date(dateStr);
+    const diff = now - then;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    if (days < 30) return days + 'd ago';
+    return then.toLocaleDateString();
+  }
+
+  // Collect all unique tags from sessions
+  function getAllTags() {
+    const tagSet = new Set();
+    for (const s of sessions) {
+      if (s.tags) s.tags.forEach(t => tagSet.add(t));
+    }
+    // Sort: source-type tags first, then alphabetical
+    const sourceOrder = ['discord', 'cron', 'hook', 'dm', 'run'];
+    return Array.from(tagSet).sort((a, b) => {
+      const ai = sourceOrder.indexOf(a);
+      const bi = sourceOrder.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return a.localeCompare(b);
+    });
+  }
+
+  function renderTagFilter() {
+    const allTags = getAllTags();
+    if (allTags.length === 0) {
+      tagFilterEl.innerHTML = '';
+      return;
+    }
+
+    const hasActive = Object.values(tagFilters).some(v => v);
+
+    let html = '';
+    for (const tag of allTags) {
+      const state = tagFilters[tag] || null;
+      const color = getTagColor(tag);
+      let stateClass = '';
+      if (state === 'include') stateClass = ' included';
+      else if (state === 'exclude') stateClass = ' excluded';
+      html += `<button class="sv-tag-pill ${color}${stateClass}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`;
+    }
+    if (hasActive) {
+      html += `<button class="sv-tag-clear" id="clearFilters">Clear</button>`;
+    }
+    tagFilterEl.innerHTML = html;
+
+    // Attach click handlers
+    tagFilterEl.querySelectorAll('.sv-tag-pill').forEach(pill => {
+      pill.addEventListener('click', (e) => {
+        e.preventDefault();
+        const tag = pill.dataset.tag;
+        cycleTagFilter(tag);
+      });
+      pill.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const tag = pill.dataset.tag;
+        const current = tagFilters[tag] || null;
+        if (current === null) {
+          // Right-click from neutral -> exclude
+          tagFilters[tag] = 'exclude';
+        } else if (current === 'include') {
+          // Right-click on included -> exclude
+          tagFilters[tag] = 'exclude';
+        } else {
+          tagFilters[tag] = null;
+        }
+        onTagFilterChanged();
+      });
+    });
+
+    const clearBtn = document.getElementById('clearFilters');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        tagFilters = {};
+        onTagFilterChanged();
+      });
+    }
+  }
+
+  function cycleTagFilter(tag) {
+    const current = tagFilters[tag] || null;
+    if (current === null) {
+      tagFilters[tag] = 'include';
+    } else if (current === 'include') {
+      tagFilters[tag] = 'exclude';
+    } else {
+      tagFilters[tag] = null;
+    }
+    onTagFilterChanged();
+  }
+
+  function onTagFilterChanged() {
+    // Clean up null entries
+    for (const k of Object.keys(tagFilters)) {
+      if (!tagFilters[k]) delete tagFilters[k];
+    }
+    renderTagFilter();
+    renderSessionList();
+    updateHashFromState();
+  }
+
+  function getFilteredSessions() {
+    const includes = Object.entries(tagFilters).filter(([, v]) => v === 'include').map(([k]) => k);
+    const excludes = Object.entries(tagFilters).filter(([, v]) => v === 'exclude').map(([k]) => k);
+
+    return sessions.filter(s => {
+      const tags = s.tags || [];
+      // If any includes active, session must have ALL included tags
+      if (includes.length > 0) {
+        for (const inc of includes) {
+          if (!tags.includes(inc)) return false;
+        }
+      }
+      // Exclude: hide sessions with any excluded tag
+      for (const exc of excludes) {
+        if (tags.includes(exc)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderSessionList() {
+    const filtered = getFilteredSessions();
+
+    if (filtered.length === 0) {
+      sessionList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No sessions match filters.</div>';
+      return;
+    }
+
+    const html = [];
+    for (const s of filtered) {
+      const label = s.label || s.key;
+      const truncLabel = label.length > 40 ? label.substring(0, 40) + '...' : label;
+      const tagHtml = (s.tags || []).map(t => {
+        const color = getTagColor(t);
+        return `<span class="sv-session-tag ${color}">${escapeHtml(t)}</span>`;
+      }).join('');
+
+      html.push(`<div class="sv-session-item${s.sessionId === currentSessionId ? ' active' : ''}" data-id="${s.sessionId}">
+        <div class="sv-session-info">
+          <div class="sv-session-top">
+            <span class="sv-session-time">${relativeTime(s.updatedAt)}</span>
+            <span class="sv-session-key" title="${escapeHtml(s.key)}">${escapeHtml(truncLabel)}</span>
+          </div>
+          <div class="sv-session-tags">${tagHtml}</div>
+        </div>
+      </div>`);
+    }
+
+    sessionList.innerHTML = html.join('');
+
+    // Session click handlers
+    sessionList.querySelectorAll('.sv-session-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.dataset.id;
+        loadSession(id);
+        updateHashFromState();
+        if (window.innerWidth <= 900) {
+          sidebarEl.classList.remove('open');
+        }
+      });
+    });
+  }
+
+  // Hash-based routing
+  function updateHashFromState() {
+    const activeTags = Object.entries(tagFilters)
+      .filter(([, v]) => v)
+      .map(([k, v]) => (v === 'exclude' ? '-' : '') + k);
+
+    if (currentSessionId && activeTags.length > 0) {
+      const hash = '#/session/' + encodeURIComponent(currentSessionId) + '?tags=' + activeTags.map(encodeURIComponent).join(',');
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else if (currentSessionId) {
+      const hash = '#/session/' + encodeURIComponent(currentSessionId);
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else if (activeTags.length > 0) {
+      const hash = '#/filter/' + activeTags.map(encodeURIComponent).join(',');
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else {
+      if (window.location.hash) history.pushState(null, '', window.location.pathname);
+    }
+  }
+
+  function parseHash() {
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#/')) return { sessionId: null, tags: {} };
+
+    let sessionId = null;
+    let tags = {};
+
+    // Match #/session/<id>?tags=...
+    const sessionMatch = hash.match(/^#\/session\/([^?]+)(\?tags=(.+))?$/);
+    if (sessionMatch) {
+      sessionId = decodeURIComponent(sessionMatch[1]);
+      if (sessionMatch[3]) {
+        tags = parseTagsParam(sessionMatch[3]);
+      }
+      return { sessionId, tags };
+    }
+
+    // Match #/filter/tag1,tag2
+    const filterMatch = hash.match(/^#\/filter\/(.+)$/);
+    if (filterMatch) {
+      tags = parseTagsParam(filterMatch[1]);
+      return { sessionId: null, tags };
+    }
+
+    // Legacy format: #/<groupSlug>/<sessionId> - try to find session by ID
+    const parts = hash.substring(2).split('/');
+    if (parts.length >= 2) {
+      sessionId = decodeURIComponent(parts[1]);
+      return { sessionId, tags: {} };
+    }
+
+    return { sessionId: null, tags: {} };
+  }
+
+  function parseTagsParam(param) {
+    const tags = {};
+    const parts = param.split(',').map(decodeURIComponent);
+    for (const p of parts) {
+      if (p.startsWith('-')) {
+        tags[p.substring(1)] = 'exclude';
+      } else {
+        tags[p] = 'include';
+      }
+    }
+    return tags;
+  }
+
+  function navigateFromHash() {
+    const parsed = parseHash();
+
+    // Restore tag filters
+    if (Object.keys(parsed.tags).length > 0) {
+      tagFilters = parsed.tags;
+      renderTagFilter();
+      renderSessionList();
+    }
+
+    // Load session if specified
+    if (parsed.sessionId) {
+      const session = sessions.find(s => s.sessionId === parsed.sessionId);
+      if (session) {
+        loadSession(parsed.sessionId);
+      }
+    }
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (!authenticated || sessions.length === 0) return;
+    navigateFromHash();
+  });
+
+  // Load single session
+  async function loadSession(sessionId) {
+    currentSessionId = sessionId;
+    currentPage = 1;
+    renderSessionList(); // Update active highlight
+
+    timeline.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading events...</div>';
+    statsBar.style.display = 'none';
+    filterBar.style.display = 'none';
+    pagination.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      if (!res.ok) throw new Error('Failed');
+      allEvents = await res.json();
+      applyFilters();
+      showStatsAndFilters();
+    } catch {
+      timeline.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load session events.</div>';
+    }
+  }
+
+  function showStatsAndFilters() {
+    statsBar.style.display = '';
+    filterBar.style.display = '';
+
+    const totalEvents = allEvents.length;
+    let toolCalls = 0;
+    let firstTime = null;
+    let lastTime = null;
+
+    for (const evt of allEvents) {
+      const ts = getEventTimestamp(evt);
+      if (ts) {
+        if (!firstTime || ts < firstTime) firstTime = ts;
+        if (!lastTime || ts > lastTime) lastTime = ts;
+      }
+      if (evt.type === 'message' && evt.message && evt.message.role === 'assistant') {
+        const content = evt.message.content;
+        if (Array.isArray(content)) {
+          toolCalls += content.filter(p => p.type === 'toolCall').length;
+        }
+      }
+    }
+
+    document.getElementById('statEvents').textContent = totalEvents;
+    document.getElementById('statTools').textContent = toolCalls;
+
+    if (firstTime && lastTime) {
+      const durMs = new Date(lastTime) - new Date(firstTime);
+      document.getElementById('statDuration').textContent = formatDuration(durMs);
+    } else {
+      document.getElementById('statDuration').textContent = '-';
+    }
+  }
+
+  function formatDuration(ms) {
+    const secs = Math.floor(ms / 1000);
+    if (secs < 60) return secs + 's';
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    if (mins < 60) return mins + 'm ' + remSecs + 's';
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return hours + 'h ' + remMins + 'm';
+  }
+
+  function getEventTimestamp(evt) {
+    if (evt.timestamp) return evt.timestamp;
+    if (evt.message && evt.message.timestamp) return evt.message.timestamp;
+    return null;
+  }
+
+  // Filtering (timeline event filters)
+  function applyFilters() {
+    const filters = {};
+    document.querySelectorAll('[data-filter]').forEach(cb => {
+      filters[cb.dataset.filter] = cb.checked;
+    });
+    const search = searchInput.value.toLowerCase().trim();
+
+    filteredEvents = allEvents.filter(evt => {
+      const cat = categorizeEvent(evt);
+      if (!filters[cat]) return false;
+      if (search && !eventMatchesSearch(evt, search)) return false;
+      return true;
+    });
+
+    totalPages = Math.max(1, Math.ceil(filteredEvents.length / EVENTS_PER_PAGE));
+    if (currentPage > totalPages) currentPage = totalPages;
+
+    renderTimeline();
+    renderPagination();
+  }
+
+  function categorizeEvent(evt) {
+    if (evt.type === 'message') {
+      const role = evt.message && evt.message.role;
+      if (role === 'user') return 'user';
+      if (role === 'assistant') return 'assistant';
+      if (role === 'toolResult') return 'tool-result';
+    }
+    if (evt.type === 'thinking_level_change' || evt.type === 'session' ||
+        (evt.type === 'custom' && evt.customType === 'model-snapshot')) {
+      return 'other';
+    }
+    return 'other';
+  }
+
+  function eventMatchesSearch(evt, search) {
+    const json = JSON.stringify(evt).toLowerCase();
+    return json.includes(search);
+  }
+
+  // Filter event listeners
+  document.querySelectorAll('[data-filter]').forEach(cb => {
+    cb.addEventListener('change', () => { currentPage = 1; applyFilters(); });
+  });
+
+  let searchTimeout;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => { currentPage = 1; applyFilters(); }, 250);
+  });
+
+  // Pagination
+  function renderPagination() {
+    if (totalPages <= 1) {
+      pagination.style.display = 'none';
+      return;
+    }
+    pagination.style.display = '';
+    document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+    document.getElementById('prevPage').disabled = currentPage <= 1;
+    document.getElementById('nextPage').disabled = currentPage >= totalPages;
+  }
+
+  document.getElementById('prevPage').addEventListener('click', () => {
+    if (currentPage > 1) { currentPage--; renderTimeline(); renderPagination(); scrollTimelineTop(); }
+  });
+
+  document.getElementById('nextPage').addEventListener('click', () => {
+    if (currentPage < totalPages) { currentPage++; renderTimeline(); renderPagination(); scrollTimelineTop(); }
+  });
+
+  function scrollTimelineTop() {
+    timeline.scrollTop = 0;
+  }
+
+  // Render timeline
+  function renderTimeline() {
+    const start = (currentPage - 1) * EVENTS_PER_PAGE;
+    const end = start + EVENTS_PER_PAGE;
+    const pageEvents = filteredEvents.slice(start, end);
+
+    if (pageEvents.length === 0) {
+      timeline.innerHTML = '<div class="sv-timeline-empty"><div class="sv-timeline-empty-icon">&#128269;</div><p>No events match your filters.</p></div>';
+      return;
+    }
+
+    const html = [];
+    let i = 0;
+    while (i < pageEvents.length) {
+      const evt = pageEvents[i];
+
+      // Check if assistant message has tool calls - group them with results
+      if (evt.type === 'message' && evt.message && evt.message.role === 'assistant') {
+        const content = evt.message.content;
+        if (Array.isArray(content)) {
+          const textParts = content.filter(p => p.type === 'text' && p.text && p.text.trim());
+          const toolCalls = content.filter(p => p.type === 'toolCall');
+
+          if (textParts.length > 0) {
+            html.push(renderAssistantText(evt, textParts));
+          }
+
+          if (toolCalls.length > 0) {
+            const toolGroup = ['<div class="sv-tool-group">'];
+            for (const tc of toolCalls) {
+              const resultIdx = findToolResult(pageEvents, i + 1, tc.id);
+              const resultEvt = resultIdx !== -1 ? pageEvents[resultIdx] : null;
+              toolGroup.push(renderToolPair(evt, tc, resultEvt));
+            }
+            toolGroup.push('</div>');
+            html.push(toolGroup.join(''));
+          }
+        }
+        i++;
+        continue;
+      }
+
+      // Tool results that weren't grouped
+      if (evt.type === 'message' && evt.message && evt.message.role === 'toolResult') {
+        html.push(renderToolResultEvent(evt));
+        i++;
+        continue;
+      }
+
+      // Other event types
+      html.push(renderEvent(evt));
+      i++;
+    }
+
+    timeline.innerHTML = html.join('');
+
+    if (currentPage === totalPages) {
+      requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+    }
+  }
+
+  function findToolResult(events, startIdx, toolCallId) {
+    for (let j = startIdx; j < Math.min(startIdx + 20, events.length); j++) {
+      const e = events[j];
+      if (e.type === 'message' && e.message && e.message.role === 'toolResult' && e.message.toolCallId === toolCallId) {
+        return j;
+      }
+    }
+    return -1;
+  }
+
+  function renderEvent(evt) {
+    if (evt.type === 'session') {
+      return renderSessionStart(evt);
+    }
+    if (evt.type === 'thinking_level_change') {
+      return renderThinkingChange(evt);
+    }
+    if (evt.type === 'custom' && evt.customType === 'model-snapshot') {
+      return renderModelSnapshot(evt);
+    }
+    if (evt.type === 'message' && evt.message) {
+      if (evt.message.role === 'user') return renderUserMessage(evt);
+      if (evt.message.role === 'assistant') return renderAssistantText(evt, null);
+    }
+    return `<div class="sv-event session-start">
+      <div class="sv-event-header"><span class="sv-event-type">${escapeHtml(evt.type || 'unknown')}</span>
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span></div>
+      <div class="sv-event-body"><details class="sv-details"><summary>Raw data</summary><pre><code>${escapeHtml(JSON.stringify(evt, null, 2))}</code></pre></details></div>
+    </div>`;
+  }
+
+  function renderSessionStart(evt) {
+    const ts = evt.timestamp || '';
+    return `<div class="sv-event session-start">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Session Start</span>
+        <span class="sv-event-time">${formatTimestamp(ts)}</span>
+      </div>
+      <div class="sv-event-body">
+        <div style="font-size:13px;color:var(--text-secondary)">
+          ${evt.sessionId ? '<div>ID: <code>' + escapeHtml(evt.sessionId) + '</code></div>' : ''}
+          ${evt.version ? '<div>Version: ' + escapeHtml(evt.version) + '</div>' : ''}
+          ${evt.cwd ? '<div>CWD: <code>' + escapeHtml(evt.cwd) + '</code></div>' : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function renderUserMessage(evt) {
+    const msg = evt.message;
+    let text = '';
+    if (Array.isArray(msg.content)) {
+      text = msg.content.map(p => {
+        if (p.type === 'text') return p.text || '';
+        return '[' + (p.type || 'content') + ']';
+      }).join('\n');
+    } else if (typeof msg.content === 'string') {
+      text = msg.content;
+    }
+
+    return `<div class="sv-event user">
+      <div class="sv-event-header">
+        <span class="sv-event-type">User</span>
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body"><div class="sv-text-content">${renderMarkdown(text)}</div></div>
+    </div>`;
+  }
+
+  function renderAssistantText(evt, textParts) {
+    const msg = evt.message;
+    let parts = textParts;
+    if (!parts && Array.isArray(msg.content)) {
+      parts = msg.content.filter(p => p.type === 'text' && p.text && p.text.trim());
+    }
+    if (!parts || parts.length === 0) return '';
+
+    const text = parts.map(p => p.text).join('\n');
+    return `<div class="sv-event assistant">
+      <div class="sv-event-header">
+        <span class="sv-event-type">Assistant</span>
+        <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+      </div>
+      <div class="sv-event-body"><div class="sv-text-content">${renderMarkdown(text)}</div></div>
+    </div>`;
+  }
+
+  function renderToolCall(evt, toolCall) {
+    let argsStr = '';
+    try {
+      const args = typeof toolCall.arguments === 'string' ? JSON.parse(toolCall.arguments) : toolCall.arguments;
+      argsStr = JSON.stringify(args, null, 2);
+    } catch {
+      argsStr = typeof toolCall.arguments === 'string' ? toolCall.arguments : JSON.stringify(toolCall.arguments);
+    }
+
+    // Compact inline preview (~100 chars)
+    const argsOneLine = argsStr.replace(/\n\s*/g, ' ').trim();
+    const preview = argsOneLine.length > 100 ? argsOneLine.substring(0, 100) + '...' : argsOneLine;
+    const uid = 'tc-' + Math.random().toString(36).substring(2, 10);
+
+    return `<div class="sv-tool-call-row" data-expand-target="${uid}">
+      <span class="sv-tc-icon">&#128295;</span>
+      <span class="sv-tc-name">${escapeHtml(toolCall.name || 'unknown')}</span>
+      <span class="sv-tc-preview">&#9656; ${escapeHtml(preview)}</span>
+      <span class="sv-tc-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>
+    <div class="sv-tool-expanded call-expanded" id="${uid}">
+      <pre><code>${escapeHtml(argsStr)}</code></pre>
+    </div>`;
+  }
+
+  function renderToolResultInline(evt) {
+    const msg = evt.message || evt;
+    const toolName = msg.toolName || '';
+    let contentText = '';
+    if (Array.isArray(msg.content)) {
+      contentText = msg.content.map(p => {
+        if (p.type === 'text') return p.text || '';
+        return '[' + (p.type || 'content') + ']';
+      }).join('\n');
+    } else if (typeof msg.content === 'string') {
+      contentText = msg.content;
+    }
+
+    const isError = contentText.toLowerCase().startsWith('error') || (msg.isError === true);
+    const charCount = contentText.length;
+    // Inline preview: first ~100 chars, single line
+    const previewText = contentText.replace(/\n/g, ' ').trim();
+    const preview = previewText.length > 100 ? previewText.substring(0, 100) + '...' : previewText;
+
+    const truncated = contentText.length > 500;
+    const displayText = truncated ? contentText.substring(0, 500) + '...' : contentText;
+    const storeKey = 'tr-' + Math.random().toString(36).substring(2, 10);
+    const uid = 'tr-' + Math.random().toString(36).substring(2, 10);
+
+    if (truncated) {
+      toolResultStore[storeKey] = contentText;
+    }
+
+    return `<div class="sv-tool-result-row${isError ? ' error' : ''}" data-expand-target="${uid}">
+      <span class="sv-tr-icon">&#8594;</span>
+      <span class="sv-tr-name">${escapeHtml(toolName)}${isError ? ': error' : ''}</span>
+      <span class="sv-tr-preview">(${charCount} chars) ${escapeHtml(preview)}</span>
+    </div>
+    <div class="sv-tool-expanded result-expanded" id="${uid}">
+      <pre><code>${escapeHtml(displayText)}</code></pre>
+      ${truncated ? '<button class="sv-show-more" data-store-key="' + storeKey + '">Show all ' + charCount + ' chars</button>' : ''}
+    </div>`;
+  }
+
+  function renderToolPair(evt, toolCall, resultEvt) {
+    let html = '<div class="sv-tool-pair">';
+    html += renderToolCall(evt, toolCall);
+    if (resultEvt) {
+      html += renderToolResultInline(resultEvt);
+    }
+    html += '</div>';
+    return html;
+  }
+
+  const toolResultStore = {};
+
+  function renderToolResult(evt) {
+    return renderToolResultInline(evt);
+  }
+
+  function renderToolResultEvent(evt) {
+    // Ungrouped tool result - wrap in a tool-pair for consistent styling
+    return '<div class="sv-tool-pair" style="margin-left:24px">' + renderToolResultInline(evt) + '</div>';
+  }
+
+  function renderThinkingChange(evt) {
+    const level = evt.thinkingLevel || evt.level || 'unknown';
+    return `<div class="sv-event thinking-change">
+      &#129504; Thinking: <strong>${escapeHtml(String(level))}</strong>
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>`;
+  }
+
+  function renderModelSnapshot(evt) {
+    const data = evt.data || {};
+    const model = data.modelId || (evt.model && evt.model.name) || 'unknown';
+    const provider = data.provider || '';
+    return `<div class="sv-event model-snapshot">
+      &#9432; Model: <strong>${escapeHtml(String(model))}</strong>${provider ? ' <span style="font-size:11px;opacity:0.7">(' + escapeHtml(provider) + ')</span>' : ''}
+      <span class="sv-event-time">${formatTimestamp(getEventTimestamp(evt))}</span>
+    </div>`;
+  }
+
+  function formatTimestamp(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return '';
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Markdown rendering with collapsible code blocks
+  const markedInstance = new marked.Marked({
+    breaks: true,
+    gfm: true,
+  });
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    let html = markedInstance.parse(text);
+    html = wrapCollapsibleCodeBlocks(html);
+    return html;
+  }
+
+  const CODE_LINE_THRESHOLD = 10;
+
+  function wrapCollapsibleCodeBlocks(html) {
+    // Wrap <pre><code>...</code></pre> blocks that exceed the line threshold
+    return html.replace(/<pre><code(?:\s+class="([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g,
+      function(match, langClass, code) {
+        const lineCount = code.split('\n').length;
+        if (lineCount <= CODE_LINE_THRESHOLD) return match;
+        const lang = langClass ? langClass.replace(/^language-/, '') : '';
+        const label = lang ? lang + ' · ' + lineCount + ' lines' : lineCount + ' lines';
+        return '<div class="sv-code-wrapper collapsed">'
+          + '<pre><code' + (langClass ? ' class="' + langClass + '"' : '') + '>' + code + '</code></pre>'
+          + '<button class="sv-code-toggle" data-label-show="Show code (' + label + ')" data-label-hide="Hide code (' + label + ')">Show code (' + label + ')</button>'
+          + '</div>';
+      }
+    );
+  }
+
+  // Mobile sidebar toggle
+  const sidebarToggleBtn = document.getElementById('sidebarToggle');
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      sidebarEl.classList.toggle('open');
+    });
+  }
+
+  // "Show more", code-block toggle, and expand/collapse delegation for tool rows
+  timeline.addEventListener('click', (e) => {
+    // Collapsible code block toggle
+    const toggle = e.target.closest('.sv-code-toggle');
+    if (toggle) {
+      const wrapper = toggle.closest('.sv-code-wrapper');
+      if (wrapper) {
+        const isCollapsed = wrapper.classList.toggle('collapsed');
+        toggle.textContent = isCollapsed ? toggle.dataset.labelShow : toggle.dataset.labelHide;
+      }
+      return;
+    }
+
+    // Show more button for truncated output
+    const btn = e.target.closest('.sv-show-more');
+    if (btn) {
+      const key = btn.dataset.storeKey;
+      if (key && toolResultStore[key]) {
+        const codeEl = btn.previousElementSibling.querySelector('code');
+        if (codeEl) codeEl.textContent = toolResultStore[key];
+        delete toolResultStore[key];
+        btn.remove();
+      }
+      return;
+    }
+
+    // Compact row expand/collapse
+    const row = e.target.closest('.sv-tool-call-row, .sv-tool-result-row');
+    if (row) {
+      const targetId = row.dataset.expandTarget;
+      if (targetId) {
+        const expanded = document.getElementById(targetId);
+        if (expanded) {
+          expanded.classList.toggle('open');
+        }
+      }
+    }
+  });
+
+  // Logout
+  const logoutLink = document.getElementById('logoutLink');
+  if (logoutLink) {
+    logoutLink.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await fetch('/auth/logout');
+      window.location.reload();
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
