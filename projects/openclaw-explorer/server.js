@@ -14,6 +14,12 @@ const SELF_CALLBACK = process.env.SELF_CALLBACK || 'https://oc.ai.jingtao.fun/au
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '851207685@qq.com').split(',').map(e => e.trim().toLowerCase());
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
 
+// Multi-agent sessions directories
+const AGENT_SESSIONS = {
+  zhang: { dir: process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions', label: 'Little Zhang', emoji: '🔧' },
+  customer: { dir: process.env.CUSTOMER_SESSIONS_DIR || '/data/customer-sessions', label: 'Little Customer', emoji: '🤝' },
+};
+
 // Discord channel ID to human-readable name mapping
 // Loaded from external file (synced by OpenClaw cron) with in-memory cache
 const CHANNEL_NAMES_FILE = process.env.CHANNEL_NAMES_FILE || '/data/channel-names.json';
@@ -99,9 +105,21 @@ function requireAuth(req, res, next) {
 app.use('/api', requireAuth);
 
 // API routes
+app.get('/api/agents', (req, res) => {
+  const agents = Object.entries(AGENT_SESSIONS).map(([id, cfg]) => ({
+    id, label: cfg.label, emoji: cfg.emoji,
+  }));
+  res.json(agents);
+});
+
 app.get('/api/channel-names', (req, res) => {
   res.json(getChannelNames());
 });
+
+function getAgentSessionsDir(agentId) {
+  const agent = AGENT_SESSIONS[agentId];
+  return agent ? agent.dir : AGENT_SESSIONS.zhang.dir;
+}
 
 function computeTags(key, sessionData) {
   const tags = [];
@@ -128,7 +146,9 @@ function computeTags(key, sessionData) {
 }
 
 app.get('/api/sessions', (req, res) => {
-  const sessionsFile = path.join(SESSIONS_DIR, 'sessions.json');
+  const agentId = req.query.agent || 'zhang';
+  const sessionsDir = getAgentSessionsDir(agentId);
+  const sessionsFile = path.join(sessionsDir, 'sessions.json');
   try {
     const data = JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
     const sessions = Object.entries(data).map(([key, value]) => ({
@@ -149,12 +169,14 @@ app.get('/api/sessions', (req, res) => {
 });
 
 app.get('/api/sessions/:id', (req, res) => {
+  const agentId = req.query.agent || 'zhang';
+  const sessionsDir = getAgentSessionsDir(agentId);
   // Sanitize session ID to prevent path traversal
   const id = path.basename(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '');
   if (!id) {
     return res.status(400).json({ error: 'Invalid session ID' });
   }
-  const sessionFile = path.join(SESSIONS_DIR, `${id}.jsonl`);
+  const sessionFile = path.join(sessionsDir, `${id}.jsonl`);
   try {
     const content = fs.readFileSync(sessionFile, 'utf8');
     const lines = content.split('\n').filter(line => line.trim());
