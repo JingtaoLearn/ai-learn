@@ -35,6 +35,7 @@
       <a class="back-link" href="../">&larr; Back to Topics</a>
       <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
     </div>
+    <div class="sv-agent-switch" id="agentSwitch"></div>
     <div class="sv-tag-filter" id="tagFilter"></div>
     <div class="sv-session-list" id="sessionList">
       <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
@@ -91,6 +92,10 @@
   let currentPage = 1;
   let totalPages = 1;
 
+  // Agent state
+  let agents = [];
+  let currentAgent = 'zhang';
+
   // Tag filter state: map of tag -> 'include' | 'exclude' | null
   let tagFilters = {};
 
@@ -107,6 +112,7 @@
   const pagination = document.getElementById('pagination');
   const searchInput = document.getElementById('searchInput');
   const userInfo = document.getElementById('userInfo');
+  const agentSwitchEl = document.getElementById('agentSwitch');
 
   // Check auth on page load
   checkAuth();
@@ -119,6 +125,7 @@
         authenticated = true;
         userInfo.textContent = data.user.name || data.user.email;
         showApp();
+        await loadAgents();
         await loadSessions();
       } else {
         showLogin();
@@ -148,6 +155,47 @@
     mainArea.style.display = '';
   }
 
+  // Agent switcher
+  async function loadAgents() {
+    try {
+      const res = await fetch('/api/agents');
+      agents = await res.json();
+      renderAgentSwitch();
+    } catch {
+      agents = [{ id: 'zhang', label: 'Little Zhang', emoji: '🔧' }];
+      renderAgentSwitch();
+    }
+  }
+
+  function renderAgentSwitch() {
+    if (agents.length <= 1) {
+      agentSwitchEl.innerHTML = '';
+      return;
+    }
+    const html = agents.map(a => {
+      const active = a.id === currentAgent ? ' active' : '';
+      return `<button class="sv-agent-btn${active}" data-agent="${a.id}">${a.emoji} ${a.label}</button>`;
+    }).join('');
+    agentSwitchEl.innerHTML = html;
+
+    agentSwitchEl.querySelectorAll('.sv-agent-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const agentId = btn.dataset.agent;
+        if (agentId !== currentAgent) {
+          currentAgent = agentId;
+          currentSessionId = null;
+          tagFilters = {};
+          renderAgentSwitch();
+          loadSessions();
+          timeline.innerHTML = '<div class="sv-timeline-empty"><div class="sv-timeline-empty-icon">&#128203;</div><p>Select a session from the sidebar to view its timeline.</p></div>';
+          statsBar.style.display = 'none';
+          filterBar.style.display = 'none';
+          pagination.style.display = 'none';
+        }
+      });
+    });
+  }
+
   // Tag color mapping
   function getTagColor(tag) {
     if (tag === 'discord') return 'blue';
@@ -164,7 +212,7 @@
   async function loadSessions() {
     sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
     try {
-      const res = await fetch('/api/sessions');
+      const res = await fetch(`/api/sessions?agent=${encodeURIComponent(currentAgent)}`);
       if (!res.ok) throw new Error('Failed');
       sessions = await res.json();
       renderTagFilter();
@@ -354,14 +402,20 @@
       .filter(([, v]) => v)
       .map(([k, v]) => (v === 'exclude' ? '-' : '') + k);
 
+    let hashParts = [];
+    if (currentAgent && currentAgent !== 'zhang') hashParts.push('agent=' + encodeURIComponent(currentAgent));
+
     if (currentSessionId && activeTags.length > 0) {
-      const hash = '#/session/' + encodeURIComponent(currentSessionId) + '?tags=' + activeTags.map(encodeURIComponent).join(',');
+      const hash = '#/session/' + encodeURIComponent(currentSessionId) + '?tags=' + activeTags.map(encodeURIComponent).join(',') + (hashParts.length ? '&' + hashParts.join('&') : '');
       if (window.location.hash !== hash) history.pushState(null, '', hash);
     } else if (currentSessionId) {
-      const hash = '#/session/' + encodeURIComponent(currentSessionId);
+      const hash = '#/session/' + encodeURIComponent(currentSessionId) + (hashParts.length ? '?' + hashParts.join('&') : '');
       if (window.location.hash !== hash) history.pushState(null, '', hash);
     } else if (activeTags.length > 0) {
-      const hash = '#/filter/' + activeTags.map(encodeURIComponent).join(',');
+      const hash = '#/filter/' + activeTags.map(encodeURIComponent).join(',') + (hashParts.length ? '?' + hashParts.join('&') : '');
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else if (hashParts.length) {
+      const hash = '#/?' + hashParts.join('&');
       if (window.location.hash !== hash) history.pushState(null, '', hash);
     } else {
       if (window.location.hash) history.pushState(null, '', window.location.pathname);
@@ -370,36 +424,44 @@
 
   function parseHash() {
     const hash = window.location.hash;
-    if (!hash || !hash.startsWith('#/')) return { sessionId: null, tags: {} };
+    if (!hash || !hash.startsWith('#/')) return { sessionId: null, tags: {}, agent: null };
 
     let sessionId = null;
     let tags = {};
+    let agent = null;
 
-    // Match #/session/<id>?tags=...
-    const sessionMatch = hash.match(/^#\/session\/([^?]+)(\?tags=(.+))?$/);
+    // Extract agent from query params
+    const qIdx = hash.indexOf('?');
+    if (qIdx !== -1) {
+      const params = new URLSearchParams(hash.substring(qIdx + 1));
+      if (params.has('agent')) agent = params.get('agent');
+      if (params.has('tags')) tags = parseTagsParam(params.get('tags'));
+    }
+
+    // Match #/session/<id>...
+    const sessionMatch = hash.match(/^#\/session\/([^?]+)/);
     if (sessionMatch) {
       sessionId = decodeURIComponent(sessionMatch[1]);
-      if (sessionMatch[3]) {
-        tags = parseTagsParam(sessionMatch[3]);
-      }
-      return { sessionId, tags };
+      return { sessionId, tags, agent };
     }
 
     // Match #/filter/tag1,tag2
-    const filterMatch = hash.match(/^#\/filter\/(.+)$/);
+    const filterMatch = hash.match(/^#\/filter\/([^?]+)/);
     if (filterMatch) {
-      tags = parseTagsParam(filterMatch[1]);
-      return { sessionId: null, tags };
+      if (Object.keys(tags).length === 0) {
+        tags = parseTagsParam(filterMatch[1]);
+      }
+      return { sessionId: null, tags, agent };
     }
 
-    // Legacy format: #/<groupSlug>/<sessionId> - try to find session by ID
-    const parts = hash.substring(2).split('/');
+    // Legacy format: #/<groupSlug>/<sessionId>
+    const parts = hash.substring(2).split('?')[0].split('/');
     if (parts.length >= 2) {
       sessionId = decodeURIComponent(parts[1]);
-      return { sessionId, tags: {} };
+      return { sessionId, tags: {}, agent };
     }
 
-    return { sessionId: null, tags: {} };
+    return { sessionId: null, tags: {}, agent };
   }
 
   function parseTagsParam(param) {
@@ -418,6 +480,19 @@
   function navigateFromHash() {
     const parsed = parseHash();
 
+    // Restore agent selection
+    if (parsed.agent && parsed.agent !== currentAgent && AGENT_SESSIONS_IDS().includes(parsed.agent)) {
+      currentAgent = parsed.agent;
+      renderAgentSwitch();
+      loadSessions().then(() => {
+        if (parsed.sessionId) {
+          const session = sessions.find(s => s.sessionId === parsed.sessionId);
+          if (session) loadSession(parsed.sessionId);
+        }
+      });
+      return;
+    }
+
     // Restore tag filters
     if (Object.keys(parsed.tags).length > 0) {
       tagFilters = parsed.tags;
@@ -432,6 +507,10 @@
         loadSession(parsed.sessionId);
       }
     }
+  }
+
+  function AGENT_SESSIONS_IDS() {
+    return agents.map(a => a.id);
   }
 
   window.addEventListener('hashchange', () => {
@@ -451,7 +530,7 @@
     pagination.style.display = 'none';
 
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`);
+      const res = await fetch(`/api/sessions/${sessionId}?agent=${encodeURIComponent(currentAgent)}`);
       if (!res.ok) throw new Error('Failed');
       allEvents = await res.json();
       applyFilters();
