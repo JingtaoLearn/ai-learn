@@ -40,6 +40,7 @@
     <div class="sv-session-list" id="sessionList">
       <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
     </div>
+    <div class="sv-resize-handle" id="resizeHandle"></div>
   </nav>
 
   <!-- Main area -->
@@ -153,6 +154,7 @@
     loginScreen.style.display = 'none';
     sidebarEl.style.display = '';
     mainArea.style.display = '';
+    restoreSidebarState();
   }
 
   // Agent switcher
@@ -989,11 +991,108 @@
     );
   }
 
-  // Mobile sidebar toggle
+  // Sidebar toggle (collapse/expand)
   const sidebarToggleBtn = document.getElementById('sidebarToggle');
+  const SIDEBAR_MIN_WIDTH = 200;
+  const SIDEBAR_MAX_WIDTH = 600;
+  const SIDEBAR_DEFAULT_WIDTH = 320;
+  const SIDEBAR_STORAGE_KEY = 'sv-sidebar-width';
+  const SIDEBAR_COLLAPSED_KEY = 'sv-sidebar-collapsed';
+
+  function getSavedSidebarWidth() {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return saved ? Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parseInt(saved, 10))) : SIDEBAR_DEFAULT_WIDTH;
+  }
+
+  function setSidebarWidth(w) {
+    sidebarEl.style.width = w + 'px';
+    sidebarEl.style.minWidth = w + 'px';
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(w));
+  }
+
+  function collapseSidebar() {
+    sidebarEl.classList.add('collapsed');
+    sidebarEl.style.width = '0px';
+    sidebarEl.style.minWidth = '0px';
+    sidebarToggleBtn.textContent = '\u25B6'; // ▶
+    sidebarToggleBtn.title = 'Show sidebar';
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, '1');
+  }
+
+  function expandSidebar() {
+    sidebarEl.classList.remove('collapsed');
+    const w = getSavedSidebarWidth();
+    setSidebarWidth(w);
+    sidebarToggleBtn.textContent = '\u2630'; // ☰
+    sidebarToggleBtn.title = 'Hide sidebar';
+    localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  }
+
   if (sidebarToggleBtn) {
     sidebarToggleBtn.addEventListener('click', () => {
-      sidebarEl.classList.toggle('open');
+      if (window.innerWidth <= 900) {
+        // Mobile: toggle overlay
+        sidebarEl.classList.toggle('open');
+      } else {
+        // Desktop: toggle collapse
+        if (sidebarEl.classList.contains('collapsed')) {
+          expandSidebar();
+        } else {
+          collapseSidebar();
+        }
+      }
+    });
+  }
+
+  // Restore sidebar state on load
+  function restoreSidebarState() {
+    if (window.innerWidth > 900) {
+      if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') {
+        collapseSidebar();
+      } else {
+        const w = getSavedSidebarWidth();
+        setSidebarWidth(w);
+      }
+    }
+  }
+
+  // Sidebar resize handle
+  const resizeHandle = document.getElementById('resizeHandle');
+  if (resizeHandle) {
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+      if (sidebarEl.classList.contains('collapsed')) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebarEl.offsetWidth;
+      sidebarEl.style.transition = 'none'; // disable transition during drag
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const delta = e.clientX - startX;
+      const newWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + delta));
+      setSidebarWidth(newWidth);
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        sidebarEl.style.transition = ''; // re-enable transition
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+
+    // Double-click to reset to default width
+    resizeHandle.addEventListener('dblclick', () => {
+      setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
     });
   }
 
