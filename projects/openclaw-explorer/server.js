@@ -10,9 +10,44 @@ const PORT = process.env.PORT || 80;
 const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET || 'changeme';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'changeme';
 const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth/login';
-const SELF_CALLBACK = process.env.SELF_CALLBACK || 'https://oc.ai.jingtao.fun/auth/callback';
-const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '851207685@qq.com').split(',').map(e => e.trim().toLowerCase());
+// SELF_CALLBACK is derived from VIRTUAL_HOST so preview deploys get the right callback automatically
+const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
+const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
+
+// Allowed emails: env var baseline + local file for additional entries (gitignored)
+const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
+let _allowedEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+let _allowedEmailsMtime = 0;
+
+function getAllowedEmails() {
+  try {
+    const stat = fs.statSync(ALLOWED_EMAILS_FILE);
+    if (stat.mtimeMs !== _allowedEmailsMtime) {
+      const content = fs.readFileSync(ALLOWED_EMAILS_FILE, 'utf8');
+      const fileEmails = content.split('\n')
+        .map(line => line.replace(/#.*$/, '').trim().toLowerCase())  // strip comments
+        .filter(Boolean);
+      // Merge env var emails + file emails, deduplicate
+      const envEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+      _allowedEmails = [...new Set([...envEmails, ...fileEmails])];
+      _allowedEmailsMtime = stat.mtimeMs;
+      console.log(`Loaded ${_allowedEmails.length} allowed emails (${envEmails.length} from env, ${fileEmails.length} from file)`);
+    }
+  } catch (err) {
+    // File doesn't exist — just use env var emails
+    if (_allowedEmails.length === 0) {
+      _allowedEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    }
+  }
+  return _allowedEmails;
+}
+
+// Skill directories
+const SKILL_DIRS = {
+  bundled: process.env.SKILLS_BUNDLED_DIR || '/data/skills-bundled',
+  workspace: process.env.SKILLS_WORKSPACE_DIR || '/data/skills-workspace'
+};
 
 // Multi-agent sessions directories
 const AGENT_SESSIONS = {
@@ -69,7 +104,7 @@ app.post('/auth/callback', (req, res) => {
   try {
     const decoded = jwt.verify(token, AUTH_SHARED_SECRET);
     const email = (decoded.email || '').toLowerCase();
-    if (!ALLOWED_EMAILS.includes(email)) {
+    if (!getAllowedEmails().includes(email)) {
       return res.status(403).send('Email not authorized');
     }
     req.session.user = { email, name: decoded.displayName || decoded.name || email };
@@ -92,6 +127,13 @@ app.get('/auth/me', (req, res) => {
   } else {
     res.json({ authenticated: false });
   }
+});
+
+// Auth config — provides login URL derived from server-side VIRTUAL_HOST
+// so frontends don't need to hardcode callback URLs
+app.get('/auth/config', (req, res) => {
+  const loginUrl = `${LOGIN_URL}?redirect=${encodeURIComponent(SELF_CALLBACK)}`;
+  res.json({ loginUrl });
 });
 
 // Auth middleware for /api/* routes
@@ -195,6 +237,146 @@ app.get('/api/sessions/:id', (req, res) => {
     }
     res.status(500).json({ error: 'Failed to read session' });
   }
+});
+
+// --- Skill Viewer API ---
+
+function parseSkillFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return { meta: {}, body: content };
+
+  const yamlStr = match[1];
+  const body = content.slice(match[0].length).trim();
+  const meta = {};
+
+  // Simple YAML parser for flat + nested metadata
+  // Handles: key: value, key: "value", key: { json }
+  for (const line of yamlStr.split('\n')) {
+    const kv = line.match(/^(\w+):\s*(.*)/);
+    if (!kv) continue;
+    const key = kv[1];
+    let val = kv[2].trim();
+    // Remove surrounding quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    // Try JSON parse for object values
+    if (val.startsWith('{') || val.startsWith('[')) {
+      try { val = JSON.parse(val); } catch { /* keep as string */ }
+    }
+    meta[key] = val;
+  }
+
+  return { meta, body };
+}
+
+function readSkillDir(dirPath, source) {
+  const skills = [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      const skillPath = path.join(dirPath, name);
+      const skillMdPath = path.join(skillPath, 'SKILL.md');
+
+      let meta = {};
+      let hasSkillMd = false;
+      try {
+        const content = fs.readFileSync(skillMdPath, 'utf8');
+        hasSkillMd = true;
+        const parsed = parseSkillFrontmatter(content);
+        meta = parsed.meta;
+      } catch { /* no SKILL.md or unreadable */ }
+
+      const ocMeta = (meta.metadata && meta.metadata.openclaw) || {};
+
+      // Check for references/ and scripts/ subdirectories
+      let hasReferences = false;
+      let hasScripts = false;
+      try {
+        hasReferences = fs.statSync(path.join(skillPath, 'references')).isDirectory();
+      } catch { /* ignore */ }
+      try {
+        hasScripts = fs.statSync(path.join(skillPath, 'scripts')).isDirectory();
+      } catch { /* ignore */ }
+
+      skills.push({
+        name: meta.name || name,
+        description: meta.description || '',
+        emoji: ocMeta.emoji || '',
+        source,
+        requires: ocMeta.requires || null,
+        hasReferences,
+        hasScripts,
+      });
+    }
+  } catch { /* directory doesn't exist or unreadable */ }
+  return skills;
+}
+
+app.get('/api/skills', (req, res) => {
+  const bundled = readSkillDir(SKILL_DIRS.bundled, 'bundled');
+  const workspace = readSkillDir(SKILL_DIRS.workspace, 'workspace');
+  const all = [...bundled, ...workspace].sort((a, b) => a.name.localeCompare(b.name));
+  res.json(all);
+});
+
+app.get('/api/skills/:name', (req, res) => {
+  const name = path.basename(req.params.name);
+  if (!name) {
+    return res.status(400).json({ error: 'Invalid skill name' });
+  }
+
+  // Search in both directories
+  for (const [source, dir] of Object.entries(SKILL_DIRS)) {
+    const skillPath = path.join(dir, name);
+    try {
+      const stat = fs.statSync(skillPath);
+      if (!stat.isDirectory()) continue;
+    } catch { continue; }
+
+    const skillMdPath = path.join(skillPath, 'SKILL.md');
+    let meta = {};
+    let body = '';
+    try {
+      const content = fs.readFileSync(skillMdPath, 'utf8');
+      const parsed = parseSkillFrontmatter(content);
+      meta = parsed.meta;
+      body = parsed.body;
+    } catch { /* no SKILL.md */ }
+
+    const ocMeta = (meta.metadata && meta.metadata.openclaw) || {};
+
+    // List files recursively (shallow - one level of subdirs)
+    const files = [];
+    function listFiles(dir, prefix) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          const rel = prefix ? prefix + '/' + e.name : e.name;
+          if (e.isFile()) {
+            files.push(rel);
+          } else if (e.isDirectory()) {
+            listFiles(path.join(dir, e.name), rel);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    listFiles(skillPath, '');
+
+    return res.json({
+      name: meta.name || name,
+      description: meta.description || '',
+      emoji: ocMeta.emoji || '',
+      source,
+      requires: ocMeta.requires || null,
+      content: body,
+      files,
+    });
+  }
+
+  res.status(404).json({ error: 'Skill not found' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

@@ -136,18 +136,24 @@
     }
   }
 
-  function showLogin() {
-    loginScreen.style.display = '';
+  async function showLogin() {
+        loginScreen.style.display = '';
     sidebarEl.style.display = 'none';
     mainArea.style.display = 'none';
 
-    const loginUrl = getLoginUrl();
+    const loginUrl = await getLoginUrl();
     loginBtn.href = loginUrl;
   }
 
-  function getLoginUrl() {
-    const callbackUrl = window.location.origin + '/auth/callback';
-    return `https://ms-login.ai.jingtao.fun/auth/login?redirect=${encodeURIComponent(callbackUrl)}`;
+  async function getLoginUrl() {
+    try {
+      const cfg = await fetch('/auth/config').then(r => r.json());
+      return cfg.loginUrl;
+    } catch {
+      // Fallback: build client-side
+      const callbackUrl = window.location.origin + '/auth/callback';
+      return `https://ms-login.ai.jingtao.fun/auth/login?redirect=${encodeURIComponent(callbackUrl)}`;
+    }
   }
 
   function showApp() {
