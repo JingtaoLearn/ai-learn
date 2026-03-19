@@ -10,9 +10,38 @@ const PORT = process.env.PORT || 80;
 const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET || 'changeme';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'changeme';
 const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth/login';
-const SELF_CALLBACK = process.env.SELF_CALLBACK || 'https://oc.ai.jingtao.fun/auth/callback';
-const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '851207685@qq.com').split(',').map(e => e.trim().toLowerCase());
+// SELF_CALLBACK is derived from VIRTUAL_HOST so preview deploys get the right callback automatically
+const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
+const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
+
+// Allowed emails: env var baseline + local file for additional entries (gitignored)
+const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
+let _allowedEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+let _allowedEmailsMtime = 0;
+
+function getAllowedEmails() {
+  try {
+    const stat = fs.statSync(ALLOWED_EMAILS_FILE);
+    if (stat.mtimeMs !== _allowedEmailsMtime) {
+      const content = fs.readFileSync(ALLOWED_EMAILS_FILE, 'utf8');
+      const fileEmails = content.split('\n')
+        .map(line => line.replace(/#.*$/, '').trim().toLowerCase())  // strip comments
+        .filter(Boolean);
+      // Merge env var emails + file emails, deduplicate
+      const envEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+      _allowedEmails = [...new Set([...envEmails, ...fileEmails])];
+      _allowedEmailsMtime = stat.mtimeMs;
+      console.log(`Loaded ${_allowedEmails.length} allowed emails (${envEmails.length} from env, ${fileEmails.length} from file)`);
+    }
+  } catch (err) {
+    // File doesn't exist — just use env var emails
+    if (_allowedEmails.length === 0) {
+      _allowedEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    }
+  }
+  return _allowedEmails;
+}
 
 // Skill directories
 const SKILL_DIRS = {
@@ -75,7 +104,7 @@ app.post('/auth/callback', (req, res) => {
   try {
     const decoded = jwt.verify(token, AUTH_SHARED_SECRET);
     const email = (decoded.email || '').toLowerCase();
-    if (!ALLOWED_EMAILS.includes(email)) {
+    if (!getAllowedEmails().includes(email)) {
       return res.status(403).send('Email not authorized');
     }
     req.session.user = { email, name: decoded.displayName || decoded.name || email };
@@ -98,6 +127,13 @@ app.get('/auth/me', (req, res) => {
   } else {
     res.json({ authenticated: false });
   }
+});
+
+// Auth config — provides login URL derived from server-side VIRTUAL_HOST
+// so frontends don't need to hardcode callback URLs
+app.get('/auth/config', (req, res) => {
+  const loginUrl = `${LOGIN_URL}?redirect=${encodeURIComponent(SELF_CALLBACK)}`;
+  res.json({ loginUrl });
 });
 
 // Auth middleware for /api/* routes
