@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skill Viewer - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/skill-viewer.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Skill Viewer</h1>
+  <div class="header-controls">
+    <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+    <span id="userInfo" style="font-size:13px;color:var(--text-secondary)"></span>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<div class="sk-container" id="appContainer">
+  <!-- Login screen -->
+  <div class="sk-login" id="loginScreen" style="display:none;width:100%">
+    <div class="sk-login-icon">&#128274;</div>
+    <h2 style="color:var(--text);margin:0">Skill Viewer</h2>
+    <p style="max-width:400px;text-align:center">Sign in to browse installed OpenClaw skills. This feature requires authentication.</p>
+    <a class="sk-login-btn" id="loginBtn" href="#">&#127759; Login with Microsoft</a>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sk-sidebar" id="sidebar" style="display:none">
+    <div class="sk-sidebar-header">
+      <a class="back-link" href="../">&larr; Back to Topics</a>
+      <div style="font-weight:600;font-size:15px;color:var(--text)">Skills</div>
+    </div>
+    <div class="sk-search-wrap">
+      <input class="sk-search" id="searchInput" type="text" placeholder="Search skills...">
+    </div>
+    <div class="sk-skill-list" id="skillList">
+      <div class="sk-loading"><div class="sk-spinner"></div> Loading skills...</div>
+    </div>
+    <div class="sk-resize-handle" id="resizeHandle"></div>
+  </nav>
+
+  <!-- Main area -->
+  <div class="sk-main" id="mainArea" style="display:none">
+    <div class="sk-detail" id="detailArea">
+      <div class="sk-empty">
+        <div class="sk-empty-icon">&#128218;</div>
+        <p>Select a skill from the sidebar to view its documentation.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../js/main.js"></script>
+<script>
+(function() {
+  // State
+  let authenticated = false;
+  let skills = [];
+  let currentSkill = null;
+
+  // DOM refs
+  const loginScreen = document.getElementById('loginScreen');
+  const loginBtn = document.getElementById('loginBtn');
+  const sidebarEl = document.getElementById('sidebar');
+  const mainArea = document.getElementById('mainArea');
+  const skillList = document.getElementById('skillList');
+  const detailArea = document.getElementById('detailArea');
+  const searchInput = document.getElementById('searchInput');
+  const userInfo = document.getElementById('userInfo');
+
+  checkAuth();
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me');
+      const data = await res.json();
+      if (data.authenticated) {
+        authenticated = true;
+        userInfo.textContent = data.user.name || data.user.email;
+        showApp();
+        await loadSkills();
+      } else {
+        showLogin();
+      }
+    } catch {
+      showLogin();
+    }
+  }
+
+  function showLogin() {
+    loginScreen.style.display = '';
+    sidebarEl.style.display = 'none';
+    mainArea.style.display = 'none';
+    const callbackUrl = window.location.origin + '/auth/callback';
+    loginBtn.href = 'https://ms-login.ai.jingtao.fun/auth/login?redirect=' + encodeURIComponent(callbackUrl);
+  }
+
+  function showApp() {
+    loginScreen.style.display = 'none';
+    sidebarEl.style.display = '';
+    mainArea.style.display = '';
+    restoreSidebarState();
+  }
+
+  // Load skills list
+  async function loadSkills() {
+    skillList.innerHTML = '<div class="sk-loading"><div class="sk-spinner"></div> Loading skills...</div>';
+    try {
+      const res = await fetch('/api/skills');
+      if (!res.ok) throw new Error('Failed');
+      skills = await res.json();
+      renderSkillList();
+      navigateFromHash();
+    } catch {
+      skillList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load skills.</div>';
+    }
+  }
+
+  function renderSkillList() {
+    const query = searchInput.value.toLowerCase().trim();
+    const filtered = query
+      ? skills.filter(s => s.name.toLowerCase().includes(query) || (s.description || '').toLowerCase().includes(query))
+      : skills;
+
+    if (filtered.length === 0) {
+      skillList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No skills match your search.</div>';
+      return;
+    }
+
+    const html = [];
+    for (const s of filtered) {
+      const emoji = s.emoji || '&#128295;';
+      const active = currentSkill === s.name ? ' active' : '';
+      const desc = s.description ? escapeHtml(s.description.length > 60 ? s.description.substring(0, 60) + '...' : s.description) : '';
+      html.push(
+        '<div class="sk-skill-item' + active + '" data-name="' + escapeHtml(s.name) + '">' +
+          '<span class="sk-skill-emoji">' + emoji + '</span>' +
+          '<div class="sk-skill-info">' +
+            '<div class="sk-skill-name">' + escapeHtml(s.name) + '</div>' +
+            (desc ? '<div class="sk-skill-desc">' + desc + '</div>' : '') +
+          '</div>' +
+          '<span class="sk-badge ' + s.source + '">' + s.source + '</span>' +
+        '</div>'
+      );
+    }
+    skillList.innerHTML = html.join('');
+
+    skillList.querySelectorAll('.sk-skill-item').forEach(item => {
+      item.addEventListener('click', () => {
+        loadSkillDetail(item.dataset.name);
+        if (window.innerWidth <= 900) {
+          sidebarEl.classList.remove('open');
+        }
+      });
+    });
+  }
+
+  // Search
+  let searchTimeout;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => renderSkillList(), 200);
+  });
+
+  // Load skill detail
+  async function loadSkillDetail(name) {
+    currentSkill = name;
+    renderSkillList(); // update active highlight
+    updateHash();
+
+    detailArea.innerHTML = '<div class="sk-loading"><div class="sk-spinner"></div> Loading skill...</div>';
+    try {
+      const res = await fetch('/api/skills/' + encodeURIComponent(name));
+      if (!res.ok) throw new Error('Failed');
+      const skill = await res.json();
+      renderDetail(skill);
+    } catch {
+      detailArea.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load skill detail.</div>';
+    }
+  }
+
+  function renderDetail(skill) {
+    const emoji = skill.emoji || '&#128295;';
+    let html = '<div class="sk-detail-header">';
+    html += '<div class="sk-detail-title">';
+    html += '<span class="sk-detail-emoji">' + emoji + '</span>';
+    html += '<span class="sk-detail-name">' + escapeHtml(skill.name) + '</span>';
+    html += '</div>';
+    html += '<div class="sk-detail-meta">';
+    html += '<span class="sk-badge ' + skill.source + '">' + skill.source + '</span>';
+    html += '</div>';
+    if (skill.description) {
+      html += '<div class="sk-detail-desc">' + escapeHtml(skill.description) + '</div>';
+    }
+    html += '</div>';
+
+    // Requirements
+    if (skill.requires && skill.requires.bins && skill.requires.bins.length > 0) {
+      html += '<div class="sk-requires">';
+      html += '<div class="sk-requires-title">Requirements</div>';
+      html += '<div class="sk-requires-list">';
+      for (const bin of skill.requires.bins) {
+        html += '<span class="sk-requires-item">' + escapeHtml(bin) + '</span>';
+      }
+      html += '</div></div>';
+    }
+
+    // Markdown content
+    if (skill.content) {
+      html += '<div class="sk-content">' + renderMarkdown(skill.content) + '</div>';
+    }
+
+    // File tree
+    if (skill.files && skill.files.length > 0) {
+      html += '<div class="sk-files">';
+      html += '<div class="sk-files-title">Files</div>';
+      html += '<ul class="sk-files-list">';
+      for (const f of skill.files) {
+        html += '<li><span class="sk-file-icon">&#128196;</span> ' + escapeHtml(f) + '</li>';
+      }
+      html += '</ul></div>';
+    }
+
+    detailArea.innerHTML = html;
+  }
+
+  // Hash routing
+  function updateHash() {
+    if (currentSkill) {
+      const hash = '#/' + encodeURIComponent(currentSkill);
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else {
+      if (window.location.hash) history.pushState(null, '', window.location.pathname);
+    }
+  }
+
+  function navigateFromHash() {
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#/')) return;
+    const name = decodeURIComponent(hash.substring(2));
+    if (name && skills.some(s => s.name === name)) {
+      loadSkillDetail(name);
+    }
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (!authenticated || skills.length === 0) return;
+    navigateFromHash();
+  });
+
+  // Markdown rendering
+  const markedInstance = new marked.Marked({ breaks: true, gfm: true });
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    return markedInstance.parse(text);
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Sidebar toggle (collapse/expand)
+  const sidebarToggleBtn = document.getElementById('sidebarToggle');
+  const SIDEBAR_MIN_WIDTH = 200;
+  const SIDEBAR_MAX_WIDTH = 600;
+  const SIDEBAR_DEFAULT_WIDTH = 320;
+  const SIDEBAR_STORAGE_KEY = 'sk-sidebar-width';
+  const SIDEBAR_COLLAPSED_KEY = 'sk-sidebar-collapsed';
+
+  function getSavedSidebarWidth() {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return saved ? Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parseInt(saved, 10))) : SIDEBAR_DEFAULT_WIDTH;
+  }
+
+  function setSidebarWidth(w) {
+    sidebarEl.style.width = w + 'px';
+    sidebarEl.style.minWidth = w + 'px';
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(w));
+  }
+
+  function collapseSidebar() {
+    sidebarEl.classList.add('collapsed');
+    sidebarEl.style.width = '0px';
+    sidebarEl.style.minWidth = '0px';
+    sidebarToggleBtn.textContent = '\u25B6';
+    sidebarToggleBtn.title = 'Show sidebar';
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, '1');
+  }
+
+  function expandSidebar() {
+    sidebarEl.classList.remove('collapsed');
+    const w = getSavedSidebarWidth();
+    setSidebarWidth(w);
+    sidebarToggleBtn.textContent = '\u2630';
+    sidebarToggleBtn.title = 'Hide sidebar';
+    localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      if (window.innerWidth <= 900) {
+        sidebarEl.classList.toggle('open');
+      } else {
+        if (sidebarEl.classList.contains('collapsed')) {
+          expandSidebar();
+        } else {
+          collapseSidebar();
+        }
+      }
+    });
+  }
+
+  function restoreSidebarState() {
+    if (window.innerWidth > 900) {
+      if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') {
+        collapseSidebar();
+      } else {
+        const w = getSavedSidebarWidth();
+        setSidebarWidth(w);
+      }
+    }
+  }
+
+  // Sidebar resize handle
+  const resizeHandle = document.getElementById('resizeHandle');
+  if (resizeHandle) {
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+      if (sidebarEl.classList.contains('collapsed')) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebarEl.offsetWidth;
+      sidebarEl.style.transition = 'none';
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const delta = e.clientX - startX;
+      const newWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + delta));
+      setSidebarWidth(newWidth);
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        sidebarEl.style.transition = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+
+    resizeHandle.addEventListener('dblclick', () => {
+      setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -14,3 +14,5 @@ services:
       - /home/jingtao/.openclaw/agents/main/sessions:/data/sessions:ro
       - /home/jingtao/.openclaw/data/channel-names.json:/data/channel-names.json:ro
       - /home/jingtao/mnt/customer-sessions:/data/customer-sessions:ro
+      - /home/jingtao/.npm-global/lib/node_modules/openclaw/skills:/data/skills-bundled:ro
+      - /home/jingtao/.openclaw/workspace/skills:/data/skills-workspace:ro

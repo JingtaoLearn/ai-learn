@@ -14,6 +14,12 @@ const SELF_CALLBACK = process.env.SELF_CALLBACK || 'https://oc.ai.jingtao.fun/au
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '851207685@qq.com').split(',').map(e => e.trim().toLowerCase());
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
 
+// Skill directories
+const SKILL_DIRS = {
+  bundled: process.env.SKILLS_BUNDLED_DIR || '/data/skills-bundled',
+  workspace: process.env.SKILLS_WORKSPACE_DIR || '/data/skills-workspace'
+};
+
 // Multi-agent sessions directories
 const AGENT_SESSIONS = {
   zhang: { dir: process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions', label: 'Little Zhang', emoji: '🔧' },
@@ -195,6 +201,146 @@ app.get('/api/sessions/:id', (req, res) => {
     }
     res.status(500).json({ error: 'Failed to read session' });
   }
+});
+
+// --- Skill Viewer API ---
+
+function parseSkillFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return { meta: {}, body: content };
+
+  const yamlStr = match[1];
+  const body = content.slice(match[0].length).trim();
+  const meta = {};
+
+  // Simple YAML parser for flat + nested metadata
+  // Handles: key: value, key: "value", key: { json }
+  for (const line of yamlStr.split('\n')) {
+    const kv = line.match(/^(\w+):\s*(.*)/);
+    if (!kv) continue;
+    const key = kv[1];
+    let val = kv[2].trim();
+    // Remove surrounding quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    // Try JSON parse for object values
+    if (val.startsWith('{') || val.startsWith('[')) {
+      try { val = JSON.parse(val); } catch { /* keep as string */ }
+    }
+    meta[key] = val;
+  }
+
+  return { meta, body };
+}
+
+function readSkillDir(dirPath, source) {
+  const skills = [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      const skillPath = path.join(dirPath, name);
+      const skillMdPath = path.join(skillPath, 'SKILL.md');
+
+      let meta = {};
+      let hasSkillMd = false;
+      try {
+        const content = fs.readFileSync(skillMdPath, 'utf8');
+        hasSkillMd = true;
+        const parsed = parseSkillFrontmatter(content);
+        meta = parsed.meta;
+      } catch { /* no SKILL.md or unreadable */ }
+
+      const ocMeta = (meta.metadata && meta.metadata.openclaw) || {};
+
+      // Check for references/ and scripts/ subdirectories
+      let hasReferences = false;
+      let hasScripts = false;
+      try {
+        hasReferences = fs.statSync(path.join(skillPath, 'references')).isDirectory();
+      } catch { /* ignore */ }
+      try {
+        hasScripts = fs.statSync(path.join(skillPath, 'scripts')).isDirectory();
+      } catch { /* ignore */ }
+
+      skills.push({
+        name: meta.name || name,
+        description: meta.description || '',
+        emoji: ocMeta.emoji || '',
+        source,
+        requires: ocMeta.requires || null,
+        hasReferences,
+        hasScripts,
+      });
+    }
+  } catch { /* directory doesn't exist or unreadable */ }
+  return skills;
+}
+
+app.get('/api/skills', (req, res) => {
+  const bundled = readSkillDir(SKILL_DIRS.bundled, 'bundled');
+  const workspace = readSkillDir(SKILL_DIRS.workspace, 'workspace');
+  const all = [...bundled, ...workspace].sort((a, b) => a.name.localeCompare(b.name));
+  res.json(all);
+});
+
+app.get('/api/skills/:name', (req, res) => {
+  const name = path.basename(req.params.name);
+  if (!name) {
+    return res.status(400).json({ error: 'Invalid skill name' });
+  }
+
+  // Search in both directories
+  for (const [source, dir] of Object.entries(SKILL_DIRS)) {
+    const skillPath = path.join(dir, name);
+    try {
+      const stat = fs.statSync(skillPath);
+      if (!stat.isDirectory()) continue;
+    } catch { continue; }
+
+    const skillMdPath = path.join(skillPath, 'SKILL.md');
+    let meta = {};
+    let body = '';
+    try {
+      const content = fs.readFileSync(skillMdPath, 'utf8');
+      const parsed = parseSkillFrontmatter(content);
+      meta = parsed.meta;
+      body = parsed.body;
+    } catch { /* no SKILL.md */ }
+
+    const ocMeta = (meta.metadata && meta.metadata.openclaw) || {};
+
+    // List files recursively (shallow - one level of subdirs)
+    const files = [];
+    function listFiles(dir, prefix) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          const rel = prefix ? prefix + '/' + e.name : e.name;
+          if (e.isFile()) {
+            files.push(rel);
+          } else if (e.isDirectory()) {
+            listFiles(path.join(dir, e.name), rel);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    listFiles(skillPath, '');
+
+    return res.json({
+      name: meta.name || name,
+      description: meta.description || '',
+      emoji: ocMeta.emoji || '',
+      source,
+      requires: ocMeta.requires || null,
+      content: body,
+      files,
+    });
+  }
+
+  res.status(404).json({ error: 'Skill not found' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
