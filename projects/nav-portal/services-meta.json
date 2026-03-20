@@ -1,0 +1,68 @@
+{
+  "todo.ai.jingtao.fun": {
+    "name": "Todo List",
+    "description": "Todo app with backend persistence, multiple auth methods, and agent-friendly API",
+    "category": "Apps",
+    "emoji": "\u2705"
+  },
+  "note.ai.jingtao.fun": {
+    "name": "Note App",
+    "description": "Markdown note-taking with tags, pinning, and auto-save",
+    "category": "Apps",
+    "emoji": "\ud83d\udcdd"
+  },
+  "board.ai.jingtao.fun": {
+    "name": "Share Board",
+    "description": "Real-time whiteboard \u2014 draw, type, add images, share with a link",
+    "category": "Apps",
+    "emoji": "\ud83c\udfa8"
+  },
+  "wedding.ai.jingtao.fun": {
+    "name": "Wedding Showcase",
+    "description": "Wedding garden party layout plan and decoration ideas",
+    "category": "Apps",
+    "emoji": "\ud83d\udc92"
+  },
+  "listen.ai.jingtao.fun": {
+    "name": "Listen English",
+    "description": "English number listening trainer with TTS audio and accuracy tracking",
+    "category": "Apps",
+    "emoji": "\ud83c\udfa7"
+  },
+  "kinship.ai.jingtao.fun": {
+    "name": "Kinship Calculator",
+    "description": "Chinese kinship term calculator for complex family relationships",
+    "category": "Apps",
+    "emoji": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66"
+  },
+  "auth-demo.ai.jingtao.fun": {
+    "name": "Auth Demo",
+    "description": "Microsoft OAuth 2.0 authentication demo",
+    "category": "Infrastructure",
+    "emoji": "\ud83d\udd10"
+  },
+  "ms-login.ai.jingtao.fun": {
+    "name": "MS Login Proxy",
+    "description": "Centralized Microsoft OAuth proxy \u2014 lightweight SSO gateway for downstream services",
+    "category": "Infrastructure",
+    "emoji": "\ud83d\udd11"
+  },
+  "universe.ai.jingtao.fun": {
+    "name": "Universe Viz",
+    "description": "Interactive universe/space visualization",
+    "category": "Apps",
+    "emoji": "\ud83c\udf0c"
+  },
+  "paste.ai.jingtao.fun": {
+    "name": "Pastebin",
+    "description": "Self-hosted pastebin for sharing text, code, and logs",
+    "category": "Infrastructure",
+    "emoji": "\ud83d\udccb"
+  },
+  "img.ai.jingtao.fun": {
+    "name": "Image Hosting",
+    "description": "Static image hosting service",
+    "category": "Infrastructure",
+    "emoji": "\ud83d\uddbc\ufe0f"
+  }
+}

@@ -1,0 +1,15 @@
+services:
+  nav-portal:
+    build: .
+    container_name: nav-portal
+    restart: always
+    environment:
+      - VIRTUAL_HOST=nav.${S_DOMAIN}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=nav.${S_DOMAIN}
+      - LETSENCRYPT_EMAIL=${S_EMAIL}
+      - SELF_CONTAINER=nav-portal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "3000"
