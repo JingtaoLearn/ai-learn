@@ -109,7 +109,7 @@ async def check_action(
         tags=tags,
         status="active",
         limit=10,
-        similarity_threshold=0.6,
+        similarity_threshold=0.4,
     )
 
     matches: list[ExperienceMatch] = []
