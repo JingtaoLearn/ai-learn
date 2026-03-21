@@ -170,3 +170,119 @@ def _fallback_verdict(candidates: list[dict[str, Any]]) -> str:
         if sim >= 0.8:
             return "warn"
     return "pass"
+
+
+# ---------------------------------------------------------------------------
+# Experience Summarizer — AI-driven learn flow
+# ---------------------------------------------------------------------------
+
+SUMMARIZE_SYSTEM_PROMPT = """\
+You are an Experience Summarizer for an AI agent framework. Your job is to take raw, informal descriptions of lessons learned, rules, or best practices, and produce a structured experience entry.
+
+You will receive:
+1. **Raw Input**: A user's description of an experience, lesson, or rule (may be informal, verbose, or vague).
+2. **Hints**: Optional category, severity, tags, and source provided by the user.
+
+Your job:
+1. **Summarize** the content into a clear, concise, actionable statement. Keep it under 2 sentences. Write it as a rule or guideline, not a story.
+2. **Classify** the category if not provided:
+   - "guardrail": Something that MUST NOT be done (a hard rule, a prohibition)
+   - "practice": A recommended way of doing things (best practice)
+   - "lesson": Something learned from experience (a takeaway, not necessarily a rule)
+3. **Assess severity** if not provided:
+   - "block": Violating this should stop the action entirely
+   - "warn": Violating this deserves a warning but can proceed
+   - "info": Informational, no enforcement needed
+4. **Suggest tags**: Extract relevant keywords as tags (lowercase, short). Aim for 2-5 tags.
+
+Respond ONLY with valid JSON:
+{
+  "content": "<summarized experience statement>",
+  "category": "guardrail" | "practice" | "lesson",
+  "severity": "block" | "warn" | "info",
+  "tags": ["tag1", "tag2", ...],
+  "reasoning": "<brief explanation of your classification choices>"
+}"""
+
+
+async def summarize_experience(
+    raw_content: str,
+    category_hint: Optional[str] = None,
+    severity_hint: Optional[str] = None,
+    tags_hint: Optional[list[str]] = None,
+    source: Optional[str] = None,
+) -> dict[str, Any]:
+    """Use LLM to summarize and classify a raw experience description.
+
+    Returns dict with "content", "category", "severity", "tags", "reasoning".
+    """
+    client = _get_client()
+    model = os.getenv("EMS_LLM_MODEL", _DEFAULT_MODEL)
+
+    parts = [f"## Raw Input\n{raw_content}"]
+
+    hints = []
+    if category_hint:
+        hints.append(f"- Category hint: {category_hint}")
+    if severity_hint:
+        hints.append(f"- Severity hint: {severity_hint}")
+    if tags_hint:
+        hints.append(f"- Tag hints: {', '.join(tags_hint)}")
+    if source:
+        hints.append(f"- Source: {source}")
+
+    if hints:
+        parts.append("## Hints\n" + "\n".join(hints))
+
+    user_prompt = "\n\n".join(parts)
+
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.0,
+        max_tokens=1000,
+    )
+
+    raw = response.choices[0].message.content.strip()
+
+    # Parse JSON (handle markdown code blocks)
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        json_lines = []
+        in_block = False
+        for line in lines:
+            if line.startswith("```") and not in_block:
+                in_block = True
+                continue
+            elif line.startswith("```") and in_block:
+                break
+            elif in_block:
+                json_lines.append(line)
+        raw = "\n".join(json_lines)
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        # Fallback: return the raw content with defaults
+        return {
+            "content": raw_content,
+            "category": category_hint or "lesson",
+            "severity": severity_hint or "info",
+            "tags": tags_hint or [],
+            "reasoning": "LLM summarization failed; using raw input as-is.",
+        }
+
+    # Validate and fill defaults
+    if "content" not in result or not result["content"]:
+        result["content"] = raw_content
+    if result.get("category") not in ("guardrail", "practice", "lesson"):
+        result["category"] = category_hint or "lesson"
+    if result.get("severity") not in ("block", "warn", "info"):
+        result["severity"] = severity_hint or "info"
+    if not isinstance(result.get("tags"), list):
+        result["tags"] = tags_hint or []
+
+    return result

@@ -19,6 +19,7 @@ from app.models import (
     LearnRequest,
 )
 from app.services.dedup import find_duplicates_and_conflicts
+from app.services.llm import summarize_experience
 
 router = APIRouter(tags=["learn"])
 
@@ -43,34 +44,37 @@ def get_db_conn() -> sqlite3.Connection:
         conn.close()
 
 
-def _infer_experience(request: LearnRequest) -> ExperienceCreate:
-    """Build an ExperienceCreate from a LearnRequest, inferring defaults."""
-    category = request.category or "lesson"
-    severity = request.severity or "info"
-    tags = request.tags or []
-    scope = request.scope or {}
-    source = request.source or ""
-
-    return ExperienceCreate(
-        content=request.content,
-        category=category,
-        severity=severity,
-        tags=tags,
-        scope=scope,
-        source=source,
-    )
-
-
 @router.post("/api/learn")
 async def learn(
     request: LearnRequest,
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> ApiResponse:
-    """Submit a new experience draft. AI checks for duplicates/conflicts."""
+    """Submit a new experience. AI summarizes, classifies, and checks for duplicates."""
     _purge_expired()
 
-    experience = _infer_experience(request)
+    # Stage 1: AI summarization — LLM refines content, infers category/severity/tags
+    try:
+        ai_result = await summarize_experience(
+            raw_content=request.content,
+            category_hint=request.category,
+            severity_hint=request.severity,
+            tags_hint=request.tags,
+            source=request.source,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI summarization failed: {exc}") from exc
 
+    # Build the experience from AI output, respecting user overrides
+    experience = ExperienceCreate(
+        content=ai_result["content"],
+        category=request.category or ai_result["category"],
+        severity=request.severity or ai_result["severity"],
+        tags=request.tags if request.tags else ai_result.get("tags", []),
+        scope=request.scope or {},
+        source=request.source or "",
+    )
+
+    # Stage 2: Dedup/conflict check
     try:
         duplicates, conflicts = await find_duplicates_and_conflicts(conn, experience)
     except Exception as exc:
@@ -88,13 +92,20 @@ async def learn(
     )
     _drafts[draft_id] = draft
 
-    message = "Draft created."
+    message = "AI summarized and classified the experience."
     if duplicates:
         message += f" {len(duplicates)} potential duplicate(s) found."
     if conflicts:
         message += f" {len(conflicts)} potential conflict(s) found."
 
-    return ApiResponse.ok(data=draft.model_dump(), message=message)
+    return ApiResponse.ok(
+        data={
+            **draft.model_dump(),
+            "ai_reasoning": ai_result.get("reasoning", ""),
+            "original_content": request.content,
+        },
+        message=message,
+    )
 
 
 @router.post("/api/learn/confirm")
