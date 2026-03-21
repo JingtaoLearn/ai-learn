@@ -382,6 +382,24 @@ app.get('/api/skills/:name', (req, res) => {
 
 // --- Claude Code Viewer API ---
 
+// Determine task status from result.json
+// Priority: result.status field (from dispatch hook) > exit_code fallback
+function determineTaskStatus(result) {
+  if (!result) return 'running';
+  // If result.json exists with status 'done', task completed successfully
+  // (dispatch hook writes status:'done' on normal completion)
+  if (result.status === 'done') {
+    // If exit_code is explicitly set and non-zero, it's a failure
+    if (result.exit_code !== undefined && result.exit_code !== null && result.exit_code !== 0) {
+      return 'failed';
+    }
+    return 'done';
+  }
+  if (result.status === 'failed' || result.status === 'error') return 'failed';
+  // Fallback: result.json exists but status isn't recognized — treat as running
+  return 'running';
+}
+
 app.get('/api/cc/tasks', (req, res) => {
   const tasks = [];
   try {
@@ -411,14 +429,7 @@ app.get('/api/cc/tasks', (req, res) => {
         milestoneCount = Array.isArray(progress.milestones) ? progress.milestones.length : 0;
       } catch { /* ignore */ }
 
-      let status;
-      if (!result || result.status !== 'done') {
-        status = 'running';
-      } else if (result.exit_code === 0) {
-        status = 'done';
-      } else {
-        status = 'failed';
-      }
+      const status = determineTaskStatus(result);
 
       tasks.push({
         name,
@@ -480,14 +491,7 @@ app.get('/api/cc/tasks/:name', (req, res) => {
     hookLogTail = lines.slice(-100).join('\n');
   } catch { /* ignore */ }
 
-  let status;
-  if (!result || result.status !== 'done') {
-    status = 'running';
-  } else if (result.exit_code === 0) {
-    status = 'done';
-  } else {
-    status = 'failed';
-  }
+  const status = determineTaskStatus(result);
 
   res.json({ name, status, meta, result, milestones, hookLogTail });
 });
