@@ -3,23 +3,15 @@ services:
     build: .
     container_name: experience-manager
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8100:8100"
     environment:
       EMS_DB_PATH: /data/ems.db
       EMS_EMBEDDING_API_KEY: ${EMS_EMBEDDING_API_KEY}
       EMS_EMBEDDING_BASE_URL: ${EMS_EMBEDDING_BASE_URL:-https://litellm.us.jingtao.fun/v1}
       EMS_EMBEDDING_MODEL: ${EMS_EMBEDDING_MODEL:-text-embedding-3-large}
-      VIRTUAL_HOST: ${EMS_VIRTUAL_HOST:-ems.ai.jingtao.fun}
-      VIRTUAL_PORT: 8100
-      LETSENCRYPT_HOST: ${EMS_VIRTUAL_HOST:-ems.ai.jingtao.fun}
-      LETSENCRYPT_EMAIL: ${S_EMAIL}
     volumes:
       - ems_data:/data
-    networks:
-      - nginx-proxy
 
 volumes:
   ems_data:
-
-networks:
-  nginx-proxy:
-    external: true

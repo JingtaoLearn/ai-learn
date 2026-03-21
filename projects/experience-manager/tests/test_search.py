@@ -26,10 +26,10 @@ async def test_search_returns_results(client, tmp_db):
     """Insert an experience then search for it by returning the same embedding."""
     from app.database import get_connection, insert_embedding, insert_experience
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     exp_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     conn = get_connection(tmp_db)
     try:
         insert_experience(
@@ -67,14 +67,14 @@ async def test_search_returns_results(client, tmp_db):
 async def test_search_with_tag_filter(client, tmp_db):
     from app.database import get_connection, insert_embedding, insert_experience
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timezone
     from tests.conftest import make_mock_embedding
 
     conn = get_connection(tmp_db)
     try:
         for i, tag in enumerate(["security", "deployment"]):
             exp_id = str(uuid.uuid4())
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             insert_experience(
                 conn,
                 exp_id=exp_id,

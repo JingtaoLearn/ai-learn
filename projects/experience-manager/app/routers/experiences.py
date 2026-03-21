@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -138,7 +138,7 @@ async def create_one(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {exc}") from exc
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     exp_id = str(uuid.uuid4())
 
     try:

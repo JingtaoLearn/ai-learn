@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 import uuid
@@ -22,8 +22,8 @@ class Experience(BaseModel):
     scope: dict[str, Any] = Field(default_factory=dict)
     source: str = ""
     status: str = "active"  # active | deprecated | merged
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("category")
     @classmethod

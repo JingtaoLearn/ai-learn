@@ -72,10 +72,10 @@ async def test_check_returns_block_for_very_similar_block_experience(client, tmp
     """Insert a block experience and query with the SAME embedding to trigger block verdict."""
     from app.database import get_connection, insert_embedding, insert_experience
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     exp_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     conn = get_connection(tmp_db)
     try:

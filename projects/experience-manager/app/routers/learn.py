@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,7 +29,7 @@ DRAFT_TTL_HOURS = 1
 
 
 def _purge_expired() -> None:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     expired = [k for k, v in _drafts.items() if v.expires_at < now]
     for k in expired:
         del _drafts[k]
@@ -77,7 +77,7 @@ async def learn(
         raise HTTPException(status_code=500, detail=f"Dedup check failed: {exc}") from exc
 
     draft_id = str(uuid.uuid4())
-    expires_at = datetime.utcnow() + timedelta(hours=DRAFT_TTL_HOURS)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=DRAFT_TTL_HOURS)
 
     draft = DraftExperience(
         draft_id=draft_id,
@@ -109,7 +109,7 @@ async def confirm(
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft not found or expired")
 
-    if datetime.utcnow() > draft.expires_at:
+    if datetime.now(timezone.utc) > draft.expires_at:
         del _drafts[request.draft_id]
         raise HTTPException(status_code=410, detail="Draft has expired")
 
@@ -124,7 +124,7 @@ async def confirm(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {exc}") from exc
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     exp_id = str(uuid.uuid4())
 
     try:

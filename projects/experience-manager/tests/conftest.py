@@ -6,7 +6,7 @@ import asyncio
 import math
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
@@ -85,7 +85,7 @@ def insert_test_experience(
 ) -> str:
     """Helper to insert a test experience with a mock embedding."""
     exp_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     insert_experience(
         conn,
         exp_id=exp_id,

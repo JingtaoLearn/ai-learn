@@ -7,7 +7,7 @@ import os
 import sqlite3
 import struct
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Generator, Optional
 
 import sqlite_vec
@@ -135,7 +135,7 @@ def update_experience(
 ) -> bool:
     if not fields:
         return False
-    fields["updated_at"] = datetime.utcnow().isoformat()
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [exp_id]
     cursor = conn.execute(
@@ -210,7 +210,7 @@ def list_experiences(
 def delete_experience_soft(conn: sqlite3.Connection, exp_id: str) -> bool:
     cursor = conn.execute(
         "UPDATE experiences SET status = 'deprecated', updated_at = ? WHERE id = ?",
-        (datetime.utcnow().isoformat(), exp_id),
+        (datetime.now(timezone.utc).isoformat(), exp_id),
     )
     return cursor.rowcount > 0
 
