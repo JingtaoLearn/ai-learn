@@ -1,0 +1,20 @@
+services:
+  experience-manager:
+    build: .
+    container_name: experience-manager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8100:8100"
+    environment:
+      EMS_DB_PATH: /data/ems.db
+      EMS_EMBEDDING_API_KEY: ${EMS_EMBEDDING_API_KEY}
+      EMS_EMBEDDING_BASE_URL: ${EMS_EMBEDDING_BASE_URL:-https://litellm.us.jingtao.fun/v1}
+      EMS_EMBEDDING_MODEL: ${EMS_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMS_LLM_API_KEY: ${EMS_LLM_API_KEY:-${EMS_EMBEDDING_API_KEY}}
+      EMS_LLM_BASE_URL: ${EMS_LLM_BASE_URL:-https://litellm.us.jingtao.fun/v1}
+      EMS_LLM_MODEL: ${EMS_LLM_MODEL:-github-copilot/claude-sonnet-4.5}
+    volumes:
+      - ems_data:/data
+
+volumes:
+  ems_data:
