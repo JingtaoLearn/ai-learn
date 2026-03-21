@@ -93,25 +93,27 @@ async def check_action(
     action: str,
     context: Optional[dict[str, Any]] = None,
     tags: Optional[list[str]] = None,
-) -> tuple[str, list[ExperienceMatch]]:
-    """Return (verdict, matches) for a given action description.
+) -> tuple[str, list[ExperienceMatch], dict[str, Any]]:
+    """Return (verdict, matches, llm_judgment) for a given action description.
 
-    Verdict logic:
-    - "block" if any match has similarity >= 0.9 and severity == "block"
-    - "warn"  if any match has similarity >= 0.8 (and no block triggered)
-    - "pass"  otherwise
+    Two-stage pipeline:
+    1. Vector retrieval: find candidate experiences via hybrid search
+    2. LLM judgment: ask LLM to precisely judge whether each candidate applies
     """
+    from app.services.llm import judge_action
+
+    # Stage 1: Retrieve candidates
     results = await hybrid_search(
         conn,
         query=action,
         tags=tags,
         status="active",
         limit=10,
-        similarity_threshold=0.75,
+        similarity_threshold=0.6,
     )
 
     matches: list[ExperienceMatch] = []
-    verdict = "pass"
+    candidates_for_llm: list[dict[str, Any]] = []
 
     for r in results:
         matched_tags = [t for t in (tags or []) if t in r.experience.tags]
@@ -121,10 +123,21 @@ async def check_action(
             matched_tags=matched_tags,
         )
         matches.append(match)
+        candidates_for_llm.append({
+            "experience": r.experience.model_dump(),
+            "similarity": r.similarity,
+        })
 
-        if r.similarity >= 0.9 and r.experience.severity == "block":
-            verdict = "block"
-        elif r.similarity >= 0.8 and verdict != "block":
-            verdict = "warn"
+    # Stage 2: LLM judgment
+    if candidates_for_llm:
+        llm_judgment = await judge_action(action, context, candidates_for_llm)
+        verdict = llm_judgment.get("verdict", "pass")
+    else:
+        llm_judgment = {
+            "judgments": [],
+            "verdict": "pass",
+            "summary": "No relevant experiences found.",
+        }
+        verdict = "pass"
 
-    return verdict, matches
+    return verdict, matches, llm_judgment

@@ -27,7 +27,7 @@ async def check(
     conn: sqlite3.Connection = Depends(get_db_conn),
 ) -> ApiResponse:
     try:
-        verdict, matches = await check_action(
+        verdict, matches, llm_judgment = await check_action(
             conn,
             action=request.action,
             context=request.context,
@@ -45,6 +45,9 @@ async def check(
     response = CheckResponse(
         verdict=verdict,
         matches=matches,
-        message=verdict_messages.get(verdict, ""),
+        message=llm_judgment.get("summary", verdict_messages.get(verdict, "")),
     )
-    return ApiResponse.ok(data=response.model_dump())
+    return ApiResponse.ok(data={
+        **response.model_dump(),
+        "llm_judgment": llm_judgment,
+    })
