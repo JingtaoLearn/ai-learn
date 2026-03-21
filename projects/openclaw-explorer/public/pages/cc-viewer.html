@@ -35,6 +35,7 @@
       <a class="back-link" href="../">&larr; Back to Topics</a>
       <div style="font-weight:600;font-size:15px;color:var(--text)">Tasks</div>
     </div>
+    <div class="cc-host-switch" id="hostSwitch"></div>
     <div class="cc-search-wrap">
       <input class="cc-search" id="searchInput" type="text" placeholder="Search tasks...">
     </div>
@@ -68,6 +69,8 @@
   let listPollInterval = null;
   let elapsedInterval = null;
   let taskStartTime = null;
+  let hosts = [];
+  let currentHost = 'ailearn';
 
   // DOM refs
   const loginScreen = document.getElementById('loginScreen');
@@ -78,6 +81,7 @@
   const detailArea = document.getElementById('detailArea');
   const searchInput = document.getElementById('searchInput');
   const userInfo = document.getElementById('userInfo');
+  const hostSwitchEl = document.getElementById('hostSwitch');
 
   // Markdown renderer
   const markedInstance = new marked.Marked({ breaks: true, gfm: true });
@@ -92,6 +96,7 @@
         authenticated = true;
         userInfo.textContent = data.user.name || data.user.email;
         showApp();
+        await loadHosts();
         await loadTasks();
         startListPolling();
       } else {
@@ -126,7 +131,7 @@
 
   async function loadTasks() {
     try {
-      const res = await fetch('/api/cc/tasks');
+      const res = await fetch('/api/cc/tasks?host=' + encodeURIComponent(currentHost));
       if (!res.ok) throw new Error('Failed');
       tasks = await res.json();
       renderTaskList();
@@ -192,6 +197,47 @@
     listPollInterval = setInterval(() => loadTasks(), 10000);
   }
 
+  // --- Host switcher ---
+
+  async function loadHosts() {
+    try {
+      const res = await fetch('/api/cc/hosts');
+      hosts = await res.json();
+      renderHostSwitch();
+    } catch {
+      hosts = [{ id: 'ailearn', label: 'ailearn', emoji: '☁️' }];
+      renderHostSwitch();
+    }
+  }
+
+  function renderHostSwitch() {
+    if (hosts.length <= 1) {
+      hostSwitchEl.innerHTML = '';
+      return;
+    }
+    const html = hosts.map(h => {
+      const active = h.id === currentHost ? ' active' : '';
+      return '<button class="cc-host-btn' + active + '" data-host="' + escapeHtml(h.id) + '">' + escapeHtml(h.emoji) + ' ' + escapeHtml(h.label) + '</button>';
+    }).join('');
+    hostSwitchEl.innerHTML = html;
+
+    hostSwitchEl.querySelectorAll('.cc-host-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const hostId = btn.dataset.host;
+        if (hostId !== currentHost) {
+          currentHost = hostId;
+          currentTask = null;
+          stopTaskPolling();
+          stopElapsedCounter();
+          history.pushState(null, '', window.location.pathname);
+          renderHostSwitch();
+          loadTasks();
+          detailArea.innerHTML = '<div class="cc-empty"><div class="cc-empty-icon">&#9654;</div><p>Select a task from the sidebar to view its details.</p></div>';
+        }
+      });
+    });
+  }
+
   // --- Task detail ---
 
   async function loadTaskDetail(name) {
@@ -205,7 +251,7 @@
     detailArea.innerHTML = '<div class="cc-loading"><div class="cc-spinner"></div> Loading task...</div>';
 
     try {
-      const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name));
+      const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name) + '?host=' + encodeURIComponent(currentHost));
       if (!res.ok) throw new Error('Not found');
       const task = await res.json();
       renderDetail(task);
@@ -385,7 +431,7 @@
     const container = document.getElementById('outputContent');
     if (!container) return;
     try {
-      const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name) + '/output');
+      const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name) + '/output?host=' + encodeURIComponent(currentHost));
       if (!res.ok) throw new Error('Not found');
       const text = await res.text();
       container.innerHTML = '<div class="cc-output-content">' + markedInstance.parse(text) + '</div>';
@@ -409,7 +455,7 @@
     clearInterval(taskPollInterval);
     taskPollInterval = setInterval(async () => {
       try {
-        const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name));
+        const res = await fetch('/api/cc/tasks/' + encodeURIComponent(name) + '?host=' + encodeURIComponent(currentHost));
         if (!res.ok) return;
         const task = await res.json();
         if (task.status !== 'running') {

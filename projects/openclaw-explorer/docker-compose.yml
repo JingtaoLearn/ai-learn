@@ -18,3 +18,4 @@ services:
       - /home/jingtao/.openclaw/workspace/skills:/data/skills-workspace:ro
       - ./allowed-emails.txt:/data/allowed-emails.txt:ro
       - /home/jingtao/.openclaw/workspace/claude-code-results:/data/cc-results:ro
+      - /home/jingtao/mnt/feng-cc-results:/data/feng-cc-results:ro
