@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Experience Viewer - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/ems-viewer.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Experience Viewer</h1>
+  <div class="header-controls">
+    <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+    <span id="userInfo" style="font-size:13px;color:var(--text-secondary)"></span>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<div class="em-container" id="appContainer">
+  <!-- Login screen -->
+  <div class="em-login" id="loginScreen" style="display:none;width:100%">
+    <div class="em-login-icon">&#128274;</div>
+    <h2 style="color:var(--text);margin:0">Experience Viewer</h2>
+    <p style="max-width:400px;text-align:center">Sign in to browse the Experience Management System. This feature requires authentication.</p>
+    <a class="em-login-btn" id="loginBtn" href="#">&#127759; Login with Microsoft</a>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="em-sidebar" id="sidebar" style="display:none">
+    <div class="em-sidebar-header">
+      <a class="back-link" href="../">&larr; Back to Topics</a>
+      <div style="font-weight:600;font-size:15px;color:var(--text)">Experiences</div>
+    </div>
+
+    <!-- Stats -->
+    <div class="em-sidebar-stats" id="sidebarStats">
+      <div class="em-sidebar-stat">Total: <span class="em-sidebar-stat-value" id="statTotal">—</span></div>
+      <div class="em-sidebar-stat">&#128683; <span class="em-sidebar-stat-value" id="statBlock">0</span></div>
+      <div class="em-sidebar-stat">&#9888; <span class="em-sidebar-stat-value" id="statWarn">0</span></div>
+      <div class="em-sidebar-stat">&#8505; <span class="em-sidebar-stat-value" id="statInfo">0</span></div>
+    </div>
+
+    <!-- Filters -->
+    <div class="em-filter-section" id="filterSection">
+      <div class="em-filter-label">Category</div>
+      <div class="em-filter-pills" id="catFilter">
+        <button class="em-pill cat-guardrail" data-filter="category" data-value="guardrail">guardrail</button>
+        <button class="em-pill cat-practice"  data-filter="category" data-value="practice">practice</button>
+        <button class="em-pill cat-lesson"    data-filter="category" data-value="lesson">lesson</button>
+      </div>
+      <div class="em-filter-label" style="margin-top:8px">Severity</div>
+      <div class="em-filter-pills" id="sevFilter">
+        <button class="em-pill sev-block" data-filter="severity" data-value="block">&#128683; block</button>
+        <button class="em-pill sev-warn"  data-filter="severity" data-value="warn">&#9888; warn</button>
+        <button class="em-pill sev-info"  data-filter="severity" data-value="info">&#8505; info</button>
+      </div>
+      <div class="em-filter-label" style="margin-top:8px">Status</div>
+      <div class="em-status-toggle" id="statusToggle">
+        <button class="em-toggle-btn active" data-status="active">active</button>
+        <button class="em-toggle-btn" data-status="all">all</button>
+      </div>
+    </div>
+
+    <!-- Tag filter -->
+    <div class="em-tag-filter" id="tagFilterSection" style="display:none">
+      <div class="em-tag-filter-header">
+        <span>Tags</span>
+        <button class="em-filter-clear" id="clearTagFilters" style="display:none">Clear</button>
+      </div>
+      <div class="em-tag-pills" id="tagPills"></div>
+    </div>
+
+    <!-- Experience list -->
+    <div class="em-list" id="expList">
+      <div class="em-loading"><div class="em-spinner"></div> Loading experiences...</div>
+    </div>
+
+    <div class="em-resize-handle" id="resizeHandle"></div>
+  </nav>
+
+  <!-- Main area -->
+  <div class="em-main" id="mainArea" style="display:none">
+    <div class="em-mobile-back" id="mobileBack">&#8592; Back to Experiences</div>
+
+    <!-- Check panel (default view) -->
+    <div id="checkPanel">
+      <!-- Check Action panel -->
+      <div class="em-panel">
+        <div class="em-panel-header">&#128269; Check Action</div>
+        <div class="em-panel-body">
+          <div class="em-input-row">
+            <input class="em-input" id="checkInput" type="text" placeholder="Describe the action to check...">
+            <button class="em-btn" id="checkBtn">Check</button>
+          </div>
+
+          <div class="em-collapsible">
+            <button class="em-collapsible-toggle" id="checkAdvToggle">&#9656; Advanced Options</button>
+            <div class="em-collapsible-body hidden" id="checkAdvBody">
+              <div>
+                <div class="em-field-label">Tags (comma-separated)</div>
+                <input class="em-input" id="checkTags" type="text" placeholder="security, email, ...">
+              </div>
+              <div>
+                <div class="em-field-label">Context (JSON)</div>
+                <textarea class="em-textarea" id="checkContext" rows="3" placeholder='{ "key": "value" }'></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="em-results" id="checkResults" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Semantic Search panel -->
+      <div class="em-panel">
+        <div class="em-panel-header">&#128270; Semantic Search</div>
+        <div class="em-panel-body">
+          <div class="em-input-row">
+            <input class="em-input" id="searchInput" type="text" placeholder="Search experiences by meaning...">
+            <button class="em-btn" id="searchBtn">Search</button>
+          </div>
+
+          <div class="em-collapsible">
+            <button class="em-collapsible-toggle" id="searchAdvToggle">&#9656; Filters</button>
+            <div class="em-collapsible-body hidden" id="searchAdvBody">
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <div style="flex:1;min-width:120px">
+                  <div class="em-field-label">Category</div>
+                  <select class="em-input" id="searchCategory" style="padding:6px 10px">
+                    <option value="">any</option>
+                    <option value="guardrail">guardrail</option>
+                    <option value="practice">practice</option>
+                    <option value="lesson">lesson</option>
+                  </select>
+                </div>
+                <div style="flex:1;min-width:120px">
+                  <div class="em-field-label">Severity</div>
+                  <select class="em-input" id="searchSeverity" style="padding:6px 10px">
+                    <option value="">any</option>
+                    <option value="block">block</option>
+                    <option value="warn">warn</option>
+                    <option value="info">info</option>
+                  </select>
+                </div>
+                <div style="flex:1;min-width:100px">
+                  <div class="em-field-label">Threshold</div>
+                  <input class="em-input" id="searchThreshold" type="number" value="0.5" min="0" max="1" step="0.05" style="padding:6px 10px">
+                </div>
+                <div style="flex:1;min-width:80px">
+                  <div class="em-field-label">Limit</div>
+                  <input class="em-input" id="searchLimit" type="number" value="20" min="1" max="100" style="padding:6px 10px">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="em-search-results" id="searchResults" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detail panel (shown when experience selected) -->
+    <div id="detailPanel" style="display:none">
+      <button class="em-detail-back" id="detailBackBtn">&#8592; Back to Check Panel</button>
+      <div class="em-detail-card" id="detailCard">
+        <div class="em-loading"><div class="em-spinner"></div> Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../js/main.js"></script>
+<script>
+(function() {
+  // State
+  let authenticated = false;
+  let experiences = [];
+  let allTags = [];
+  let currentExp = null;
+  let showAllStatus = false;
+
+  // Filter state: map of value -> 'include' | 'exclude' | null
+  let catFilters = {};
+  let sevFilters = {};
+  let tagFilters = {};
+
+  // DOM refs
+  const loginScreen  = document.getElementById('loginScreen');
+  const loginBtn     = document.getElementById('loginBtn');
+  const sidebarEl    = document.getElementById('sidebar');
+  const mainArea     = document.getElementById('mainArea');
+  const expList      = document.getElementById('expList');
+  const checkPanel   = document.getElementById('checkPanel');
+  const detailPanel  = document.getElementById('detailPanel');
+  const userInfo     = document.getElementById('userInfo');
+
+  checkAuth();
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me');
+      const data = await res.json();
+      if (data.authenticated) {
+        authenticated = true;
+        userInfo.textContent = data.user.name || data.user.email;
+        showApp();
+        await loadData();
+      } else {
+        showLogin();
+      }
+    } catch {
+      showLogin();
+    }
+  }
+
+  async function showLogin() {
+    loginScreen.style.display = '';
+    sidebarEl.style.display = 'none';
+    mainArea.style.display = 'none';
+    try {
+      const cfg = await fetch('/auth/config').then(r => r.json());
+      loginBtn.href = cfg.loginUrl;
+    } catch {
+      const callbackUrl = window.location.origin + '/auth/callback';
+      loginBtn.href = 'https://ms-login.ai.jingtao.fun/auth/login?redirect=' + encodeURIComponent(callbackUrl);
+    }
+  }
+
+  function showApp() {
+    loginScreen.style.display = 'none';
+    sidebarEl.style.display = '';
+    mainArea.style.display = '';
+    restoreSidebarState();
+  }
+
+  // Load all data
+  async function loadData() {
+    expList.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Loading experiences...</div>';
+    try {
+      const [expsRes, tagsRes] = await Promise.all([
+        fetch('/api/ems/experiences'),
+        fetch('/api/ems/tags'),
+      ]);
+      if (expsRes.ok) {
+        const data = await expsRes.json();
+        experiences = Array.isArray(data) ? data : (data.data || []);
+      } else {
+        experiences = [];
+      }
+      if (tagsRes.ok) {
+        const data = await tagsRes.json();
+        allTags = Array.isArray(data) ? data : (data.data || []);
+      } else {
+        allTags = [];
+      }
+    } catch (err) {
+      console.error('Failed to load EMS data:', err);
+      experiences = [];
+      allTags = [];
+    }
+    updateStats();
+    renderTagFilter();
+    renderExpList();
+  }
+
+  // Update sidebar stats
+  function updateStats() {
+    const total = experiences.length;
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statBlock').textContent = experiences.filter(e => e.severity === 'block').length;
+    document.getElementById('statWarn').textContent  = experiences.filter(e => e.severity === 'warn').length;
+    document.getElementById('statInfo').textContent  = experiences.filter(e => e.severity === 'info').length;
+  }
+
+  // Render tag filter pills
+  function renderTagFilter() {
+    const section = document.getElementById('tagFilterSection');
+    const pillsEl = document.getElementById('tagPills');
+    const clearBtn = document.getElementById('clearTagFilters');
+
+    if (allTags.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+
+    const hasActive = Object.values(tagFilters).some(Boolean);
+    clearBtn.style.display = hasActive ? '' : 'none';
+
+    const html = allTags.map(tag => {
+      const state = tagFilters[tag] || null;
+      const stateClass = state === 'include' ? ' included' : state === 'exclude' ? ' excluded' : '';
+      return `<button class="em-pill${stateClass}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`;
+    }).join('');
+    pillsEl.innerHTML = html;
+
+    pillsEl.querySelectorAll('.em-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        const tag = pill.dataset.tag;
+        const current = tagFilters[tag] || null;
+        if (current === null) tagFilters[tag] = 'include';
+        else if (current === 'include') tagFilters[tag] = 'exclude';
+        else delete tagFilters[tag];
+        renderTagFilter();
+        renderExpList();
+      });
+      pill.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        const tag = pill.dataset.tag;
+        const current = tagFilters[tag] || null;
+        if (current === 'exclude') delete tagFilters[tag];
+        else tagFilters[tag] = 'exclude';
+        renderTagFilter();
+        renderExpList();
+      });
+    });
+
+    if (clearBtn) {
+      clearBtn.onclick = () => {
+        tagFilters = {};
+        renderTagFilter();
+        renderExpList();
+      };
+    }
+  }
+
+  // Category/severity filter pills
+  document.querySelectorAll('[data-filter="category"]').forEach(pill => {
+    pill.addEventListener('click', () => cycleFilter(catFilters, pill.dataset.value, pill));
+  });
+  document.querySelectorAll('[data-filter="severity"]').forEach(pill => {
+    pill.addEventListener('click', () => cycleFilter(sevFilters, pill.dataset.value, pill));
+  });
+
+  function cycleFilter(filterMap, value, pillEl) {
+    const current = filterMap[value] || null;
+    if (current === null) filterMap[value] = 'include';
+    else if (current === 'include') filterMap[value] = 'exclude';
+    else delete filterMap[value];
+    updatePillState(pillEl, filterMap[value] || null);
+    renderExpList();
+  }
+
+  function updatePillState(pillEl, state) {
+    pillEl.classList.remove('included', 'excluded');
+    if (state === 'include') pillEl.classList.add('included');
+    else if (state === 'exclude') pillEl.classList.add('excluded');
+  }
+
+  // Status toggle
+  document.querySelectorAll('.em-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.em-toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      showAllStatus = btn.dataset.status === 'all';
+      renderExpList();
+    });
+  });
+
+  // Get filtered experiences
+  function getFilteredExps() {
+    const catIncludes = Object.entries(catFilters).filter(([,v]) => v === 'include').map(([k]) => k);
+    const catExcludes = Object.entries(catFilters).filter(([,v]) => v === 'exclude').map(([k]) => k);
+    const sevIncludes = Object.entries(sevFilters).filter(([,v]) => v === 'include').map(([k]) => k);
+    const sevExcludes = Object.entries(sevFilters).filter(([,v]) => v === 'exclude').map(([k]) => k);
+    const tagIncludes = Object.entries(tagFilters).filter(([,v]) => v === 'include').map(([k]) => k);
+    const tagExcludes = Object.entries(tagFilters).filter(([,v]) => v === 'exclude').map(([k]) => k);
+
+    return experiences.filter(e => {
+      // Status filter
+      if (!showAllStatus && e.status === 'deprecated') return false;
+
+      // Category filter
+      if (catIncludes.length > 0 && !catIncludes.includes(e.category)) return false;
+      if (catExcludes.includes(e.category)) return false;
+
+      // Severity filter
+      if (sevIncludes.length > 0 && !sevIncludes.includes(e.severity)) return false;
+      if (sevExcludes.includes(e.severity)) return false;
+
+      // Tag filter
+      const tags = e.tags || [];
+      if (tagIncludes.length > 0 && !tagIncludes.every(t => tags.includes(t))) return false;
+      if (tagExcludes.some(t => tags.includes(t))) return false;
+
+      return true;
+    });
+  }
+
+  // Render experience list
+  function renderExpList() {
+    const filtered = getFilteredExps();
+
+    if (filtered.length === 0) {
+      const msg = experiences.length === 0
+        ? '<div class="em-list-empty"><div style="font-size:32px;margin-bottom:8px">&#128203;</div><p>No experiences yet.</p><p style="font-size:12px;margin-top:4px">Use the Check panel to verify actions once experiences are added.</p></div>'
+        : '<div class="em-list-empty">No experiences match the current filters.</div>';
+      expList.innerHTML = msg;
+      return;
+    }
+
+    const html = filtered.map(e => {
+      const sevIcon = sevIcon_(e.severity);
+      const catClass = e.category || 'lesson';
+      const preview = (e.content || '').slice(0, 90) + ((e.content || '').length > 90 ? '…' : '');
+      const tags = (e.tags || []).slice(0, 4);
+      const tagsHtml = tags.map(t => `<span class="em-tag-chip">${escapeHtml(t)}</span>`).join('');
+      const timeStr = relativeTime(e.created_at || e.createdAt);
+      const active = currentExp && currentExp.id === e.id ? ' active' : '';
+      return `<div class="em-exp-item${active}" data-id="${escapeHtml(e.id)}">
+        <div class="em-exp-item-header">
+          <span class="em-sev-icon">${sevIcon}</span>
+          <span class="em-cat-badge ${catClass}">${escapeHtml(e.category || '')}</span>
+          <span class="em-exp-item-time">${timeStr}</span>
+        </div>
+        <div class="em-exp-item-content">${escapeHtml(preview)}</div>
+        <div class="em-exp-item-tags">${tagsHtml}</div>
+      </div>`;
+    }).join('');
+
+    expList.innerHTML = html;
+
+    expList.querySelectorAll('.em-exp-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const exp = filtered.find(e => e.id === item.dataset.id);
+        if (exp) {
+          loadExpDetail(exp);
+          if (window.innerWidth <= 900) sidebarEl.classList.remove('open');
+        }
+      });
+    });
+  }
+
+  // Load experience detail
+  async function loadExpDetail(expOrId) {
+    let exp = typeof expOrId === 'object' ? expOrId : null;
+    const id = exp ? exp.id : expOrId;
+    currentExp = { id };
+    renderExpList();
+
+    checkPanel.style.display = 'none';
+    detailPanel.style.display = '';
+    document.getElementById('detailCard').innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Loading...</div>';
+
+    try {
+      const res = await fetch('/api/ems/experiences/' + encodeURIComponent(id));
+      if (!res.ok) throw new Error('Not found');
+      const data = await res.json();
+      exp = data.data || data;
+    } catch (err) {
+      document.getElementById('detailCard').innerHTML = `<div style="color:var(--red);padding:16px">Failed to load experience.</div>`;
+      return;
+    }
+
+    currentExp = exp;
+    renderExpList();
+    renderDetail(exp);
+  }
+
+  function renderDetail(exp) {
+    const sevIcon = sevIcon_(exp.severity);
+    const tagsHtml = (exp.tags || []).map(t => `<span class="em-detail-tag">${escapeHtml(t)}</span>`).join('');
+    const statusClass = exp.status === 'deprecated' ? 'deprecated' : 'active';
+    const scopeHtml = exp.scope && Object.keys(exp.scope).length > 0
+      ? `<pre class="em-scope-pre">${escapeHtml(JSON.stringify(exp.scope, null, 2))}</pre>`
+      : '<span style="color:var(--text-secondary);font-size:13px">—</span>';
+
+    const createdAt = exp.created_at || exp.createdAt || '';
+    const updatedAt = exp.updated_at || exp.updatedAt || '';
+
+    document.getElementById('detailCard').innerHTML = `
+      <div class="em-detail-badges">
+        <span class="em-sev-badge ${exp.severity}">${sevIcon} ${escapeHtml(exp.severity || '')}</span>
+        <span class="em-cat-badge ${exp.category || 'lesson'}" style="font-size:12px;padding:4px 10px">${escapeHtml(exp.category || '')}</span>
+      </div>
+      <div class="em-detail-content">${escapeHtml(exp.content || '')}</div>
+      <div class="em-detail-section">
+        <div class="em-detail-key">Tags</div>
+        <div class="em-detail-tags">${tagsHtml || '<span style="color:var(--text-secondary);font-size:13px">none</span>'}</div>
+      </div>
+      ${exp.source ? `<div class="em-detail-section"><div class="em-detail-key">Source</div><div class="em-detail-val">${escapeHtml(exp.source)}</div></div>` : ''}
+      <div class="em-detail-section">
+        <div class="em-detail-key">Status</div>
+        <div class="em-detail-val"><span class="em-status-dot ${statusClass}"></span>${escapeHtml(exp.status || 'active')}</div>
+      </div>
+      <div class="em-detail-section">
+        <div class="em-detail-key">Scope</div>
+        ${scopeHtml}
+      </div>
+      ${createdAt ? `<div class="em-detail-section"><div class="em-detail-key">Created</div><div class="em-detail-val">${escapeHtml(formatDate(createdAt))}</div></div>` : ''}
+      ${updatedAt ? `<div class="em-detail-section"><div class="em-detail-key">Updated</div><div class="em-detail-val">${escapeHtml(formatDate(updatedAt))}</div></div>` : ''}
+      <div class="em-detail-section">
+        <div class="em-detail-key">ID</div>
+        <div class="em-detail-id">${escapeHtml(exp.id || '')}</div>
+      </div>
+    `;
+  }
+
+  // Back to check panel
+  document.getElementById('detailBackBtn').addEventListener('click', () => {
+    currentExp = null;
+    renderExpList();
+    detailPanel.style.display = 'none';
+    checkPanel.style.display = '';
+  });
+
+  // Mobile back button
+  document.getElementById('mobileBack').addEventListener('click', () => {
+    sidebarEl.classList.add('open');
+  });
+
+  // --- Check Action ---
+  document.getElementById('checkAdvToggle').addEventListener('click', () => {
+    toggleCollapsible('checkAdvToggle', 'checkAdvBody');
+  });
+
+  document.getElementById('checkBtn').addEventListener('click', runCheck);
+  document.getElementById('checkInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runCheck();
+  });
+
+  async function runCheck() {
+    const action = document.getElementById('checkInput').value.trim();
+    if (!action) return;
+
+    const tagsRaw = document.getElementById('checkTags').value.trim();
+    const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : undefined;
+
+    let context;
+    const ctxRaw = document.getElementById('checkContext').value.trim();
+    if (ctxRaw) {
+      try { context = JSON.parse(ctxRaw); } catch { /* ignore bad JSON */ }
+    }
+
+    const body = { action };
+    if (tags && tags.length > 0) body.tags = tags;
+    if (context) body.context = context;
+
+    const resultsEl = document.getElementById('checkResults');
+    resultsEl.style.display = '';
+    resultsEl.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Checking...</div>';
+
+    const checkBtn = document.getElementById('checkBtn');
+    checkBtn.disabled = true;
+
+    try {
+      const res = await fetch('/api/ems/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const result = data.data || data;
+      renderCheckResult(result, resultsEl);
+    } catch (err) {
+      resultsEl.innerHTML = `<div style="color:var(--red);font-size:13px">Check failed: ${escapeHtml(err.message)}</div>`;
+    } finally {
+      checkBtn.disabled = false;
+    }
+  }
+
+  function renderCheckResult(result, container) {
+    const verdict = (result.verdict || 'pass').toLowerCase();
+    const message = result.message || '';
+    const matches = result.matches || [];
+    const judgment = result.judgment || result.llm_judgment || null;
+
+    let html = `<div class="em-verdict ${verdict}">
+      <div class="em-verdict-badge">${escapeHtml(verdict)}</div>
+      ${message ? `<div class="em-verdict-msg">${escapeHtml(message)}</div>` : ''}
+    </div>`;
+
+    if (matches.length > 0) {
+      html += `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Matches (${matches.length})</div>`;
+      html += matches.map((m, i) => renderMatchCard(m, i)).join('');
+    }
+
+    if (judgment) {
+      html += `<div class="em-collapsible" style="margin-top:12px">
+        <button class="em-collapsible-toggle" onclick="toggleCollapsibleById('jToggle${Date.now()}', 'jBody${Date.now()}')">&#9656; LLM Judgment</button>
+        <div class="em-collapsible-body hidden" id="jBody">
+          <pre class="em-judgment-pre">${escapeHtml(JSON.stringify(judgment, null, 2))}</pre>
+        </div>
+      </div>`;
+      // Simpler approach for dynamic elements
+      html = html.replace(/<button class="em-collapsible-toggle" onclick=".*?">/, match => {
+        const ts = 'j_' + Math.random().toString(36).slice(2);
+        return `<button class="em-collapsible-toggle" data-jid="${ts}">`;
+      });
+    }
+
+    container.innerHTML = html;
+
+    // Attach judgment toggle
+    const jToggle = container.querySelector('[data-jid]');
+    if (jToggle) {
+      const jid = jToggle.dataset.jid;
+      const jBody = container.querySelector('.em-collapsible-body');
+      jToggle.addEventListener('click', () => {
+        const hidden = jBody.classList.toggle('hidden');
+        jToggle.textContent = (hidden ? '\u25B6' : '\u25BC') + ' LLM Judgment';
+      });
+    }
+
+    // Attach "View Detail" links
+    container.querySelectorAll('[data-exp-id]').forEach(btn => {
+      btn.addEventListener('click', () => loadExpDetail(btn.dataset.expId));
+    });
+  }
+
+  function renderMatchCard(m, idx) {
+    const exp = m.experience || m;
+    const sim = typeof m.similarity === 'number' ? m.similarity : (m.score || 0);
+    const sevClass = 'sev-' + (exp.severity || 'info');
+    const sevIcon = sevIcon_(exp.severity);
+    const simPct = Math.round(sim * 100);
+    const tags = (exp.tags || []).map(t => `<span class="em-tag-chip">${escapeHtml(t)}</span>`).join('');
+
+    return `<div class="em-match-card ${sevClass}">
+      <div class="em-match-header">
+        <span class="em-match-label">Match ${idx + 1}</span>
+        <div class="em-sim-bar-wrap">
+          <div class="em-sim-bar"><div class="em-sim-bar-fill" style="width:${simPct}%"></div></div>
+          <span class="em-sim-pct">sim: ${(sim).toFixed(2)}</span>
+        </div>
+      </div>
+      <div class="em-match-content">${escapeHtml(exp.content || '')}</div>
+      <div class="em-match-footer">
+        <span class="em-sev-badge ${exp.severity || 'info'}" style="font-size:11px;padding:2px 7px">${sevIcon} ${escapeHtml(exp.severity || '')}</span>
+        <span class="em-cat-badge ${exp.category || 'lesson'}">${escapeHtml(exp.category || '')}</span>
+        ${tags}
+        ${exp.id ? `<button class="em-match-view-link" data-exp-id="${escapeHtml(exp.id)}">View Detail &rarr;</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // --- Semantic Search ---
+  document.getElementById('searchAdvToggle').addEventListener('click', () => {
+    toggleCollapsible('searchAdvToggle', 'searchAdvBody');
+  });
+
+  document.getElementById('searchBtn').addEventListener('click', runSearch);
+  document.getElementById('searchInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runSearch();
+  });
+
+  async function runSearch() {
+    const query = document.getElementById('searchInput').value.trim();
+    if (!query) return;
+
+    const body = {
+      query,
+      threshold: parseFloat(document.getElementById('searchThreshold').value) || 0.5,
+      limit: parseInt(document.getElementById('searchLimit').value) || 20,
+    };
+    const cat = document.getElementById('searchCategory').value;
+    const sev = document.getElementById('searchSeverity').value;
+    if (cat) body.category = cat;
+    if (sev) body.severity = sev;
+
+    const resultsEl = document.getElementById('searchResults');
+    resultsEl.style.display = '';
+    resultsEl.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Searching...</div>';
+
+    const searchBtn = document.getElementById('searchBtn');
+    searchBtn.disabled = true;
+
+    try {
+      const res = await fetch('/api/ems/experiences/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const matches = Array.isArray(data) ? data : (data.data || data.results || []);
+      renderSearchResults(matches, resultsEl);
+    } catch (err) {
+      resultsEl.innerHTML = `<div style="color:var(--red);font-size:13px">Search failed: ${escapeHtml(err.message)}</div>`;
+    } finally {
+      searchBtn.disabled = false;
+    }
+  }
+
+  function renderSearchResults(matches, container) {
+    if (matches.length === 0) {
+      container.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;padding:8px 0">No results found.</div>';
+      return;
+    }
+    container.innerHTML = `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">${matches.length} result${matches.length !== 1 ? 's' : ''}</div>` +
+      matches.map((m, i) => renderMatchCard(m, i)).join('');
+
+    container.querySelectorAll('[data-exp-id]').forEach(btn => {
+      btn.addEventListener('click', () => loadExpDetail(btn.dataset.expId));
+    });
+  }
+
+  // Collapsible helper
+  function toggleCollapsible(toggleId, bodyId) {
+    const toggle = document.getElementById(toggleId);
+    const body = document.getElementById(bodyId);
+    if (!toggle || !body) return;
+    const hidden = body.classList.toggle('hidden');
+    toggle.textContent = (hidden ? '\u25B6' : '\u25BC') + ' ' + toggle.textContent.replace(/^[▶▼]\s*/, '');
+  }
+
+  // Sidebar toggle & resize (same pattern as skill-viewer)
+  const sidebarToggleBtn = document.getElementById('sidebarToggle');
+  const SIDEBAR_MIN_WIDTH     = 220;
+  const SIDEBAR_MAX_WIDTH     = 600;
+  const SIDEBAR_DEFAULT_WIDTH = 340;
+  const SIDEBAR_STORAGE_KEY   = 'em-sidebar-width';
+  const SIDEBAR_COLLAPSED_KEY = 'em-sidebar-collapsed';
+
+  function getSavedSidebarWidth() {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return saved ? Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parseInt(saved, 10))) : SIDEBAR_DEFAULT_WIDTH;
+  }
+
+  function setSidebarWidth(w) {
+    sidebarEl.style.width = w + 'px';
+    sidebarEl.style.minWidth = w + 'px';
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(w));
+  }
+
+  function collapseSidebar() {
+    sidebarEl.classList.add('collapsed');
+    sidebarEl.style.width = '0px';
+    sidebarEl.style.minWidth = '0px';
+    sidebarToggleBtn.textContent = '\u25B6';
+    sidebarToggleBtn.title = 'Show sidebar';
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, '1');
+  }
+
+  function expandSidebar() {
+    sidebarEl.classList.remove('collapsed');
+    setSidebarWidth(getSavedSidebarWidth());
+    sidebarToggleBtn.textContent = '\u2630';
+    sidebarToggleBtn.title = 'Hide sidebar';
+    localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      if (window.innerWidth <= 900) {
+        sidebarEl.classList.toggle('open');
+      } else {
+        if (sidebarEl.classList.contains('collapsed')) expandSidebar();
+        else collapseSidebar();
+      }
+    });
+  }
+
+  function restoreSidebarState() {
+    if (window.innerWidth > 900) {
+      if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') collapseSidebar();
+      else setSidebarWidth(getSavedSidebarWidth());
+    }
+  }
+
+  // Resize handle
+  const resizeHandle = document.getElementById('resizeHandle');
+  if (resizeHandle) {
+    let isResizing = false, startX = 0, startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', e => {
+      if (sidebarEl.classList.contains('collapsed')) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebarEl.offsetWidth;
+      sidebarEl.style.transition = 'none';
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', e => {
+      if (!isResizing) return;
+      const newWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + e.clientX - startX));
+      setSidebarWidth(newWidth);
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!isResizing) return;
+      isResizing = false;
+      sidebarEl.style.transition = '';
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+  }
+
+  // Utility helpers
+  function sevIcon_(sev) {
+    if (sev === 'block') return '&#128683;';
+    if (sev === 'warn')  return '&#9888;';
+    return '&#8505;';
+  }
+
+  function relativeTime(isoStr) {
+    if (!isoStr) return '';
+    const diff = Date.now() - new Date(isoStr).getTime();
+    if (diff < 0) return 'just now';
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    const d = Math.floor(h / 24);
+    return d + 'd ago';
+  }
+
+  function formatDate(isoStr) {
+    if (!isoStr) return '';
+    try {
+      return new Date(isoStr).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+    } catch { return isoStr; }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+})();
+</script>
+</body>
+</html>
