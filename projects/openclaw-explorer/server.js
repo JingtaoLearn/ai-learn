@@ -14,11 +14,7 @@ const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth
 const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
 const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
-// Multi-host Claude Code results directories
-const CC_HOSTS = {
-  ailearn: { dir: process.env.CC_RESULTS_DIR || '/data/cc-results', label: 'ailearn', emoji: '☁️' },
-  feng: { dir: process.env.CC_RESULTS_FENG_DIR || '/data/feng-cc-results', label: 'feng-learn', emoji: '🖥️' },
-};
+const CC_RESULTS_DIR = process.env.CC_RESULTS_DIR || '/data/cc-results';
 
 // Allowed emails: env var baseline + local file for additional entries (gitignored)
 const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
@@ -386,61 +382,22 @@ app.get('/api/skills/:name', (req, res) => {
 
 // --- Claude Code Viewer API ---
 
-// Determine task status from result.json
-// Priority: result.status field (from dispatch hook) > exit_code fallback
-function determineTaskStatus(result) {
-  if (!result) return 'running';
-  if (result.status === 'done') {
-    if (result.exit_code !== undefined && result.exit_code !== null && result.exit_code !== 0) {
-      return 'failed';
-    }
-    return 'done';
-  }
-  if (result.status === 'failed' || result.status === 'error') return 'failed';
-  return 'running';
-}
-
-function getCCResultsDir(hostId) {
-  const host = CC_HOSTS[hostId];
-  return host ? host.dir : CC_HOSTS.ailearn.dir;
-}
-
-// List available CC hosts
-app.get('/api/cc/hosts', (req, res) => {
-  const hosts = Object.entries(CC_HOSTS).map(([id, cfg]) => ({
-    id, label: cfg.label, emoji: cfg.emoji,
-  }));
-  res.json(hosts);
-});
-
 app.get('/api/cc/tasks', (req, res) => {
-  const hostId = req.query.host || 'ailearn';
-  const ccDir = getCCResultsDir(hostId);
   const tasks = [];
   try {
-    const entries = fs.readdirSync(ccDir, { withFileTypes: true });
+    const entries = fs.readdirSync(CC_RESULTS_DIR, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const name = entry.name;
-      const taskDir = path.join(ccDir, name);
+      const taskDir = path.join(CC_RESULTS_DIR, name);
 
-      // Try task-meta.json first, then result.json as fallback for metadata
+      // Only process directories that contain task-meta.json
       const metaPath = path.join(taskDir, 'task-meta.json');
       let meta;
       try {
         meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       } catch {
-        // No task-meta.json — try result.json (feng-learn tasks may only have result.json)
-        try {
-          const result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
-          meta = {
-            prompt: result.prompt || '',
-            workdir: result.cwd || '',
-            started_at: result.started_at || result.startedAt || null,
-          };
-        } catch {
-          continue; // skip directories with no metadata at all
-        }
+        continue; // skip if no task-meta.json
       }
 
       let result = null;
@@ -448,26 +405,28 @@ app.get('/api/cc/tasks', (req, res) => {
         result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
       } catch { /* running or missing */ }
 
-      // Milestones: check progress.json or result.milestones
       let milestoneCount = 0;
       try {
         const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
         milestoneCount = Array.isArray(progress.milestones) ? progress.milestones.length : 0;
-      } catch {
-        if (result && Array.isArray(result.milestones)) {
-          milestoneCount = result.milestones.length;
-        }
-      }
+      } catch { /* ignore */ }
 
-      const status = determineTaskStatus(result);
+      let status;
+      if (!result || result.status !== 'done') {
+        status = 'running';
+      } else if (result.exit_code === 0) {
+        status = 'done';
+      } else {
+        status = 'failed';
+      }
 
       tasks.push({
         name,
         status,
         prompt: meta.prompt || '',
-        workdir: meta.workdir || meta.cwd || '',
-        startedAt: meta.started_at || meta.startedAt || (result ? (result.started_at || result.startedAt || null) : null),
-        completedAt: result ? (result.completed_at || result.completedAt || result.timestamp || null) : null,
+        workdir: meta.workdir || '',
+        startedAt: meta.started_at || meta.startedAt || null,
+        completedAt: result ? (result.completed_at || result.completedAt || null) : null,
         elapsed: result ? (result.elapsed || '') : '',
         elapsedSecs: result ? (result.elapsed_secs || result.elapsedSecs || 0) : 0,
         milestoneCount,
@@ -480,39 +439,30 @@ app.get('/api/cc/tasks', (req, res) => {
     }
   }
 
-  // Sort: running first, then by startedAt descending
+  // Sort: running first, then by most recent timestamp descending
+  // Use startedAt, completedAt, or whichever is available
   tasks.sort((a, b) => {
     if (a.status === 'running' && b.status !== 'running') return -1;
     if (a.status !== 'running' && b.status === 'running') return 1;
-    return new Date(b.startedAt || 0) - new Date(a.startedAt || 0);
+    const timeA = new Date(a.completedAt || a.startedAt || 0);
+    const timeB = new Date(b.completedAt || b.startedAt || 0);
+    return timeB - timeA;
   });
 
   res.json(tasks);
 });
 
 app.get('/api/cc/tasks/:name', (req, res) => {
-  const hostId = req.query.host || 'ailearn';
-  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).json({ error: 'Invalid task name' });
 
-  const taskDir = path.join(ccDir, name);
+  const taskDir = path.join(CC_RESULTS_DIR, name);
 
-  // Try task-meta.json, fall back to result.json
   let meta;
   try {
     meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'task-meta.json'), 'utf8'));
   } catch {
-    try {
-      const result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
-      meta = {
-        prompt: result.prompt || '',
-        workdir: result.cwd || '',
-        started_at: result.started_at || result.startedAt || null,
-      };
-    } catch {
-      return res.status(404).json({ error: 'Task not found' });
-    }
+    return res.status(404).json({ error: 'Task not found' });
   }
 
   let result = null;
@@ -520,16 +470,11 @@ app.get('/api/cc/tasks/:name', (req, res) => {
     result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
   } catch { /* running */ }
 
-  // Milestones from progress.json or result.milestones
   let milestones = [];
   try {
     const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
     milestones = Array.isArray(progress.milestones) ? progress.milestones : [];
-  } catch {
-    if (result && Array.isArray(result.milestones)) {
-      milestones = result.milestones;
-    }
-  }
+  } catch { /* ignore */ }
 
   let hookLogTail = '';
   try {
@@ -538,17 +483,22 @@ app.get('/api/cc/tasks/:name', (req, res) => {
     hookLogTail = lines.slice(-100).join('\n');
   } catch { /* ignore */ }
 
-  const status = determineTaskStatus(result);
+  let status;
+  if (!result || result.status !== 'done') {
+    status = 'running';
+  } else if (result.exit_code === 0) {
+    status = 'done';
+  } else {
+    status = 'failed';
+  }
 
   res.json({ name, status, meta, result, milestones, hookLogTail });
 });
 
 app.get('/api/cc/tasks/:name/log', (req, res) => {
-  const hostId = req.query.host || 'ailearn';
-  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).send('Invalid task name');
-  const logPath = path.join(ccDir, name, 'hook.log');
+  const logPath = path.join(CC_RESULTS_DIR, name, 'hook.log');
   try {
     const content = fs.readFileSync(logPath, 'utf8');
     res.type('text/plain').send(content);
@@ -559,11 +509,9 @@ app.get('/api/cc/tasks/:name/log', (req, res) => {
 });
 
 app.get('/api/cc/tasks/:name/output', (req, res) => {
-  const hostId = req.query.host || 'ailearn';
-  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).send('Invalid task name');
-  const outputPath = path.join(ccDir, name, 'task-output.txt');
+  const outputPath = path.join(CC_RESULTS_DIR, name, 'task-output.txt');
   try {
     const content = fs.readFileSync(outputPath, 'utf8');
     res.type('text/plain').send(content);
