@@ -865,6 +865,11 @@
   color: var(--text-secondary);
 }
 
+/* Mobile back button (hidden on desktop) */
+.sv-mobile-back {
+  display: none;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .sv-sidebar {
@@ -879,6 +884,24 @@
 
   .sv-sidebar.open {
     transform: translateX(0);
+  }
+
+  .sv-mobile-back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .sv-mobile-back:hover {
+    background: var(--bg-tertiary);
   }
 
   .sv-tag-filter {

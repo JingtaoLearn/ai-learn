@@ -423,6 +423,11 @@
   to { transform: rotate(360deg); }
 }
 
+/* Mobile back button (hidden on desktop) */
+.sk-mobile-back {
+  display: none;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .sk-sidebar {
@@ -437,6 +442,24 @@
 
   .sk-sidebar.open {
     transform: translateX(0);
+  }
+
+  .sk-mobile-back {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .sk-mobile-back:hover {
+    background: var(--bg-tertiary);
   }
 
   .sk-detail {

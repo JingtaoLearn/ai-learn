@@ -14,6 +14,11 @@ const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth
 const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
 const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
+// Multi-host Claude Code results directories
+const CC_HOSTS = {
+  ailearn: { dir: process.env.CC_RESULTS_DIR || '/data/cc-results', label: 'ailearn', emoji: '☁️' },
+  feng: { dir: process.env.CC_RESULTS_FENG_DIR || '/data/feng-cc-results', label: 'feng-learn', emoji: '🖥️' },
+};
 
 // Allowed emails: env var baseline + local file for additional entries (gitignored)
 const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
@@ -377,6 +382,195 @@ app.get('/api/skills/:name', (req, res) => {
   }
 
   res.status(404).json({ error: 'Skill not found' });
+});
+
+// --- Claude Code Viewer API ---
+
+// Determine task status from result.json
+// Priority: result.status field (from dispatch hook) > exit_code fallback
+function determineTaskStatus(result) {
+  if (!result) return 'running';
+  if (result.status === 'done') {
+    if (result.exit_code !== undefined && result.exit_code !== null && result.exit_code !== 0) {
+      return 'failed';
+    }
+    return 'done';
+  }
+  if (result.status === 'failed' || result.status === 'error') return 'failed';
+  return 'running';
+}
+
+function getCCResultsDir(hostId) {
+  const host = CC_HOSTS[hostId];
+  return host ? host.dir : CC_HOSTS.ailearn.dir;
+}
+
+// List available CC hosts
+app.get('/api/cc/hosts', (req, res) => {
+  const hosts = Object.entries(CC_HOSTS).map(([id, cfg]) => ({
+    id, label: cfg.label, emoji: cfg.emoji,
+  }));
+  res.json(hosts);
+});
+
+app.get('/api/cc/tasks', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
+  const tasks = [];
+  try {
+    const entries = fs.readdirSync(ccDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      const taskDir = path.join(ccDir, name);
+
+      // Try task-meta.json first, then result.json as fallback for metadata
+      const metaPath = path.join(taskDir, 'task-meta.json');
+      let meta;
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      } catch {
+        // No task-meta.json — try result.json (feng-learn tasks may only have result.json)
+        try {
+          const result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+          meta = {
+            prompt: result.prompt || '',
+            workdir: result.cwd || '',
+            started_at: result.started_at || result.startedAt || null,
+          };
+        } catch {
+          continue; // skip directories with no metadata at all
+        }
+      }
+
+      let result = null;
+      try {
+        result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+      } catch { /* running or missing */ }
+
+      // Milestones: check progress.json or result.milestones
+      let milestoneCount = 0;
+      try {
+        const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
+        milestoneCount = Array.isArray(progress.milestones) ? progress.milestones.length : 0;
+      } catch {
+        if (result && Array.isArray(result.milestones)) {
+          milestoneCount = result.milestones.length;
+        }
+      }
+
+      const status = determineTaskStatus(result);
+
+      tasks.push({
+        name,
+        status,
+        prompt: meta.prompt || '',
+        workdir: meta.workdir || meta.cwd || '',
+        startedAt: meta.started_at || meta.startedAt || (result ? (result.started_at || result.startedAt || null) : null),
+        completedAt: result ? (result.completed_at || result.completedAt || result.timestamp || null) : null,
+        elapsed: result ? (result.elapsed || '') : '',
+        elapsedSecs: result ? (result.elapsed_secs || result.elapsedSecs || 0) : 0,
+        milestoneCount,
+        exitCode: result ? (result.exit_code !== undefined ? result.exit_code : result.exitCode) : null,
+      });
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      return res.status(500).json({ error: 'Failed to read tasks directory' });
+    }
+  }
+
+  // Sort: running first, then by startedAt descending
+  tasks.sort((a, b) => {
+    if (a.status === 'running' && b.status !== 'running') return -1;
+    if (a.status !== 'running' && b.status === 'running') return 1;
+    return new Date(b.startedAt || 0) - new Date(a.startedAt || 0);
+  });
+
+  res.json(tasks);
+});
+
+app.get('/api/cc/tasks/:name', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid task name' });
+
+  const taskDir = path.join(ccDir, name);
+
+  // Try task-meta.json, fall back to result.json
+  let meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'task-meta.json'), 'utf8'));
+  } catch {
+    try {
+      const result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+      meta = {
+        prompt: result.prompt || '',
+        workdir: result.cwd || '',
+        started_at: result.started_at || result.startedAt || null,
+      };
+    } catch {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+  }
+
+  let result = null;
+  try {
+    result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+  } catch { /* running */ }
+
+  // Milestones from progress.json or result.milestones
+  let milestones = [];
+  try {
+    const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
+    milestones = Array.isArray(progress.milestones) ? progress.milestones : [];
+  } catch {
+    if (result && Array.isArray(result.milestones)) {
+      milestones = result.milestones;
+    }
+  }
+
+  let hookLogTail = '';
+  try {
+    const logContent = fs.readFileSync(path.join(taskDir, 'hook.log'), 'utf8');
+    const lines = logContent.split('\n');
+    hookLogTail = lines.slice(-100).join('\n');
+  } catch { /* ignore */ }
+
+  const status = determineTaskStatus(result);
+
+  res.json({ name, status, meta, result, milestones, hookLogTail });
+});
+
+app.get('/api/cc/tasks/:name/log', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).send('Invalid task name');
+  const logPath = path.join(ccDir, name, 'hook.log');
+  try {
+    const content = fs.readFileSync(logPath, 'utf8');
+    res.type('text/plain').send(content);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).send('Log not found');
+    res.status(500).send('Failed to read log');
+  }
+});
+
+app.get('/api/cc/tasks/:name/output', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).send('Invalid task name');
+  const outputPath = path.join(ccDir, name, 'task-output.txt');
+  try {
+    const content = fs.readFileSync(outputPath, 'utf8');
+    res.type('text/plain').send(content);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).send('Output not found');
+    res.status(500).send('Failed to read output');
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
