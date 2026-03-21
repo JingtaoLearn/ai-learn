@@ -46,6 +46,7 @@
 
   <!-- Main area -->
   <div class="sk-main" id="mainArea" style="display:none">
+    <div class="sk-mobile-back" id="mobileBack">&#8592; Back to Skills</div>
     <div class="sk-detail" id="detailArea">
       <div class="sk-empty">
         <div class="sk-empty-icon">&#128218;</div>
@@ -274,6 +275,12 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  // Mobile back button
+  const mobileBack = document.getElementById('mobileBack');
+  if (mobileBack) {
+    mobileBack.addEventListener('click', () => sidebarEl.classList.add('open'));
   }
 
   // Sidebar toggle (collapse/expand)

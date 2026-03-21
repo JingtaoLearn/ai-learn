@@ -45,6 +45,7 @@
 
   <!-- Main area -->
   <div class="sv-main" id="mainArea" style="display:none">
+    <div class="sv-mobile-back" id="mobileBack">&#8592; Back to Sessions</div>
     <!-- Stats bar -->
     <div class="sv-stats" id="statsBar" style="display:none">
       <div class="sv-stat">Events: <span class="sv-stat-value" id="statEvents">0</span></div>
@@ -995,6 +996,12 @@
           + '</div>';
       }
     );
+  }
+
+  // Mobile back button
+  const mobileBack = document.getElementById('mobileBack');
+  if (mobileBack) {
+    mobileBack.addEventListener('click', () => sidebarEl.classList.add('open'));
   }
 
   // Sidebar toggle (collapse/expand)
