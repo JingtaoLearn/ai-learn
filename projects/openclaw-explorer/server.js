@@ -14,6 +14,7 @@ const LOGIN_URL = process.env.LOGIN_URL || 'https://ms-login.ai.jingtao.fun/auth
 const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
 const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
+const CC_RESULTS_DIR = process.env.CC_RESULTS_DIR || '/data/cc-results';
 
 // Allowed emails: env var baseline + local file for additional entries (gitignored)
 const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
@@ -377,6 +378,144 @@ app.get('/api/skills/:name', (req, res) => {
   }
 
   res.status(404).json({ error: 'Skill not found' });
+});
+
+// --- Claude Code Viewer API ---
+
+app.get('/api/cc/tasks', (req, res) => {
+  const tasks = [];
+  try {
+    const entries = fs.readdirSync(CC_RESULTS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      const taskDir = path.join(CC_RESULTS_DIR, name);
+
+      // Only process directories that contain task-meta.json
+      const metaPath = path.join(taskDir, 'task-meta.json');
+      let meta;
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      } catch {
+        continue; // skip if no task-meta.json
+      }
+
+      let result = null;
+      try {
+        result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+      } catch { /* running or missing */ }
+
+      let milestoneCount = 0;
+      try {
+        const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
+        milestoneCount = Array.isArray(progress.milestones) ? progress.milestones.length : 0;
+      } catch { /* ignore */ }
+
+      let status;
+      if (!result || result.status !== 'done') {
+        status = 'running';
+      } else if (result.exit_code === 0) {
+        status = 'done';
+      } else {
+        status = 'failed';
+      }
+
+      tasks.push({
+        name,
+        status,
+        prompt: meta.prompt || '',
+        workdir: meta.workdir || '',
+        startedAt: meta.started_at || meta.startedAt || null,
+        completedAt: result ? (result.completed_at || result.completedAt || null) : null,
+        elapsed: result ? (result.elapsed || '') : '',
+        elapsedSecs: result ? (result.elapsed_secs || result.elapsedSecs || 0) : 0,
+        milestoneCount,
+        exitCode: result ? (result.exit_code !== undefined ? result.exit_code : result.exitCode) : null,
+      });
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      return res.status(500).json({ error: 'Failed to read tasks directory' });
+    }
+  }
+
+  // Sort: running first, then by startedAt descending
+  tasks.sort((a, b) => {
+    if (a.status === 'running' && b.status !== 'running') return -1;
+    if (a.status !== 'running' && b.status === 'running') return 1;
+    return new Date(b.startedAt || 0) - new Date(a.startedAt || 0);
+  });
+
+  res.json(tasks);
+});
+
+app.get('/api/cc/tasks/:name', (req, res) => {
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid task name' });
+
+  const taskDir = path.join(CC_RESULTS_DIR, name);
+
+  let meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'task-meta.json'), 'utf8'));
+  } catch {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  let result = null;
+  try {
+    result = JSON.parse(fs.readFileSync(path.join(taskDir, 'result.json'), 'utf8'));
+  } catch { /* running */ }
+
+  let milestones = [];
+  try {
+    const progress = JSON.parse(fs.readFileSync(path.join(taskDir, 'progress.json'), 'utf8'));
+    milestones = Array.isArray(progress.milestones) ? progress.milestones : [];
+  } catch { /* ignore */ }
+
+  let hookLogTail = '';
+  try {
+    const logContent = fs.readFileSync(path.join(taskDir, 'hook.log'), 'utf8');
+    const lines = logContent.split('\n');
+    hookLogTail = lines.slice(-100).join('\n');
+  } catch { /* ignore */ }
+
+  let status;
+  if (!result || result.status !== 'done') {
+    status = 'running';
+  } else if (result.exit_code === 0) {
+    status = 'done';
+  } else {
+    status = 'failed';
+  }
+
+  res.json({ name, status, meta, result, milestones, hookLogTail });
+});
+
+app.get('/api/cc/tasks/:name/log', (req, res) => {
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).send('Invalid task name');
+  const logPath = path.join(CC_RESULTS_DIR, name, 'hook.log');
+  try {
+    const content = fs.readFileSync(logPath, 'utf8');
+    res.type('text/plain').send(content);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).send('Log not found');
+    res.status(500).send('Failed to read log');
+  }
+});
+
+app.get('/api/cc/tasks/:name/output', (req, res) => {
+  const name = path.basename(req.params.name);
+  if (!name) return res.status(400).send('Invalid task name');
+  const outputPath = path.join(CC_RESULTS_DIR, name, 'task-output.txt');
+  try {
+    const content = fs.readFileSync(outputPath, 'utf8');
+    res.type('text/plain').send(content);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).send('Output not found');
+    res.status(500).send('Failed to read output');
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
