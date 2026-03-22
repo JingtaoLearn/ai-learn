@@ -1,12 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-const API_AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN as string | undefined
-
-function authHeaders(): Record<string, string> {
-  if (!API_AUTH_TOKEN) return {}
-  return { Authorization: `Bearer ${API_AUTH_TOKEN}` }
-}
-
 export function useApi<T>(
   url: string,
   options?: { interval?: number; enabled?: boolean }
@@ -18,7 +11,7 @@ export function useApi<T>(
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(url, { headers: authHeaders() })
+      const res = await fetch(url, { credentials: 'same-origin' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       setData(json)
@@ -46,7 +39,8 @@ export function useApi<T>(
 export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -62,7 +56,7 @@ export function useHealth(autoRefresh: boolean) {
 
   const check = useCallback(async () => {
     try {
-      const res = await fetch('/api/health', { headers: authHeaders() })
+      const res = await fetch('/api/health')
       setHealthy(res.ok)
     } catch {
       setHealthy(false)
