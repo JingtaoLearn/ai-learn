@@ -101,6 +101,12 @@
   // Tag filter state: map of tag -> 'include' | 'exclude' | null
   let tagFilters = {};
 
+  // Auto-refresh intervals
+  let listPollInterval = null;
+  let sessionPollInterval = null;
+  const LIST_POLL_MS = 30000;    // refresh session list every 30s
+  const SESSION_POLL_MS = 5000;  // refresh current session every 5s
+
   // DOM refs
   const loginScreen = document.getElementById('loginScreen');
   const loginBtn = document.getElementById('loginBtn');
@@ -129,6 +135,7 @@
         showApp();
         await loadAgents();
         await loadSessions();
+        startListPolling();
       } else {
         showLogin();
       }
@@ -196,6 +203,7 @@
           allEvents = [];
           filteredEvents = [];
           tagFilters = {};
+          stopSessionPolling();
           // Clear hash before loading new agent's sessions to prevent
           // navigateFromHash() from restoring the old session
           history.pushState(null, '', window.location.pathname);
@@ -223,18 +231,69 @@
   }
 
   // Load sessions list
-  async function loadSessions() {
-    sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+  async function loadSessions(isPolling) {
+    if (!isPolling) {
+      sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+    }
     try {
       const res = await fetch(`/api/sessions?agent=${encodeURIComponent(currentAgent)}`);
       if (!res.ok) throw new Error('Failed');
       sessions = await res.json();
       renderTagFilter();
       renderSessionList();
-      navigateFromHash();
+      if (!isPolling) navigateFromHash();
     } catch {
-      sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+      if (!isPolling) {
+        sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+      }
     }
+  }
+
+  // --- Auto-refresh ---
+
+  function startListPolling() {
+    stopListPolling();
+    listPollInterval = setInterval(() => loadSessions(true), LIST_POLL_MS);
+  }
+
+  function stopListPolling() {
+    if (listPollInterval) { clearInterval(listPollInterval); listPollInterval = null; }
+  }
+
+  function startSessionPolling() {
+    stopSessionPolling();
+    if (!currentSessionId) return;
+    sessionPollInterval = setInterval(() => refreshCurrentSession(), SESSION_POLL_MS);
+  }
+
+  function stopSessionPolling() {
+    if (sessionPollInterval) { clearInterval(sessionPollInterval); sessionPollInterval = null; }
+  }
+
+  async function refreshCurrentSession() {
+    if (!currentSessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}?agent=${encodeURIComponent(currentAgent)}`);
+      if (!res.ok) return;
+      const newEvents = await res.json();
+      if (newEvents.length !== allEvents.length) {
+        // Check if user is scrolled to bottom before updating
+        const wasAtBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 50;
+        const wasOnLastPage = currentPage === totalPages;
+        allEvents = newEvents;
+        applyFilters();
+        showStatsAndFilters();
+        // If user was on last page and at bottom, stay there
+        if (wasOnLastPage && currentPage !== totalPages) {
+          currentPage = totalPages;
+          renderTimeline();
+          renderPagination();
+        }
+        if (wasAtBottom) {
+          requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+        }
+      }
+    } catch { /* ignore polling errors */ }
   }
 
   function relativeTime(dateStr) {
@@ -536,6 +595,7 @@
   async function loadSession(sessionId) {
     currentSessionId = sessionId;
     currentPage = 1;
+    stopSessionPolling();
     renderSessionList(); // Update active highlight
 
     timeline.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading events...</div>';
@@ -549,6 +609,7 @@
       allEvents = await res.json();
       applyFilters();
       showStatsAndFilters();
+      startSessionPolling();
     } catch {
       timeline.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load session events.</div>';
     }
