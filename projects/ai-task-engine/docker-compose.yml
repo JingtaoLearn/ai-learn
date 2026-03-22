@@ -1,0 +1,26 @@
+services:
+  ai-task-engine:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3200:3200"
+    volumes:
+      - ${S_CONTAINER_FOLDER_ACTIVE:-./data}:/app/data
+      - ./workflows:/app/workflows:ro
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      EMS_BASE_URL: ${EMS_BASE_URL:-http://127.0.0.1:8100}
+      OPENCLAW_GATEWAY_URL: ${OPENCLAW_GATEWAY_URL:-http://127.0.0.1:18789}
+      EXECUTOR_MODE: ${EXECUTOR_MODE:-mock}
+      API_PORT: 3200
+      DB_PATH: /app/data/task-engine.db
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    networks:
+      - nginx-proxy
+    labels:
+      - "com.docker.compose.project=ai-task-engine"
+
+networks:
+  nginx-proxy:
+    external: true

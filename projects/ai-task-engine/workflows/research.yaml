@@ -1,0 +1,42 @@
+name: research
+description: Technical research workflow — investigation, synthesis, and recommendations
+
+steps:
+  - name: define-research-scope
+    goal: Define what needs to be researched, what questions need answers, and what success looks like
+    acceptance:
+      type: human_confirm
+    timeout: 20m
+    wakePolicy: dependency
+
+  - name: gather-information
+    goal: Collect information from relevant sources — documentation, code, examples, community resources
+    rules:
+      - cite-sources
+      - prioritize-official-documentation
+    acceptance:
+      type: ai_self_check
+      criteria: Key questions from the scope definition are answered with supporting evidence
+    timeout: 60m
+    wakePolicy: dependency
+
+  - name: synthesize-findings
+    goal: Synthesize gathered information into a structured findings document with clear conclusions
+    rules:
+      - be-concise
+      - separate-facts-from-opinions
+    acceptance:
+      type: ai_self_check
+      criteria: Findings document covers all scoped questions with clear, evidence-backed conclusions
+    timeout: 30m
+    wakePolicy: dependency
+
+  - name: recommendations
+    goal: Produce actionable recommendations based on the research findings
+    rules:
+      - rank-by-impact
+      - include-trade-offs
+    acceptance:
+      type: human_confirm
+    timeout: 30m
+    wakePolicy: dependency
