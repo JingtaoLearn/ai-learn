@@ -1,0 +1,73 @@
+services:
+  engine:
+    build: ./engine
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - engine_data:/app/data
+      - ./engine/workflows:/app/workflows:ro
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      EMS_BASE_URL: http://ems:8100
+      EMS_AUTH_TOKEN: ${EMS_AUTH_TOKEN}
+      OPENCLAW_GATEWAY_URL: ${OPENCLAW_GATEWAY_URL:-http://host.docker.internal:18789}
+      OPENCLAW_HOOKS_TOKEN: ${OPENCLAW_HOOKS_TOKEN}
+      EXECUTOR_MODE: ${EXECUTOR_MODE:-openclaw}
+      API_PORT: "3200"
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      AUTH_SHARED_SECRET: ${AUTH_SHARED_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      LOGIN_URL: ${LOGIN_URL:-https://ms-login.ai.jingtao.fun/auth/login}
+      VIRTUAL_HOST: task.ai.jingtao.fun
+      DB_PATH: /app/data/task-engine.db
+    networks:
+      - nginx-proxy
+      - internal
+
+  web:
+    build:
+      context: ./web
+    restart: unless-stopped
+    depends_on:
+      - engine
+    environment:
+      VIRTUAL_HOST: task.ai.jingtao.fun
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: task.ai.jingtao.fun
+      LETSENCRYPT_EMAIL: jingtao_buaa@icloud.com
+    networks:
+      - nginx-proxy
+      - internal
+
+  ems:
+    build: ./ems
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8100:8100"
+    environment:
+      EMS_DB_PATH: /data/ems.db
+      EMS_EMBEDDING_API_KEY: ${EMS_EMBEDDING_API_KEY}
+      EMS_EMBEDDING_BASE_URL: ${EMS_EMBEDDING_BASE_URL:-https://litellm.us.jingtao.fun/v1}
+      EMS_EMBEDDING_MODEL: ${EMS_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMS_LLM_API_KEY: ${EMS_LLM_API_KEY:-${EMS_EMBEDDING_API_KEY}}
+      EMS_LLM_BASE_URL: ${EMS_LLM_BASE_URL:-https://litellm.us.jingtao.fun/v1}
+      EMS_LLM_MODEL: ${EMS_LLM_MODEL:-github-copilot/claude-sonnet-4.5}
+      EMS_AUTH_TOKEN: ${EMS_AUTH_TOKEN}
+    volumes:
+      - ems_data:/data
+    networks:
+      - internal
+
+volumes:
+  engine_data:
+  ems_data:
+    external: true
+    name: experience-manager_ems_data
+
+networks:
+  nginx-proxy:
+    external: true
+  internal:
+    driver: bridge

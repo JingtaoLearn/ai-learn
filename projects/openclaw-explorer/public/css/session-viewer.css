@@ -306,6 +306,67 @@
   font-weight: 600;
 }
 
+/* Refresh button */
+.sv-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: auto;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.sv-refresh-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.sv-refresh-btn.small {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+.sv-refresh-btn.spinning {
+  animation: sv-spin 0.6s linear infinite;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Updated badge — shown when new events detected in background */
+.sv-updated-flash {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.3s;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.sv-updated-flash:hover {
+  background: rgba(63, 185, 80, 0.25);
+}
+
+.sv-updated-flash.show {
+  opacity: 1;
+}
+
 /* Filter bar */
 .sv-filters {
   display: flex;
@@ -814,6 +875,32 @@
   justify-content: center;
   padding: 40px;
   color: var(--text-secondary);
+}
+
+/* Sidebar list refresh indicator */
+.sv-list-refresh {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  opacity: 0.7;
+}
+
+.sv-list-refresh.active {
+  display: flex;
+}
+
+.sv-list-refresh .sv-mini-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sv-spin 0.6s linear infinite;
 }
 
 .sv-spinner {

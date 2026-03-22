@@ -31,6 +31,8 @@ projects/
 | [wedding-showcase](wedding-showcase/) | `wedding.${S_DOMAIN}` | Wedding garden party layout showcase website |
 | [listen-english](listen-english/) | `listen.${S_DOMAIN}` | English number listening comprehension trainer |
 | [nav-portal](nav-portal/) | `nav.${S_DOMAIN}` | Navigation dashboard with Docker service auto-discovery |
+| [experience-manager](experience-manager/) | `ems.ai.jingtao.fun` | AI agent experience storage and semantic search (EMS) |
+| [ai-task-engine](ai-task-engine/) | `localhost:3200` | Workflow engine for AI task orchestration with Discord, EMS, and OpenClaw integration |
 
 ## Adding a New Project
 

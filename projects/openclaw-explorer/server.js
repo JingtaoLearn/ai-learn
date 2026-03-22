@@ -16,6 +16,17 @@ const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
 const CC_RESULTS_DIR = process.env.CC_RESULTS_DIR || '/data/cc-results';
 
+// Multi-host Claude Code results directories
+const CC_HOSTS = {
+  ailearn: { dir: process.env.CC_RESULTS_DIR || '/data/cc-results', label: 'ailearn', emoji: '☁️' },
+  'feng-learn': { dir: process.env.CC_RESULTS_FENG_DIR || '/data/feng-cc-results', label: 'feng-learn', emoji: '🖥️' },
+};
+
+function getCCResultsDir(hostId) {
+  const host = CC_HOSTS[hostId];
+  return host ? host.dir : CC_HOSTS.ailearn.dir;
+}
+
 // Allowed emails: env var baseline + local file for additional entries (gitignored)
 const ALLOWED_EMAILS_FILE = process.env.ALLOWED_EMAILS_FILE || '/data/allowed-emails.txt';
 let _allowedEmails = (process.env.ALLOWED_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
@@ -382,14 +393,23 @@ app.get('/api/skills/:name', (req, res) => {
 
 // --- Claude Code Viewer API ---
 
+app.get('/api/cc/hosts', (req, res) => {
+  const hostList = Object.entries(CC_HOSTS).map(([id, cfg]) => ({
+    id, label: cfg.label, emoji: cfg.emoji,
+  }));
+  res.json(hostList);
+});
+
 app.get('/api/cc/tasks', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
   const tasks = [];
   try {
-    const entries = fs.readdirSync(CC_RESULTS_DIR, { withFileTypes: true });
+    const entries = fs.readdirSync(ccDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const name = entry.name;
-      const taskDir = path.join(CC_RESULTS_DIR, name);
+      const taskDir = path.join(ccDir, name);
 
       // Only process directories that contain task-meta.json
       const metaPath = path.join(taskDir, 'task-meta.json');
@@ -453,10 +473,12 @@ app.get('/api/cc/tasks', (req, res) => {
 });
 
 app.get('/api/cc/tasks/:name', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).json({ error: 'Invalid task name' });
 
-  const taskDir = path.join(CC_RESULTS_DIR, name);
+  const taskDir = path.join(ccDir, name);
 
   let meta;
   try {
@@ -496,9 +518,11 @@ app.get('/api/cc/tasks/:name', (req, res) => {
 });
 
 app.get('/api/cc/tasks/:name/log', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).send('Invalid task name');
-  const logPath = path.join(CC_RESULTS_DIR, name, 'hook.log');
+  const logPath = path.join(ccDir, name, 'hook.log');
   try {
     const content = fs.readFileSync(logPath, 'utf8');
     res.type('text/plain').send(content);
@@ -509,9 +533,11 @@ app.get('/api/cc/tasks/:name/log', (req, res) => {
 });
 
 app.get('/api/cc/tasks/:name/output', (req, res) => {
+  const hostId = req.query.host || 'ailearn';
+  const ccDir = getCCResultsDir(hostId);
   const name = path.basename(req.params.name);
   if (!name) return res.status(400).send('Invalid task name');
-  const outputPath = path.join(CC_RESULTS_DIR, name, 'task-output.txt');
+  const outputPath = path.join(ccDir, name, 'task-output.txt');
   try {
     const content = fs.readFileSync(outputPath, 'utf8');
     res.type('text/plain').send(content);

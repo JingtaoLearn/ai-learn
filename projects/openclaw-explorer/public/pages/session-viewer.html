@@ -33,7 +33,10 @@
   <nav class="sv-sidebar" id="sidebar" style="display:none">
     <div class="sv-sidebar-header">
       <a class="back-link" href="../">&larr; Back to Topics</a>
-      <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="font-weight:600;font-size:15px;color:var(--text)">Sessions</div>
+        <button class="sv-refresh-btn small" id="refreshList" title="Refresh list">&#8635;</button>
+      </div>
     </div>
     <div class="sv-agent-switch" id="agentSwitch"></div>
     <div class="sv-tag-filter" id="tagFilter"></div>
@@ -51,6 +54,8 @@
       <div class="sv-stat">Events: <span class="sv-stat-value" id="statEvents">0</span></div>
       <div class="sv-stat">Tool calls: <span class="sv-stat-value" id="statTools">0</span></div>
       <div class="sv-stat">Duration: <span class="sv-stat-value" id="statDuration">-</span></div>
+      <span class="sv-updated-flash" id="updatedFlash">+<span id="newEventCount">0</span> new</span>
+      <button class="sv-refresh-btn" id="refreshSession" title="Refresh session">&#8635;</button>
     </div>
 
     <!-- Filter bar -->
@@ -100,6 +105,11 @@
 
   // Tag filter state: map of tag -> 'include' | 'exclude' | null
   let tagFilters = {};
+
+  // Auto-refresh intervals
+  let sessionCheckInterval = null;
+  const SESSION_CHECK_MS = 10000; // check for new events every 10s (silent, no re-render)
+  let pendingNewEvents = 0;
 
   // DOM refs
   const loginScreen = document.getElementById('loginScreen');
@@ -196,6 +206,7 @@
           allEvents = [];
           filteredEvents = [];
           tagFilters = {};
+          stopSessionCheck();
           // Clear hash before loading new agent's sessions to prevent
           // navigateFromHash() from restoring the old session
           history.pushState(null, '', window.location.pathname);
@@ -223,18 +234,95 @@
   }
 
   // Load sessions list
-  async function loadSessions() {
-    sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+  async function loadSessions(isPolling) {
+    if (!isPolling) {
+      sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+    }
     try {
       const res = await fetch(`/api/sessions?agent=${encodeURIComponent(currentAgent)}`);
       if (!res.ok) throw new Error('Failed');
       sessions = await res.json();
       renderTagFilter();
       renderSessionList();
-      navigateFromHash();
+      if (!isPolling) navigateFromHash();
     } catch {
-      sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+      if (!isPolling) {
+        sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
+      }
     }
+  }
+
+  // --- Refresh controls ---
+
+  function startSessionCheck() {
+    stopSessionCheck();
+    if (!currentSessionId) return;
+    pendingNewEvents = 0;
+    sessionCheckInterval = setInterval(() => checkForNewEvents(), SESSION_CHECK_MS);
+  }
+
+  function stopSessionCheck() {
+    if (sessionCheckInterval) { clearInterval(sessionCheckInterval); sessionCheckInterval = null; }
+    pendingNewEvents = 0;
+    hideUpdatedFlash();
+  }
+
+  function hideUpdatedFlash() {
+    const flashEl = document.getElementById('updatedFlash');
+    if (flashEl) flashEl.classList.remove('show');
+  }
+
+  // Silent check — only updates the badge, never re-renders the timeline
+  async function checkForNewEvents() {
+    if (!currentSessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}?agent=${encodeURIComponent(currentAgent)}`);
+      if (!res.ok) return;
+      const newEvents = await res.json();
+      const diff = newEvents.length - allEvents.length;
+      if (diff > 0) {
+        pendingNewEvents = diff;
+        const flashEl = document.getElementById('updatedFlash');
+        const countEl = document.getElementById('newEventCount');
+        if (flashEl && countEl) {
+          countEl.textContent = diff;
+          flashEl.classList.add('show');
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Manual refresh — actually reload and re-render
+  async function manualRefreshSession() {
+    if (!currentSessionId) return;
+    const btn = document.getElementById('refreshSession');
+    if (btn) btn.classList.add('spinning');
+    try {
+      const res = await fetch(`/api/sessions/${currentSessionId}?agent=${encodeURIComponent(currentAgent)}`);
+      if (!res.ok) return;
+      const wasAtBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 50;
+      allEvents = await res.json();
+      pendingNewEvents = 0;
+      hideUpdatedFlash();
+      applyFilters();
+      showStatsAndFilters();
+      if (wasAtBottom) {
+        currentPage = totalPages;
+        renderTimeline();
+        renderPagination();
+        requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+      }
+    } catch { /* ignore */ }
+    finally {
+      if (btn) btn.classList.remove('spinning');
+    }
+  }
+
+  async function manualRefreshList() {
+    const btn = document.getElementById('refreshList');
+    if (btn) btn.classList.add('spinning');
+    await loadSessions(true);
+    if (btn) btn.classList.remove('spinning');
   }
 
   function relativeTime(dateStr) {
@@ -536,6 +624,7 @@
   async function loadSession(sessionId) {
     currentSessionId = sessionId;
     currentPage = 1;
+    stopSessionCheck();
     renderSessionList(); // Update active highlight
 
     timeline.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading events...</div>';
@@ -549,6 +638,7 @@
       allEvents = await res.json();
       applyFilters();
       showStatsAndFilters();
+      startSessionCheck();
     } catch {
       timeline.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load session events.</div>';
     }
@@ -1147,6 +1237,23 @@
       }
     }
   });
+
+  // Refresh buttons
+  const refreshSessionBtn = document.getElementById('refreshSession');
+  if (refreshSessionBtn) {
+    refreshSessionBtn.addEventListener('click', () => manualRefreshSession());
+  }
+
+  const refreshListBtn = document.getElementById('refreshList');
+  if (refreshListBtn) {
+    refreshListBtn.addEventListener('click', () => manualRefreshList());
+  }
+
+  // Click on "+N new" flash also triggers refresh
+  const updatedFlashEl = document.getElementById('updatedFlash');
+  if (updatedFlashEl) {
+    updatedFlashEl.addEventListener('click', () => manualRefreshSession());
+  }
 
   // Logout
   const logoutLink = document.getElementById('logoutLink');
