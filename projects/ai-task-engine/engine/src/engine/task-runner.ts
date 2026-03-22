@@ -190,6 +190,7 @@ export class TaskRunner {
         goal: step.goal,
         background: step.background,
         rules: step.rules_json ? JSON.parse(step.rules_json) : [],
+        acceptanceCriteria: step.acceptance_criteria ?? null,
         discordChannelId: step.discord_channel_id,
         previousOutput,
         retryContext,
@@ -197,6 +198,8 @@ export class TaskRunner {
 
       if (result.success && result.output) {
         await this.completeStep(step.id, result.output);
+      } else if (result.error?.includes('Escalating to human review')) {
+        await this.blockStep(step.id, result.error);
       } else {
         await this.failStep(step.id, result.error || 'Executor returned failure');
       }
@@ -298,6 +301,25 @@ export class TaskRunner {
       const task = getTask(step.task_id)!;
       if (task.status === 'active') {
         updateTask(step.task_id, { status: 'failed' });
+      }
+    }
+  }
+
+  async blockStep(stepId: string, reason: string): Promise<void> {
+    const step = getStep(stepId);
+    if (!step) return;
+
+    assertStepTransition(step.status, 'blocked');
+    updateStep(stepId, { status: 'blocked', error_message: reason });
+    logStepEvent(stepId, 'error', `Step blocked: ${reason}`);
+    console.warn(`[task-runner] Step blocked for human review: ${step.name}`);
+
+    if (this.discordEnabled && step.discord_channel_id) {
+      try {
+        await updateChannelStatusEmoji(step.discord_channel_id, 'blocked');
+        await postToChannel(step.discord_channel_id, `🚫 **Step blocked — needs human review**\n${reason}\n\n> Use \`!approve\` to unblock or the API to resume.`);
+      } catch (err) {
+        console.error(`[task-runner] Discord update failed (non-fatal): ${err}`);
       }
     }
   }

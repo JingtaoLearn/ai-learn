@@ -171,6 +171,56 @@ function splitMessage(text: string, maxLen: number): string[] {
   return chunks;
 }
 
+/**
+ * Fetch the latest bot message posted after `afterSnowflake` in a channel.
+ * Polls until a new bot message appears or timeout is reached.
+ */
+export async function pollForBotMessage(
+  channelId: string,
+  afterSnowflake: string | undefined,
+  pollInterval: number,
+  timeout: number,
+): Promise<{ content: string; messageId: string } | null> {
+  const client = getDiscordClient();
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+
+    try {
+      const channel = await client.channels.fetch(channelId) as TextChannel;
+      const fetchOptions: Record<string, unknown> = { limit: 50 };
+      if (afterSnowflake) fetchOptions.after = afterSnowflake;
+
+      const messages = await channel.messages.fetch(fetchOptions as Parameters<typeof channel.messages.fetch>[0]);
+
+      for (const [, msg] of messages) {
+        if (msg.author.bot && (!afterSnowflake || msg.id > afterSnowflake)) {
+          return { content: msg.content, messageId: msg.id };
+        }
+      }
+    } catch (err) {
+      console.warn(`[discord] Poll error (will retry): ${err}`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get the snowflake ID of the latest message in a channel (for use as a baseline).
+ */
+export async function getLatestMessageId(channelId: string): Promise<string | undefined> {
+  const client = getDiscordClient();
+  try {
+    const channel = await client.channels.fetch(channelId) as TextChannel;
+    const messages = await channel.messages.fetch({ limit: 1 });
+    return messages.first()?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function destroyDiscordClient(): Promise<void> {
   if (discordClient) {
     discordClient.destroy();

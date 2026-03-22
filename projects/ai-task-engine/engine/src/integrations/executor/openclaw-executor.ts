@@ -1,75 +1,101 @@
-import { StepExecutor, ExecutorInput, ExecutorResult, ExecutorOutput } from './interface';
-import { postToChannel, getDiscordClient } from '../discord';
-import { TextChannel } from 'discord.js';
+import {
+  StepExecutor, ExecutorInput, ExecutorResult, ExecutorOutput,
+  ExecutorLoopConfig, DEFAULT_LOOP_CONFIG,
+} from './interface';
+import { postToChannel, pollForBotMessage, getLatestMessageId } from '../discord';
 
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
 const OPENCLAW_HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN || '';
-const POLL_INTERVAL_MS = 10_000;
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 export class OpenClawExecutor implements StepExecutor {
   name = 'openclaw';
+  private config: ExecutorLoopConfig;
+
+  constructor(config?: Partial<ExecutorLoopConfig>) {
+    this.config = { ...DEFAULT_LOOP_CONFIG, ...config };
+  }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
-    console.log(`[openclaw-executor] Dispatching step to OpenClaw: ${input.stepName}`);
+    console.log(`[openclaw-executor] Starting AI-driven execution for step: ${input.stepName}`);
 
     if (!input.discordChannelId) {
-      return {
-        success: false,
-        error: 'OpenClaw executor requires a Discord channel (discordChannelId is null). Ensure Discord is enabled.',
-      };
+      return { success: false, error: 'OpenClaw executor requires a Discord channel.' };
     }
-
     if (!OPENCLAW_HOOKS_TOKEN) {
-      return {
-        success: false,
-        error: 'OPENCLAW_HOOKS_TOKEN environment variable is not set.',
-      };
+      return { success: false, error: 'OPENCLAW_HOOKS_TOKEN environment variable is not set.' };
     }
 
-    const brief = buildStepBrief(input);
+    const channelId = input.discordChannelId;
 
     try {
-      // a) Post step brief to Discord channel
-      await postToChannel(input.discordChannelId, brief);
-      console.log(`[openclaw-executor] Posted step brief to channel ${input.discordChannelId}`);
+      // 1. Send initial work message to agent
+      const initialPrompt = buildInitialPrompt(input);
+      let snapshot = await getLatestMessageId(channelId);
+      const sendResult = await this.sendToAgent(channelId, initialPrompt);
+      if (!sendResult.ok) return sendResult.result;
 
-      // b) Trigger OpenClaw agent session
-      const hookResponse = await fetch(`${OPENCLAW_GATEWAY_URL}/hooks/agent`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${OPENCLAW_HOOKS_TOKEN}`,
-        },
-        body: JSON.stringify({
-          text: brief,
-          channel: 'discord',
-          to: `channel:${input.discordChannelId}`,
-          sessionTarget: 'isolated',
-        }),
-      });
+      // 2. AI-driven execution loop
+      for (let iteration = 1; iteration <= this.config.maxIterations; iteration++) {
+        console.log(`[openclaw-executor] Iteration ${iteration}/${this.config.maxIterations}`);
 
-      if (!hookResponse.ok) {
-        const body = await hookResponse.text();
-        return {
-          success: false,
-          error: `OpenClaw hooks API error ${hookResponse.status}: ${body}`,
-        };
+        // Wait for agent's work response
+        await sleep(this.config.evaluationDelay);
+        const workResponse = await pollForBotMessage(
+          channelId, snapshot, this.config.pollInterval, this.config.pollTimeout,
+        );
+
+        if (!workResponse) {
+          return { success: false, error: `Agent did not respond within ${this.config.pollTimeout / 1000}s (iteration ${iteration})` };
+        }
+
+        console.log(`[openclaw-executor] Got agent response (${workResponse.content.length} chars)`);
+
+        // If no acceptance criteria, first response is success
+        if (!input.acceptanceCriteria) {
+          return { success: true, output: buildOutput(workResponse.content) };
+        }
+
+        // 3. Ask agent to self-evaluate
+        const evalSnapshot = await getLatestMessageId(channelId);
+        const evalSend = await this.sendToAgent(channelId, buildEvaluationPrompt(input.acceptanceCriteria));
+        if (!evalSend.ok) return evalSend.result;
+
+        await sleep(this.config.evaluationDelay);
+        const evalResponse = await pollForBotMessage(
+          channelId, evalSnapshot, this.config.pollInterval, this.config.pollTimeout,
+        );
+
+        if (!evalResponse) {
+          return { success: false, error: `Agent did not respond to evaluation prompt (iteration ${iteration})` };
+        }
+
+        const verdict = parseAcceptanceVerdict(evalResponse.content);
+
+        if (verdict.pass) {
+          console.log(`[openclaw-executor] ACCEPTANCE: PASS on iteration ${iteration}`);
+          return {
+            success: true,
+            output: buildOutput(workResponse.content, { iterations: iteration }),
+          };
+        }
+
+        console.log(`[openclaw-executor] ACCEPTANCE: FAIL — ${verdict.reason}`);
+
+        // Last iteration — give up
+        if (iteration >= this.config.maxIterations) break;
+
+        // Send follow-up to continue working; next iteration will wait for the response
+        await postToChannel(channelId, `🔄 **Iteration ${iteration}/${this.config.maxIterations}** — Continuing work...`);
+        snapshot = await getLatestMessageId(channelId);
+        const followUpSend = await this.sendToAgent(channelId, buildFollowUpPrompt(verdict.reason));
+        if (!followUpSend.ok) return followUpSend.result;
+        // Loop back — next iteration waits for the follow-up response
       }
 
-      console.log(`[openclaw-executor] OpenClaw agent session triggered for channel ${input.discordChannelId}`);
-
-      // c) Poll for completion
-      const output = await pollForCompletion(input.discordChannelId, DEFAULT_TIMEOUT_MS);
-
-      if (!output) {
-        return {
-          success: false,
-          error: `Step timed out waiting for AI completion after ${DEFAULT_TIMEOUT_MS / 1000}s`,
-        };
-      }
-
-      return { success: true, output };
+      return {
+        success: false,
+        error: `Agent could not meet acceptance criteria after ${this.config.maxIterations} iterations. Escalating to human review.`,
+      };
     } catch (err) {
       return {
         success: false,
@@ -77,82 +103,39 @@ export class OpenClawExecutor implements StepExecutor {
       };
     }
   }
-}
 
-async function pollForCompletion(channelId: string, timeoutMs: number): Promise<ExecutorOutput | null> {
-  const client = getDiscordClient();
-  const deadline = Date.now() + timeoutMs;
-  let afterSnowflake: string | undefined;
+  private async sendToAgent(
+    channelId: string,
+    text: string,
+  ): Promise<{ ok: true } | { ok: false; result: ExecutorResult }> {
+    const res = await fetch(`${OPENCLAW_GATEWAY_URL}/hooks/agent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENCLAW_HOOKS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        text,
+        channel: 'discord',
+        to: `channel:${channelId}`,
+        sessionTarget: 'isolated',
+        deliver: true,
+      }),
+    });
 
-  // Snapshot current latest message so we only look at new messages
-  try {
-    const channel = await client.channels.fetch(channelId) as TextChannel;
-    const messages = await channel.messages.fetch({ limit: 1 });
-    if (messages.size > 0) {
-      afterSnowflake = messages.first()!.id;
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        result: { success: false, error: `OpenClaw hooks API error ${res.status}: ${body}` },
+      };
     }
-  } catch (err) {
-    console.warn(`[openclaw-executor] Could not snapshot channel messages: ${err}`);
+
+    return { ok: true };
   }
-
-  while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL_MS);
-
-    try {
-      const channel = await client.channels.fetch(channelId) as TextChannel;
-      const fetchOptions: Parameters<typeof channel.messages.fetch>[0] = { limit: 50 };
-      if (afterSnowflake) (fetchOptions as Record<string, unknown>).after = afterSnowflake;
-
-      const messages = await channel.messages.fetch(fetchOptions);
-
-      // Update afterSnowflake to the latest seen message
-      for (const [, msg] of messages) {
-        if (!afterSnowflake || msg.id > afterSnowflake) {
-          afterSnowflake = msg.id;
-        }
-
-        if (msg.author.bot) {
-          const parsed = tryParseCompletionOutput(msg.content);
-          if (parsed) {
-            console.log(`[openclaw-executor] Found completion output in message ${msg.id}`);
-            return parsed;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`[openclaw-executor] Poll error (will retry): ${err}`);
-    }
-  }
-
-  return null;
 }
 
-function tryParseCompletionOutput(content: string): ExecutorOutput | null {
-  // Look for ```json ... ``` blocks
-  const match = content.match(/```json\s*([\s\S]*?)```/);
-  if (!match) return null;
-
-  try {
-    const parsed = JSON.parse(match[1].trim());
-    if (
-      typeof parsed.summary === 'string' &&
-      Array.isArray(parsed.artifacts) &&
-      typeof parsed.metadata === 'object' &&
-      typeof parsed.completedAt === 'string'
-    ) {
-      return parsed as ExecutorOutput;
-    }
-  } catch {
-    // Not valid JSON
-  }
-  return null;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function buildStepBrief(input: ExecutorInput): string {
+function buildInitialPrompt(input: ExecutorInput): string {
   const stepLabel = input.stepIndex !== undefined
     ? `Step ${input.stepIndex + 1}: ${input.stepName}`
     : `Step: ${input.stepName}`;
@@ -161,21 +144,21 @@ function buildStepBrief(input: ExecutorInput): string {
   lines.push(`**Goal:** ${input.goal}`, '');
 
   if (input.background) {
-    lines.push('**Background:**');
-    lines.push(input.background);
-    lines.push('');
+    lines.push('**Background:**', input.background, '');
   }
 
   if (input.previousOutput) {
-    lines.push('**Previous Step Output:**');
-    lines.push(input.previousOutput);
-    lines.push('');
+    lines.push('**Previous Step Output:**', input.previousOutput, '');
   }
 
   if (input.rules.length > 0) {
     lines.push('**Rules:**');
     input.rules.forEach(r => lines.push(`- ${r}`));
     lines.push('');
+  }
+
+  if (input.acceptanceCriteria) {
+    lines.push('**Acceptance Criteria:**', input.acceptanceCriteria, '');
   }
 
   if (input.retryContext) {
@@ -187,15 +170,53 @@ function buildStepBrief(input: ExecutorInput): string {
     lines.push('');
   }
 
-  lines.push('**When you are done, post your results in this exact JSON format:**');
-  lines.push('```json');
-  lines.push(JSON.stringify({
-    summary: 'What you accomplished',
-    artifacts: [{ type: 'file', path: '...' }, { type: 'url', value: '...' }],
-    metadata: {},
-    completedAt: new Date().toISOString(),
-  }, null, 2));
-  lines.push('```');
+  lines.push('Work on this goal now. When done, describe what you accomplished.');
 
   return lines.join('\n');
+}
+
+function buildEvaluationPrompt(criteria: string): string {
+  return [
+    'Review your work against these acceptance criteria:',
+    '',
+    criteria,
+    '',
+    'If ALL criteria are fully met, respond with exactly: ACCEPTANCE: PASS',
+    'If any criteria are NOT met, respond with: ACCEPTANCE: FAIL — [what is missing]',
+  ].join('\n');
+}
+
+function buildFollowUpPrompt(failReason: string): string {
+  return `Continue working. ${failReason}`;
+}
+
+function parseAcceptanceVerdict(content: string): { pass: boolean; reason: string } {
+  if (/ACCEPTANCE:\s*PASS/i.test(content)) {
+    return { pass: true, reason: '' };
+  }
+  const failMatch = content.match(/ACCEPTANCE:\s*FAIL\s*[—\-]\s*(.*)/i);
+  if (failMatch) {
+    return { pass: false, reason: failMatch[1].trim() };
+  }
+  return { pass: false, reason: `Agent response did not contain clear verdict. Response: ${content.substring(0, 500)}` };
+}
+
+function buildOutput(
+  agentResponse: string,
+  metadata: Record<string, unknown> = {},
+): ExecutorOutput {
+  const summary = agentResponse.length > 500
+    ? agentResponse.substring(0, 497) + '...'
+    : agentResponse;
+
+  return {
+    summary,
+    artifacts: [],
+    metadata: { ...metadata, fullResponse: agentResponse },
+    completedAt: new Date().toISOString(),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
