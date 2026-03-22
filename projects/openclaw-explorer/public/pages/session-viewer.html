@@ -37,6 +37,7 @@
     </div>
     <div class="sv-agent-switch" id="agentSwitch"></div>
     <div class="sv-tag-filter" id="tagFilter"></div>
+    <div class="sv-list-refresh" id="listRefresh"><span class="sv-mini-spinner"></span> Refreshing...</div>
     <div class="sv-session-list" id="sessionList">
       <div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>
     </div>
@@ -51,6 +52,8 @@
       <div class="sv-stat">Events: <span class="sv-stat-value" id="statEvents">0</span></div>
       <div class="sv-stat">Tool calls: <span class="sv-stat-value" id="statTools">0</span></div>
       <div class="sv-stat">Duration: <span class="sv-stat-value" id="statDuration">-</span></div>
+      <span class="sv-updated-flash" id="updatedFlash">+<span id="newEventCount">0</span> new</span>
+      <div class="sv-live-indicator" id="liveIndicator"><span class="sv-live-dot"></span><span id="liveLabel">Live</span></div>
     </div>
 
     <!-- Filter bar -->
@@ -232,8 +235,11 @@
 
   // Load sessions list
   async function loadSessions(isPolling) {
+    const listRefreshEl = document.getElementById('listRefresh');
     if (!isPolling) {
       sessionList.innerHTML = '<div class="sv-loading"><div class="sv-spinner"></div> Loading sessions...</div>';
+    } else if (listRefreshEl) {
+      listRefreshEl.classList.add('active');
     }
     try {
       const res = await fetch(`/api/sessions?agent=${encodeURIComponent(currentAgent)}`);
@@ -246,6 +252,8 @@
       if (!isPolling) {
         sessionList.innerHTML = '<div style="padding:16px;color:var(--red);font-size:13px">Failed to load sessions.</div>';
       }
+    } finally {
+      if (listRefreshEl) listRefreshEl.classList.remove('active');
     }
   }
 
@@ -270,13 +278,30 @@
     if (sessionPollInterval) { clearInterval(sessionPollInterval); sessionPollInterval = null; }
   }
 
+  let updatedFlashTimeout = null;
+
   async function refreshCurrentSession() {
     if (!currentSessionId) return;
+    const liveIndicator = document.getElementById('liveIndicator');
+    const liveLabel = document.getElementById('liveLabel');
+    if (liveIndicator) liveIndicator.classList.add('syncing');
+    if (liveLabel) liveLabel.textContent = 'Syncing...';
     try {
       const res = await fetch(`/api/sessions/${currentSessionId}?agent=${encodeURIComponent(currentAgent)}`);
       if (!res.ok) return;
       const newEvents = await res.json();
-      if (newEvents.length !== allEvents.length) {
+      const diff = newEvents.length - allEvents.length;
+      if (diff > 0) {
+        // Show "+N new" flash
+        const flashEl = document.getElementById('updatedFlash');
+        const countEl = document.getElementById('newEventCount');
+        if (flashEl && countEl) {
+          countEl.textContent = diff;
+          flashEl.classList.add('show');
+          clearTimeout(updatedFlashTimeout);
+          updatedFlashTimeout = setTimeout(() => flashEl.classList.remove('show'), 3000);
+        }
+
         // Check if user is scrolled to bottom before updating
         const wasAtBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 50;
         const wasOnLastPage = currentPage === totalPages;
@@ -294,6 +319,10 @@
         }
       }
     } catch { /* ignore polling errors */ }
+    finally {
+      if (liveIndicator) liveIndicator.classList.remove('syncing');
+      if (liveLabel) liveLabel.textContent = 'Live';
+    }
   }
 
   function relativeTime(dateStr) {

@@ -306,6 +306,66 @@
   font-weight: 600;
 }
 
+/* Live refresh indicator */
+.sv-live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  transition: opacity 0.3s;
+}
+
+.sv-live-indicator.syncing {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.sv-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: sv-pulse 2s ease-in-out infinite;
+}
+
+.sv-live-indicator.syncing .sv-live-dot {
+  background: var(--accent);
+  animation: sv-spin-dot 0.8s linear infinite;
+}
+
+@keyframes sv-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes sv-spin-dot {
+  0% { opacity: 1; }
+  50% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+/* Updated badge — shown when new events arrive during polling */
+.sv-updated-flash {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.sv-updated-flash.show {
+  opacity: 1;
+}
+
 /* Filter bar */
 .sv-filters {
   display: flex;
@@ -814,6 +874,32 @@
   justify-content: center;
   padding: 40px;
   color: var(--text-secondary);
+}
+
+/* Sidebar list refresh indicator */
+.sv-list-refresh {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  opacity: 0.7;
+}
+
+.sv-list-refresh.active {
+  display: flex;
+}
+
+.sv-list-refresh .sv-mini-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sv-spin 0.6s linear infinite;
 }
 
 .sv-spinner {
