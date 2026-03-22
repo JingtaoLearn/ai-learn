@@ -1,101 +1,197 @@
-import { StepExecutor, ExecutorInput, ExecutorResult } from './interface';
+import { StepExecutor, ExecutorInput, ExecutorResult, ExecutorOutput } from './interface';
+import { postToChannel, getDiscordClient } from '../discord';
+import { TextChannel } from 'discord.js';
 
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
+const OPENCLAW_HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN || '';
+const POLL_INTERVAL_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
-/**
- * OpenClaw Gateway Executor
- *
- * Triggers step execution via the OpenClaw gateway.
- * Each step channel is mapped to an isolated OpenClaw agent session.
- *
- * The engine triggers execution by posting the step brief (goal + background + rules)
- * to the channel. OpenClaw picks it up as an agent turn in that channel's session.
- * Step completion is signaled when the AI posts a structured JSON output block.
- *
- * TODO (Phase 2): Implement actual OpenClaw gateway integration:
- * 1. POST step brief to OpenClaw session endpoint
- * 2. Poll or subscribe to completion events
- * 3. Parse structured JSON output from agent response
- * 4. Handle multi-turn conversations within a step session
- */
 export class OpenClawExecutor implements StepExecutor {
   name = 'openclaw';
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     console.log(`[openclaw-executor] Dispatching step to OpenClaw: ${input.stepName}`);
-    console.log(`[openclaw-executor] Gateway URL: ${OPENCLAW_GATEWAY_URL}`);
 
-    const sessionId = input.discordChannelId
-      ? `task-${input.taskId}-step-${input.stepId}`
-      : `step-${input.stepId}`;
+    if (!input.discordChannelId) {
+      return {
+        success: false,
+        error: 'OpenClaw executor requires a Discord channel (discordChannelId is null). Ensure Discord is enabled.',
+      };
+    }
+
+    if (!OPENCLAW_HOOKS_TOKEN) {
+      return {
+        success: false,
+        error: 'OPENCLAW_HOOKS_TOKEN environment variable is not set.',
+      };
+    }
 
     const brief = buildStepBrief(input);
 
     try {
-      // TODO: POST to OpenClaw gateway to create/resume agent session
-      // const response = await fetch(`${OPENCLAW_GATEWAY_URL}/api/sessions/${sessionId}/turns`, {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ message: brief, discordChannelId: input.discordChannelId }),
-      // });
-      //
-      // TODO: Poll for completion or subscribe to webhook
-      // const result = await waitForCompletion(sessionId);
-      //
-      // TODO: Parse structured output block from AI response
+      // a) Post step brief to Discord channel
+      await postToChannel(input.discordChannelId, brief);
+      console.log(`[openclaw-executor] Posted step brief to channel ${input.discordChannelId}`);
 
-      console.warn(`[openclaw-executor] OpenClaw integration not yet implemented. Session: ${sessionId}`);
-      console.warn(`[openclaw-executor] Step brief would be: ${brief.substring(0, 200)}...`);
+      // b) Trigger OpenClaw agent session
+      const hookResponse = await fetch(`${OPENCLAW_GATEWAY_URL}/hooks/agent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENCLAW_HOOKS_TOKEN}`,
+        },
+        body: JSON.stringify({
+          text: brief,
+          channel: 'discord',
+          to: `channel:${input.discordChannelId}`,
+          sessionTarget: 'isolated',
+        }),
+      });
 
-      return {
-        success: false,
-        error: 'OpenClaw executor is not yet fully implemented. Use EXECUTOR_MODE=mock for testing.',
-      };
+      if (!hookResponse.ok) {
+        const body = await hookResponse.text();
+        return {
+          success: false,
+          error: `OpenClaw hooks API error ${hookResponse.status}: ${body}`,
+        };
+      }
+
+      console.log(`[openclaw-executor] OpenClaw agent session triggered for channel ${input.discordChannelId}`);
+
+      // c) Poll for completion
+      const output = await pollForCompletion(input.discordChannelId, DEFAULT_TIMEOUT_MS);
+
+      if (!output) {
+        return {
+          success: false,
+          error: `Step timed out waiting for AI completion after ${DEFAULT_TIMEOUT_MS / 1000}s`,
+        };
+      }
+
+      return { success: true, output };
     } catch (err) {
       return {
         success: false,
-        error: `OpenClaw gateway error: ${err instanceof Error ? err.message : String(err)}`,
+        error: `OpenClaw executor error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   }
 }
 
+async function pollForCompletion(channelId: string, timeoutMs: number): Promise<ExecutorOutput | null> {
+  const client = getDiscordClient();
+  const deadline = Date.now() + timeoutMs;
+  let afterSnowflake: string | undefined;
+
+  // Snapshot current latest message so we only look at new messages
+  try {
+    const channel = await client.channels.fetch(channelId) as TextChannel;
+    const messages = await channel.messages.fetch({ limit: 1 });
+    if (messages.size > 0) {
+      afterSnowflake = messages.first()!.id;
+    }
+  } catch (err) {
+    console.warn(`[openclaw-executor] Could not snapshot channel messages: ${err}`);
+  }
+
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+
+    try {
+      const channel = await client.channels.fetch(channelId) as TextChannel;
+      const fetchOptions: Parameters<typeof channel.messages.fetch>[0] = { limit: 50 };
+      if (afterSnowflake) (fetchOptions as Record<string, unknown>).after = afterSnowflake;
+
+      const messages = await channel.messages.fetch(fetchOptions);
+
+      // Update afterSnowflake to the latest seen message
+      for (const [, msg] of messages) {
+        if (!afterSnowflake || msg.id > afterSnowflake) {
+          afterSnowflake = msg.id;
+        }
+
+        if (msg.author.bot) {
+          const parsed = tryParseCompletionOutput(msg.content);
+          if (parsed) {
+            console.log(`[openclaw-executor] Found completion output in message ${msg.id}`);
+            return parsed;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[openclaw-executor] Poll error (will retry): ${err}`);
+    }
+  }
+
+  return null;
+}
+
+function tryParseCompletionOutput(content: string): ExecutorOutput | null {
+  // Look for ```json ... ``` blocks
+  const match = content.match(/```json\s*([\s\S]*?)```/);
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[1].trim());
+    if (
+      typeof parsed.summary === 'string' &&
+      Array.isArray(parsed.artifacts) &&
+      typeof parsed.metadata === 'object' &&
+      typeof parsed.completedAt === 'string'
+    ) {
+      return parsed as ExecutorOutput;
+    }
+  } catch {
+    // Not valid JSON
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function buildStepBrief(input: ExecutorInput): string {
-  const lines: string[] = [
-    `# Step: ${input.stepName}`,
-    '',
-    `## Goal`,
-    input.goal,
-    '',
-  ];
+  const stepLabel = input.stepIndex !== undefined
+    ? `Step ${input.stepIndex + 1}: ${input.stepName}`
+    : `Step: ${input.stepName}`;
+
+  const lines: string[] = [`## ${stepLabel}`, ''];
+  lines.push(`**Goal:** ${input.goal}`, '');
 
   if (input.background) {
-    lines.push('## Background');
+    lines.push('**Background:**');
     lines.push(input.background);
     lines.push('');
   }
 
+  if (input.previousOutput) {
+    lines.push('**Previous Step Output:**');
+    lines.push(input.previousOutput);
+    lines.push('');
+  }
+
   if (input.rules.length > 0) {
-    lines.push('## Rules / Constraints');
+    lines.push('**Rules:**');
     input.rules.forEach(r => lines.push(`- ${r}`));
     lines.push('');
   }
 
   if (input.retryContext) {
-    lines.push('## Retry Context');
-    lines.push(`Retry attempt: ${input.retryContext.retryCount}`);
+    lines.push('**Retry Context:**');
+    lines.push(`- Retry attempt: ${input.retryContext.retryCount}`);
     if (input.retryContext.previousError) {
-      lines.push(`Previous error: ${input.retryContext.previousError}`);
+      lines.push(`- Previous error: ${input.retryContext.previousError}`);
     }
     lines.push('');
   }
 
-  lines.push('## Output Format');
-  lines.push('When complete, post a JSON block in this exact format:');
+  lines.push('**When you are done, post your results in this exact JSON format:**');
   lines.push('```json');
   lines.push(JSON.stringify({
-    summary: 'Brief description of what was done',
-    artifacts: [],
+    summary: 'What you accomplished',
+    artifacts: [{ type: 'file', path: '...' }, { type: 'url', value: '...' }],
     metadata: {},
     completedAt: new Date().toISOString(),
   }, null, 2));

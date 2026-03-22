@@ -3,6 +3,8 @@ import { TaskRunner } from './engine/task-runner';
 import { WakeScheduler } from './engine/wake-scheduler';
 import { createApiServer } from './api/server';
 import { getDb } from './storage/db';
+import { loginDiscord, destroyDiscordClient } from './integrations/discord';
+import { startDiscordListener } from './integrations/discord-listener';
 
 async function main(): Promise<void> {
   console.log('[ai-task-engine] Starting...');
@@ -19,6 +21,21 @@ async function main(): Promise<void> {
   const scheduler = new WakeScheduler(runner);
   scheduler.start();
 
+  // Start Discord listener if enabled
+  const discordEnabled =
+    process.env.DISCORD_ENABLED !== 'false' &&
+    !!(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_GUILD_ID);
+
+  if (discordEnabled) {
+    try {
+      await loginDiscord();
+      startDiscordListener(runner);
+      console.log('[ai-task-engine] Discord listener started');
+    } catch (err) {
+      console.error('[ai-task-engine] Discord listener failed to start (non-fatal):', err);
+    }
+  }
+
   // Start API server
   const port = parseInt(process.env.API_PORT || '3200', 10);
   const app = createApiServer(runner);
@@ -30,11 +47,13 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => {
     console.log('\n[ai-task-engine] Shutting down...');
     scheduler.stop();
+    if (discordEnabled) destroyDiscordClient();
     process.exit(0);
   });
 
   process.on('SIGTERM', () => {
     scheduler.stop();
+    if (discordEnabled) destroyDiscordClient();
     process.exit(0);
   });
 }

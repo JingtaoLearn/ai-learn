@@ -216,6 +216,28 @@ pending → active → executing → validating → completed
 - **blocked**: EMS blocked the step, or manual block
 - **retrying**: Scheduled for retry after failure
 
+### OpenClaw Executor
+
+When `EXECUTOR_MODE=openclaw`, the engine dispatches AI steps via the OpenClaw gateway:
+
+1. Posts the step brief to the Discord step channel
+2. Triggers an isolated OpenClaw agent session via `POST /hooks/agent`
+3. Polls the Discord channel every 10 seconds for a structured JSON response
+4. Parses the response and marks the step complete
+
+Required env vars: `OPENCLAW_HOOKS_TOKEN`, `OPENCLAW_GATEWAY_URL` (default: `http://127.0.0.1:18789`)
+
+### Discord Commands
+
+In step channels, human operators can use:
+
+- `!approve` — Approve a `human_confirm` step and advance the task
+- `!reject [reason]` — Reject a step with an optional reason (marks the task as failed)
+
+### Discord Integration Toggle
+
+Set `DISCORD_ENABLED=false` to disable Discord integration entirely (useful for testing without Discord credentials).
+
 ## Phase 2 Roadmap
 
 - **OpenClaw full integration**: POST step briefs to OpenClaw sessions, poll for structured JSON output, handle multi-turn conversations

@@ -1,6 +1,7 @@
 export interface ExecutorInput {
   stepId: string;
   taskId: string;
+  stepIndex?: number;
   stepName: string;
   goal: string;
   background: string | null;

@@ -112,3 +112,7 @@ export function getActiveStepsWithTimeout(): StepRecord[] {
     AND started_at IS NOT NULL
   `).all() as StepRecord[];
 }
+
+export function getStepByDiscordChannelId(channelId: string): StepRecord | null {
+  return (getDb().prepare('SELECT * FROM steps WHERE discord_channel_id = ?').get(channelId) as StepRecord | undefined) ?? null;
+}

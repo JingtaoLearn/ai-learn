@@ -28,7 +28,12 @@ export class TaskRunner {
 
   constructor() {
     this.executor = getExecutor();
-    this.discordEnabled = !!(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_GUILD_ID);
+    const discordEnabledEnv = process.env.DISCORD_ENABLED;
+    if (discordEnabledEnv === 'false') {
+      this.discordEnabled = false;
+    } else {
+      this.discordEnabled = !!(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_GUILD_ID);
+    }
   }
 
   async createAndStartTask(workflowName: string, name: string, description?: string): Promise<TaskRecord> {
@@ -180,6 +185,7 @@ export class TaskRunner {
       const result = await this.executor.execute({
         stepId: step.id,
         taskId: step.task_id,
+        stepIndex: step.step_index,
         stepName: step.name,
         goal: step.goal,
         background: step.background,
@@ -315,6 +321,31 @@ export class TaskRunner {
       completedAt: new Date().toISOString(),
     };
     await this.completeStep(stepId, output);
+  }
+
+  async rejectStep(taskId: string, stepId: string, reason: string): Promise<void> {
+    const step = getStep(stepId);
+    if (!step) throw new Error(`Step not found: ${stepId}`);
+    if (step.task_id !== taskId) throw new Error('Step does not belong to task');
+
+    logStepEvent(stepId, 'human_input', `Human rejected step: ${reason}`);
+    updateStep(stepId, { status: 'failed', error_message: `Rejected by human: ${reason}` });
+
+    if (this.discordEnabled && step.discord_channel_id) {
+      try {
+        await updateChannelStatusEmoji(step.discord_channel_id, 'failed');
+        await postToChannel(step.discord_channel_id, `❌ **Step rejected:** ${reason}`);
+      } catch (err) {
+        console.error(`[task-runner] Discord update failed (non-fatal): ${err}`);
+      }
+    }
+
+    const task = getTask(step.task_id)!;
+    if (task.status === 'active') {
+      updateTask(step.task_id, { status: 'failed' });
+    }
+
+    console.log(`[task-runner] Step rejected: ${step.name} — ${reason}`);
   }
 
   async cancelTask(taskId: string): Promise<void> {
