@@ -1,4 +1,5 @@
-import { RefreshCw, Zap } from 'lucide-react'
+import { RefreshCw, Zap, LogOut } from 'lucide-react'
+import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 
 interface Props {
   healthy: boolean | null
@@ -7,6 +8,10 @@ interface Props {
 }
 
 export function Header({ healthy, autoRefresh, onToggleAutoRefresh }: Props) {
+  const { instance, accounts } = useMsal()
+  const isAuthenticated = useIsAuthenticated()
+  const clientId = import.meta.env.VITE_AZURE_CLIENT_ID
+  const user = accounts[0]
   return (
     <header className="border-b border-white/10 bg-[#0f0f1a]/80 backdrop-blur sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -47,6 +52,19 @@ export function Header({ healthy, autoRefresh, onToggleAutoRefresh }: Props) {
             <RefreshCw className={`w-3.5 h-3.5 ${autoRefresh ? 'animate-spin' : ''}`} />
             Auto-refresh
           </button>
+
+          {clientId && isAuthenticated && user && (
+            <div className="flex items-center gap-2 pl-3 border-l border-white/10">
+              <span className="text-gray-400 text-xs">{user.username || user.name}</span>
+              <button
+                onClick={() => instance.logoutPopup().catch(console.error)}
+                className="p-1.5 rounded-lg bg-white/5 text-gray-400 hover:bg-white/10 border border-white/10 transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

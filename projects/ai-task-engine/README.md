@@ -1,203 +1,197 @@
 # AI Task Engine
 
-AI Task-Driven Assistant System — a workflow engine that orchestrates multi-step AI tasks with Discord integration, EMS (Experience Management System) policy enforcement, and pluggable executor backends (mock and OpenClaw).
+AI Task-Driven Assistant System — a monorepo containing three services:
+- **engine** — Node.js workflow orchestration engine with Discord, EMS, and OpenClaw integration
+- **web** — React dashboard for task/step monitoring and approval
+- **ems** — Python FastAPI Experience Management System for AI agent policy enforcement
 
-## Overview
+## Monorepo Structure
 
-The AI Task Engine lets you define reusable **workflow templates** as YAML files. When a task is started, the engine:
+```
+projects/ai-task-engine/
+├── engine/              Node.js workflow engine (TypeScript)
+│   ├── src/             Source code
+│   ├── tests/           Unit tests
+│   ├── workflows/       YAML workflow templates
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── Dockerfile
+├── web/                 React dashboard (Vite + Tailwind)
+│   ├── src/
+│   ├── nginx.conf
+│   ├── package.json
+│   └── Dockerfile
+├── ems/                 Experience Management System (FastAPI + Python)
+│   ├── app/
+│   ├── tests/
+│   ├── requirements.txt
+│   └── Dockerfile
+├── docker-compose.yml   Unified deployment (all 3 services)
+├── .env.example         All env vars documented
+└── .env                 Local config (gitignored)
+```
 
-1. Creates a Discord category for the task and a channel per step
+## Services
+
+### engine (port 3200)
+
+Orchestrates multi-step AI workflows. When a task starts, the engine:
+
+1. Creates a Discord category and channel per step
 2. Checks each step against EMS before execution (policy enforcement)
-3. Executes steps sequentially, routing to the appropriate executor (AI agent or automated command)
+3. Executes steps via the configured executor (OpenClaw AI agent or mock)
 4. Waits for human approval on `human_confirm` steps
-5. Advances through steps automatically on completion
-6. Times out stuck steps and retries failed ones up to `maxRetries`
+5. Retries failed steps up to `maxRetries`, times out stuck steps
 
-## Architecture
+### web (port 80)
 
-```
-                    REST API / CLI
-                         |
-                    [ API Server ]
-                         |
-                   [ Task Runner ]  <-- orchestration core
-                  /      |       \
-         [EMS Check] [Executor] [Discord]
-                         |
-              [Mock] | [OpenClaw]
-                         |
-                  [ SQLite Storage ]
-                  (workflows / tasks / steps / logs)
-```
+React SPA dashboard served by nginx. Nginx proxies `/api/*` to `engine:3200`.
 
-- **API Server** (`src/api/server.ts`) — Express REST API for managing tasks and steps
-- **Task Runner** (`src/engine/task-runner.ts`) — Core orchestration: step activation, EMS checks, execution routing
-- **State Machine** (`src/engine/state-machine.ts`) — Enforces valid status transitions for tasks and steps
-- **Wake Scheduler** (`src/engine/wake-scheduler.ts`) — Cron job that detects and fails timed-out steps
-- **Storage** (`src/storage/`) — SQLite via better-sqlite3 with auto-migration
-- **Discord** (`src/integrations/discord.ts`) — Category/channel creation, step brief posting, status emoji updates
-- **EMS** (`src/integrations/ems.ts`) — Pre-execution policy check (block / warn / pass)
-- **Executor** (`src/integrations/executor/`) — Pluggable step execution backends
+Supports optional Microsoft Entra ID (Azure AD) login via MSAL — configure `VITE_AZURE_CLIENT_ID` to enable.
 
-## Prerequisites
+### ems (port 8100, internal only)
 
-- Node.js 20+
-- pnpm (`npm install -g pnpm`)
-- SQLite (bundled via better-sqlite3)
-- Discord bot token and guild ID (optional, required for Discord integration)
+FastAPI service for storing and retrieving AI agent experiences with semantic search. Engine calls EMS before each step to check if the action should be blocked, warned, or allowed.
 
-## Setup
+## Configuration
 
 ```bash
-# Clone and install
-cd projects/ai-task-engine
-pnpm install
-
-# Configure environment
 cp .env.example .env
 # Edit .env with your values
-
-# Build
-pnpm build
-
-# Run tests
-pnpm test
 ```
+
+### All Environment Variables
+
+| Variable | Service | Description |
+|----------|---------|-------------|
+| `DISCORD_BOT_TOKEN` | engine | Discord bot token |
+| `DISCORD_GUILD_ID` | engine | Discord server/guild ID |
+| `OPENCLAW_GATEWAY_URL` | engine | OpenClaw gateway URL (default: `http://host.docker.internal:18789`) |
+| `OPENCLAW_HOOKS_TOKEN` | engine | OpenClaw auth token |
+| `EXECUTOR_MODE` | engine | `openclaw` or `mock` (default: `openclaw`) |
+| `API_AUTH_TOKEN` | engine | Bearer token for engine API (empty = no auth) |
+| `EMS_EMBEDDING_API_KEY` | ems | API key for embedding model |
+| `EMS_EMBEDDING_BASE_URL` | ems | Embedding API base URL |
+| `EMS_EMBEDDING_MODEL` | ems | Embedding model name |
+| `EMS_LLM_API_KEY` | ems | API key for LLM (defaults to embedding key) |
+| `EMS_LLM_BASE_URL` | ems | LLM API base URL |
+| `EMS_LLM_MODEL` | ems | LLM model name |
+| `EMS_AUTH_TOKEN` | ems | Bearer token for EMS API (empty = no auth) |
+| `VITE_AZURE_CLIENT_ID` | web | Azure AD client ID (empty = auth disabled) |
+| `VITE_AZURE_TENANT_ID` | web | Azure AD tenant ID (empty = `common`) |
+| `VITE_API_AUTH_TOKEN` | web | Same as `API_AUTH_TOKEN`, baked into web build |
+| `S_DOMAIN` | web | Base domain for HTTPS routing |
+| `S_EMAIL` | web | Email for Let's Encrypt certificates |
+
+## Running Locally
+
+### Engine
+
+```bash
+cd engine
+npm install
+cp ../.env.example ../.env   # then edit .env
+npm run dev                  # ts-node src/index.ts
+# or
+npm run build && npm start
+```
+
+### Web
+
+```bash
+cd web
+npm install
+npm run dev     # http://localhost:5173 (proxies /api to localhost:3200)
+```
+
+### EMS
+
+```bash
+cd ems
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
+```
+
+## Docker Deployment
+
+```bash
+cp .env.example .env
+# Edit .env with production values
+
+docker compose up -d
+# Web accessible at https://task.ai.<S_DOMAIN>
+```
+
+Build args for the web service (`VITE_*` vars) are passed at build time and baked into the static bundle:
+
+```bash
+docker compose build web
+docker compose up -d
+```
+
+## Authentication
+
+### API Bearer Token
+
+Set `API_AUTH_TOKEN` (engine) and `EMS_AUTH_TOKEN` (ems) to enforce Bearer token auth. Leave empty to disable.
+
+All requests (except `GET /api/health`) must include:
+```
+Authorization: Bearer <token>
+```
+
+Set `VITE_API_AUTH_TOKEN` to the same value as `API_AUTH_TOKEN` so the web dashboard can authenticate.
+
+### Microsoft Entra ID (Azure AD) — Web Dashboard
+
+1. Register an app in Azure Portal → App registrations
+2. Set the redirect URI to your dashboard URL (e.g. `https://task.ai.example.com`)
+3. Note the Application (client) ID and Directory (tenant) ID
+4. Set in `.env`:
+   ```
+   VITE_AZURE_CLIENT_ID=<client-id>
+   VITE_AZURE_TENANT_ID=<tenant-id>
+   ```
+5. Rebuild the web service: `docker compose build web && docker compose up -d web`
+
+If `VITE_AZURE_CLIENT_ID` is empty, MSAL auth is skipped.
 
 ## Workflow Files
 
-Workflows are YAML files placed in the `workflows/` directory. They are loaded on daemon start or via `workflow sync`.
-
-### Schema
+Workflows are YAML files in `engine/workflows/`. See `engine/workflows/bug-fix.yaml` for a full example.
 
 ```yaml
-name: my-workflow          # Required. Unique workflow identifier.
-description: What it does  # Optional.
+name: my-workflow
+description: What it does
 
 steps:
-  - name: step-name        # Required. Unique within workflow.
-    goal: What to achieve  # Required. Passed to executor as the task.
-    background: Context    # Optional. Additional context for the executor.
-    rules:                 # Optional. Constraints for the executor.
-      - rule-one
-      - rule-two
-    acceptance:            # Required. How completion is determined.
-      type: human_confirm  # Waits for !approve via API/CLI/Discord
-      # OR
-      type: ai_self_check
-      criteria: Completion criteria for the AI to self-verify
-      # OR
-      type: automated
-      command: npm test    # Shell command; exit 0 = success
-    timeout: 30m           # Optional. Format: Ns, Nm, Nh, Nd
-    wakePolicy: dependency # Optional. default: dependency
-    maxRetries: 0          # Optional. default: 0
-```
-
-### Example
-
-See `workflows/bug-fix.yaml`, `workflows/feature-dev.yaml`, `workflows/research.yaml` for full examples.
-
-## Running
-
-### Daemon Mode (recommended)
-
-```bash
-# Start API server + wake scheduler
-pnpm start
-# or
-task-engine start --port 3200
-```
-
-### Docker
-
-```bash
-cp .env.example .env
-# Edit .env
-docker compose up -d
+  - name: step-name
+    goal: What to achieve
+    background: Optional context
+    rules:
+      - constraint one
+    acceptance:
+      type: human_confirm    # OR ai_self_check OR automated
+    timeout: 30m
+    maxRetries: 0
 ```
 
 ## REST API Reference
 
 Base URL: `http://localhost:3200`
+Auth header: `Authorization: Bearer <API_AUTH_TOKEN>` (if set)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/health` | Health check |
-| GET | `/api/workflows` | List loaded workflow templates |
+| GET | `/api/health` | Health check (no auth) |
+| GET | `/api/workflows` | List workflow templates |
 | POST | `/api/tasks` | Create and start a task |
-| GET | `/api/tasks` | List tasks (optional `?status=` filter) |
+| GET | `/api/tasks` | List tasks (`?status=` filter) |
 | GET | `/api/tasks/:id` | Get task with steps |
 | POST | `/api/tasks/:id/cancel` | Cancel a task |
 | POST | `/api/tasks/:id/steps/:stepId/approve` | Approve a human_confirm step |
 | POST | `/api/tasks/:id/steps/:stepId/resume` | Resume a failed/blocked step |
 | GET | `/api/tasks/:id/steps/:stepId/logs` | Get step event logs |
-
-### Create Task
-
-```bash
-curl -X POST http://localhost:3200/api/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"workflow": "bug-fix", "name": "Fix login timeout", "description": "Users are timing out after 5 min"}'
-```
-
-### Approve a Step
-
-```bash
-curl -X POST http://localhost:3200/api/tasks/<taskId>/steps/<stepId>/approve
-```
-
-## CLI Reference
-
-```bash
-# Start daemon
-task-engine start [--port 3200]
-
-# List workflows
-task-engine workflow list
-
-# Create and start a task
-task-engine task create -w bug-fix -n "Fix login bug" [-d "Description"]
-
-# List tasks
-task-engine task list [--status active|pending|completed|failed|cancelled]
-
-# Show task status and steps
-task-engine task status <taskId>
-
-# Cancel a task
-task-engine task cancel <taskId>
-
-# Approve a human_confirm step
-task-engine step approve <taskId> <stepId>
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DISCORD_BOT_TOKEN` | — | Discord bot token (required for Discord integration) |
-| `DISCORD_GUILD_ID` | — | Discord server/guild ID |
-| `EMS_BASE_URL` | `http://127.0.0.1:8100` | EMS API base URL |
-| `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789` | OpenClaw gateway URL |
-| `DB_PATH` | `./data/task-engine.db` | SQLite database path |
-| `API_PORT` | `3200` | REST API port |
-| `EXECUTOR_MODE` | `mock` | Executor backend: `mock` or `openclaw` |
-| `LOG_LEVEL` | `info` | Log verbosity |
-| `WORKFLOWS_DIR` | `./workflows` | Directory to load workflow YAML files from |
-
-## Discord Setup
-
-1. Create a Discord bot at https://discord.com/developers/applications
-2. Enable the following bot permissions:
-   - Manage Channels
-   - Send Messages
-   - Read Message History
-3. Enable Privileged Gateway Intents: Message Content Intent
-4. Invite the bot to your server with the above permissions
-5. Set `DISCORD_BOT_TOKEN` and `DISCORD_GUILD_ID` in `.env`
-
-The bot creates one Discord category per task (named `📋 <task-short-id>-<task-name>`) and one text channel per step. Step channels are prefixed with a status emoji that updates as the step progresses.
 
 ## Step Status Lifecycle
 
@@ -206,44 +200,3 @@ pending → active → executing → validating → completed
                 ↘ blocked ↗
                 ↘ failed → retrying → active
 ```
-
-- **pending**: Created, not yet started
-- **active**: EMS-checked, Discord channel created, waiting for execution
-- **executing**: Executor is running (AI or automated command)
-- **validating**: AI self-check in progress
-- **completed**: Step finished successfully
-- **failed**: Step failed (permanently or temporarily)
-- **blocked**: EMS blocked the step, or manual block
-- **retrying**: Scheduled for retry after failure
-
-### OpenClaw Executor
-
-When `EXECUTOR_MODE=openclaw`, the engine dispatches AI steps via the OpenClaw gateway:
-
-1. Posts the step brief to the Discord step channel
-2. Triggers an isolated OpenClaw agent session via `POST /hooks/agent`
-3. Polls the Discord channel every 10 seconds for a structured JSON response
-4. Parses the response and marks the step complete
-
-Required env vars: `OPENCLAW_HOOKS_TOKEN`, `OPENCLAW_GATEWAY_URL` (default: `http://127.0.0.1:18789`)
-
-### Discord Commands
-
-In step channels, human operators can use:
-
-- `!approve` — Approve a `human_confirm` step and advance the task
-- `!reject [reason]` — Reject a step with an optional reason (marks the task as failed)
-
-### Discord Integration Toggle
-
-Set `DISCORD_ENABLED=false` to disable Discord integration entirely (useful for testing without Discord credentials).
-
-## Phase 2 Roadmap
-
-- **OpenClaw full integration**: POST step briefs to OpenClaw sessions, poll for structured JSON output, handle multi-turn conversations
-- **Discord message handler**: Listen for `!approve` messages in step channels, route to approval endpoint
-- **Event wake policy**: Wake a step when a specific external event fires (webhook, file system, message)
-- **Scheduled wake policy**: Wake steps on a cron schedule
-- **EMS learn on completion**: Submit step outcomes back to EMS as experience drafts
-- **Web UI**: Dashboard for task/step monitoring and approval
-- **Parallel steps**: Allow steps within a workflow to run concurrently

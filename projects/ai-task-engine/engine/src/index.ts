@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { syncWorkflowsFromDisk } from './workflow/loader';
 import { TaskRunner } from './engine/task-runner';
 import { WakeScheduler } from './engine/wake-scheduler';

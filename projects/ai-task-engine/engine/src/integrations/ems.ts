@@ -1,5 +1,12 @@
 const EMS_BASE_URL = process.env.EMS_BASE_URL || 'http://127.0.0.1:8100';
 
+function emsHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = process.env.EMS_AUTH_TOKEN;
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 export type EmsVerdict = 'block' | 'warn' | 'pass';
 
 export interface EmsCheckResult {
@@ -21,7 +28,7 @@ export async function emsCheck(stepGoal: string, rules: string[]): Promise<EmsCh
 
     const response = await fetch(`${EMS_BASE_URL}/api/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: emsHeaders(),
       body: JSON.stringify({ action }),
       signal: AbortSignal.timeout(5000),
     });
@@ -43,7 +50,7 @@ export async function emsLearn(content: string, context: string): Promise<EmsLea
   try {
     const response = await fetch(`${EMS_BASE_URL}/api/learn`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: emsHeaders(),
       body: JSON.stringify({ content, context }),
       signal: AbortSignal.timeout(5000),
     });
@@ -64,7 +71,7 @@ export async function emsConfirm(draftId: string): Promise<boolean> {
   try {
     const response = await fetch(`${EMS_BASE_URL}/api/learn/confirm`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: emsHeaders(),
       body: JSON.stringify({ id: draftId }),
       signal: AbortSignal.timeout(5000),
     });

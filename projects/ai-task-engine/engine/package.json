@@ -18,6 +18,7 @@
     "better-sqlite3": "^9.4.3",
     "commander": "^12.0.0",
     "discord.js": "^14.14.1",
+    "dotenv": "^17.3.1",
     "express": "^4.18.3",
     "js-yaml": "^4.1.0",
     "node-cron": "^3.0.3",
@@ -45,7 +46,12 @@
       "src/**/*.ts"
     ],
     "transform": {
-      "^.+\\.tsx?$": ["ts-jest", { "tsconfig": "tsconfig.test.json" }]
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "tsconfig": "tsconfig.test.json"
+        }
+      ]
     }
   }
 }

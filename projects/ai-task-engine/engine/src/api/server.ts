@@ -4,14 +4,31 @@ import { listTasks, getTask } from '../storage/repositories/task-repo';
 import { getStepsByTask, getStepLogs } from '../storage/repositories/step-repo';
 import { listWorkflows } from '../storage/repositories/workflow-repo';
 
+function bearerAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const token = process.env.API_AUTH_TOKEN;
+  if (!token) {
+    next();
+    return;
+  }
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || authHeader !== `Bearer ${token}`) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
 export function createApiServer(runner: TaskRunner): express.Application {
   const app = express();
   app.use(express.json());
 
-  // Health check
+  // Health check (no auth required)
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
+
+  // All other routes require auth
+  app.use(bearerAuthMiddleware);
 
   // Workflow endpoints
   app.get('/api/workflows', (_req: Request, res: Response) => {
