@@ -38,7 +38,8 @@ All available tools are enabled in the configuration:
 | `web` | Web access |
 | `web_fetch` | Fetch web content |
 | `web_search` | Web search capability |
-| `memory` | Memory and embedding search |
+| `memory_search` | Memory semantic search |
+| `memory_get` | Memory snippet retrieval |
 | `cron` | Scheduled task execution |
 | `tts` | Text-to-speech synthesis |
 
@@ -121,13 +122,17 @@ OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
 
 # Discord bot token
 S_DISCORD_BOT_TOKEN="your-discord-bot-token-here"
+
+# AgentMail API key (for agentmail skill)
+S_AGENTMAIL_API_KEY="your-agentmail-api-key-here"
 ```
 
 | Variable | Purpose | Used By |
 |----------|---------|---------|
-| `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider |
+| `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider, memory search |
 | `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
 | `S_DISCORD_BOT_TOKEN` | Discord bot authentication | channels.discord config |
+| `S_AGENTMAIL_API_KEY` | AgentMail API authentication | skills.entries.agentmail |
 
 ### Generating Secure Tokens
 
@@ -226,7 +231,7 @@ openssl rand -base64 24
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6",
         "fallbacks": [
           "litellm/github-copilot/claude-sonnet-4.5",
           "openai-codex/gpt-5.3-codex",
@@ -234,7 +239,7 @@ openssl rand -base64 24
         ]
       },
       "models": {
-        "litellm/github-copilot/claude-opus-4.6-fast": {},
+        "litellm/github-copilot/claude-opus-4.6": {},
         "litellm/github-copilot/claude-sonnet-4.5": {},
         "openai-codex/gpt-5.3-codex": {},
         "openai-codex/gpt-5.2-codex": {}
@@ -264,7 +269,7 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
-| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6-fast`) |
+| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6`) |
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
@@ -275,6 +280,78 @@ openssl rand -base64 24
 | `maxConcurrent` | Maximum concurrent agents |
 | `subagents.maxConcurrent` | Maximum concurrent subagents per agent |
 
+## Memory Search
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "sources": ["memory", "sessions"],
+        "experimental": { "sessionMemory": true },
+        "provider": "openai",
+        "remote": {
+          "baseUrl": "https://litellm.us.jingtao.fun/v1/",
+          "apiKey": "${S_LITELLM_API_KEY}"
+        },
+        "model": "text-embedding-3-large",
+        "sync": {
+          "watch": true,
+          "sessions": { "deltaBytes": 100000, "deltaMessages": 50 }
+        },
+        "query": {
+          "hybrid": {
+            "enabled": true,
+            "vectorWeight": 0.7,
+            "textWeight": 0.3,
+            "candidateMultiplier": 4,
+            "mmr": { "enabled": true, "lambda": 0.7 },
+            "temporalDecay": { "enabled": true, "halfLifeDays": 30 }
+          }
+        },
+        "cache": { "enabled": true, "maxEntries": 50000 }
+      }
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `sources` | Memory sources to index (`memory` = MEMORY.md + memory/*.md, `sessions` = session transcripts) |
+| `provider` | Embedding provider (`"openai"` via LiteLLM proxy) |
+| `model` | Embedding model (`"text-embedding-3-large"`) |
+| `sync.watch` | Watch for file changes and re-index automatically |
+| `sync.sessions` | Session indexing thresholds (deltaBytes / deltaMessages) |
+| `query.hybrid.enabled` | Enable hybrid search (vector + text) |
+| `query.hybrid.vectorWeight` | Weight for vector similarity (0.7) |
+| `query.hybrid.textWeight` | Weight for text/keyword matching (0.3) |
+| `query.hybrid.mmr` | Maximal Marginal Relevance for diversity |
+| `query.hybrid.temporalDecay` | Time-based relevance decay (30-day half-life) |
+| `cache` | Query result cache (up to 50k entries) |
+
+## Skills
+
+```json
+{
+  "skills": {
+    "install": { "nodeManager": "npm" },
+    "entries": {
+      "agentmail": {
+        "enabled": true,
+        "env": { "AGENTMAIL_API_KEY": "${S_AGENTMAIL_API_KEY}" }
+      }
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `install.nodeManager` | Package manager for skill dependencies (`"npm"`) |
+| `entries.<name>.enabled` | Enable/disable a specific skill |
+| `entries.<name>.env` | Environment variables injected for the skill |
+
 ## Plugins
 
 ```json
@@ -284,10 +361,16 @@ openssl rand -base64 24
       "memory": "memory-core"
     },
     "entries": {
+      "memory-core": {
+        "enabled": true
+      },
       "whatsapp": {
         "enabled": true
       },
       "discord": {
+        "enabled": true
+      },
+      "msteams": {
         "enabled": true
       }
     }
@@ -300,6 +383,7 @@ openssl rand -base64 24
 | `memory-core` | Memory and embedding search plugin |
 | `whatsapp` | WhatsApp messaging integration |
 | `discord` | Discord messaging integration |
+| `msteams` | Microsoft Teams messaging integration |
 
 ## Channels
 
@@ -311,10 +395,10 @@ openssl rand -base64 24
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
       "allowBots": true,
-      "groupPolicy": "allowlist",
+      "groupPolicy": "open",
       "streaming": "off",
-      "dmPolicy": "pairing",
-      "allowFrom": ["1471352977691250891"],
+      "dmPolicy": "open",
+      "allowFrom": ["*"],
       "guilds": {
         "1471415768955490418": {
           "requireMention": false,
@@ -335,10 +419,10 @@ openssl rand -base64 24
 | `enabled` | Enable/disable the channel |
 | `token` | Bot token for Discord |
 | `allowBots` | Whether to process messages from other bots |
-| `groupPolicy` | Guild access policy (`"allowlist"` — only listed guilds are allowed) |
+| `groupPolicy` | Guild access policy (`"open"` — any guild is allowed) |
 | `streaming` | Response streaming mode (`"off"` to disable streaming responses) |
-| `dmPolicy` | DM policy (`"pairing"` — requires allowFrom match) |
-| `allowFrom` | User IDs allowed to initiate DMs |
+| `dmPolicy` | DM policy (`"open"` — anyone can DM) |
+| `allowFrom` | User IDs allowed to initiate DMs (`["*"]` for all users) |
 | `guilds.<id>.requireMention` | Whether bot must be @mentioned to respond (default for guild) |
 | `guilds.<id>.users` | Allowed user IDs in the guild |
 | `guilds.<id>.channels` | Per-channel overrides (e.g., require mention in specific channels) |
@@ -403,6 +487,20 @@ openssl rand -base64 24
 | `nativeSkills` | Native skill command handling mode (`"auto"` for automatic detection) |
 | `restart` | Enable the `/restart` command for restarting OpenClaw |
 | `ownerDisplay` | How to display the owner in command responses (`"raw"` for unformatted) |
+
+## Memory
+
+```json
+{
+  "memory": {
+    "citations": "auto"
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `citations` | Citation mode for memory search results (`"auto"` for automatic) |
 
 ## Validation
 

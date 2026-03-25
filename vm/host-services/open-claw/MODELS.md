@@ -21,7 +21,7 @@ OpenClaw Gateway (18789)
 **Fallback chain (as configured):**
 
 ```
-Primary:    litellm/github-copilot/claude-opus-4.6-fast
+Primary:    litellm/github-copilot/claude-opus-4.6
 Fallback 1: litellm/github-copilot/claude-sonnet-4.5
 Fallback 2: openai-codex/gpt-5.3-codex
 Fallback 3: openai-codex/gpt-5.2-codex
@@ -43,8 +43,8 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
         "api": "openai-completions",
         "models": [
           {
-            "id": "github-copilot/claude-opus-4.6-fast",
-            "name": "Claude Opus 4.6 Fast",
+            "id": "github-copilot/claude-opus-4.6",
+            "name": "Claude Opus 4.6",
             "reasoning": true,
             "input": ["text", "image"],
             "contextWindow": 200000,
@@ -69,7 +69,7 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
 
 | Model Ref | Context | Input | Role |
 |-----------|---------|-------|------|
-| `litellm/github-copilot/claude-opus-4.6-fast` | 200k | text+image | Primary |
+| `litellm/github-copilot/claude-opus-4.6` | 200k | text+image | Primary |
 | `litellm/github-copilot/claude-sonnet-4.5` | 200k | text+image | Fallback 1 |
 
 ### openai-codex (Fallback)
