@@ -22,8 +22,8 @@
   "models": {
     "providers": {
       "openai": {
-        "apiKey": "${S_LITELLM_API_KEY}",
         "baseUrl": "https://litellm.us.jingtao.fun/v1",
+        "apiKey": "${S_LITELLM_API_KEY}",
         "models": []
       },
       "litellm": {
@@ -32,8 +32,8 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "github-copilot/claude-opus-4.6-fast",
-            "name": "Claude Opus 4.6 Fast",
+            "id": "github-copilot/claude-opus-4.6",
+            "name": "Claude Opus 4.6",
             "reasoning": true,
             "input": [
               "text",
@@ -72,7 +72,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/github-copilot/claude-opus-4.6-fast",
+        "primary": "litellm/github-copilot/claude-opus-4.6",
         "fallbacks": [
           "litellm/github-copilot/claude-sonnet-4.5",
           "openai-codex/gpt-5.3-codex",
@@ -80,12 +80,54 @@
         ]
       },
       "models": {
-        "litellm/github-copilot/claude-opus-4.6-fast": {},
+        "litellm/github-copilot/claude-opus-4.6": {},
         "litellm/github-copilot/claude-sonnet-4.5": {},
         "openai-codex/gpt-5.3-codex": {},
         "openai-codex/gpt-5.2-codex": {}
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
+      "memorySearch": {
+        "sources": [
+          "memory",
+          "sessions"
+        ],
+        "experimental": {
+          "sessionMemory": true
+        },
+        "provider": "openai",
+        "remote": {
+          "baseUrl": "https://litellm.us.jingtao.fun/v1/",
+          "apiKey": "${S_LITELLM_API_KEY}"
+        },
+        "model": "text-embedding-3-large",
+        "sync": {
+          "watch": true,
+          "sessions": {
+            "deltaBytes": 100000,
+            "deltaMessages": 50
+          }
+        },
+        "query": {
+          "hybrid": {
+            "enabled": true,
+            "vectorWeight": 0.7,
+            "textWeight": 0.3,
+            "candidateMultiplier": 4,
+            "mmr": {
+              "enabled": true,
+              "lambda": 0.7
+            },
+            "temporalDecay": {
+              "enabled": true,
+              "halfLifeDays": 30
+            }
+          }
+        },
+        "cache": {
+          "enabled": true,
+          "maxEntries": 50000
+        }
+      },
       "compaction": {
         "mode": "safeguard"
       },
@@ -117,31 +159,32 @@
       "web",
       "web_fetch",
       "web_search",
-      "memory",
+      "memory_search",
+      "memory_get",
       "cron",
       "tts"
     ],
     "deny": [],
-    "exec": {
-      "security": "full",
-      "ask": "off"
-    },
     "media": {
       "audio": {
         "enabled": true,
         "models": [
           {
-            "type": "provider",
             "provider": "openai",
             "model": "gpt-4o-transcribe",
+            "type": "provider",
+            "timeoutSeconds": 60,
             "baseUrl": "https://litellm.us.jingtao.fun/v1",
             "headers": {
               "authorization": "Bearer ${S_LITELLM_API_KEY}"
-            },
-            "timeoutSeconds": 60
+            }
           }
         ]
       }
+    },
+    "exec": {
+      "security": "full",
+      "ask": "off"
     }
   },
   "messages": {
@@ -150,18 +193,18 @@
       "auto": "tagged",
       "mode": "final",
       "provider": "openai",
-      "maxTextLength": 4000,
-      "timeoutMs": 30000,
+      "modelOverrides": {
+        "enabled": true,
+        "allowText": true,
+        "allowVoice": true
+      },
       "openai": {
         "apiKey": "${S_LITELLM_API_KEY}",
         "model": "gpt-4o-mini-tts",
         "voice": "alloy"
       },
-      "modelOverrides": {
-        "enabled": true,
-        "allowText": true,
-        "allowVoice": true
-      }
+      "maxTextLength": 4000,
+      "timeoutMs": 30000
     }
   },
   "commands": {
@@ -189,11 +232,11 @@
       "enabled": true,
       "token": "${S_DISCORD_BOT_TOKEN}",
       "allowBots": true,
-      "groupPolicy": "allowlist",
+      "groupPolicy": "open",
       "streaming": "off",
-      "dmPolicy": "pairing",
+      "dmPolicy": "open",
       "allowFrom": [
-        "1471352977691250891"
+        "*"
       ],
       "guilds": {
         "1471415768955490418": {
@@ -232,9 +275,20 @@
       "token": "${OPENCLAW_GATEWAY_TOKEN}"
     }
   },
+  "memory": {
+    "citations": "auto"
+  },
   "skills": {
     "install": {
       "nodeManager": "npm"
+    },
+    "entries": {
+      "agentmail": {
+        "enabled": true,
+        "env": {
+          "AGENTMAIL_API_KEY": "${S_AGENTMAIL_API_KEY}"
+        }
+      }
     }
   },
   "plugins": {
@@ -242,10 +296,16 @@
       "memory": "memory-core"
     },
     "entries": {
+      "memory-core": {
+        "enabled": true
+      },
       "whatsapp": {
         "enabled": true
       },
       "discord": {
+        "enabled": true
+      },
+      "msteams": {
         "enabled": true
       }
     }
