@@ -31,6 +31,7 @@
   <a class="nav-link" href="#tool-profiles">Profiles &amp; Groups</a>
   <a class="nav-link" href="#allow-deny">Allow / Deny Lists</a>
   <a class="nav-link" href="#policy-pipeline">Policy Pipeline</a>
+  <a class="nav-link" href="#subagent-policy">Sub-Agent Policy</a>
 
   <div class="nav-section">Exec Security</div>
   <a class="nav-link" href="#exec-modes">Security Modes</a>
@@ -50,6 +51,7 @@
 
   <div class="nav-section">Reference</div>
   <a class="nav-link" href="#config-reference">Configuration Reference</a>
+  <a class="nav-link" href="#design-principles">Design Principles</a>
 </nav>
 
 <!-- Main Content -->
@@ -307,18 +309,74 @@ Agent requests tool call
             <td>Remote node management</td>
           </tr>
           <tr>
-            <td><code>group:openclaw</code></td>
-            <td>OpenClaw-specific tools</td>
-            <td>Internal system tools</td>
+            <td><code>group:agents</code></td>
+            <td>agents_list</td>
+            <td>Agent enumeration (owner-only)</td>
+          </tr>
+          <tr>
+            <td><code>group:media</code></td>
+            <td>image, image_generate, tts</td>
+            <td>Image generation and text-to-speech</td>
+          </tr>
+          <tr>
+            <td><code>group:plugins</code></td>
+            <td>All currently loaded plugin tools</td>
+            <td>Dynamic — expands to all plugin tools at runtime</td>
+          </tr>
+          <tr>
+            <td><code>&lt;pluginId&gt;</code></td>
+            <td>Tools belonging to a specific plugin</td>
+            <td>Per-plugin group; use bare plugin ID (no <code>group:</code> prefix)</td>
           </tr>
         </tbody>
       </table>
     </div>
 
+    <p class="note">
+      <strong>Tools not included in any built-in profile:</strong>
+      <code>browser</code>, <code>canvas</code>, <code>gateway</code>, <code>nodes</code>,
+      <code>agents_list</code>, and <code>tts</code> are absent from all profiles including
+      <code>full</code>. They must be explicitly added via <code>tools.allow</code> or
+      <code>tools.alsoAllow</code>.
+    </p>
+
+    <h3>Coding Profile — Exact Tool List</h3>
     <p>
-      Plugin tools are loaded separately as <code>group:plugin:&lt;name&gt;</code> and community
-      tools as <code>group:community:&lt;name&gt;</code>. This namespace separation ensures
-      third-party tools cannot accidentally match built-in group patterns.
+      The <code>coding</code> profile includes exactly these tools (source:
+      <code>src/agents/tool-catalog.ts</code>):
+    </p>
+    <pre>
+read, write, edit, apply_patch,         // filesystem
+exec, process,                           // runtime
+web_search, web_fetch,                   // web
+memory_search, memory_get,               // memory
+sessions_list, sessions_history,         // sessions (limited)
+sessions_send, sessions_spawn,
+sessions_yield, subagents,
+session_status, cron,                    // scheduling
+image, image_generate                    // media (no tts)
+</pre>
+    <p>
+      Note: <code>browser</code>, <code>canvas</code>, <code>gateway</code>, <code>nodes</code>,
+      <code>agents_list</code>, <code>tts</code>, and channel tools are excluded even from
+      <code>coding</code>.
+    </p>
+
+    <h3>Tool Name Normalization</h3>
+    <p>
+      Before any policy matching, tool names are normalized via
+      <code>normalizeToolName()</code> and <code>normalizeToolList()</code>
+      (<code>src/agents/tool-policy-shared.ts</code>).
+      Two aliases are recognized:
+    </p>
+    <pre>
+"bash"        → "exec"          // legacy alias
+"apply-patch" → "apply_patch"   // hyphen → underscore normalization
+</pre>
+    <p>
+      This means config entries like <code>allow: ["bash"]</code> correctly
+      enable the exec tool, and <code>deny: ["apply-patch"]</code> correctly
+      blocks apply_patch.
     </p>
   </section>
 
@@ -369,10 +427,54 @@ Agent requests tool call
 
     <h3>Owner-Only Tools</h3>
     <p>
-      Certain tools are marked <strong>owner-only</strong> in the catalog
-      (<code>src/agents/tool-policy.ts</code>). These tools are stripped from the list for any
-      agent that is not the designated "owner" agent regardless of what profiles or allow lists
-      say. This prevents subagents or guest agents from accessing administrative capabilities.
+      Four tools are marked <strong>owner-only</strong>:
+      <code>whatsapp_login</code>, <code>cron</code>, <code>gateway</code>, <code>nodes</code>.
+      They receive double protection: they are silently removed from the tool list for any
+      non-owner agent, <em>and</em> their execute handler is replaced with an
+      exception-throwing wrapper so even a direct internal call is rejected.
+      No profile or allow list can grant these tools to a non-owner agent.
+    </p>
+
+    <h3>apply_patch + exec Special Rule</h3>
+    <p>
+      When <code>exec</code> is present in the effective allow list,
+      <code>apply_patch</code> is implicitly allowed even if not listed explicitly.
+      This is step 4 of the match logic in <code>src/agents/tool-policy-match.ts</code>:
+    </p>
+    <pre>
+allow: ["exec"]
+  → exec: allowed (explicit match)
+  → apply_patch: allowed (implicit, because exec is in allow list)
+  → read: denied (not in allow list and apply_patch rule does not extend further)
+</pre>
+
+    <h3>Plugin Allowlist Safety — stripPluginOnlyAllowlist</h3>
+    <p>
+      A common mistake is setting <code>tools.allow</code> to a list of plugin tools.
+      If the allow list contains <em>only</em> plugin tools (no core tools and no
+      <code>*</code> wildcard), the system detects this via
+      <code>stripPluginOnlyAllowlist()</code> and strips the allow list entirely — preventing
+      the operator from accidentally blocking all core tools.
+    </p>
+    <p>
+      The function returns an <code>AllowlistResolution</code> object with three fields:
+      <code>policy</code> (resulting policy after stripping),
+      <code>unknownAllowlist</code> (entries that were not recognized core tools),
+      and <code>strippedAllowlist</code> (entries that were removed).
+    </p>
+    <pre>
+# DANGEROUS — accidentally blocks read, write, exec, etc.:
+tools:
+  allow: ["my-plugin-tool", "other-plugin-tool"]
+
+# CORRECT — use alsoAllow to extend without replacing the baseline:
+tools:
+  alsoAllow: ["my-plugin-tool", "other-plugin-tool"]
+</pre>
+    <p>
+      <code>tools.alsoAllow</code> appends to the effective allowed set without
+      replacing it. Use <code>alsoAllow</code> for plugins and
+      <code>allow</code> only when you intentionally want to restrict to an explicit list.
     </p>
 
     <h3>Pattern Matching</h3>
@@ -390,8 +492,8 @@ deny: ["write", "edit", "apply_patch"]
 # Deny everything in the runtime group
 deny: ["group:runtime"]
 
-# Allow a specific community tool
-allow: ["group:community:my-tool"]
+# Add a plugin tool without restricting core tools
+alsoAllow: ["my-plugin-tool"]
 </pre>
   </section>
 
@@ -403,33 +505,132 @@ allow: ["group:community:my-tool"]
       deterministic resolution sequence. The pipeline runs once per agent initialization and
       produces a frozen allowed-tool set that is injected into the agent's tool schema.
     </p>
+    <p>
+      The pipeline runs 7 ordered steps. Each step is identified by a label that corresponds
+      to a config key. Steps run in this exact order (<code>src/agents/tool-policy-pipeline.ts</code>):
+    </p>
     <pre>
-Profile expansion
-  → resolve profile name → expand to concrete tool names
-  → apply owner-only filter (strip privileged tools for non-owner agents)
+Step 1 — tools.profile
+  Config key: tools.profile
+  Expand profile name → concrete tool list
+  Apply owner-only filter (strip privileged tools for non-owner agents)
+  Apply implicit alsoAllow:
+    tools.exec.* section present → implicit "exec", "process" added
+    tools.fs.* section present   → implicit "read", "write", "edit" added
 
-Global deny list
-  → remove any tool matching global tools.deny
+Step 2 — tools.byProvider.profile
+  Config key: tools.byProvider.&lt;providerId&gt;.profile
+  Provider-level profile override for agents under this provider
 
-Global allow list
-  → if set: keep only tools matching global tools.allow
-  → if not set: no additional filtering
+Step 3 — tools.allow
+  Config key: tools.allow
+  Global allow list: if set, keep only matching tools
+  Empty allow list = no filtering (allow all from profile)
 
-Provider-level deny → remove tools matching provider deny list
-Provider-level allow → if set: intersect with provider allow list
+Step 4 — tools.byProvider.allow
+  Config key: tools.byProvider.&lt;providerId&gt;.allow / .deny
+  Provider-level allow/deny applied after global
 
-Agent-level deny → remove tools matching agent deny list
-Agent-level allow → if set: intersect with agent allow list
+Step 5 — agents.&lt;id&gt;.tools.allow
+  Config key: agents.&lt;id&gt;.tools.allow / .deny
+  Per-agent allow/deny applied after provider
 
-Sandbox alsoAllow (sandboxed agents only)
-  → add tools in alsoAllow that were not previously denied
-  → does NOT override a deny — cannot un-deny tools
+Step 6 — agents.&lt;id&gt;.tools.byProvider.allow
+  Config key: agents.&lt;id&gt;.tools.byProvider.&lt;providerId&gt;.allow / .deny
+  Per-agent, per-provider fine-grained override
 
-Result: frozen tool set presented to LLM via tool schema
+Step 7 — group tools.allow
+  Group-level resolution for plugin and channel tool groups
+  Calls: resolveGroupToolPolicy() → resolveChannelGroupToolsPolicy()
+  Supports plugin-custom groups.resolveToolPolicy hook
+
+Result: frozen tool set → injected into LLM tool schema
 </pre>
     <p>
-      The frozen set is the only set the LLM ever sees. The model cannot request a tool
-      not in the set — the schema simply does not include it.
+      AND semantics: policies from multiple layers are all applied; a tool must pass
+      every layer's filter. The frozen set is the only set the LLM ever sees — the
+      schema simply does not include blocked tools.
+    </p>
+    <p>
+      Warning deduplication: repeated pipeline warnings are suppressed after the first
+      occurrence using an LRU-style cache with a 256-entry limit
+      (<code>rememberToolPolicyWarning()</code> in <code>src/agents/tool-policy-pipeline.ts</code>).
+    </p>
+  </section>
+
+  <!-- Sub-Agent Tool Policy -->
+  <section id="subagent-policy">
+    <h2><span class="section-num">05b</span>Sub-Agent Tool Policy</h2>
+    <p>
+      Subagents (spawned by <code>sessions_spawn</code> or <code>subagents</code>) receive a
+      more restricted tool set than the orchestrator. Two deny lists are applied on top of the
+      normal pipeline (<code>src/agents/tool-policy.ts</code> —
+      <code>resolveSubagentToolPolicy(cfg, depth)</code>):
+    </p>
+
+    <h3>DENY_ALWAYS — All Subagents</h3>
+    <p>
+      These 8 tools are always denied for every subagent regardless of depth or config:
+    </p>
+    <pre>
+gateway          — cannot control the gateway
+agents_list      — cannot enumerate other agents
+whatsapp_login   — owner-only auth action
+session_status   — session introspection
+cron             — cannot create scheduled tasks
+memory_search    — long-term memory read
+memory_get       — long-term memory fetch
+sessions_send    — cannot initiate messages to sessions
+</pre>
+    <p>
+      An operator can remove an entry from this deny list by explicitly listing the tool in
+      the agent's <code>tools.allow</code> config — but this should be done only when the
+      specific capability is intentional and reviewed.
+    </p>
+
+    <h3>DENY_LEAF — Leaf Agents Only</h3>
+    <p>
+      Leaf agents (depth &ge; <code>maxSpawnDepth</code>) additionally lose these 4 tools,
+      preventing recursive spawning:
+    </p>
+    <pre>
+subagents         — cannot spawn further subagents
+sessions_list     — cannot enumerate sessions
+sessions_history  — cannot read session history
+sessions_spawn    — cannot create new sessions
+</pre>
+
+    <h3>Depth-Based Classification</h3>
+    <pre>
+depth = 0          → orchestrator (main agent) — no subagent restrictions
+depth &lt; maxDepth   → orchestrator-tier subagent — DENY_ALWAYS only
+depth &ge; maxDepth  → leaf agent — DENY_ALWAYS + DENY_LEAF
+
+resolveSubagentToolPolicy(cfg, depth)
+resolveSubagentToolPolicyForSession(cfg, sessionKey)  // uses stored session role
+</pre>
+
+    <h3>Sandbox Tool Policy Constants</h3>
+    <p>
+      Sandboxed agents use a separate default allow/deny set defined in
+      <code>sandbox/constants.ts</code>. These defaults apply before any config overrides:
+    </p>
+    <pre>
+DEFAULT_TOOL_ALLOW (line 13) — tools allowed in sandbox by default:
+  exec, process, read, write, edit, apply_patch,
+  image, sessions_list, sessions_history,
+  sessions_send, sessions_spawn, sessions_yield,
+  subagents, session_status
+
+DEFAULT_TOOL_DENY (line 31) — tools always denied in sandbox:
+  browser, canvas, nodes, cron, gateway
+  + all channel IDs (discord, telegram, slack, …)
+</pre>
+    <p>
+      Config can override defaults via <code>agents[n].tools.sandbox.tools.allow/deny</code>
+      or <code>agents[n].sandbox.alsoAllow</code>. The source of each decision is tracked as
+      <code>SandboxToolPolicySource</code>: <code>"agent"</code>, <code>"global"</code>, or
+      <code>"default"</code>, along with the config path string for diagnostics.
     </p>
   </section>
 
@@ -581,6 +782,39 @@ tools:
         maxPositional: 1
 </pre>
 
+    <h3>Specific Rejection Rules</h3>
+    <p>
+      Each safe-bin profile implements fine-grained argument validation beyond just allowed/denied
+      flags. Notable rejection cases:
+    </p>
+    <pre>
+grep:
+  grep pattern file.txt     → REJECTED (positional pattern arg without -e)
+  grep -e SECRET .env       → REJECTED (file positional arg; stdin only)
+  grep -n TODO src/          → REJECTED (path positional arg)
+  grep -e TODO               → ALLOWED (stdin, explicit -e)
+
+jq:
+  jq 'env'                   → REJECTED (env access via jq filter)
+  jq '.foo | env.BAR'        → REJECTED (env access)
+  jq 'env.FOO'               → REJECTED (env access)
+  jq '.field'                → ALLOWED
+
+sort:
+  sort --compress-program=sh → REJECTED (code execution via compression)
+  sort --files0-from=f       → REJECTED (file input)
+  sort -k1,1                 → ALLOWED
+
+wc:
+  wc --files0-from=f         → REJECTED (file input)
+  wc -l                      → ALLOWED
+
+Token safety rules (apply to all safe bins):
+  command -- --unknown-flag  → REJECTED (unknown long options fail closed)
+  command -- /path/to/file   → REJECTED (path/glob after -- terminator rejected)
+  command - (stdin)          → ALLOWED (stdin marker allowed even after --)
+</pre>
+
     <h3>Skill Auto-Allow</h3>
     <p>
       When <code>autoAllowSkills: true</code> is set, commands that match a registered skill's
@@ -666,6 +900,48 @@ pnpm exec vitest            → vitest
       When <code>strictInlineEval: true</code> is set (default: <code>false</code>), these
       always require an explicit approval even if the binary (python, node) is in the allowlist.
     </p>
+
+    <h3>Allow-Always Pattern Derivation</h3>
+    <p>
+      When a command is approved and <code>ask = "on-miss"</code>, the system derives a
+      <em>pattern</em> to persist in the allowlist via
+      <code>resolveAllowAlwaysPatterns()</code>
+      (<code>src/infra/exec-command-resolution.ts</code>).
+      The derivation rules depend on how the command was invoked:
+    </p>
+    <pre>
+Direct executable:
+  /usr/bin/rg -n TODO src/
+  → pattern: full executable path "/usr/bin/rg"
+
+Shell wrapper (bash -lc 'whoami'):
+  → unwrap inner command → persist inner executable path
+  bash -lc 'whoami'  → pattern: resolved path of "whoami"
+
+Shell wrapper with script path (bash scripts/save.sh):
+  → persist absolute path of the script file
+  bash scripts/save.sh  → pattern: "/abs/path/scripts/save.sh"
+
+REJECTION — inline not treated as script path:
+  bash -lc 'scripts/save.sh'  → REJECTED (inline string, not a file path)
+  bash -s scripts/save.sh     → REJECTED (stdin mode with file path)
+
+Scheduler wrapper (nice, timeout, sudo):
+  nice whoami  → strip wrapper → pattern: resolved path of "whoami"
+
+Busybox applet:
+  busybox grep pattern  → applet "grep" → pattern: resolved grep path
+
+Positional argv carrier:
+  sh -lc '$0 "$1"' touch /path/to/file
+  → $0 is the external carrier; pattern: resolved path of "touch"
+  REJECTED if: $0 is single-quote wrapped, exec and $0 are separated
+               by newline, or inline includes extra shell operations
+               (e.g. "echo blocked; $0")
+
+Chain deduplication:
+  whoami &amp;&amp; ls &amp;&amp; whoami  → [resolved(whoami), resolved(ls)]  (deduped)
+</pre>
   </section>
 
   <!-- Approval Lifecycle -->
@@ -686,28 +962,41 @@ pnpm exec vitest            → vitest
    ├─ Tool policy: is exec allowed for this agent?
    ├─ Security mode: deny / allowlist / full?
    └─ Allowlist match: does command pass without ask?
+      Note: security="full" never triggers approval even with ask="on-miss"
 
 3. Approval request created (if ask triggers)
-   ├─ UUID assigned to this approval request
-   ├─ systemRunPlan captured (argv, cwd, env snapshot)
-   ├─ Approval binding hash computed
-   └─ Record stored in ApprovalManager
+   ├─ crypto.randomUUID() assigned as approval ID
+   ├─ 12-field request payload captured:
+   │   commandPreview, commandArgv, envKeys,
+   │   systemRunBinding, systemRunPlan, host,
+   │   turnSourceChannel, agentId, sessionKey, …
+   ├─ sanitizeExecApprovalDisplayText() called
+   ├─ buildSystemRunApprovalBinding() + resolveSystemRunApprovalRequestContext()
+   └─ Record stored in ApprovalManager (register() — idempotent)
+
+   If no approval route available (no UI, no forwarder configured):
+   → expire("no-approval-route") called immediately; request never queued
 
 4. Broadcast exec.approval.requested
    ├─ All connected UI clients notified
    ├─ macOS app shows system notification
    └─ Forwarder sends to configured channels
       └─ (Discord / Telegram / Slack messages with approve/deny buttons)
+      └─ Channel plugin may suppress local CLI prompt if remote UI handles it
+         (shouldSuppressLocalExecApprovalPrompt())
 
-5. Operator decision window (configurable timeout)
+5. Operator decision window (default: 120 seconds)
    ├─ Operator approves via: UI, macOS app, chat /approve command
-   └─ On timeout: falls back to askFallback mode (deny or allowlist)
+   ├─ awaitDecision() blocks agent fiber until resolved or timeout
+   └─ On 120s timeout: expire() called → askFallback applied (deny or allowlist)
 
-6. Gateway resolves approval (exec.approval.resolve)
+6. Gateway resolves approval (exec.approval.resolve — prefix matching)
    ├─ APPROVED: command proceeds to execution
    │   ├─ Pattern saved to allowlist (for on-miss ask mode)
+   │   ├─ consumeAllowOnce() — atomic, prevents replay attacks
    │   └─ Approval binding forwarded to node if needed
    └─ DENIED: system event "Exec denied" sent to session
+   After resolve: 15-second grace window, then cleanup removes the record
 
 7. Node host validation (gateway → node flow only)
    ├─ Node receives system.run with approval token
@@ -718,6 +1007,34 @@ pnpm exec vitest            → vitest
 8. Execution completes
    └─ System events: "Exec running" → "Exec finished" / error
 </pre>
+
+    <h3>Approval Manager — Core Methods</h3>
+    <pre>
+create()           — build a new approval record
+register()         — store record; idempotent (safe to call twice)
+resolve()          — record operator decision; starts 15-sec grace cleanup
+expire()           — mark as expired (timeout or no-route); unblocks awaitDecision()
+consumeAllowOnce() — atomically consume a one-time allow; prevents replay
+awaitDecision()    — suspend caller until decision or 120-sec timeout
+lookupPendingId()  — find a pending approval by UUID prefix (for short IDs)
+getSnapshot()      — return current state of all pending approvals
+</pre>
+
+    <h3>Allowlist Persistence</h3>
+    <p>
+      When a command is approved in <code>on-miss</code> mode, the derived pattern is persisted
+      via <code>addAllowlistEntry()</code> (with deduplication). Each subsequent use of an
+      allowlisted command calls <code>recordAllowlistUse()</code> which updates three fields:
+    </p>
+    <pre>
+lastUsedAt       — timestamp of most recent use
+lastUsedCommand  — exact command string that matched
+lastResolvedPath — resolved absolute path of the executable
+</pre>
+    <p>
+      The file is written with permission <code>0o600</code>. Socket token is generated with
+      <code>crypto.randomBytes(24).toString("base64url")</code>.
+    </p>
   </section>
 
   <!-- Ask Modes -->
@@ -882,7 +1199,48 @@ TIMEOUT path (operator does not respond):
   Gateway timer fires → askFallback applied
     "deny"      → rejection returned to agent
     "allowlist" → re-check allowlist; allow or deny accordingly
+
+RECONNECT path (exec.approval.waitDecision):
+  UI client disconnects and reconnects mid-approval
+  → call exec.approval.waitDecision with known approval ID
+  → resumes blocking wait without re-creating the approval request
 </pre>
+
+    <h3>Socket Communication</h3>
+    <p>
+      The approval manager communicates via a Unix domain socket at
+      <code>~/.openclaw/exec-approvals.sock</code> using JSONL protocol (one JSON object
+      per line). The socket token is stored in <code>exec-approvals.json</code> and used
+      to authenticate all socket messages. Socket connection timeout: <strong>15 seconds</strong>
+      (separate from the 120-second approval decision timeout).
+    </p>
+
+    <h3>Gateway Server Methods</h3>
+    <p>
+      The gateway exposes these JSON-RPC methods for approval management
+      (<code>src/gateway/server-methods/exec-approval.ts</code>):
+    </p>
+    <pre>
+exec.approval.request      — create approval; twoPhase mode returns
+                              { status: "accepted" } immediately then resolves async
+exec.approval.waitDecision — wait for decision on existing approval (reconnect)
+exec.approval.resolve      — submit operator decision; supports UUID prefix matching
+
+exec.approvals.get         — read exec-approvals.json; redacts socket token
+                              (redactExecApprovals() removes token before response)
+exec.approvals.set         — write exec-approvals.json; requires baseHash matching
+                              current file hash (optimistic concurrency control)
+                              calls mergeExecApprovalsSocketDefaults() before write
+
+exec.approvals.node.get    — remote proxy: read node's exec-approvals.json
+exec.approvals.node.set    — remote proxy: write node's exec-approvals.json
+                              both route via nodeRegistry.invoke()
+</pre>
+    <p>
+      Optimistic concurrency: <code>exec.approvals.set</code> requires a <code>baseHash</code>
+      matching the current file hash. If another process updated the file since the client
+      last read it, the set call fails and the client must reload before retrying.
+    </p>
   </section>
 
   <!-- Shell Hardening -->
@@ -1019,17 +1377,56 @@ sandboxing:
       </table>
     </div>
 
+    <h3>Command Alias</h3>
+    <p>
+      <code>/elev</code> is a supported alias for <code>/elevated</code>. Both forms accept
+      the same <code>on</code> / <code>ask</code> / <code>full</code> / <code>off</code>
+      arguments.
+    </p>
+
+    <h3>Inline vs Session Scope</h3>
+    <p>
+      Elevated directives have two scopes that interact via priority order:
+    </p>
+    <pre>
+Inline directive  — applies to the current message only; does not persist
+Session directive — persists for the duration of the session
+
+Priority (highest to lowest):
+  1. Inline directive (current message)
+  2. Session-level override (/elevated on/off/full during session)
+  3. Global default (agents.defaults.elevatedDefault in config)
+</pre>
+
     <h3>Sender Authorization</h3>
     <p>
       Not every user can activate elevated mode. The <code>/elevated</code> command is only
-      accepted from senders in the elevated authorization list. This is configured per-channel:
+      accepted from senders in the elevated authorization list. This is configured with two
+      levels — global (applies to all agents) and per-agent:
     </p>
     <pre>
-# Config: who can use /elevated on this agent
+# Global elevated authorization
+tools:
+  elevated:
+    enabled: true
+    allowFrom:
+      - "discord:123456789"       # bare channel:ID
+      - "id:987654321"            # prefixed format
+
+# Per-agent elevated authorization (overrides global for this agent)
 agents:
-  main:
-    elevated:
-      allowedSenders: ["discord:123456789", "telegram:987654321"]
+  list:
+    - id: main
+      tools:
+        elevated:
+          enabled: true
+          allowFrom:
+            - "name:Alice"          # by display name
+            - "username:alice99"    # by username
+            - "tag:alice#1234"      # by username#discriminator (Discord)
+            - "id:123456789"        # by platform user ID
+            - "from:alice@corp"     # by email / address
+            - "e164:+15551234567"   # by E.164 phone number
 </pre>
     <p>
       If an unauthorized sender attempts <code>/elevated full</code>, the command is rejected
@@ -1038,12 +1435,13 @@ agents:
 
     <h3>Elevated vs Sandbox Interaction</h3>
     <pre>
-Sandboxed agent + /elevated on  → exec runs on HOST, approval required
+Sandboxed agent + /elevated on   → exec runs on HOST, approval required
 Sandboxed agent + /elevated full → exec runs on HOST, no approval
 Non-sandboxed agent (host)       → always runs on host; elevated not needed
 
-Note: Tool policy deny still applies even in /elevated full mode.
-If exec is in the agent's deny list, /elevated full cannot override it.
+Key constraint: Tool policy deny STILL applies in /elevated full mode.
+If exec is denied by tool policy, /elevated cannot override it.
+Elevated only controls sandbox-to-host promotion; it does not bypass Layer 1.
 </pre>
     <p>
       Full elevated documentation: <code>docs/tools/elevated.md</code>
@@ -1388,6 +1786,103 @@ sandboxing:
           <tr>
             <td>Approval config schema</td>
             <td><code>src/config/zod-schema.approvals.ts</code></td>
+          </tr>
+          <tr>
+            <td>Tool policy pipeline (7 steps)</td>
+            <td><code>src/agents/tool-policy-pipeline.ts</code></td>
+          </tr>
+          <tr>
+            <td>Policy conformance / CI drift check</td>
+            <td><code>src/agents/tool-policy.conformance.ts</code></td>
+          </tr>
+          <tr>
+            <td>Sandbox tool policy constants</td>
+            <td><code>sandbox/constants.ts</code></td>
+          </tr>
+          <tr>
+            <td>Plugin allowlist safety</td>
+            <td><code>src/agents/pi-tools.policy.ts</code></td>
+          </tr>
+          <tr>
+            <td>Subagent tool policy</td>
+            <td><code>src/agents/tool-policy.ts</code> — <code>resolveSubagentToolPolicy()</code></td>
+          </tr>
+          <tr>
+            <td>Elevated execution</td>
+            <td><code>docs/tools/elevated.md</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Design Principles -->
+  <section id="design-principles">
+    <h2><span class="section-num">17</span>Design Principles</h2>
+    <p>
+      The tool permission system is built on 10 explicit design principles
+      (source: <code>research/00-tool-permission-overview.md</code> appendix):
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Principle</th>
+            <th>What it means in practice</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td><strong>Deny wins</strong></td>
+            <td>A tool in both allow and deny lists is blocked. No allow can override a deny at the same layer.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td><strong>Empty allow = allow all</strong></td>
+            <td>An absent allow list means no additional filtering — not "deny everything". Only an explicit allow list restricts.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td><strong>Plugin protection</strong></td>
+            <td><code>stripPluginOnlyAllowlist()</code> prevents operators from accidentally blocking all core tools when trying to allowlist plugins.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td><strong>Fail closed</strong></td>
+            <td>Unknown commands, unrecognized flags, and unresolvable paths default to deny. No behavior is assumed safe.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td><strong>Chain full coverage</strong></td>
+            <td>Every segment in a chained command (<code>&amp;&amp;</code>, <code>||</code>, <code>;</code>, <code>|</code>) must independently satisfy the allowlist. One bad segment fails the whole chain.</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td><strong>Source tracing</strong></td>
+            <td>Each allowlist decision records its source (<code>"agent"</code>, <code>"global"</code>, <code>"default"</code>) and config path string for auditability.</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td><strong>Layered AND semantics</strong></td>
+            <td>All policy layers are applied in sequence. A tool must pass every layer — passing one layer does not exempt it from the next.</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td><strong>Idempotent approval</strong></td>
+            <td><code>register()</code> is idempotent; <code>consumeAllowOnce()</code> is atomic. Duplicate approvals and replay attacks are structurally prevented.</td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td><strong>Permission isolation</strong></td>
+            <td>Subagents cannot inherit more permissions than their parent. Tool policy cannot be escalated through spawning.</td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td><strong>Subagent least privilege</strong></td>
+            <td>DENY_ALWAYS and DENY_LEAF lists exist precisely because subagents do not need session management, memory, or gateway access by default.</td>
           </tr>
         </tbody>
       </table>
