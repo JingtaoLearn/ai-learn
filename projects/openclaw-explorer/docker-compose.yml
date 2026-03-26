@@ -8,6 +8,7 @@ services:
       - VIRTUAL_HOST=oc.${S_DOMAIN}
       - VIRTUAL_PORT=80
       - LETSENCRYPT_HOST=oc.${S_DOMAIN}
+      - EMS_UPSTREAM=http://experience-manager:8100
     expose:
       - "80"
     volumes:
@@ -19,3 +20,11 @@ services:
       - ./allowed-emails.txt:/data/allowed-emails.txt:ro
       - /home/jingtao/.openclaw/workspace/claude-code-results:/data/cc-results:ro
       - /home/jingtao/mnt/feng-cc-results:/data/feng-cc-results:ro
+    networks:
+      - default
+      - ems_network
+
+networks:
+  ems_network:
+    external: true
+    name: experience-manager_default

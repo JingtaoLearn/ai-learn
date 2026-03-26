@@ -547,6 +547,48 @@ app.get('/api/cc/tasks/:name/output', (req, res) => {
   }
 });
 
+// --- EMS Viewer Proxy ---
+const EMS_UPSTREAM = process.env.EMS_UPSTREAM || 'http://experience-manager:8100';
+
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
+
+app.all('/api/ems/*', (req, res) => {
+  const targetPath = req.originalUrl.replace(/^\/api\/ems/, '/api');
+  const upstream = new URL(targetPath, EMS_UPSTREAM);
+  upstream.search = new URL(req.originalUrl, 'http://localhost').search;
+
+  const mod = upstream.protocol === 'https:' ? https : http;
+  const headers = { ...req.headers, host: upstream.host };
+
+  const hasBody = req.body && Object.keys(req.body).length > 0;
+  let bodyStr;
+  if (hasBody) {
+    bodyStr = JSON.stringify(req.body);
+    headers['content-type'] = 'application/json';
+    headers['content-length'] = Buffer.byteLength(bodyStr);
+  }
+
+  const proxyReq = mod.request(upstream.href, {
+    method: req.method,
+    headers,
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    console.error('EMS proxy error:', err.message);
+    res.status(502).json({ error: 'EMS service unavailable' });
+  });
+
+  if (hasBody) {
+    proxyReq.write(bodyStr);
+  }
+  proxyReq.end();
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenClaw Explorer running on port ${PORT}`);
 });

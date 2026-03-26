@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Experience Viewer - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/ems-viewer.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Experience Viewer</h1>
+  <div class="header-controls">
+    <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+    <span id="userInfo" style="font-size:13px;color:var(--text-secondary)"></span>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<div class="em-container" id="appContainer">
+  <!-- Login screen -->
+  <div class="em-login" id="loginScreen" style="display:none;width:100%">
+    <div class="em-login-icon">&#128274;</div>
+    <h2 style="color:var(--text);margin:0">Experience Viewer</h2>
+    <p style="max-width:400px;text-align:center">Sign in to browse EMS experiences. This feature requires authentication.</p>
+    <a class="em-login-btn" id="loginBtn" href="#">&#127759; Login with Microsoft</a>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="em-sidebar" id="sidebar" style="display:none">
+    <div class="em-sidebar-header">
+      <a class="back-link" href="../">&larr; Back to Topics</a>
+      <div style="font-weight:600;font-size:15px;color:var(--text)">Experiences</div>
+    </div>
+
+    <!-- Stats -->
+    <div class="em-stats-bar" id="statsBar">
+      <span class="em-stat">Total: <span class="em-stat-count" id="statTotal">0</span></span>
+    </div>
+
+    <!-- Filters -->
+    <div class="em-filters" id="filtersArea">
+      <div>
+        <div class="em-filter-label">Category</div>
+        <div class="em-filter-pills" id="categoryPills">
+          <span class="em-pill" data-group="category" data-value="guardrail">guardrail</span>
+          <span class="em-pill" data-group="category" data-value="practice">practice</span>
+          <span class="em-pill" data-group="category" data-value="lesson">lesson</span>
+        </div>
+      </div>
+      <div>
+        <div class="em-filter-label">Severity</div>
+        <div class="em-filter-pills" id="severityPills">
+          <span class="em-pill" data-group="severity" data-value="block">block</span>
+          <span class="em-pill" data-group="severity" data-value="warn">warn</span>
+          <span class="em-pill" data-group="severity" data-value="info">info</span>
+        </div>
+      </div>
+      <div>
+        <div class="em-filter-label">Status</div>
+        <div class="em-status-toggle" id="statusToggle">
+          <button class="em-status-btn active" data-status="active">Active</button>
+          <button class="em-status-btn" data-status="all">All</button>
+        </div>
+      </div>
+      <div id="tagFilterSection" style="display:none">
+        <div class="em-filter-label">Tags</div>
+        <div class="em-filter-pills" id="tagPills"></div>
+      </div>
+    </div>
+
+    <!-- Experience list -->
+    <div class="em-exp-list" id="expList">
+      <div class="em-loading"><div class="em-spinner"></div> Loading...</div>
+    </div>
+    <div class="em-resize-handle" id="resizeHandle"></div>
+  </nav>
+
+  <!-- Main area -->
+  <div class="em-main" id="mainArea" style="display:none">
+    <div class="em-mobile-back" id="mobileBack">&#8592; Back to List</div>
+    <div class="em-detail" id="detailArea"></div>
+  </div>
+</div>
+
+<script src="../js/main.js"></script>
+<script>
+(function() {
+  // State
+  let authenticated = false;
+  let experiences = [];
+  let allTags = [];
+  let currentExpId = null;
+  let viewMode = 'check'; // 'check' or 'detail'
+
+  // Filters: { include: Set, exclude: Set }
+  const filters = {
+    category: { include: new Set(), exclude: new Set() },
+    severity: { include: new Set(), exclude: new Set() },
+    tags: { include: new Set(), exclude: new Set() },
+    statusFilter: 'active'
+  };
+
+  const SEVERITY_ICONS = { block: '\uD83D\uDEAB', warn: '\u26A0\uFE0F', info: '\u2139\uFE0F' };
+  const SEVERITY_COLORS = { block: 'var(--red)', warn: 'var(--orange)', info: 'var(--accent)' };
+
+  // DOM refs
+  const loginScreen = document.getElementById('loginScreen');
+  const loginBtn = document.getElementById('loginBtn');
+  const sidebarEl = document.getElementById('sidebar');
+  const mainArea = document.getElementById('mainArea');
+  const expList = document.getElementById('expList');
+  const detailArea = document.getElementById('detailArea');
+  const userInfo = document.getElementById('userInfo');
+  const statsBar = document.getElementById('statsBar');
+  const tagPills = document.getElementById('tagPills');
+  const tagFilterSection = document.getElementById('tagFilterSection');
+
+  checkAuth();
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/auth/me');
+      const data = await res.json();
+      if (data.authenticated) {
+        authenticated = true;
+        userInfo.textContent = data.user.name || data.user.email;
+        showApp();
+        await Promise.all([loadExperiences(), loadTags()]);
+      } else {
+        showLogin();
+      }
+    } catch {
+      showLogin();
+    }
+  }
+
+  async function showLogin() {
+    loginScreen.style.display = '';
+    sidebarEl.style.display = 'none';
+    mainArea.style.display = 'none';
+    try {
+      const cfg = await fetch('/auth/config').then(r => r.json());
+      loginBtn.href = cfg.loginUrl;
+    } catch {
+      const callbackUrl = window.location.origin + '/auth/callback';
+      loginBtn.href = 'https://ms-login.ai.jingtao.fun/auth/login?redirect=' + encodeURIComponent(callbackUrl);
+    }
+  }
+
+  function showApp() {
+    loginScreen.style.display = 'none';
+    sidebarEl.style.display = '';
+    mainArea.style.display = '';
+    restoreSidebarState();
+    showCheckPanel();
+  }
+
+  // --- Data loading ---
+
+  async function loadExperiences() {
+    expList.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Loading...</div>';
+    try {
+      const res = await fetch('/api/ems/experiences');
+      if (!res.ok) throw new Error('Failed');
+      const json = await res.json();
+      experiences = json.success ? (json.data || []) : (Array.isArray(json) ? json : []);
+      updateStats();
+      renderExpList();
+      navigateFromHash();
+    } catch {
+      experiences = [];
+      updateStats();
+      renderExpList();
+    }
+  }
+
+  async function loadTags() {
+    try {
+      const res = await fetch('/api/ems/tags');
+      if (!res.ok) throw new Error('Failed');
+      const json = await res.json();
+      allTags = json.success ? (json.data || []) : (Array.isArray(json) ? json : []);
+      renderTagPills();
+    } catch {
+      allTags = [];
+    }
+  }
+
+  function updateStats() {
+    const total = experiences.length;
+    const cats = {};
+    for (const e of experiences) {
+      const c = e.category || 'unknown';
+      cats[c] = (cats[c] || 0) + 1;
+    }
+    let html = '<span class="em-stat">Total: <span class="em-stat-count">' + total + '</span></span>';
+    for (const [cat, count] of Object.entries(cats)) {
+      html += '<span class="em-stat">' + escapeHtml(cat) + ': <span class="em-stat-count">' + count + '</span></span>';
+    }
+    statsBar.innerHTML = html;
+  }
+
+  function renderTagPills() {
+    if (allTags.length === 0) {
+      tagFilterSection.style.display = 'none';
+      return;
+    }
+    tagFilterSection.style.display = '';
+    tagPills.innerHTML = allTags.map(function(t) {
+      let cls = 'em-pill';
+      if (filters.tags.include.has(t)) cls += ' include';
+      else if (filters.tags.exclude.has(t)) cls += ' exclude';
+      return '<span class="' + cls + '" data-group="tags" data-value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</span>';
+    }).join('');
+    bindPillClicks(tagPills);
+  }
+
+  // --- Filtering ---
+
+  function getFilteredExperiences() {
+    return experiences.filter(function(e) {
+      // Status filter
+      if (filters.statusFilter === 'active' && e.status === 'deprecated') return false;
+
+      // Category filter
+      if (filters.category.include.size > 0 && !filters.category.include.has(e.category)) return false;
+      if (filters.category.exclude.has(e.category)) return false;
+
+      // Severity filter
+      if (filters.severity.include.size > 0 && !filters.severity.include.has(e.severity)) return false;
+      if (filters.severity.exclude.has(e.severity)) return false;
+
+      // Tags filter
+      var eTags = e.tags || [];
+      if (filters.tags.include.size > 0) {
+        var hasIncluded = false;
+        for (var t of filters.tags.include) {
+          if (eTags.includes(t)) { hasIncluded = true; break; }
+        }
+        if (!hasIncluded) return false;
+      }
+      for (var t of filters.tags.exclude) {
+        if (eTags.includes(t)) return false;
+      }
+
+      return true;
+    });
+  }
+
+  function renderExpList() {
+    var filtered = getFilteredExperiences();
+
+    if (experiences.length === 0) {
+      expList.innerHTML = '<div style="padding:24px 16px;color:var(--text-secondary);font-size:13px;text-align:center">' +
+        '<div style="font-size:32px;margin-bottom:8px;opacity:0.3">&#128218;</div>' +
+        'No experiences found. The EMS may be empty or unavailable.</div>';
+      return;
+    }
+
+    if (filtered.length === 0) {
+      expList.innerHTML = '<div style="padding:16px;color:var(--text-secondary);font-size:13px">No experiences match your filters.</div>';
+      return;
+    }
+
+    var html = [];
+    for (var e of filtered) {
+      var icon = SEVERITY_ICONS[e.severity] || '\u2139\uFE0F';
+      var active = currentExpId === e.id ? ' active' : '';
+      var content = e.content || '';
+      var preview = content.length > 80 ? content.substring(0, 80) + '...' : content;
+      var time = e.created_at ? relativeTime(e.created_at) : '';
+
+      html.push(
+        '<div class="em-exp-item' + active + '" data-id="' + escapeHtml(e.id) + '">' +
+          '<span class="em-exp-icon">' + icon + '</span>' +
+          '<div class="em-exp-info">' +
+            '<div class="em-exp-content">' + escapeHtml(preview) + '</div>' +
+            '<div class="em-exp-meta">' +
+              '<span class="em-cat-badge ' + escapeHtml(e.category || '') + '">' + escapeHtml(e.category || '') + '</span>' +
+              (e.tags || []).slice(0, 3).map(function(t) {
+                return '<span class="em-tag">' + escapeHtml(t) + '</span>';
+              }).join('') +
+              (time ? '<span class="em-exp-time">' + time + '</span>' : '') +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+    expList.innerHTML = html.join('');
+
+    expList.querySelectorAll('.em-exp-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        loadExpDetail(item.dataset.id);
+        if (window.innerWidth <= 900) {
+          sidebarEl.classList.remove('open');
+        }
+      });
+    });
+  }
+
+  // --- Tri-state pill logic ---
+
+  function cyclePill(group, value) {
+    var f = filters[group];
+    if (f.include.has(value)) {
+      f.include.delete(value);
+      f.exclude.add(value);
+    } else if (f.exclude.has(value)) {
+      f.exclude.delete(value);
+    } else {
+      f.include.add(value);
+    }
+  }
+
+  function bindPillClicks(container) {
+    container.querySelectorAll('.em-pill').forEach(function(pill) {
+      pill.addEventListener('click', function() {
+        var group = pill.dataset.group;
+        var value = pill.dataset.value;
+        cyclePill(group, value);
+        updatePillStates();
+        renderExpList();
+      });
+    });
+  }
+
+  function updatePillStates() {
+    document.querySelectorAll('.em-pill[data-group]').forEach(function(pill) {
+      var group = pill.dataset.group;
+      var value = pill.dataset.value;
+      var f = filters[group];
+      pill.classList.remove('include', 'exclude');
+      if (f.include.has(value)) pill.classList.add('include');
+      else if (f.exclude.has(value)) pill.classList.add('exclude');
+    });
+  }
+
+  // Bind static pills
+  bindPillClicks(document.getElementById('categoryPills'));
+  bindPillClicks(document.getElementById('severityPills'));
+
+  // Status toggle
+  document.getElementById('statusToggle').addEventListener('click', function(e) {
+    var btn = e.target.closest('.em-status-btn');
+    if (!btn) return;
+    filters.statusFilter = btn.dataset.status;
+    document.querySelectorAll('.em-status-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    renderExpList();
+  });
+
+  // --- Check Panel ---
+
+  function showCheckPanel() {
+    viewMode = 'check';
+    currentExpId = null;
+    renderExpList();
+    updateHash();
+
+    detailArea.innerHTML =
+      '<div class="em-check-panel">' +
+        // Check Action
+        '<div class="em-panel-section">' +
+          '<div class="em-panel-title">Check Action</div>' +
+          '<div class="em-input-group">' +
+            '<input class="em-input" id="checkAction" type="text" placeholder="Describe an action to check...">' +
+            '<button class="em-btn" id="checkBtn">Check</button>' +
+          '</div>' +
+          '<div class="em-advanced-toggle" id="advancedToggle">' +
+            '<span class="em-advanced-arrow">&#9654;</span> Advanced Options' +
+          '</div>' +
+          '<div class="em-advanced-body" id="advancedBody">' +
+            '<div><div class="em-field-label">Tags (comma-separated)</div>' +
+            '<input class="em-input" id="checkTags" type="text" placeholder="tag1, tag2"></div>' +
+            '<div><div class="em-field-label">Context (JSON)</div>' +
+            '<textarea class="em-textarea" id="checkContext" placeholder=\'{"key": "value"}\'></textarea></div>' +
+          '</div>' +
+          '<div id="checkResult"></div>' +
+        '</div>' +
+        // Semantic Search
+        '<div class="em-panel-section">' +
+          '<div class="em-panel-title">Semantic Search</div>' +
+          '<div class="em-input-group">' +
+            '<input class="em-input" id="searchQuery" type="text" placeholder="Search experiences...">' +
+            '<button class="em-btn" id="searchBtn">Search</button>' +
+          '</div>' +
+          '<div class="em-advanced-toggle" id="searchAdvToggle">' +
+            '<span class="em-advanced-arrow">&#9654;</span> Filters' +
+          '</div>' +
+          '<div class="em-advanced-body" id="searchAdvBody">' +
+            '<div class="em-search-filters">' +
+              '<label>Category <select class="em-input" id="searchCategory" style="max-width:120px;padding:4px 8px">' +
+                '<option value="">any</option><option value="guardrail">guardrail</option><option value="practice">practice</option><option value="lesson">lesson</option>' +
+              '</select></label>' +
+              '<label>Severity <select class="em-input" id="searchSeverity" style="max-width:120px;padding:4px 8px">' +
+                '<option value="">any</option><option value="block">block</option><option value="warn">warn</option><option value="info">info</option>' +
+              '</select></label>' +
+              '<label>Threshold <input class="em-input" id="searchThreshold" type="number" step="0.1" min="0" max="1" value="0.5" style="max-width:70px;padding:4px 8px"></label>' +
+              '<label>Limit <input class="em-input" id="searchLimit" type="number" min="1" max="100" value="20" style="max-width:70px;padding:4px 8px"></label>' +
+            '</div>' +
+          '</div>' +
+          '<div id="searchResult"></div>' +
+        '</div>' +
+      '</div>';
+
+    // Advanced toggles
+    var advToggle = document.getElementById('advancedToggle');
+    advToggle.addEventListener('click', function() { advToggle.classList.toggle('open'); });
+
+    var searchAdvToggle = document.getElementById('searchAdvToggle');
+    searchAdvToggle.addEventListener('click', function() { searchAdvToggle.classList.toggle('open'); });
+
+    // Check button
+    document.getElementById('checkBtn').addEventListener('click', doCheck);
+    document.getElementById('checkAction').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') doCheck();
+    });
+
+    // Search button
+    document.getElementById('searchBtn').addEventListener('click', doSearch);
+    document.getElementById('searchQuery').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') doSearch();
+    });
+  }
+
+  async function doCheck() {
+    var action = document.getElementById('checkAction').value.trim();
+    if (!action) return;
+
+    var resultEl = document.getElementById('checkResult');
+    resultEl.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Checking...</div>';
+
+    var body = { action: action };
+    var tags = document.getElementById('checkTags').value.trim();
+    if (tags) body.tags = tags.split(',').map(function(t) { return t.trim(); }).filter(Boolean);
+
+    var ctx = document.getElementById('checkContext').value.trim();
+    if (ctx) {
+      try { body.context = JSON.parse(ctx); } catch { /* ignore invalid JSON */ }
+    }
+
+    try {
+      var res = await fetch('/api/ems/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error('Failed');
+      var json = await res.json();
+      var data = json.success ? json.data : json;
+      renderCheckResult(data, resultEl);
+    } catch {
+      resultEl.innerHTML = '<div style="padding:16px;color:var(--red)">Failed to check action. EMS may be unavailable.</div>';
+    }
+  }
+
+  function renderCheckResult(data, el) {
+    var verdict = (data.verdict || data.action || 'allow').toLowerCase();
+    var html = '<div class="em-verdict">' +
+      '<div class="em-verdict-badge ' + escapeHtml(verdict) + '">' + escapeHtml(verdict) + '</div>' +
+    '</div>';
+
+    var matches = data.matched_experiences || data.matches || [];
+    if (matches.length > 0) {
+      html += '<div class="em-matches">';
+      html += '<div class="em-matches-title">Matched Experiences (' + matches.length + ')</div>';
+      for (var m of matches) {
+        var exp = m.experience || m;
+        var sev = exp.severity || 'info';
+        var sim = m.similarity || m.score || 0;
+        html += renderMatchCard(exp, sev, sim);
+      }
+      html += '</div>';
+    }
+
+    // LLM Judgment
+    var judgment = data.judgment || data.llm_judgment;
+    if (judgment) {
+      html += '<div class="em-judgment" id="judgmentBlock">' +
+        '<div class="em-judgment-header" id="judgmentToggle">' +
+          '<span class="em-judgment-arrow">&#9654;</span> LLM Judgment' +
+        '</div>' +
+        '<div class="em-judgment-body"><pre>' + escapeHtml(JSON.stringify(judgment, null, 2)) + '</pre></div>' +
+      '</div>';
+    }
+
+    el.innerHTML = html;
+
+    // Bind judgment toggle
+    var jt = document.getElementById('judgmentToggle');
+    if (jt) {
+      jt.addEventListener('click', function() {
+        document.getElementById('judgmentBlock').classList.toggle('open');
+      });
+    }
+  }
+
+  async function doSearch() {
+    var query = document.getElementById('searchQuery').value.trim();
+    if (!query) return;
+
+    var resultEl = document.getElementById('searchResult');
+    resultEl.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Searching...</div>';
+
+    var body = { query: query };
+    var cat = document.getElementById('searchCategory').value;
+    if (cat) body.category = cat;
+    var sev = document.getElementById('searchSeverity').value;
+    if (sev) body.severity = sev;
+    body.threshold = parseFloat(document.getElementById('searchThreshold').value) || 0.5;
+    body.limit = parseInt(document.getElementById('searchLimit').value, 10) || 20;
+
+    try {
+      var res = await fetch('/api/ems/experiences/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error('Failed');
+      var json = await res.json();
+      var results = json.success ? (json.data || []) : (Array.isArray(json) ? json : []);
+      renderSearchResults(results, resultEl);
+    } catch {
+      resultEl.innerHTML = '<div style="padding:16px;color:var(--red)">Search failed. EMS may be unavailable.</div>';
+    }
+  }
+
+  function renderSearchResults(results, el) {
+    if (results.length === 0) {
+      el.innerHTML = '<div style="padding:16px;color:var(--text-secondary)">No matches found.</div>';
+      return;
+    }
+
+    var html = '<div class="em-matches">';
+    html += '<div class="em-matches-title">Results (' + results.length + ')</div>';
+    for (var r of results) {
+      var exp = r.experience || r;
+      var sev = exp.severity || 'info';
+      var sim = r.similarity || r.score || 0;
+      html += renderMatchCard(exp, sev, sim);
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  function renderMatchCard(exp, sev, sim) {
+    var icon = SEVERITY_ICONS[sev] || '\u2139\uFE0F';
+    var pct = Math.round(sim * 100);
+    var tags = exp.tags || [];
+
+    var html = '<div class="em-match-card ' + escapeHtml(sev) + '">';
+    html += '<div class="em-match-header">';
+    html += '<span>' + icon + '</span>';
+    html += '<span class="em-severity-badge ' + escapeHtml(sev) + '">' + escapeHtml(sev) + '</span>';
+    html += '<span class="em-cat-badge ' + escapeHtml(exp.category || '') + '">' + escapeHtml(exp.category || '') + '</span>';
+    html += '</div>';
+    html += '<div class="em-match-content">' + escapeHtml(exp.content || '') + '</div>';
+    if (tags.length > 0) {
+      html += '<div class="em-match-tags">';
+      for (var t of tags) {
+        html += '<span class="em-tag">' + escapeHtml(t) + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '<div class="em-sim-bar-wrap">';
+    html += '<div class="em-sim-bar"><div class="em-sim-bar-fill" style="width:' + pct + '%"></div></div>';
+    html += '<span class="em-sim-value">' + pct + '%</span>';
+    html += '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  // --- Experience Detail ---
+
+  async function loadExpDetail(id) {
+    viewMode = 'detail';
+    currentExpId = id;
+    renderExpList();
+    updateHash();
+
+    detailArea.innerHTML = '<div class="em-loading"><div class="em-spinner"></div> Loading...</div>';
+
+    try {
+      var res = await fetch('/api/ems/experiences/' + encodeURIComponent(id));
+      if (!res.ok) throw new Error('Failed');
+      var json = await res.json();
+      var exp = json.success ? json.data : json;
+      renderExpDetail(exp);
+    } catch {
+      detailArea.innerHTML = '<div style="padding:24px;color:var(--red)">Failed to load experience.</div>';
+    }
+  }
+
+  function renderExpDetail(exp) {
+    var sev = exp.severity || 'info';
+    var icon = SEVERITY_ICONS[sev] || '\u2139\uFE0F';
+    var tags = exp.tags || [];
+
+    var html = '';
+
+    // Back link
+    html += '<div class="em-back-link" id="backToCheck">&larr; Back to Check Panel</div>';
+
+    // Header
+    html += '<div class="em-detail-header">';
+    html += '<div class="em-detail-title-row">';
+    html += '<span class="em-detail-severity-icon">' + icon + '</span>';
+    html += '<div class="em-detail-badges">';
+    html += '<span class="em-severity-badge ' + escapeHtml(sev) + '">' + escapeHtml(sev) + '</span>';
+    html += '<span class="em-cat-badge ' + escapeHtml(exp.category || '') + '">' + escapeHtml(exp.category || '') + '</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Content
+    html += '<div class="em-detail-content">' + escapeHtml(exp.content || 'No content') + '</div>';
+
+    // Tags
+    if (tags.length > 0) {
+      html += '<div class="em-detail-section">';
+      html += '<div class="em-detail-section-title">Tags</div>';
+      html += '<div class="em-detail-tags">';
+      for (var t of tags) {
+        html += '<span class="em-detail-tag">' + escapeHtml(t) + '</span>';
+      }
+      html += '</div></div>';
+    }
+
+    // Metadata grid
+    html += '<div class="em-detail-section">';
+    html += '<div class="em-detail-section-title">Details</div>';
+    html += '<div class="em-detail-meta-grid">';
+    if (exp.source) {
+      html += '<span class="em-detail-meta-key">Source</span>';
+      html += '<span class="em-detail-meta-val">' + escapeHtml(exp.source) + '</span>';
+    }
+    html += '<span class="em-detail-meta-key">Status</span>';
+    html += '<span class="em-detail-meta-val">' + escapeHtml(exp.status || 'active') + '</span>';
+    if (exp.id) {
+      html += '<span class="em-detail-meta-key">ID</span>';
+      html += '<span class="em-detail-meta-val">' + escapeHtml(exp.id) + '</span>';
+    }
+    if (exp.created_at) {
+      html += '<span class="em-detail-meta-key">Created</span>';
+      html += '<span class="em-detail-meta-val">' + escapeHtml(new Date(exp.created_at).toLocaleString()) + '</span>';
+    }
+    if (exp.updated_at) {
+      html += '<span class="em-detail-meta-key">Updated</span>';
+      html += '<span class="em-detail-meta-val">' + escapeHtml(new Date(exp.updated_at).toLocaleString()) + '</span>';
+    }
+    html += '</div></div>';
+
+    // Scope
+    if (exp.scope && Object.keys(exp.scope).length > 0) {
+      html += '<div class="em-detail-section em-detail-scope">';
+      html += '<div class="em-detail-section-title">Scope</div>';
+      html += '<pre>' + escapeHtml(JSON.stringify(exp.scope, null, 2)) + '</pre>';
+      html += '</div>';
+    }
+
+    detailArea.innerHTML = html;
+
+    document.getElementById('backToCheck').addEventListener('click', function() {
+      showCheckPanel();
+    });
+  }
+
+  // --- Hash routing ---
+
+  function updateHash() {
+    if (viewMode === 'detail' && currentExpId) {
+      var hash = '#/' + encodeURIComponent(currentExpId);
+      if (window.location.hash !== hash) history.pushState(null, '', hash);
+    } else {
+      if (window.location.hash) history.pushState(null, '', window.location.pathname);
+    }
+  }
+
+  function navigateFromHash() {
+    var hash = window.location.hash;
+    if (!hash || !hash.startsWith('#/')) return;
+    var id = decodeURIComponent(hash.substring(2));
+    if (id) loadExpDetail(id);
+  }
+
+  window.addEventListener('hashchange', function() {
+    if (!authenticated) return;
+    var hash = window.location.hash;
+    if (!hash || !hash.startsWith('#/')) {
+      showCheckPanel();
+    } else {
+      navigateFromHash();
+    }
+  });
+
+  // --- Utilities ---
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function relativeTime(dateStr) {
+    var now = Date.now();
+    var then = new Date(dateStr).getTime();
+    var diff = now - then;
+    if (diff < 0) return 'just now';
+    var secs = Math.floor(diff / 1000);
+    if (secs < 60) return secs + 's ago';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    var days = Math.floor(hrs / 24);
+    if (days < 30) return days + 'd ago';
+    return new Date(dateStr).toLocaleDateString();
+  }
+
+  // --- Mobile back ---
+  var mobileBack = document.getElementById('mobileBack');
+  if (mobileBack) {
+    mobileBack.addEventListener('click', function() { sidebarEl.classList.add('open'); });
+  }
+
+  // --- Sidebar toggle (collapse/expand) ---
+  var sidebarToggleBtn = document.getElementById('sidebarToggle');
+  var SIDEBAR_MIN_WIDTH = 200;
+  var SIDEBAR_MAX_WIDTH = 600;
+  var SIDEBAR_DEFAULT_WIDTH = 320;
+  var SIDEBAR_STORAGE_KEY = 'em-sidebar-width';
+  var SIDEBAR_COLLAPSED_KEY = 'em-sidebar-collapsed';
+
+  function getSavedSidebarWidth() {
+    var saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return saved ? Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, parseInt(saved, 10))) : SIDEBAR_DEFAULT_WIDTH;
+  }
+
+  function setSidebarWidth(w) {
+    sidebarEl.style.width = w + 'px';
+    sidebarEl.style.minWidth = w + 'px';
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(w));
+  }
+
+  function collapseSidebar() {
+    sidebarEl.classList.add('collapsed');
+    sidebarEl.style.width = '0px';
+    sidebarEl.style.minWidth = '0px';
+    sidebarToggleBtn.textContent = '\u25B6';
+    sidebarToggleBtn.title = 'Show sidebar';
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, '1');
+  }
+
+  function expandSidebar() {
+    sidebarEl.classList.remove('collapsed');
+    var w = getSavedSidebarWidth();
+    setSidebarWidth(w);
+    sidebarToggleBtn.textContent = '\u2630';
+    sidebarToggleBtn.title = 'Hide sidebar';
+    localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', function() {
+      if (window.innerWidth <= 900) {
+        sidebarEl.classList.toggle('open');
+      } else {
+        if (sidebarEl.classList.contains('collapsed')) {
+          expandSidebar();
+        } else {
+          collapseSidebar();
+        }
+      }
+    });
+  }
+
+  function restoreSidebarState() {
+    if (window.innerWidth > 900) {
+      if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') {
+        collapseSidebar();
+      } else {
+        var w = getSavedSidebarWidth();
+        setSidebarWidth(w);
+      }
+    }
+  }
+
+  // --- Sidebar resize handle ---
+  var resizeHandle = document.getElementById('resizeHandle');
+  if (resizeHandle) {
+    var isResizing = false;
+    var startX = 0;
+    var startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', function(e) {
+      if (sidebarEl.classList.contains('collapsed')) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebarEl.offsetWidth;
+      sidebarEl.style.transition = 'none';
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!isResizing) return;
+      var delta = e.clientX - startX;
+      var newWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, startWidth + delta));
+      setSidebarWidth(newWidth);
+    });
+
+    document.addEventListener('mouseup', function() {
+      if (isResizing) {
+        isResizing = false;
+        sidebarEl.style.transition = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+
+    resizeHandle.addEventListener('dblclick', function() {
+      setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
