@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tool Permission System - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Tool Permission System</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Sidebar toggle (mobile) -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <a class="back-link" href="../" style="padding:8px 16px;display:block">&larr; Back to Topics</a>
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-link" href="#overview">Architecture Overview</a>
+  <a class="nav-link" href="#decision-flow">Decision Flowchart</a>
+
+  <div class="nav-section">Tool Policy</div>
+  <a class="nav-link" href="#tool-profiles">Profiles &amp; Groups</a>
+  <a class="nav-link" href="#allow-deny">Allow / Deny Lists</a>
+  <a class="nav-link" href="#policy-pipeline">Policy Pipeline</a>
+
+  <div class="nav-section">Exec Security</div>
+  <a class="nav-link" href="#exec-modes">Security Modes</a>
+  <a class="nav-link" href="#safe-bins">Safe-Bin Policy</a>
+  <a class="nav-link" href="#command-analysis">Command Analysis</a>
+
+  <div class="nav-section">Approvals</div>
+  <a class="nav-link" href="#approval-lifecycle">Approval Lifecycle</a>
+  <a class="nav-link" href="#ask-modes">Ask Modes</a>
+  <a class="nav-link" href="#approval-binding">Approval Binding</a>
+  <a class="nav-link" href="#forwarder-flow">Forwarder Flow</a>
+
+  <div class="nav-section">Execution</div>
+  <a class="nav-link" href="#shell-hardening">Shell Hardening</a>
+  <a class="nav-link" href="#elevated">Elevated Execution</a>
+  <a class="nav-link" href="#non-exec-policies">Non-Exec Policies</a>
+
+  <div class="nav-section">Reference</div>
+  <a class="nav-link" href="#config-reference">Configuration Reference</a>
+</nav>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- Architecture Overview -->
+  <section id="overview">
+    <h2><span class="section-num">01</span>Architecture Overview</h2>
+    <p class="lead">
+      OpenClaw's tool permission system is a multi-layer defense-in-depth stack. Each layer
+      independently decides whether a tool invocation is allowed — and all layers must agree
+      before execution proceeds.
+    </p>
+    <p>
+      The four layers compose in order of increasing specificity: the <strong>Tool Policy</strong>
+      layer controls which tool names an agent can call at all; the <strong>Exec Security</strong>
+      layer governs how shell commands execute; the <strong>Exec Approvals</strong> layer adds
+      human-in-the-loop gating; and the <strong>Elevated Mode</strong> layer provides a
+      controlled escape hatch for sandboxed agents that need host access.
+    </p>
+
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>What It Controls</th>
+            <th>Key Source</th>
+            <th>Applies To</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1. Tool Policy</strong></td>
+            <td>Which tool names are visible/callable by an agent</td>
+            <td><code>src/agents/tool-policy.ts</code></td>
+            <td>All agents, all tools</td>
+          </tr>
+          <tr>
+            <td><strong>2. Exec Security</strong></td>
+            <td>How shell commands are classified and gated</td>
+            <td><code>src/infra/exec-approvals-allowlist.ts</code></td>
+            <td>Exec tool only</td>
+          </tr>
+          <tr>
+            <td><strong>3. Exec Approvals</strong></td>
+            <td>Human approval lifecycle for each exec call</td>
+            <td><code>src/gateway/exec-approval-manager.ts</code></td>
+            <td>Gateway / Node hosts</td>
+          </tr>
+          <tr>
+            <td><strong>4. Elevated Mode</strong></td>
+            <td>Sandbox-to-host breakout with authorization</td>
+            <td><code>src/infra/elevated-exec.ts</code></td>
+            <td>Sandboxed agents</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Decision Flowchart -->
+  <section id="decision-flow">
+    <h2><span class="section-num">02</span>Decision Flowchart</h2>
+    <p>When an agent invokes a tool, the request traverses this decision tree top-to-bottom.
+       The first <strong>DENY</strong> encountered ends execution immediately.</p>
+    <pre>
+Agent requests tool call
+  │
+  ▼
+┌─────────────────────────────────────────────┐
+│  LAYER 1 — Tool Policy                      │
+│  Is this tool name in the agent's           │
+│  allowed set? (profile + allow/deny lists)  │
+└───────────┬─────────────────────────────────┘
+            │
+    NO ─────┴──→  DENY  (tool not available to agent)
+            │
+           YES
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  Is this the "exec" tool?                   │
+└───────────┬─────────────────────────────────┘
+            │
+    NO ──────┴──→  Apply non-exec tool policy (read / write /
+            │     browser / web_fetch) and ALLOW or DENY
+           YES
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  LAYER 2 — Exec Security Mode               │
+│  What is the agent's exec security mode?    │
+└───────────┬─────────────────────────────────┘
+            │
+         "deny" ──────────────────────────────→  DENY  (all exec blocked)
+            │
+         "full" ──────────────────────────────→  skip to LAYER 3
+            │
+        "allowlist"
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  Command Analysis                           │
+│  1. Unwrap shell wrappers (bash -c, env…)   │
+│  2. Parse chain operators (&& || ; | )      │
+│  3. Check each segment individually         │
+└───────────┬─────────────────────────────────┘
+            │
+  Redirection / subshell found ────────────→  DENY  (unconditional)
+            │
+  Any segment not satisfying allowlist ────→  DENY  (unless ask triggers)
+            │
+  All segments satisfy allowlist or safe-bin
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  LAYER 3 — Exec Approvals (ask mode)        │
+│  ask = off ?                                │
+└───────────┬─────────────────────────────────┘
+            │
+          YES ─────────────────────────────→  ALLOW  (no approval needed)
+            │
+           NO (on-miss or always)
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  ask = "always" OR command not in history?  │
+│  → Create approval request, broadcast UI    │
+│  → Wait for operator (timeout → deny)       │
+└───────────┬─────────────────────────────────┘
+            │
+       DENIED ────────────────────────────→  DENY  (operator rejected)
+            │
+         APPROVED
+            │
+            ▼
+┌─────────────────────────────────────────────┐
+│  LAYER 4 — Elevated Mode (sandboxed only)   │
+│  Is agent in sandbox? Elevated requested?   │
+└───────────┬─────────────────────────────────┘
+            │
+    Sandbox, no elevated ─────────────────→  Execute in sandbox
+            │
+    Elevated allowed for this sender ─────→  Execute on HOST
+            │
+            ▼
+         ALLOW — command executes
+</pre>
+  </section>
+
+  <!-- Tool Profiles & Groups -->
+  <section id="tool-profiles">
+    <h2><span class="section-num">03</span>Profiles &amp; Groups</h2>
+    <p>
+      Every agent is assigned a <strong>tool profile</strong> that defines its baseline tool
+      availability. Profiles are defined in
+      <code>src/agents/tool-catalog.ts</code> and expanded to concrete tool sets before policy
+      allow/deny lists are applied.
+    </p>
+
+    <h3>Built-in Profiles</h3>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Included Tool Groups</th>
+            <th>Typical Use Case</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>full</code></td>
+            <td>All groups — fs, runtime, web, memory, sessions, ui, messaging, automation, nodes, agents, media</td>
+            <td>Default for main agent with full capabilities</td>
+          </tr>
+          <tr>
+            <td><code>coding</code></td>
+            <td>fs, runtime, memory, sessions (limited), media, web</td>
+            <td>Code-focused agents, Claude Code integration</td>
+          </tr>
+          <tr>
+            <td><code>messaging</code></td>
+            <td>messaging, sessions (limited)</td>
+            <td>Relay agents that only forward messages</td>
+          </tr>
+          <tr>
+            <td><code>minimal</code></td>
+            <td>session_status only</td>
+            <td>Read-only status agents, lightweight subagents</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Tool Groups</h3>
+    <p>
+      Profiles are built from named groups. Groups can also be used directly in allow/deny
+      lists with the <code>group:</code> prefix.
+    </p>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Group</th>
+            <th>Tools</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>group:fs</code></td>
+            <td>read, write, edit, apply_patch</td>
+            <td>File system access</td>
+          </tr>
+          <tr>
+            <td><code>group:runtime</code></td>
+            <td>exec, process</td>
+            <td>Command execution</td>
+          </tr>
+          <tr>
+            <td><code>group:web</code></td>
+            <td>web_search, web_fetch</td>
+            <td>Internet access</td>
+          </tr>
+          <tr>
+            <td><code>group:memory</code></td>
+            <td>memory_search, memory_get</td>
+            <td>Long-term memory</td>
+          </tr>
+          <tr>
+            <td><code>group:sessions</code></td>
+            <td>sessions_list, sessions_history, sessions_send, sessions_spawn, sessions_yield, subagents, session_status</td>
+            <td>Multi-agent orchestration</td>
+          </tr>
+          <tr>
+            <td><code>group:ui</code></td>
+            <td>browser, canvas</td>
+            <td>GUI interaction</td>
+          </tr>
+          <tr>
+            <td><code>group:messaging</code></td>
+            <td>message</td>
+            <td>Send messages to channels</td>
+          </tr>
+          <tr>
+            <td><code>group:automation</code></td>
+            <td>cron, gateway</td>
+            <td>Scheduled and gateway control</td>
+          </tr>
+          <tr>
+            <td><code>group:nodes</code></td>
+            <td>nodes</td>
+            <td>Remote node management</td>
+          </tr>
+          <tr>
+            <td><code>group:openclaw</code></td>
+            <td>OpenClaw-specific tools</td>
+            <td>Internal system tools</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Plugin tools are loaded separately as <code>group:plugin:&lt;name&gt;</code> and community
+      tools as <code>group:community:&lt;name&gt;</code>. This namespace separation ensures
+      third-party tools cannot accidentally match built-in group patterns.
+    </p>
+  </section>
+
+  <!-- Allow / Deny Lists -->
+  <section id="allow-deny">
+    <h2><span class="section-num">04</span>Allow / Deny Lists</h2>
+    <p>
+      After a profile establishes the baseline set, allow and deny lists refine it.
+      Deny always wins — a tool in both lists is blocked. Lists accept individual tool names,
+      <code>group:</code> prefixes, and glob patterns via
+      <code>src/agents/tool-policy-match.ts</code>.
+    </p>
+
+    <h3>Policy Scopes (in application order)</h3>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Config Key</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Global</td>
+            <td><code>tools.allow / tools.deny</code></td>
+            <td>Applies to all agents across all providers</td>
+          </tr>
+          <tr>
+            <td>Provider-specific</td>
+            <td><code>providers[n].tools.allow / .deny</code></td>
+            <td>Applies to all agents that use provider n</td>
+          </tr>
+          <tr>
+            <td>Agent-specific</td>
+            <td><code>agents[n].tools.allow / .deny</code></td>
+            <td>Applies to a named agent only</td>
+          </tr>
+          <tr>
+            <td>Sandbox override</td>
+            <td><code>agents[n].sandbox.alsoAllow</code></td>
+            <td>Extra allow list for sandboxed copies of the agent (<code>src/agents/sandbox-tool-policy.ts</code>)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Owner-Only Tools</h3>
+    <p>
+      Certain tools are marked <strong>owner-only</strong> in the catalog
+      (<code>src/agents/tool-policy.ts</code>). These tools are stripped from the list for any
+      agent that is not the designated "owner" agent regardless of what profiles or allow lists
+      say. This prevents subagents or guest agents from accessing administrative capabilities.
+    </p>
+
+    <h3>Pattern Matching</h3>
+    <p>
+      Tool name matching is case-insensitive glob matching. The <code>group:</code> prefix is
+      expanded to the full tool list before matching. Examples:
+    </p>
+    <pre>
+# Allow only filesystem and web tools
+allow: ["group:fs", "group:web"]
+
+# Deny all write operations
+deny: ["write", "edit", "apply_patch"]
+
+# Deny everything in the runtime group
+deny: ["group:runtime"]
+
+# Allow a specific community tool
+allow: ["group:community:my-tool"]
+</pre>
+  </section>
+
+  <!-- Policy Pipeline -->
+  <section id="policy-pipeline">
+    <h2><span class="section-num">05</span>Policy Pipeline</h2>
+    <p>
+      <code>src/agents/tool-policy-pipeline.ts</code> wires the scopes together into a
+      deterministic resolution sequence. The pipeline runs once per agent initialization and
+      produces a frozen allowed-tool set that is injected into the agent's tool schema.
+    </p>
+    <pre>
+Profile expansion
+  → resolve profile name → expand to concrete tool names
+  → apply owner-only filter (strip privileged tools for non-owner agents)
+
+Global deny list
+  → remove any tool matching global tools.deny
+
+Global allow list
+  → if set: keep only tools matching global tools.allow
+  → if not set: no additional filtering
+
+Provider-level deny → remove tools matching provider deny list
+Provider-level allow → if set: intersect with provider allow list
+
+Agent-level deny → remove tools matching agent deny list
+Agent-level allow → if set: intersect with agent allow list
+
+Sandbox alsoAllow (sandboxed agents only)
+  → add tools in alsoAllow that were not previously denied
+  → does NOT override a deny — cannot un-deny tools
+
+Result: frozen tool set presented to LLM via tool schema
+</pre>
+    <p>
+      The frozen set is the only set the LLM ever sees. The model cannot request a tool
+      not in the set — the schema simply does not include it.
+    </p>
+  </section>
+
+  <!-- Exec Security Modes -->
+  <section id="exec-modes">
+    <h2><span class="section-num">06</span>Exec Security Modes</h2>
+    <p>
+      Even when the exec tool is allowed by policy, a second gate controls <em>how</em> it
+      executes. The mode is set per-agent in
+      <code>agents[n].exec.security</code>
+      (or globally in <code>tools.exec.security</code>).
+    </p>
+
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>Behavior</th>
+            <th>Default For</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>deny</code></td>
+            <td>All exec calls are rejected immediately. The exec tool may still appear in the schema (so the agent knows it exists) but every invocation returns a permission denied error.</td>
+            <td>Sandbox environments</td>
+          </tr>
+          <tr>
+            <td><code>allowlist</code></td>
+            <td>Commands are evaluated against a per-agent allowlist of glob patterns. Commands matching the list may proceed to the approval gate; unmatched commands are denied (or trigger ask on-miss).</td>
+            <td>Gateway / Node hosts</td>
+          </tr>
+          <tr>
+            <td><code>full</code></td>
+            <td>No allowlist checking. All syntactically valid commands pass through to the approval gate. Use with extreme caution — the agent can run arbitrary code.</td>
+            <td>Explicit operator opt-in only</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Mode Interaction with Ask</h3>
+    <p>
+      In <code>allowlist</code> mode, the <code>ask</code> setting determines what happens
+      when a command is <em>not</em> in the allowlist:
+    </p>
+    <pre>
+security = "allowlist", ask = "off"
+  → Commands NOT in allowlist: DENY immediately
+  → Commands IN allowlist:     ALLOW (no approval prompt)
+
+security = "allowlist", ask = "on-miss"
+  → Commands NOT in allowlist: ASK operator → approve adds to allowlist
+  → Commands IN allowlist:     ALLOW (no approval prompt)
+
+security = "allowlist", ask = "always"
+  → All commands: ASK operator every time
+  → Allowlist still checked for auto-allow; patterns in list skip prompt
+
+security = "full", ask = "on-miss"
+  → Allowlist not checked; ASK for everything not previously seen
+
+security = "full", ask = "always"
+  → ASK for every single exec call, no exceptions
+</pre>
+  </section>
+
+  <!-- Safe-Bin Policy -->
+  <section id="safe-bins">
+    <h2><span class="section-num">07</span>Safe-Bin Policy</h2>
+    <p>
+      Safe bins are a curated set of Unix filter commands that are auto-allowed in
+      <code>allowlist</code> mode without requiring an explicit pattern in the allowlist.
+      They are only allowed when invoked in a <strong>stdin-only</strong> fashion — no file
+      operands, no output redirection, no dangerous flags.
+    </p>
+    <p>
+      Implementation lives in
+      <code>src/infra/exec-safe-bin-policy-profiles.ts</code> and
+      <code>src/infra/exec-safe-bin-policy.ts</code>.
+    </p>
+
+    <h3>Default Safe Bins</h3>
+    <pre>
+cut    — field/byte splitting (stdin only, flags: -b -c -f -d)
+uniq   — de-duplication (stdin only)
+head   — first N lines (stdin only, flags: -n -c)
+tail   — last N lines (stdin only, flags: -n -c)
+tr     — character translation (stdin only, 1–2 positional args)
+wc     — line/word/byte count (stdin only)
+</pre>
+
+    <h3>Extended Safe-Bin Profiles</h3>
+    <p>
+      Additional tools can be promoted to safe-bin status via profiles — which strictly
+      constrain allowed flags to prevent file access or code execution:
+    </p>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Allowed Flags</th>
+            <th>Denied Flags</th>
+            <th>Posit. Args</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>jq</code></td>
+            <td><code>--arg</code>, <code>--argjson</code>, <code>--rawfile</code> (if trusted dir)</td>
+            <td><code>--argfile</code>, <code>-f</code>, <code>-L</code></td>
+            <td>max 1 (filter expr)</td>
+          </tr>
+          <tr>
+            <td><code>grep</code></td>
+            <td><code>-e</code>, <code>--regexp</code>, <code>-i</code>, <code>-v</code>, <code>-c</code>, <code>-n</code></td>
+            <td><code>-f</code>, <code>-r</code>, <code>-R</code>, <code>--include</code>, <code>--exclude</code></td>
+            <td>0 (stdin only)</td>
+          </tr>
+          <tr>
+            <td><code>sort</code></td>
+            <td><code>-k</code>, <code>-t</code>, <code>-n</code>, <code>-r</code>, <code>-u</code></td>
+            <td><code>--output</code>, <code>-o</code>, <code>--compress-program</code>, <code>--random-source</code></td>
+            <td>0 (stdin only)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Trusted Directories</h3>
+    <p>
+      The safe-bin check also validates that the resolved executable path comes from a
+      trusted directory. Default trusted dirs are <code>/bin</code> and <code>/usr/bin</code>.
+      This prevents a malicious script placing a fake <code>cut</code> binary in
+      <code>/tmp</code> and having it auto-allowed.
+    </p>
+    <pre>
+# Config example
+tools:
+  exec:
+    safeBins: ["cut", "uniq", "head", "tail", "tr", "wc"]
+    safeBinTrustedDirs: ["/bin", "/usr/bin", "/opt/homebrew/bin"]
+    safeBinProfiles:
+      jq:
+        allowedValueFlags: ["--arg", "--argjson"]
+        deniedFlags: ["-f", "--argfile", "-L"]
+        maxPositional: 1
+</pre>
+
+    <h3>Skill Auto-Allow</h3>
+    <p>
+      When <code>autoAllowSkills: true</code> is set, commands that match a registered skill's
+      binary are automatically allowed. Skills must explicitly register their binaries — this
+      prevents skills from inadvertently granting broad permissions.
+      See <code>src/infra/exec-approvals-allowlist.ts</code>.
+    </p>
+  </section>
+
+  <!-- Command Analysis -->
+  <section id="command-analysis">
+    <h2><span class="section-num">08</span>Command Analysis</h2>
+    <p>
+      Before allowlist matching, every exec command goes through a multi-step analysis pipeline
+      (<code>src/infra/exec-approvals-analysis.ts</code>,
+      <code>src/infra/exec-command-resolution.ts</code>,
+      <code>src/infra/shell-wrapper-resolution.ts</code>).
+      The goal is to determine the <em>actual</em> command being run after all wrappers and
+      aliases are removed.
+    </p>
+
+    <h3>Step 1 — Shell Wrapper Unwrapping</h3>
+    <p>
+      If the command starts with a shell (bash, sh, zsh, fish, ksh, dash) or a multiplexer
+      (busybox, toybox), the wrapper is peeled off to reveal the inner command or script:
+    </p>
+    <pre>
+bash -c "grep -n TODO src/"
+  → shell wrapper detected (bash with -c flag)
+  → inner command: "grep -n TODO src/"
+
+env -i PATH=/usr/bin bash -c "ls"
+  → env wrapper unwrapped (env passes through)
+  → shell wrapper detected
+  → inner command: "ls"
+
+busybox grep pattern file
+  → busybox multiplexer → applet: grep
+  → inner command: grep pattern file
+</pre>
+    <p>
+      Wrapper detection is in <code>src/infra/shell-wrapper-resolution.ts</code>.
+      Inline command flags are defined in <code>src/infra/shell-inline-command.ts</code>
+      (<code>POSIX_INLINE_COMMAND_FLAGS</code>: <code>-lc</code>, <code>-c</code>, <code>--command</code>).
+    </p>
+
+    <h3>Step 2 — Chain Operator Parsing</h3>
+    <p>
+      Commands joined by shell operators are split into segments. Each segment is evaluated
+      independently. If any segment fails allowlist matching, the entire command is rejected.
+    </p>
+    <pre>
+Detected operators and their treatment:
+  |    pipe         → split into segments, all must satisfy
+  &amp;&amp;   and-then      → split into segments, all must satisfy
+  ||   or-then       → split into segments, all must satisfy
+  ;    sequence      → split into segments, all must satisfy
+  &amp;    background    → split into segments, all must satisfy
+
+Unconditional rejection (no allowlist can override):
+  &gt;    stdout redirect
+  &gt;&gt;   append redirect
+  &lt;    stdin redirect (overrides safe-bin stdin-only rule)
+  2&gt;   stderr redirect
+  $()  command substitution
+  ``   backtick substitution
+</pre>
+
+    <h3>Step 3 — Package Runner Unwrapping</h3>
+    <p>
+      Common package runners are also unwrapped to reveal the actual script:
+    </p>
+    <pre>
+npm exec -- tsc --noEmit    → tsc --noEmit
+npx prettier --write .      → prettier --write .
+pnpm exec vitest            → vitest
+</pre>
+
+    <h3>Step 4 — Inline Eval Detection</h3>
+    <p>
+      Commands that embed code strings (e.g. <code>python -c "..."</code>,
+      <code>node -e "..."</code>, <code>perl -e "..."</code>) are treated as high-risk.
+      When <code>strictInlineEval: true</code> is set (default: <code>false</code>), these
+      always require an explicit approval even if the binary (python, node) is in the allowlist.
+    </p>
+  </section>
+
+  <!-- Approval Lifecycle -->
+  <section id="approval-lifecycle">
+    <h2><span class="section-num">09</span>Approval Lifecycle</h2>
+    <p>
+      The approval system provides human-in-the-loop oversight for exec calls. It is
+      implemented across the gateway (<code>src/gateway/exec-approval-manager.ts</code>),
+      the node service, and multiple UI surfaces.
+    </p>
+
+    <h3>Complete Lifecycle</h3>
+    <pre>
+1. Agent requests exec
+   └─ OpenClaw gateway receives system.run tool call
+
+2. Pre-flight checks
+   ├─ Tool policy: is exec allowed for this agent?
+   ├─ Security mode: deny / allowlist / full?
+   └─ Allowlist match: does command pass without ask?
+
+3. Approval request created (if ask triggers)
+   ├─ UUID assigned to this approval request
+   ├─ systemRunPlan captured (argv, cwd, env snapshot)
+   ├─ Approval binding hash computed
+   └─ Record stored in ApprovalManager
+
+4. Broadcast exec.approval.requested
+   ├─ All connected UI clients notified
+   ├─ macOS app shows system notification
+   └─ Forwarder sends to configured channels
+      └─ (Discord / Telegram / Slack messages with approve/deny buttons)
+
+5. Operator decision window (configurable timeout)
+   ├─ Operator approves via: UI, macOS app, chat /approve command
+   └─ On timeout: falls back to askFallback mode (deny or allowlist)
+
+6. Gateway resolves approval (exec.approval.resolve)
+   ├─ APPROVED: command proceeds to execution
+   │   ├─ Pattern saved to allowlist (for on-miss ask mode)
+   │   └─ Approval binding forwarded to node if needed
+   └─ DENIED: system event "Exec denied" sent to session
+
+7. Node host validation (gateway → node flow only)
+   ├─ Node receives system.run with approval token
+   ├─ Validates approval binding matches request
+   │   (argv hash, cwd, script sha256 if applicable)
+   └─ Executes or denies based on binding match
+
+8. Execution completes
+   └─ System events: "Exec running" → "Exec finished" / error
+</pre>
+  </section>
+
+  <!-- Ask Modes -->
+  <section id="ask-modes">
+    <h2><span class="section-num">10</span>Ask Modes</h2>
+    <p>
+      The <code>ask</code> setting controls <em>when</em> the approval prompt fires.
+      It applies per-agent and interacts with the allowlist and security mode.
+    </p>
+
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>Trigger Condition</th>
+            <th>Effect on Allowlist</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>off</code></td>
+            <td>Never prompts. Commands not in allowlist are denied silently.</td>
+            <td>Allowlist is the only gate. Approved = in list, else deny.</td>
+          </tr>
+          <tr>
+            <td><code>on-miss</code></td>
+            <td>Prompts when command is NOT in allowlist. Approval adds pattern to allowlist for future runs.</td>
+            <td>Grows the allowlist on each approval. Good for learning mode.</td>
+          </tr>
+          <tr>
+            <td><code>always</code></td>
+            <td>Prompts for every exec call, even if already in allowlist.</td>
+            <td>Allowlist still checked for auto-approve shortcuts; operator always sees prompt.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Ask Fallback</h3>
+    <p>
+      <code>askFallback</code> specifies behavior when an approval times out (operator
+      does not respond within the timeout window):
+    </p>
+    <pre>
+askFallback: "deny"       → timeout → command denied (safe default)
+askFallback: "allowlist"  → timeout → re-evaluate against allowlist only
+                            (if in list: allow, if not: deny)
+</pre>
+
+    <h3>Forwarder Configuration</h3>
+    <p>
+      The forwarder sends approval requests to chat channels when the operator is not
+      watching the UI. Configured under <code>approvals.exec</code>:
+    </p>
+    <pre>
+{
+  "approvals": {
+    "exec": {
+      "enabled": true,
+      "mode": "session",     // "session" | "targets" | "both"
+      "agentFilter": ["main"],
+      "sessionFilter": ["discord"],
+      "targets": [
+        { "channel": "slack", "to": "U12345678" },
+        { "channel": "discord", "to": "123456789" }
+      ]
+    }
+  }
+}
+</pre>
+    <p>
+      <code>mode: "session"</code> forwards to the same session that triggered the exec.
+      <code>mode: "targets"</code> forwards to the explicit targets list.
+      <code>mode: "both"</code> does both.
+    </p>
+  </section>
+
+  <!-- Approval Binding -->
+  <section id="approval-binding">
+    <h2><span class="section-num">11</span>Approval Binding</h2>
+    <p>
+      When an approval flows from the gateway to a remote node host, the system must
+      guarantee that the node executes exactly the command the operator approved — not
+      a substituted or modified command. This is enforced via
+      <strong>approval binding</strong> (<code>src/infra/system-run-approval-binding.ts</code>).
+    </p>
+
+    <h3>Binding Components</h3>
+    <pre>
+Approval binding captures at approval time:
+  ├─ argv[]      — exact command + arguments array
+  ├─ cwd         — working directory
+  ├─ env{}       — environment variable snapshot
+  ├─ agentId     — which agent requested the command
+  ├─ sessionKey  — which session this belongs to
+  └─ scriptHash  — if command is a script file: sha256(file contents)
+                   + scriptPath for path verification
+
+All fields are hashed together into a binding token.
+</pre>
+
+    <h3>Binding Validation (Node Side)</h3>
+    <p>
+      When the node receives the forwarded approval, it recomputes the binding from
+      the actual request parameters and compares with the token. If any field differs,
+      execution is denied:
+    </p>
+    <pre>
+Node receives:  system.run { argv, cwd, env, approvalToken }
+                  │
+                  ▼
+              Recompute binding from actual params
+                  │
+              binding_actual == binding_in_token?
+                  │
+       YES ───────┴──────→ Execute
+       NO                → Deny ("approval binding mismatch")
+</pre>
+    <p>
+      This prevents TOCTOU attacks where a compromised agent modifies the command
+      between the approval decision and execution. If the binding cannot be computed
+      (e.g. script file is unreadable), execution is denied rather than skipped.
+    </p>
+  </section>
+
+  <!-- Forwarder Flow -->
+  <section id="forwarder-flow">
+    <h2><span class="section-num">12</span>Forwarder → Resolver → Timeout Flow</h2>
+    <p>
+      This is the complete data flow for an approval that is forwarded to a chat channel
+      (<code>src/gateway/node-invoke-system-run-approval.ts</code>,
+      <code>src/gateway/server-methods/exec-approval.ts</code>):
+    </p>
+    <pre>
+Agent                  Gateway                 Node                  Operator (chat)
+  │                      │                      │                        │
+  │  system.run call     │                      │                        │
+  │─────────────────────▶│                      │                        │
+  │                      │ create approval UUID │                        │
+  │                      │ store in ApprovalMgr │                        │
+  │                      │──────────────────────────────────────────────▶│
+  │                      │         exec.approval.requested broadcast      │
+  │                      │                      │                        │
+  │  (waiting...)        │                      │       /approve UUID     │
+  │                      │◀──────────────────────────────────────────────│
+  │                      │ exec.approval.resolve│                        │
+  │                      │ decision = "approve" │                        │
+  │                      │ record resolved       │                        │
+  │                      │                      │                        │
+  │                      │ forward to node       │                        │
+  │                      │─────────────────────▶│                        │
+  │                      │ system.run +          │                        │
+  │                      │ approvalToken         │                        │
+  │                      │                      │ validate binding        │
+  │                      │                      │ execute command         │
+  │                      │                      │─────────────────────▶ stdout
+  │◀─────────────────────│◀─────────────────────│                        │
+  │    tool result        │    exec result        │                        │
+
+TIMEOUT path (operator does not respond):
+  Gateway timer fires → askFallback applied
+    "deny"      → rejection returned to agent
+    "allowlist" → re-check allowlist; allow or deny accordingly
+</pre>
+  </section>
+
+  <!-- Shell Hardening -->
+  <section id="shell-hardening">
+    <h2><span class="section-num">13</span>Shell Hardening</h2>
+    <p>
+      For sandboxed exec environments, OpenClaw applies additional hardening beyond
+      the allowlist and approval gates:
+    </p>
+
+    <h3>Command Binding in Sandbox</h3>
+    <p>
+      Sandbox execution uses <code>src/infra/shell-wrapper-resolution.ts</code> to unwrap
+      the full command chain. The sandbox enforcer then rebuilds the command using only
+      the verified binary paths — shell wrapper arguments are re-assembled from the
+      parsed structure rather than passed verbatim, preventing injection via
+      shell metacharacters in arguments.
+    </p>
+
+    <h3>Workspace Isolation Modes</h3>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>Filesystem View</th>
+            <th>Tools Affected</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>none</code></td>
+            <td>Agent sees only <code>~/.openclaw/sandboxes/&lt;id&gt;</code></td>
+            <td>read, write, edit, exec all scoped to sandbox</td>
+          </tr>
+          <tr>
+            <td><code>ro</code></td>
+            <td>Agent workspace mounted at <code>/agent</code> read-only</td>
+            <td>write, edit, apply_patch removed from schema</td>
+          </tr>
+          <tr>
+            <td><code>rw</code></td>
+            <td>Agent workspace mounted at <code>/workspace</code> read-write</td>
+            <td>All fs tools available within workspace boundary</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Sandbox Backends</h3>
+    <p>Configured in <code>agents[n].sandbox.backend</code>:</p>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Backend</th>
+            <th>Isolation Method</th>
+            <th>Scope Options</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>docker</code></td>
+            <td>Containerized execution, network isolation</td>
+            <td>session, agent, shared</td>
+          </tr>
+          <tr>
+            <td><code>ssh</code></td>
+            <td>Remote execution on a separate host</td>
+            <td>session, agent</td>
+          </tr>
+          <tr>
+            <td><code>openShell</code></td>
+            <td>OS-level shell with restricted env</td>
+            <td>session</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Sandbox Modes</h3>
+    <pre>
+sandboxing:
+  mode: "off"       → no sandboxing; all agents run on host
+  mode: "non-main"  → only subagents and spawned agents are sandboxed
+  mode: "all"       → all agents including main are sandboxed
+</pre>
+    <p>
+      Full sandboxing documentation: <code>docs/gateway/sandboxing.md</code>
+    </p>
+  </section>
+
+  <!-- Elevated Execution -->
+  <section id="elevated">
+    <h2><span class="section-num">14</span>Elevated Execution</h2>
+    <p>
+      Elevated execution allows a sandboxed agent to break out to the host for specific
+      commands. It is the controlled escape hatch — not a bypass of all security, but a
+      structured promotion of individual exec calls.
+    </p>
+
+    <h3>Elevated Modes</h3>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Command</th>
+            <th>Behavior</th>
+            <th>Approval Required?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/elevated on</code></td>
+            <td>Host exec enabled. Commands run on the host machine with full host access.</td>
+            <td>Yes — normal approval lifecycle applies</td>
+          </tr>
+          <tr>
+            <td><code>/elevated ask</code></td>
+            <td>Like <code>on</code>, but always prompts the operator even if command is in allowlist.</td>
+            <td>Yes — always prompts regardless of allowlist</td>
+          </tr>
+          <tr>
+            <td><code>/elevated full</code></td>
+            <td>Host exec enabled AND approvals bypassed. Operator trusted this session fully.</td>
+            <td>No — skips approval gate entirely</td>
+          </tr>
+          <tr>
+            <td><code>/elevated off</code></td>
+            <td>Disable elevated mode; return to sandbox exec.</td>
+            <td>N/A</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Sender Authorization</h3>
+    <p>
+      Not every user can activate elevated mode. The <code>/elevated</code> command is only
+      accepted from senders in the elevated authorization list. This is configured per-channel:
+    </p>
+    <pre>
+# Config: who can use /elevated on this agent
+agents:
+  main:
+    elevated:
+      allowedSenders: ["discord:123456789", "telegram:987654321"]
+</pre>
+    <p>
+      If an unauthorized sender attempts <code>/elevated full</code>, the command is rejected
+      and the attempt is logged as a security event.
+    </p>
+
+    <h3>Elevated vs Sandbox Interaction</h3>
+    <pre>
+Sandboxed agent + /elevated on  → exec runs on HOST, approval required
+Sandboxed agent + /elevated full → exec runs on HOST, no approval
+Non-sandboxed agent (host)       → always runs on host; elevated not needed
+
+Note: Tool policy deny still applies even in /elevated full mode.
+If exec is in the agent's deny list, /elevated full cannot override it.
+</pre>
+    <p>
+      Full elevated documentation: <code>docs/tools/elevated.md</code>
+    </p>
+  </section>
+
+  <!-- Non-Exec Tool Policies -->
+  <section id="non-exec-policies">
+    <h2><span class="section-num">15</span>Non-Exec Tool Policies</h2>
+    <p>
+      Tools other than exec have their own policy controls. These sit at Layer 1
+      (tool policy) and do not use the approval lifecycle — they are configured once
+      and applied statically.
+    </p>
+
+    <h3>Read Tool</h3>
+    <pre>
+tools:
+  read:
+    allow: ["~/Projects/**", "/tmp/**"]   # glob allowlist for paths
+    deny: ["~/.ssh/**", "~/.gnupg/**"]    # always denied paths
+    maxSizeBytes: 10485760                 # max file size (10 MB default)
+</pre>
+    <p>
+      Path patterns are matched against the resolved (absolute) path, preventing
+      <code>../</code> traversal attacks. Symlinks are resolved before matching.
+    </p>
+
+    <h3>Write Tool</h3>
+    <pre>
+tools:
+  write:
+    allow: ["~/Projects/**", "/tmp/**"]
+    deny: ["/etc/**", "/usr/**", "~/.ssh/**"]
+    # Write is always denied if path is outside allow list when allow list is set
+</pre>
+
+    <h3>Browser Tool</h3>
+    <pre>
+tools:
+  browser:
+    enabled: true | false
+    allowedOrigins: ["https://example.com", "https://*.github.com"]
+    deniedOrigins: ["https://internal-corp.example"]
+    # Empty allowedOrigins = all origins allowed (except denied)
+</pre>
+
+    <h3>Web Fetch Tool</h3>
+    <pre>
+tools:
+  web_fetch:
+    enabled: true | false
+    allowedDomains: ["github.com", "*.npmjs.com"]
+    deniedDomains: ["internal.corp", "169.254.0.0/16"]
+    maxResponseBytes: 5242880   # 5 MB
+    followRedirects: true
+</pre>
+    <p>
+      SSRF protection: by default, requests to RFC 1918 addresses (10.x, 172.16.x,
+      192.168.x) and link-local addresses (169.254.x) are blocked unless explicitly
+      added to <code>allowedDomains</code>.
+    </p>
+  </section>
+
+  <!-- Configuration Reference -->
+  <section id="config-reference">
+    <h2><span class="section-num">16</span>Configuration Reference</h2>
+    <p>
+      All permission system knobs live under the main OpenClaw config file.
+      Below is a complete annotated reference.
+    </p>
+
+    <h3>exec-approvals.json (Runtime State)</h3>
+    <p>
+      The approval allowlist is persisted in
+      <code>~/.openclaw/exec-approvals.json</code>
+      (<code>src/infra/exec-approvals.ts</code>). It stores the allowlist entries
+      that have been approved over time:
+    </p>
+    <pre>
+{
+  "version": 1,
+  "socket": {
+    "path": "~/.openclaw/exec-approvals.sock",
+    "token": "&lt;base64url-token&gt;"
+  },
+  "defaults": {
+    "security": "allowlist",      // deny | allowlist | full
+    "ask": "on-miss",             // off | on-miss | always
+    "askFallback": "deny",        // deny | allowlist
+    "autoAllowSkills": false      // auto-allow registered skill bins
+  },
+  "agents": {
+    "main": {
+      "security": "allowlist",
+      "ask": "on-miss",
+      "allowlist": [
+        {
+          "id": "uuid-v4",
+          "pattern": "~/Projects/**/bin/rg",
+          "lastUsedAt": 1737150000000,
+          "lastUsedCommand": "rg -n TODO src/",
+          "lastResolvedPath": "/home/user/Projects/.../bin/rg"
+        }
+      ]
+    }
+  }
+}
+</pre>
+
+    <h3>Main Config — Exec Settings</h3>
+    <pre>
+tools:
+  exec:
+    host: sandbox | gateway | node    # where exec runs (default: sandbox)
+    security: deny | allowlist | full # security mode (default: deny in sandbox)
+    ask: off | on-miss | always       # approval ask mode (default: on-miss)
+    askFallback: deny | allowlist     # on timeout behavior (default: deny)
+    strictInlineEval: false           # require approval for python -c / node -e
+    autoAllowSkills: false            # auto-allow registered skill binaries
+    pathPrepend: []                   # paths prepended to PATH in exec env
+    safeBins:                         # auto-allowed stdin-only filter tools
+      - cut
+      - uniq
+      - head
+      - tail
+      - tr
+      - wc
+    safeBinTrustedDirs:               # only trust safe-bin exes from these dirs
+      - /bin
+      - /usr/bin
+    safeBinProfiles:                  # extended profiles for non-default safe bins
+      jq:
+        allowedValueFlags: ["--arg", "--argjson"]
+        deniedFlags: ["-f", "--argfile", "-L"]
+        maxPositional: 1
+</pre>
+
+    <h3>Main Config — Tool Policy</h3>
+    <pre>
+tools:
+  allow: []                           # global allow list (empty = all from profile)
+  deny: []                            # global deny list (always enforced)
+
+  read:
+    allow: ["~/Projects/**"]
+    deny: ["~/.ssh/**"]
+
+  write:
+    allow: ["~/Projects/**", "/tmp/**"]
+    deny: ["/etc/**"]
+
+  browser:
+    enabled: true
+    allowedOrigins: []                # empty = all allowed
+
+  web_fetch:
+    enabled: true
+    allowedDomains: []                # empty = all allowed
+
+agents:
+  main:
+    profile: full                     # full | coding | messaging | minimal
+    tools:
+      allow: ["group:fs", "exec"]
+      deny: ["browser"]
+    sandbox:
+      enabled: true
+      mode: non-main                  # off | non-main | all
+      backend: docker
+      alsoAllow: ["web_search"]       # extra tools for sandboxed copies
+
+elevated:
+  allowedSenders: ["discord:123456"]
+  exec:
+    mode: on                          # on | ask | full
+</pre>
+
+    <h3>Approvals Forwarding Config</h3>
+    <pre>
+approvals:
+  exec:
+    enabled: true
+    mode: both                        # session | targets | both
+    agentFilter: ["main"]             # which agents to forward for
+    sessionFilter: ["discord"]        # which channels trigger forwarding
+    timeout: 300000                   # ms to wait before askFallback (5 min)
+    targets:
+      - channel: slack
+        to: U12345678
+      - channel: telegram
+        to: "987654321"
+      - channel: discord
+        to: "123456789012345678"
+</pre>
+
+    <h3>Sandboxing Config</h3>
+    <pre>
+sandboxing:
+  mode: non-main                      # off | non-main | all
+  backend: docker                     # docker | ssh | openShell
+  scope: session                      # session | agent | shared
+  workspaceAccess: rw                 # none | ro | rw
+  docker:
+    image: "ubuntu:22.04"
+    memoryMb: 512
+    cpus: 1.0
+    network: none                     # none | bridge | host
+</pre>
+
+    <h3>CLI Flags &amp; Environment Variables</h3>
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>CLI Flag</th>
+            <th>Env Var</th>
+            <th>Effect</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>--exec-security &lt;mode&gt;</code></td>
+            <td><code>OC_EXEC_SECURITY</code></td>
+            <td>Override exec security mode for this session</td>
+          </tr>
+          <tr>
+            <td><code>--exec-ask &lt;mode&gt;</code></td>
+            <td><code>OC_EXEC_ASK</code></td>
+            <td>Override ask mode for this session</td>
+          </tr>
+          <tr>
+            <td><code>--no-sandbox</code></td>
+            <td><code>OC_SANDBOX=off</code></td>
+            <td>Disable all sandboxing</td>
+          </tr>
+          <tr>
+            <td><code>--allow-tool &lt;name&gt;</code></td>
+            <td>—</td>
+            <td>Add tool to allow list for this session</td>
+          </tr>
+          <tr>
+            <td><code>--deny-tool &lt;name&gt;</code></td>
+            <td>—</td>
+            <td>Add tool to deny list for this session</td>
+          </tr>
+          <tr>
+            <td><code>--profile &lt;name&gt;</code></td>
+            <td><code>OC_TOOL_PROFILE</code></td>
+            <td>Set tool profile for the main agent</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Source File Map</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Concern</th>
+            <th>Source File</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Tool catalog &amp; profiles</td>
+            <td><code>src/agents/tool-catalog.ts</code></td>
+          </tr>
+          <tr>
+            <td>Tool policy composition</td>
+            <td><code>src/agents/tool-policy.ts</code></td>
+          </tr>
+          <tr>
+            <td>Profile resolution &amp; groups</td>
+            <td><code>src/agents/tool-policy-shared.ts</code></td>
+          </tr>
+          <tr>
+            <td>Allow/deny pattern matching</td>
+            <td><code>src/agents/tool-policy-match.ts</code></td>
+          </tr>
+          <tr>
+            <td>Policy pipeline</td>
+            <td><code>src/agents/tool-policy-pipeline.ts</code></td>
+          </tr>
+          <tr>
+            <td>Sandbox tool policy</td>
+            <td><code>src/agents/sandbox-tool-policy.ts</code></td>
+          </tr>
+          <tr>
+            <td>Exec approvals types &amp; storage</td>
+            <td><code>src/infra/exec-approvals.ts</code></td>
+          </tr>
+          <tr>
+            <td>Allowlist evaluation</td>
+            <td><code>src/infra/exec-approvals-allowlist.ts</code></td>
+          </tr>
+          <tr>
+            <td>Command chain analysis</td>
+            <td><code>src/infra/exec-approvals-analysis.ts</code></td>
+          </tr>
+          <tr>
+            <td>Safe-bin profiles</td>
+            <td><code>src/infra/exec-safe-bin-policy-profiles.ts</code></td>
+          </tr>
+          <tr>
+            <td>Shell wrapper detection</td>
+            <td><code>src/infra/shell-wrapper-resolution.ts</code></td>
+          </tr>
+          <tr>
+            <td>Inline command flags</td>
+            <td><code>src/infra/shell-inline-command.ts</code></td>
+          </tr>
+          <tr>
+            <td>Exec command resolution</td>
+            <td><code>src/infra/exec-command-resolution.ts</code></td>
+          </tr>
+          <tr>
+            <td>Approval binding &amp; hashing</td>
+            <td><code>src/infra/system-run-approval-binding.ts</code></td>
+          </tr>
+          <tr>
+            <td>Approval request context</td>
+            <td><code>src/infra/system-run-approval-context.ts</code></td>
+          </tr>
+          <tr>
+            <td>Gateway approval manager</td>
+            <td><code>src/gateway/exec-approval-manager.ts</code></td>
+          </tr>
+          <tr>
+            <td>Approval server methods</td>
+            <td><code>src/gateway/server-methods/exec-approval.ts</code></td>
+          </tr>
+          <tr>
+            <td>Node invoke approval gate</td>
+            <td><code>src/gateway/node-invoke-system-run-approval.ts</code></td>
+          </tr>
+          <tr>
+            <td>Approval config types</td>
+            <td><code>src/config/types.approvals.ts</code></td>
+          </tr>
+          <tr>
+            <td>Approval config schema</td>
+            <td><code>src/config/zod-schema.approvals.ts</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script src="../js/main.js"></script>
+
+</body>
+</html>
