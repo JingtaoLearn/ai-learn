@@ -1614,10 +1614,18 @@ agents:
       backend: docker
       alsoAllow: ["web_search"]       # extra tools for sandboxed copies
 
-elevated:
-  allowedSenders: ["discord:123456"]
-  exec:
-    mode: on                          # on | ask | full
+tools:
+  elevated:
+    enabled: true
+    allowFrom: ["discord:123456789"]  # senders who can use /elevated
+
+agents:
+  list:
+    - id: main
+      tools:
+        elevated:
+          enabled: true
+          allowFrom: ["id:123456789"] # per-agent override
 </pre>
 
     <h3>Approvals Forwarding Config</h3>
@@ -1786,10 +1794,6 @@ sandboxing:
           <tr>
             <td>Approval config schema</td>
             <td><code>src/config/zod-schema.approvals.ts</code></td>
-          </tr>
-          <tr>
-            <td>Tool policy pipeline (7 steps)</td>
-            <td><code>src/agents/tool-policy-pipeline.ts</code></td>
           </tr>
           <tr>
             <td>Policy conformance / CI drift check</td>
