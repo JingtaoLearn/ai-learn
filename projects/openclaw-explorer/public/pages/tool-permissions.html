@@ -460,7 +460,7 @@ allow: ["exec"]
       The function returns an <code>AllowlistResolution</code> object with three fields:
       <code>policy</code> (resulting policy after stripping),
       <code>unknownAllowlist</code> (entries that were not recognized core tools),
-      and <code>strippedAllowlist</code> (entries that were removed).
+      and <code>strippedAllowlist</code> (a <code>boolean</code> flag indicating whether the allow list was stripped).
     </p>
     <pre>
 # DANGEROUS — accidentally blocks read, write, exec, etc.:
@@ -564,7 +564,7 @@ Result: frozen tool set → injected into LLM tool schema
     <p>
       Subagents (spawned by <code>sessions_spawn</code> or <code>subagents</code>) receive a
       more restricted tool set than the orchestrator. Two deny lists are applied on top of the
-      normal pipeline (<code>src/agents/tool-policy.ts</code> —
+      normal pipeline (<code>src/agents/pi-tools.policy.ts</code> —
       <code>resolveSubagentToolPolicy(cfg, depth)</code>):
     </p>
 
@@ -742,14 +742,14 @@ wc     — line/word/byte count (stdin only)
         <tbody>
           <tr>
             <td><code>jq</code></td>
-            <td><code>--arg</code>, <code>--argjson</code>, <code>--rawfile</code> (if trusted dir)</td>
-            <td><code>--argfile</code>, <code>-f</code>, <code>-L</code></td>
+            <td><code>--arg</code>, <code>--argjson</code>, <code>--argstr</code></td>
+            <td><code>--rawfile</code>, <code>--argfile</code>, <code>-f</code>, <code>-L</code></td>
             <td>max 1 (filter expr)</td>
           </tr>
           <tr>
             <td><code>grep</code></td>
-            <td><code>-e</code>, <code>--regexp</code>, <code>-i</code>, <code>-v</code>, <code>-c</code>, <code>-n</code></td>
-            <td><code>-f</code>, <code>-r</code>, <code>-R</code>, <code>--include</code>, <code>--exclude</code></td>
+            <td><code>-e</code>, <code>--regexp</code>, <code>-i</code>, <code>-v</code>, <code>-c</code>, <code>-n</code>, <code>-m</code>, <code>-A</code>, <code>-B</code>, <code>-C</code>, <code>--include</code>, <code>--exclude</code></td>
+            <td><code>--file</code>, <code>--exclude-from</code>, <code>--dereference-recursive</code>, <code>--directories</code>, <code>-f</code>, <code>-d</code>, <code>-r</code>, <code>-R</code></td>
             <td>0 (stdin only)</td>
           </tr>
           <tr>
@@ -906,7 +906,7 @@ pnpm exec vitest            → vitest
       When a command is approved and <code>ask = "on-miss"</code>, the system derives a
       <em>pattern</em> to persist in the allowlist via
       <code>resolveAllowAlwaysPatterns()</code>
-      (<code>src/infra/exec-command-resolution.ts</code>).
+      (<code>src/infra/exec-approvals-allowlist.ts</code>).
       The derivation rules depend on how the command was invoked:
     </p>
     <pre>
@@ -1015,9 +1015,9 @@ register()         — store record; idempotent (safe to call twice)
 resolve()          — record operator decision; starts 15-sec grace cleanup
 expire()           — mark as expired (timeout or no-route); unblocks awaitDecision()
 consumeAllowOnce() — atomically consume a one-time allow; prevents replay
-awaitDecision()    — suspend caller until decision or 120-sec timeout
+awaitDecision()    — suspend caller until decision; no built-in timeout (timeout managed by register())
 lookupPendingId()  — find a pending approval by UUID prefix (for short IDs)
-getSnapshot()      — return current state of all pending approvals
+getSnapshot()      — return a single ExecApprovalRecord | null for the given recordId
 </pre>
 
     <h3>Allowlist Persistence</h3>
@@ -1809,7 +1809,7 @@ sandboxing:
           </tr>
           <tr>
             <td>Subagent tool policy</td>
-            <td><code>src/agents/tool-policy.ts</code> — <code>resolveSubagentToolPolicy()</code></td>
+            <td><code>src/agents/pi-tools.policy.ts</code> — <code>resolveSubagentToolPolicy()</code></td>
           </tr>
           <tr>
             <td>Elevated execution</td>
