@@ -76,7 +76,7 @@ docker compose up -d
 ### Seed initial data
 
 ```bash
-docker compose exec experience-manager python scripts/seed.py
+docker compose exec experience-manager python seed_data.py
 ```
 
 ## Development
@@ -118,10 +118,12 @@ experience-manager/
 │   │   └── health.py        GET /api/health
 │   └── services/
 │       ├── retrieval.py     Hybrid search logic
+│       ├── llm.py           LLM judgment + summarization
 │       └── dedup.py         Duplicate/conflict detection
 ├── scripts/
 │   └── seed.py              Seed data import
 ├── tests/                   pytest test suite
+├── seed_data.py             Seed entry point
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
