@@ -432,3 +432,19 @@ body {
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
+
+/* Auto-save indicator */
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.modal-title-row h2 {
+  margin: 0;
+}
+.save-indicator {
+  font-size: 13px;
+  color: var(--text-light);
+  transition: color 0.2s;
+}

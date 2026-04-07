@@ -279,10 +279,16 @@
   }
 
   // --- Item modal ---
+  let autoSaveTimer = null;
+  let savingIndicator = null;
+
   function showItemModal(item) {
     const isEdit = !!item;
     const overlay = h("div", { className: "modal-overlay", onClick: (e) => {
-      if (e.target === overlay) overlay.remove();
+      if (e.target === overlay) {
+        if (isEdit) { flushAutoSave(overlay, item); }
+        overlay.remove();
+      }
     }});
 
     const fields = {
@@ -295,48 +301,71 @@
       notes: item?.notes || "",
     };
 
+    // Auto-save handler for edit mode — debounced, fires on every field change
+    function onFieldChange() {
+      if (!isEdit) return;
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      if (savingIndicator) savingIndicator.textContent = "正在保存...";
+      autoSaveTimer = setTimeout(() => doAutoSave(overlay, item), 500);
+    }
+
+    savingIndicator = isEdit ? h("span", { className: "save-indicator" }, "") : null;
+
     const modal = h("div", { className: "modal" },
-      h("h2", null, isEdit ? "编辑物品" : "添加物品"),
+      h("div", { className: "modal-title-row" },
+        h("h2", null, isEdit ? "编辑物品" : "添加物品"),
+        savingIndicator,
+      ),
 
       h("div", { className: "form-group" },
         h("label", null, "名称"),
-        h("input", { type: "text", id: "f-name", value: fields.name, placeholder: "物品名称" }),
+        h("input", { type: "text", id: "f-name", value: fields.name, placeholder: "物品名称",
+          onInput: onFieldChange }),
       ),
       h("div", { className: "form-group" },
         h("label", null, "数量"),
-        h("input", { type: "number", id: "f-quantity", value: String(fields.quantity), min: "1" }),
+        h("input", { type: "number", id: "f-quantity", value: String(fields.quantity), min: "1",
+          onInput: onFieldChange }),
       ),
       h("div", { className: "form-group" },
         h("label", null, "使用场地"),
-        makeFormSelect("f-venue", VENUES, fields.venue, "选择场地"),
+        makeFormSelect("f-venue", VENUES, fields.venue, "选择场地", onFieldChange),
       ),
       h("div", { className: "form-group" },
         h("label", null, "负责人"),
-        makeFormSelect("f-person", PERSONS, fields.person, "选择负责人"),
+        makeFormSelect("f-person", PERSONS, fields.person, "选择负责人", onFieldChange),
       ),
       h("div", { className: "form-group" },
         h("label", null, "状态"),
-        makeFormSelect("f-status", STATUSES, fields.status, ""),
+        makeFormSelect("f-status", STATUSES, fields.status, "", onFieldChange),
       ),
       h("div", { className: "form-group" },
         h("label", null, "下次关注日"),
-        h("input", { type: "date", id: "f-nextCheckDate", value: fields.nextCheckDate }),
+        h("input", { type: "date", id: "f-nextCheckDate", value: fields.nextCheckDate,
+          onChange: onFieldChange }),
       ),
       h("div", { className: "form-group" },
         h("label", null, "备注"),
-        h("textarea", { id: "f-notes", placeholder: "可选备注" }, fields.notes),
+        h("textarea", { id: "f-notes", placeholder: "可选备注", onInput: onFieldChange }, fields.notes),
       ),
 
-      h("div", { className: "form-actions" },
-        h("button", {
-          className: "btn btn-secondary",
-          onClick: () => overlay.remove(),
-        }, "取消"),
-        h("button", {
-          className: "btn btn-primary",
-          onClick: () => handleSaveItem(overlay, item),
-        }, "保存"),
-      ),
+      isEdit
+        ? h("div", { className: "form-actions" },
+            h("button", {
+              className: "btn btn-secondary btn-block",
+              onClick: () => { flushAutoSave(overlay, item); overlay.remove(); },
+            }, "关闭"),
+          )
+        : h("div", { className: "form-actions" },
+            h("button", {
+              className: "btn btn-secondary",
+              onClick: () => overlay.remove(),
+            }, "取消"),
+            h("button", {
+              className: "btn btn-primary",
+              onClick: () => handleSaveItem(overlay, item),
+            }, "添加"),
+          ),
 
       isEdit ? h("div", { className: "delete-row" },
         h("button", {
@@ -353,8 +382,32 @@
     setTimeout(() => document.getElementById("f-name")?.focus(), 100);
   }
 
-  function makeFormSelect(id, options, current, placeholder) {
-    const sel = h("select", { id },
+  async function doAutoSave(overlay, item) {
+    const data = getFormData();
+    if (!data.name) return;
+    try {
+      await api("PUT", `/projects/${state.project.id}/items/${item.id}`, data);
+      if (savingIndicator) savingIndicator.textContent = "✓ 已保存";
+      // Update local state
+      const idx = state.project.items.findIndex((i) => i.id === item.id);
+      if (idx !== -1) Object.assign(state.project.items[idx], data);
+    } catch (err) {
+      if (savingIndicator) savingIndicator.textContent = "保存失败";
+    }
+  }
+
+  function flushAutoSave(overlay, item) {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+      doAutoSave(overlay, item);
+    }
+  }
+
+  function makeFormSelect(id, options, current, placeholder, onChange) {
+    const attrs = { id };
+    if (onChange) attrs.onChange = onChange;
+    const sel = h("select", attrs,
       placeholder ? h("option", { value: "" }, placeholder) : null,
       ...options.map((o) => {
         const opt = h("option", { value: o }, o);
