@@ -1,0 +1,21 @@
+services:
+  app:
+    build: ./
+    container_name: wedding-seating-app
+    restart: unless-stopped
+    volumes:
+      - ${S_CONTAINER_FOLDER_STATIC:-./data}:/data
+    environment:
+      VIRTUAL_HOST: seat.${S_DOMAIN:-ai.jingtao.fun}
+      VIRTUAL_PORT: 80
+      LETSENCRYPT_HOST: seat.${S_DOMAIN:-ai.jingtao.fun}
+      LETSENCRYPT_EMAIL: ${S_EMAIL:-admin@jingtao.fun}
+    expose:
+      - "80"
+    ports:
+      - "80"
+
+networks:
+  default:
+    name: nginx-proxy
+    external: true
