@@ -169,11 +169,13 @@
     // Header
     app.appendChild(
       h("div", { className: "project-header" },
-        h("h1", null, p.name),
-        h("button", {
-          className: "btn btn-secondary btn-sm refresh-btn",
-          onClick: () => refreshProject(),
-        }, "🔄"),
+        h("div", { className: "project-title-row" },
+          h("h1", null, p.name),
+          h("button", {
+            className: "btn btn-secondary refresh-btn",
+            onClick: () => refreshProject(),
+          }, "刷新"),
+        ),
         h("div", { className: "meta" }, `共 ${p.items.length} 项`),
       ),
     );
