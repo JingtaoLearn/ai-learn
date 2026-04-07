@@ -170,22 +170,6 @@
       ),
     );
 
-    // Share bar
-    const shareUrl = window.location.origin + "/p/" + p.id;
-    const shareInput = h("input", { type: "text", value: shareUrl, readOnly: "true" });
-    app.appendChild(
-      h("div", { className: "share-bar" },
-        shareInput,
-        h("button", {
-          className: "btn btn-secondary btn-sm",
-          onClick: () => {
-            shareInput.select();
-            navigator.clipboard.writeText(shareUrl);
-          },
-        }, "复制"),
-      ),
-    );
-
     // Summary bar
     const statusCounts = {};
     for (const s of STATUSES) statusCounts[s] = 0;
