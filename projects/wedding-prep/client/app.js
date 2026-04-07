@@ -317,7 +317,15 @@
             ),
           )
         : h("div", { className: "modal-title-row" },
+            h("button", {
+              className: "btn btn-secondary btn-sm",
+              onClick: () => overlay.remove(),
+            }, "取消"),
             h("h2", null, "添加物品"),
+            h("button", {
+              className: "btn btn-primary btn-sm",
+              onClick: () => handleSaveItem(overlay, item),
+            }, "添加"),
           ),
 
       h("div", { className: "form-group" },
@@ -354,19 +362,6 @@
         h("label", null, "备注"),
         h("textarea", { id: "f-notes", placeholder: "可选备注", onInput: onFieldChange }, fields.notes),
       ),
-
-      !isEdit
-        ? h("div", { className: "form-actions" },
-            h("button", {
-              className: "btn btn-secondary",
-              onClick: () => overlay.remove(),
-            }, "取消"),
-            h("button", {
-              className: "btn btn-primary",
-              onClick: () => handleSaveItem(overlay, item),
-            }, "添加"),
-          )
-        : null,
     );
 
     overlay.appendChild(modal);
