@@ -203,15 +203,15 @@
     // Filters
     app.appendChild(
       h("div", { className: "filters" },
-        makeSelect("场地", VENUES, state.filters.venue, (v) => {
+        makeSelect("所有场地", VENUES, state.filters.venue, (v) => {
           state.filters.venue = v;
           renderProject();
         }),
-        makeSelect("负责人", PERSONS, state.filters.person, (v) => {
+        makeSelect("所有负责人", PERSONS, state.filters.person, (v) => {
           state.filters.person = v;
           renderProject();
         }),
-        makeSelect("状态", STATUSES, state.filters.status, (v) => {
+        makeSelect("所有状态", STATUSES, state.filters.status, (v) => {
           state.filters.status = v;
           renderProject();
         }),
