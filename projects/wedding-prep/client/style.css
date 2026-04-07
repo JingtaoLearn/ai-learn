@@ -452,9 +452,17 @@ body {
   gap: 8px;
 }
 .save-indicator {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-light);
   white-space: nowrap;
+  font-weight: 500;
+  transition: color 0.3s;
+}
+.save-indicator.saved {
+  color: #16a34a;
+}
+.save-indicator.saving {
+  color: #f59e0b;
 }
 
 /* Quantity + unit row */

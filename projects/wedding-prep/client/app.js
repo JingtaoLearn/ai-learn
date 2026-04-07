@@ -307,7 +307,10 @@
     function onFieldChange() {
       if (!isEdit) return;
       if (autoSaveTimer) clearTimeout(autoSaveTimer);
-      if (savingIndicator) savingIndicator.textContent = "正在保存...";
+      if (savingIndicator) {
+        savingIndicator.textContent = "⏳ 保存中...";
+        savingIndicator.className = "save-indicator saving";
+      }
       autoSaveTimer = setTimeout(() => doAutoSave(overlay, item), 500);
     }
 
@@ -394,12 +397,18 @@
     if (!data.name) return;
     try {
       await api("PUT", `/projects/${state.project.id}/items/${item.id}`, data);
-      if (savingIndicator) savingIndicator.textContent = "✓ 已保存";
+      if (savingIndicator) {
+        savingIndicator.textContent = "✅ 已保存";
+        savingIndicator.className = "save-indicator saved";
+      }
       // Update local state
       const idx = state.project.items.findIndex((i) => i.id === item.id);
       if (idx !== -1) Object.assign(state.project.items[idx], data);
     } catch (err) {
-      if (savingIndicator) savingIndicator.textContent = "保存失败";
+      if (savingIndicator) {
+        savingIndicator.textContent = "❌ 保存失败";
+        savingIndicator.className = "save-indicator";
+      }
     }
   }
 
