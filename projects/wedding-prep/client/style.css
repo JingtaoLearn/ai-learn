@@ -109,12 +109,22 @@ body {
 .project-header {
   text-align: center;
   padding: 16px 0 12px;
+  position: relative;
 }
 
 .project-header h1 {
   font-size: 22px;
   font-weight: 700;
   color: var(--primary-dark);
+  display: inline;
+}
+
+.refresh-btn {
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 4px 8px !important;
+  font-size: 16px !important;
+  min-height: unset !important;
 }
 
 .project-header .meta {
