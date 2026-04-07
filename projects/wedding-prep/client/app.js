@@ -4,7 +4,7 @@
   const VENUES = ["丰县", "婚房", "婚礼现场", "宴会厅", "埠口家", "北京"];
   const PERSONS = ["张景涛", "渠琪", "丛领兹"];
   const STATUSES = ["采买中", "已收货", "已取货", "已就绪"];
-  const UNITS = ["件", "每人件", "斤"];
+  const UNITS = ["件", "件/每人", "斤"];
 
   const app = document.getElementById("app");
   let state = { page: "loading", project: null, filters: {} };
