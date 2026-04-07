@@ -245,6 +245,11 @@ body {
   color: #c0392b;
 }
 
+.status-待发货 {
+  background: #fef9e2;
+  color: #92400e;
+}
+
 .status-已收货 {
   background: #fef3e2;
   color: #b45309;
