@@ -113,14 +113,18 @@
   }
 
   async function handleCreate() {
+    if (saving) return;
     const input = document.getElementById("project-name");
     const name = input.value.trim();
     if (!name) return;
+    saving = true;
     try {
       const project = await api("POST", "/projects", { name });
       navigate("/p/" + project.id);
     } catch (err) {
       alert(err.message);
+    } finally {
+      saving = false;
     }
   }
 
@@ -430,12 +434,16 @@
     };
   }
 
+  let saving = false;
+
   async function handleSaveItem(overlay, existing) {
+    if (saving) return;
     const data = getFormData();
     if (!data.name) {
       alert("请输入物品名称");
       return;
     }
+    saving = true;
     try {
       if (existing) {
         await api("PUT", `/projects/${state.project.id}/items/${existing.id}`, data);
@@ -446,6 +454,8 @@
       await refreshProject();
     } catch (err) {
       alert(err.message);
+    } finally {
+      saving = false;
     }
   }
 
