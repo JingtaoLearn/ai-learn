@@ -1,0 +1,14 @@
+{
+  "name": "wedding-prep",
+  "version": "1.0.0",
+  "description": "Wedding item preparation and checklist web app",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "uuid": "^10.0.0"
+  }
+}

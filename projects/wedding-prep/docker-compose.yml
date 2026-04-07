@@ -1,0 +1,22 @@
+services:
+  wedding-prep:
+    build: .
+    container_name: wedding-prep-app
+    restart: always
+    environment:
+      - VIRTUAL_HOST=prep.${S_DOMAIN}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=prep.${S_DOMAIN}
+    volumes:
+      - wedding-prep-data:/data
+    expose:
+      - "3000"
+    networks:
+      - nginx-proxy
+
+volumes:
+  wedding-prep-data:
+
+networks:
+  nginx-proxy:
+    external: true
