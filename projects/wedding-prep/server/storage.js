@@ -70,6 +70,7 @@ function addItem(projectUuid, item) {
       id: uuidv4(),
       name: item.name,
       quantity: item.quantity || 1,
+      unit: item.unit || "件",
       venue: item.venue || "",
       person: item.person || "",
       status: item.status || "采买中",
@@ -97,6 +98,7 @@ function updateItem(projectUuid, itemId, updates) {
     const allowed = [
       "name",
       "quantity",
+      "unit",
       "venue",
       "person",
       "status",

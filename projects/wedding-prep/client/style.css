@@ -448,3 +448,15 @@ body {
   color: var(--text-light);
   transition: color 0.2s;
 }
+
+/* Quantity + unit row */
+.qty-row {
+  display: flex;
+  gap: 8px;
+}
+.qty-row input {
+  flex: 1;
+}
+.qty-row select {
+  flex: 0 0 90px;
+}

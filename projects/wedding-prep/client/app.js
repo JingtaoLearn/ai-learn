@@ -4,6 +4,7 @@
   const VENUES = ["丰县", "婚房", "婚礼现场", "宴会厅", "埠口家"];
   const PERSONS = ["张景涛", "渠琪", "丛领兹"];
   const STATUSES = ["采买中", "已收货", "已取货", "已就绪"];
+  const UNITS = ["件", "每人件", "斤"];
 
   const app = document.getElementById("app");
   let state = { page: "loading", project: null, filters: {} };
@@ -263,7 +264,7 @@
       item.venue ? h("span", { className: "tag tag-venue" }, item.venue) : null,
       item.person ? h("span", { className: "tag tag-person" }, item.person) : null,
       h("span", { className: `tag tag-status status-${item.status}` }, item.status),
-      item.quantity > 1 ? h("span", { className: "tag tag-qty" }, `x${item.quantity}`) : null,
+      item.quantity ? h("span", { className: "tag tag-qty" }, `x${item.quantity}${item.unit || "件"}`) : null,
     ].filter(Boolean);
 
     const card = h("div", {
@@ -294,6 +295,7 @@
     const fields = {
       name: item?.name || "",
       quantity: item?.quantity || 1,
+      unit: item?.unit || "件",
       venue: item?.venue || "",
       person: item?.person || "",
       status: item?.status || "采买中",
@@ -324,8 +326,11 @@
       ),
       h("div", { className: "form-group" },
         h("label", null, "数量"),
-        h("input", { type: "number", id: "f-quantity", value: String(fields.quantity), min: "1",
-          onInput: onFieldChange }),
+        h("div", { className: "qty-row" },
+          h("input", { type: "number", id: "f-quantity", value: String(fields.quantity), min: "1",
+            onInput: onFieldChange }),
+          makeFormSelect("f-unit", UNITS, fields.unit, "", onFieldChange),
+        ),
       ),
       h("div", { className: "form-group" },
         h("label", null, "使用场地"),
@@ -422,6 +427,7 @@
     return {
       name: document.getElementById("f-name").value.trim(),
       quantity: parseInt(document.getElementById("f-quantity").value, 10) || 1,
+      unit: document.getElementById("f-unit").value || "件",
       venue: document.getElementById("f-venue").value,
       person: document.getElementById("f-person").value,
       status: document.getElementById("f-status").value,
