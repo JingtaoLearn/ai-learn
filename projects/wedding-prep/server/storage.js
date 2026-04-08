@@ -70,10 +70,28 @@ function addItem(projectUuid, item) {
     const data = readData();
     const project = data[projectUuid];
     if (!project) return null;
-    const { v4: uuidv4 } = require("uuid");
     const now = new Date().toISOString();
+
+    // Client provides id — upsert: if item with same id exists, update it instead
+    const clientId = item.id;
+    if (clientId) {
+      const existing = project.items.find((i) => i.id === clientId && !i.deleted);
+      if (existing) {
+        // Upsert — treat as update
+        const allowed = ["name", "quantity", "unit", "venue", "person", "status", "nextCheckDate", "notes"];
+        for (const key of allowed) {
+          if (item[key] !== undefined) existing[key] = item[key];
+        }
+        existing.updatedAt = now;
+        project.updatedAt = now;
+        writeData(data);
+        return existing;
+      }
+    }
+
+    const { v4: uuidv4 } = require("uuid");
     const newItem = {
-      id: uuidv4(),
+      id: clientId || uuidv4(),
       name: item.name,
       quantity: item.quantity || 1,
       unit: item.unit || "件",

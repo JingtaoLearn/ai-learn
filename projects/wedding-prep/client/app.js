@@ -6,6 +6,14 @@
   const STATUSES = ["采买中", "待发货", "已收货", "已取货", "已就绪"];
   const UNITS = ["件", "件/每人", "斤"];
 
+  // Client-side UUID v4 generator
+  function generateUUID() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+      (+c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> +c / 4).toString(16)
+    );
+  }
+
   const app = document.getElementById("app");
   let state = { page: "loading", project: null, filters: {} };
 
@@ -279,6 +287,8 @@
 
   function showItemModal(item) {
     const isEdit = !!item;
+    // For new items, generate UUID now so retries become upserts
+    const itemId = isEdit ? item.id : generateUUID();
     const overlay = h("div", { className: "modal-overlay", onClick: (e) => {
       if (e.target === overlay) {
         if (isEdit) { flushAutoSave(overlay, item); }
@@ -334,7 +344,7 @@
             h("h2", null, "添加物品"),
             h("button", {
               className: "btn btn-primary btn-sm",
-              onClick: () => handleSaveItem(overlay, item),
+              onClick: () => handleSaveItem(overlay, item, itemId),
             }, "添加"),
           ),
 
@@ -438,7 +448,7 @@
 
   let saving = false;
 
-  async function handleSaveItem(overlay, existing) {
+  async function handleSaveItem(overlay, existing, newItemId) {
     if (saving) return;
     const data = getFormData();
     if (!data.name) {
@@ -450,6 +460,8 @@
       if (existing) {
         await api("PUT", `/projects/${state.project.id}/items/${existing.id}`, data);
       } else {
+        // Include client-generated UUID for idempotent create (upsert)
+        data.id = newItemId;
         await api("POST", `/projects/${state.project.id}/items`, data);
       }
       overlay.remove();
