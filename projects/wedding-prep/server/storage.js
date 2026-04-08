@@ -38,7 +38,13 @@ function withLock(fn) {
 
 function getProject(uuid) {
   const data = readData();
-  return data[uuid] || null;
+  const project = data[uuid];
+  if (!project) return null;
+  // Return a copy with soft-deleted items filtered out
+  return {
+    ...project,
+    items: (project.items || []).filter((i) => !i.deleted),
+  };
 }
 
 function createProject(name) {
@@ -91,7 +97,7 @@ function updateItem(projectUuid, itemId, updates) {
     const data = readData();
     const project = data[projectUuid];
     if (!project) return null;
-    const idx = project.items.findIndex((i) => i.id === itemId);
+    const idx = project.items.findIndex((i) => i.id === itemId && !i.deleted);
     if (idx === -1) return null;
     const now = new Date().toISOString();
     const item = project.items[idx];
@@ -122,10 +128,13 @@ function deleteItem(projectUuid, itemId) {
     const data = readData();
     const project = data[projectUuid];
     if (!project) return false;
-    const idx = project.items.findIndex((i) => i.id === itemId);
-    if (idx === -1) return false;
-    project.items.splice(idx, 1);
-    project.updatedAt = new Date().toISOString();
+    const item = project.items.find((i) => i.id === itemId);
+    if (!item) return false;
+    const now = new Date().toISOString();
+    item.deleted = true;
+    item.deletedAt = now;
+    item.updatedAt = now;
+    project.updatedAt = now;
     writeData(data);
     return true;
   });
