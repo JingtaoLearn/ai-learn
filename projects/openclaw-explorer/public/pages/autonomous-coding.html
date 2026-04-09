@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Autonomous Coding Harness - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Autonomous Coding Harness</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Sidebar toggle (mobile) -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <a class="back-link" href="../" style="padding:8px 16px;display:block">&larr; Back to Topics</a>
+
+  <div class="nav-section">Overview</div>
+  <a class="nav-link" href="#architecture">Architecture Overview</a>
+  <a class="nav-link" href="#initialization">Agent Initialization Flow</a>
+
+  <div class="nav-section">State &amp; Sessions</div>
+  <a class="nav-link" href="#state-transfer">Multi-Session State Transfer</a>
+  <a class="nav-link" href="#context-reset">Context Reset Strategy</a>
+
+  <div class="nav-section">Design &amp; Security</div>
+  <a class="nav-link" href="#prompt-design">Prompt Design</a>
+  <a class="nav-link" href="#security">Security Model</a>
+
+  <div class="nav-section">Summary</div>
+  <a class="nav-link" href="#insights">Key Architectural Insights</a>
+</nav>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- Architecture Overview -->
+  <section id="architecture">
+    <h2><span class="section-num">01</span>Architecture Overview</h2>
+    <p class="lead">
+      Anthropic's <code>autonomous-coding</code> demo uses a two-agent pattern to build complete
+      applications across unlimited Claude Code sessions. A thin Python harness orchestrates two
+      specialized agents &mdash; an <strong>Initializer</strong> that bootstraps the project once,
+      and a <strong>Coding Agent</strong> that implements features across as many sessions as needed.
+    </p>
+    <p>
+      The harness itself is trivial: a <code>while True</code> loop that creates a fresh
+      <code>ClaudeSDKClient</code> each iteration, selects the right prompt, runs a session, then
+      sleeps 3 seconds and repeats. All complexity lives in the prompts and the filesystem.
+    </p>
+
+    <div class="flow">
+      <div class="flow-row">
+        <div class="flow-box entry">
+          <div class="flow-title">autonomous_agent_demo.py</div>
+          <div class="flow-file">Entry point</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Parses args, sets project_dir and model, calls run_autonomous_agent()</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">agent.py &mdash; run_autonomous_agent()</div>
+        <div class="flow-file">Core harness loop</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">while True: create client &rarr; choose prompt &rarr; run session &rarr; sleep(3)</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-row">
+        <div class="flow-box hook">
+          <div class="flow-title">client.py</div>
+          <div class="flow-file">create_client()</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">ClaudeSDKClient with sandbox, hooks, MCP tools</div>
+        </div>
+        <div class="flow-box hook">
+          <div class="flow-title">prompts.py</div>
+          <div class="flow-file">get_initializer_prompt() / get_coding_prompt()</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Loads initializer_prompt.md or coding_prompt.md</div>
+        </div>
+        <div class="flow-box hook">
+          <div class="flow-title">security.py</div>
+          <div class="flow-file">bash_security_hook()</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">PreToolUse hook — command allowlist enforcement</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-row">
+        <div class="flow-box entry">
+          <div class="flow-title">Session 1: Initializer Agent</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">feature_list.json, init.sh, git init, project scaffold</div>
+        </div>
+        <div class="flow-box entry">
+          <div class="flow-title">Sessions 2&ndash;N: Coding Agent</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Read state &rarr; test &rarr; implement &rarr; verify &rarr; commit &rarr; end</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>File</th>
+            <th>Responsibility</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Harness loop</strong></td>
+            <td><code>agent.py</code></td>
+            <td>While loop: create client, select prompt, run session, 3s delay</td>
+          </tr>
+          <tr>
+            <td><strong>Client factory</strong></td>
+            <td><code>client.py</code></td>
+            <td>Build <code>ClaudeSDKClient</code> with security, sandbox, MCP, hooks</td>
+          </tr>
+          <tr>
+            <td><strong>Prompt loader</strong></td>
+            <td><code>prompts.py</code></td>
+            <td>Return the right markdown prompt file for session type</td>
+          </tr>
+          <tr>
+            <td><strong>Security hook</strong></td>
+            <td><code>security.py</code></td>
+            <td>PreToolUse allowlist enforcement for Bash commands</td>
+          </tr>
+          <tr>
+            <td><strong>Initializer prompt</strong></td>
+            <td><code>initializer_prompt.md</code></td>
+            <td>Bootstrap instructions: feature list, project setup, git init</td>
+          </tr>
+          <tr>
+            <td><strong>Coding prompt</strong></td>
+            <td><code>coding_prompt.md</code></td>
+            <td>10-step workflow for each feature implementation session</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Agent Initialization Flow -->
+  <section id="initialization">
+    <h2><span class="section-num">02</span>Agent Initialization Flow</h2>
+    <p>
+      Each session starts by instantiating a fresh <code>ClaudeSDKClient</code> via
+      <code>create_client()</code>. The harness detects whether <code>feature_list.json</code>
+      exists to decide which prompt to use — if absent, it's session 1 and the Initializer runs;
+      otherwise the Coding Agent takes over.
+    </p>
+
+    <h3 style="font-size:15px;font-weight:600;margin:20px 0 8px">Core harness loop &mdash; agent.py</h3>
+    <pre>
+async def run_autonomous_agent(project_dir, model, max_iterations=None):
+    tests_file = project_dir / "feature_list.json"
+    is_first_run = not tests_file.exists()
+    iteration = 0
+    while True:
+        iteration += 1
+        if max_iterations and iteration > max_iterations:
+            break
+        client = create_client(project_dir, model)  # fresh context each time
+        if is_first_run:
+            prompt = get_initializer_prompt()
+            is_first_run = False
+        else:
+            prompt = get_coding_prompt()
+        async with client:
+            status, response = await run_agent_session(client, prompt, project_dir)
+        await asyncio.sleep(AUTO_CONTINUE_DELAY_SECONDS)  # 3 seconds</pre>
+
+    <p style="margin-top:16px">
+      The <code>run_agent_session()</code> call drives the Claude Code SDK conversation until the
+      agent completes its session. The harness does not inspect the content of the session &mdash;
+      it only checks the exit status returned by the SDK.
+    </p>
+
+    <h3 style="font-size:15px;font-weight:600;margin:20px 0 8px">Client factory &mdash; client.py</h3>
+    <pre>
+def create_client(project_dir, model):
+    security_settings = {
+        "sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True},
+        "permissions": {
+            "defaultMode": "acceptEdits",
+            "allow": [
+                "Read(./**)", "Write(./**)", "Edit(./**)",
+                "Glob(./**)", "Grep(./**)", "Bash(*)",
+                *PUPPETEER_TOOLS,
+            ],
+        },
+    }
+    return ClaudeSDKClient(
+        options=ClaudeCodeOptions(
+            model=model,
+            system_prompt="You are an expert full-stack developer building "
+                          "a production-quality web application.",
+            allowed_tools=[*BUILTIN_TOOLS, *PUPPETEER_TOOLS],
+            mcp_servers={"puppeteer": {"command": "npx",
+                                       "args": ["puppeteer-mcp-server"]}},
+            hooks={"PreToolUse": [HookMatcher(matcher="Bash",
+                                              hooks=[bash_security_hook])]},
+            max_turns=1000,
+            cwd=str(project_dir.resolve()),
+            settings=str(settings_file.resolve()),
+        )
+    )</pre>
+
+    <div class="table-wrap" style="margin-top:20px">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Value</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>max_turns</code></td>
+            <td><code>1000</code></td>
+            <td>Allow long-running feature implementation without hitting SDK limits</td>
+          </tr>
+          <tr>
+            <td><code>sandbox.enabled</code></td>
+            <td><code>True</code></td>
+            <td>OS-level isolation; Bash commands sandboxed by the Claude Code runtime</td>
+          </tr>
+          <tr>
+            <td><code>defaultMode</code></td>
+            <td><code>acceptEdits</code></td>
+            <td>File edits applied automatically; no human approval required per edit</td>
+          </tr>
+          <tr>
+            <td><code>PreToolUse hook</code></td>
+            <td><code>bash_security_hook</code></td>
+            <td>Command allowlist runs before every Bash tool call</td>
+          </tr>
+          <tr>
+            <td><code>mcp_servers</code></td>
+            <td>Puppeteer MCP</td>
+            <td>Browser automation for screenshot-based feature verification</td>
+          </tr>
+          <tr>
+            <td><code>cwd</code></td>
+            <td><code>project_dir</code></td>
+            <td>All relative paths resolve inside the project directory</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="margin-top:16px">
+      The settings object is written to <code>.claude_settings.json</code> inside the project
+      directory at startup. This means the filesystem restrictions and sandbox config are
+      co-located with the project, not embedded in the harness code.
+    </p>
+  </section>
+
+  <!-- Multi-Session State Transfer -->
+  <section id="state-transfer">
+    <h2><span class="section-num">03</span>Multi-Session State Transfer</h2>
+    <p class="lead">
+      Claude Code sessions have no cross-session memory. The harness solves this with a
+      <strong>"file as state"</strong> pattern: every piece of information the next session
+      needs is written to the filesystem before the current session ends.
+    </p>
+    <p>
+      Three files carry state across sessions. The Coding Agent's first step is always to read
+      all three before doing any work.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Written by</th>
+            <th>Read by</th>
+            <th>Content</th>
+            <th>Mutability</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>feature_list.json</code></td>
+            <td>Initializer</td>
+            <td>Every session</td>
+            <td>200 test cases with feature metadata and <code>passes</code> boolean</td>
+            <td>Only the <code>passes</code> field may be changed &mdash; all other fields are immutable</td>
+          </tr>
+          <tr>
+            <td><code>claude-progress.txt</code></td>
+            <td>Every session (end)</td>
+            <td>Every session (start)</td>
+            <td>Free-form progress notes: what was done, what broke, what to do next</td>
+            <td>Overwritten each session with fresh notes</td>
+          </tr>
+          <tr>
+            <td><code>git log</code></td>
+            <td>Every session (commit step)</td>
+            <td>Every session (bearings step)</td>
+            <td>Commit history as a chronological work record</td>
+            <td>Append-only (normal git)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:24px 0 8px">Immutability constraint on feature_list.json</h3>
+    <p>
+      The Initializer creates <code>feature_list.json</code> once with 200 test cases covering
+      both functional features and style/UX requirements, ordered by priority. The Coding Agent
+      prompt contains an explicit hard constraint:
+    </p>
+    <pre>
+IT IS CATASTROPHIC TO REMOVE OR EDIT FEATURES IN FUTURE SESSIONS.
+The feature_list.json is the single source of truth for what needs to be built.
+In future sessions you may ONLY change the "passes" field of existing entries.</pre>
+
+    <p style="margin-top:16px">
+      This design means the feature backlog is stable across all N sessions. Work is tracked by
+      flipping <code>"passes": false</code> to <code>"passes": true</code> — a monotonically
+      increasing progress indicator that can never regress below the previous session's count.
+    </p>
+
+    <h3 style="font-size:15px;font-weight:600;margin:24px 0 8px">Step 1 "Get Your Bearings" — context reconstruction</h3>
+    <p>
+      The Coding Agent begins every session by running exactly these 7 commands to reconstruct
+      the full project context from the filesystem:
+    </p>
+    <pre>
+# Step 1: Get Your Bearings
+cat app_spec.txt          # Original product requirements
+cat feature_list.json     # All 200 features and current pass/fail status
+cat claude-progress.txt   # Progress notes from the last session
+git log --oneline -20     # Recent commit history
+ls -la                    # Current project structure
+cat package.json          # Dependencies and scripts (if present)
+cat README.md             # Project documentation (if present)</pre>
+
+    <p style="margin-top:16px">
+      This sequence gives the agent a complete picture: what was requested, what has been built,
+      what was done last session, and what remains. No human context-passing is needed.
+    </p>
+  </section>
+
+  <!-- Context Reset Strategy -->
+  <section id="context-reset">
+    <h2><span class="section-num">04</span>Context Reset Strategy</h2>
+    <p class="lead">
+      Every iteration of the harness loop creates a new <code>ClaudeSDKClient</code> instance.
+      This is not a limitation &mdash; it is an explicit design choice.
+    </p>
+
+    <div class="flow">
+      <div class="flow-box">
+        <div class="flow-title">Session N ends</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Agent writes progress notes, commits, exits cleanly</div>
+      </div>
+      <div class="flow-arrow wide">&#9660; 3-second delay (AUTO_CONTINUE_DELAY_SECONDS)</div>
+      <div class="flow-box core">
+        <div class="flow-title">create_client() called again</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Fresh ClaudeSDKClient &mdash; no session ID, no --resume, no conversation history</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Session N+1 begins</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Empty context window &mdash; agent reads filesystem to reconstruct state</div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Property</th>
+            <th>Design Choice</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Session continuity</td>
+            <td>None &mdash; no <code>--resume</code>, no conversation ID</td>
+            <td>Context window exhaustion is guaranteed on long tasks; proactive reset avoids degraded performance from a bloated context</td>
+          </tr>
+          <tr>
+            <td>State carrier</td>
+            <td>Filesystem only</td>
+            <td>Files are durable, inspectable, and independent of the Claude API</td>
+          </tr>
+          <tr>
+            <td>Reset trigger</td>
+            <td>After every session, unconditionally</td>
+            <td>Simpler than detecting context pressure; predictable cost model</td>
+          </tr>
+          <tr>
+            <td>Inter-session delay</td>
+            <td>3 seconds</td>
+            <td>Avoids API rate-limiting between rapid session starts</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:24px 0 8px">Context Reconstruction Pattern</h3>
+    <p>
+      The Coding Agent's prompt explicitly tells it that it is in a fresh context window and that
+      it must reconstruct its understanding before doing any work:
+    </p>
+    <pre>
+YOUR ROLE - CODING AGENT
+This is a FRESH context window - you have no memory of previous sessions.
+Your entire understanding of the project state must come from reading files.
+
+Step 1 (MANDATORY): Read app_spec.txt, feature_list.json, claude-progress.txt,
+                    and git log before doing anything else.</pre>
+
+    <p style="margin-top:16px">
+      This "prompt-driven recovery" pattern means the agent doesn't depend on implicit session
+      state. The harness never needs to serialize or inject prior conversation history &mdash;
+      the agent self-orients by design.
+    </p>
+  </section>
+
+  <!-- Prompt Design -->
+  <section id="prompt-design">
+    <h2><span class="section-num">05</span>Prompt Design</h2>
+    <p>
+      The two prompts are the core intellectual content of the system. The harness is ~60 lines;
+      each prompt is hundreds of lines of precise, step-by-step instructions.
+    </p>
+
+    <h3 style="font-size:15px;font-weight:600;margin:20px 0 8px">Initializer Prompt</h3>
+    <p>
+      Runs exactly once (Session 1). Produces all the scaffolding that every subsequent session
+      depends on.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Output</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1. Read <code>app_spec.txt</code></td>
+            <td>Understanding of product requirements</td>
+            <td>Provided by the user in the project directory</td>
+          </tr>
+          <tr>
+            <td>2. Create <code>feature_list.json</code></td>
+            <td>200 test cases, priority-ordered</td>
+            <td>Mixed: functional + style, step counts 2&ndash;5 and 10+, priority-ordered</td>
+          </tr>
+          <tr>
+            <td>3. Create <code>init.sh</code></td>
+            <td>Startup script for dev servers</td>
+            <td>Used by every coding session to start the app before testing</td>
+          </tr>
+          <tr>
+            <td>4. Git init + project structure</td>
+            <td>Initial commit + directory layout</td>
+            <td>Baseline commit so git log starts clean</td>
+          </tr>
+          <tr>
+            <td>5. End session cleanly</td>
+            <td>Commit + <code>claude-progress.txt</code></td>
+            <td>Progress notes document what was set up and what to build first</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="collapsible" style="margin-top:16px">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Initializer prompt excerpt
+      </div>
+      <div class="collapsible-body">
+        <pre>
+YOUR ROLE - INITIALIZER AGENT (Session 1 of Many)
+
+You are setting up a new project. Future sessions will implement features
+one at a time using the scaffold you create now.
+
+TASKS (in order):
+1. Read app_spec.txt to understand what needs to be built
+2. Create feature_list.json with EXACTLY 200 test cases:
+   - Mix of functional features and style/UX requirements
+   - Include both quick tasks (2-5 steps) and complex ones (10+ steps)
+   - Priority-ordered: most important features first
+   - Every entry has: id, title, description, category, passes (false)
+3. Create init.sh — script to start all dev servers
+4. Initialize git repository and create initial project structure
+5. Before session ends:
+   - Commit everything with a clear message
+   - Create claude-progress.txt documenting what was set up
+
+IT IS CATASTROPHIC TO REMOVE OR EDIT FEATURES IN FUTURE SESSIONS.
+The feature_list.json you create now is the permanent feature backlog.</pre>
+      </div>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:28px 0 8px">Coding Prompt &mdash; 10-Step Workflow</h3>
+    <p>
+      Runs for every session from Session 2 onward. The 10 steps encode three key principles:
+      <em>reconstruct before acting</em>, <em>verify before building</em>, and
+      <em>one feature at a time</em>.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Action</th>
+            <th>Key Constraint</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1</strong></td>
+            <td>Get Your Bearings</td>
+            <td>Read all 4 state files before anything else</td>
+          </tr>
+          <tr>
+            <td><strong>2</strong></td>
+            <td>Start Servers</td>
+            <td>Run <code>./init.sh</code> to bring up the dev environment</td>
+          </tr>
+          <tr>
+            <td><strong>3</strong></td>
+            <td>Regression Test (MANDATORY)</td>
+            <td>Verify 1&ndash;2 already-passing features before writing any new code</td>
+          </tr>
+          <tr>
+            <td><strong>4</strong></td>
+            <td>Choose ONE Feature</td>
+            <td>Pick the highest-priority unimplemented feature from feature_list.json</td>
+          </tr>
+          <tr>
+            <td><strong>5</strong></td>
+            <td>Implement</td>
+            <td>Write code, one feature only</td>
+          </tr>
+          <tr>
+            <td><strong>6</strong></td>
+            <td>Browser Verify (Puppeteer)</td>
+            <td>Take screenshots proving the feature works; no skipping this step</td>
+          </tr>
+          <tr>
+            <td><strong>7</strong></td>
+            <td>Update feature_list.json</td>
+            <td>ONLY change the <code>"passes"</code> field of the implemented feature</td>
+          </tr>
+          <tr>
+            <td><strong>8</strong></td>
+            <td>Commit</td>
+            <td>One commit per feature with a descriptive message</td>
+          </tr>
+          <tr>
+            <td><strong>9</strong></td>
+            <td>Update claude-progress.txt</td>
+            <td>Document what was done, what broke, and what to tackle next session</td>
+          </tr>
+          <tr>
+            <td><strong>10</strong></td>
+            <td>End Session Cleanly</td>
+            <td>No dangling processes, no uncommitted changes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:24px 0 8px">"Regression before progress" principle</h3>
+    <p>
+      Step 3 is explicitly marked MANDATORY in the prompt. Before implementing any new feature,
+      the agent must verify that previously-passing features still pass. This provides a
+      regression safety net across context resets &mdash; if a prior session introduced a bug
+      and the agent failed to catch it, the next session will detect it during Step 3 before
+      compounding the problem.
+    </p>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Coding prompt excerpt
+      </div>
+      <div class="collapsible-body">
+        <pre>
+YOUR ROLE - CODING AGENT
+This is a FRESH context window - you have no memory of previous sessions.
+
+Step 1: Get Your Bearings
+  cat app_spec.txt
+  cat feature_list.json
+  cat claude-progress.txt
+  git log --oneline -20
+
+Step 2: Start Servers
+  ./init.sh
+
+Step 3: Verification Test — MANDATORY: test 1-2 passing features BEFORE new work
+  Use Puppeteer to verify existing features still work.
+  If regression found, fix it before proceeding.
+
+Step 4: Choose ONE Feature to implement
+  Pick the highest-priority feature where passes=false
+
+Step 5: Implement the feature
+
+Step 6: Verify with Browser Automation (Puppeteer screenshots)
+  Must see visual proof the feature works before marking it as passing.
+
+Step 7: Update feature_list.json (ONLY change "passes" field to true)
+
+Step 8: Commit with a descriptive message
+
+Step 9: Update claude-progress.txt with:
+  - What feature was implemented
+  - Any issues encountered
+  - What to tackle next session
+
+Step 10: End Session Cleanly — kill dev servers, verify clean git state</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Security Model -->
+  <section id="security">
+    <h2><span class="section-num">06</span>Security Model</h2>
+    <p class="lead">
+      The harness applies defense-in-depth with three independent security layers. Each layer
+      would need to fail independently for an unsafe command to execute.
+    </p>
+
+    <div class="flow">
+      <div class="flow-box entry">
+        <div class="flow-title">Layer 1: OS Sandbox</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><code>sandbox.enabled = true</code> in .claude_settings.json — Claude Code runtime OS isolation</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box hook">
+        <div class="flow-title">Layer 2: Filesystem Restrictions</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><code>Read(./**)</code>, <code>Write(./**)</code>, <code>Edit(./**)</code> — all paths relative to project dir only</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">Layer 3: Bash Command Allowlist (PreToolUse Hook)</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><code>bash_security_hook()</code> in security.py — blocks any command not in ALLOWED_COMMANDS</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:24px 0 8px">ALLOWED_COMMANDS &mdash; security.py</h3>
+    <pre>
+ALLOWED_COMMANDS = {
+    # File inspection
+    "ls", "cat", "head", "tail", "wc", "grep",
+    # File manipulation
+    "cp", "mkdir", "chmod",
+    # Navigation
+    "pwd",
+    # Runtime
+    "npm", "node",
+    # Version control
+    "git",
+    # Process management
+    "ps", "lsof", "sleep", "pkill",
+    # Project startup
+    "init.sh",
+}
+
+async def bash_security_hook(input_data, tool_use_id=None, context=None):
+    command = input_data.get("tool_input", {}).get("command", "")
+    commands = extract_commands(command)
+    for cmd in commands:
+        if cmd not in ALLOWED_COMMANDS:
+            return {"decision": "block", "reason": f"Command '{cmd}' not allowed"}
+        # Extra validation for sensitive commands:
+        # pkill  → only dev process names allowed (node, npm, etc.)
+        # chmod  → only +x flag allowed (no permission widening)
+        # init.sh → only ./init.sh allowed (no path traversal)
+    return {}  # allow</pre>
+
+    <div class="table-wrap" style="margin-top:20px">
+      <table>
+        <thead>
+          <tr>
+            <th>Sensitive Command</th>
+            <th>Extra Validation</th>
+            <th>Blocked Example</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pkill</code></td>
+            <td>Only dev process names (node, npm, vite, etc.) are allowed targets</td>
+            <td><code>pkill -9 sshd</code> &rarr; blocked</td>
+          </tr>
+          <tr>
+            <td><code>chmod</code></td>
+            <td>Only <code>+x</code> flag allowed; numeric modes blocked</td>
+            <td><code>chmod 777 file</code> &rarr; blocked</td>
+          </tr>
+          <tr>
+            <td><code>init.sh</code></td>
+            <td>Only <code>./init.sh</code> form; path traversal blocked</td>
+            <td><code>../init.sh</code> &rarr; blocked</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="margin-top:16px">
+      The <code>.claude_settings.json</code> file is written to the project directory at harness
+      startup. This keeps the security configuration version-controlled alongside the project
+      rather than embedded in a global config.
+    </p>
+  </section>
+
+  <!-- Key Architectural Insights -->
+  <section id="insights">
+    <h2><span class="section-num">07</span>Key Architectural Insights</h2>
+    <p>
+      The <code>autonomous-coding</code> demo distills several reusable patterns for building
+      reliable long-running AI coding agents.
+    </p>
+
+    <div class="mode-cards">
+      <div class="mode-card">
+        <div class="mode-card-header full">File as State</div>
+        <div class="mode-card-body">
+          <p>No agent memory, no database, no session continuity. Every piece of state lives in
+          files the agent writes and reads. The filesystem is the only cross-session contract.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> Files are durable, inspectable
+          by humans, and independent of the Claude API. Debugging a stuck agent means reading
+          <code>claude-progress.txt</code> — no special tooling needed.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header minimal">Stateless Worker</div>
+        <div class="mode-card-body">
+          <p>The Python harness is intentionally trivial. It creates clients, selects prompts,
+          and loops. All intelligence is in the prompts — the harness has zero domain knowledge.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> Simple harness = easy to test,
+          reason about, and extend. Adding a new agent type means adding a new prompt file, not
+          modifying the harness.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header none">Immutable + Monotonic</div>
+        <div class="mode-card-body">
+          <p><code>feature_list.json</code> is immutable except for the <code>passes</code>
+          field, which only ever changes from <code>false</code> to <code>true</code>. Progress
+          is monotonically increasing.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> The agent can never accidentally
+          delete or reorder the backlog. Progress is always visible and measurable across any
+          number of sessions.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mode-cards" style="margin-top:0">
+      <div class="mode-card">
+        <div class="mode-card-header full">Regression Before Progress</div>
+        <div class="mode-card-body">
+          <p>Every session begins with a mandatory regression check before new work. The agent
+          must verify existing features still pass using Puppeteer before implementing anything.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> Context resets introduce the
+          risk of silent regressions. Step 3 turns this from a latent bug into an immediate,
+          session-local problem that must be fixed.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header minimal">Defense in Depth</div>
+        <div class="mode-card-body">
+          <p>Three independent security layers: OS sandbox, filesystem path restrictions, and a
+          Bash command allowlist hook. Each can block malicious activity independently.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> A single allowlist can be
+          bypassed by creative command construction. Three layers means three independent
+          failure modes must all align for a breach.</p>
+        </div>
+      </div>
+      <div class="mode-card">
+        <div class="mode-card-header none">Proactive Context Reset</div>
+        <div class="mode-card-body">
+          <p>Context is reset after every session, not when it's exhausted. The agent reconstructs
+          from files at the start of each session rather than relying on accumulated history.</p>
+          <p style="margin-top:8px"><strong>Why it works:</strong> Degraded performance from a
+          bloated context window is worse than the overhead of reconstructing from files. The
+          cost of reconstruction is predictable; the cost of degraded context is not.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="font-size:15px;font-weight:600;margin:28px 0 12px">Pattern Summary</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Pattern</th>
+            <th>Mechanism</th>
+            <th>Enables</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>File as state</strong></td>
+            <td>feature_list.json + claude-progress.txt + git log</td>
+            <td>Unlimited sessions without API session continuity</td>
+          </tr>
+          <tr>
+            <td><strong>Stateless worker</strong></td>
+            <td>Harness loop is ~60 lines; prompts carry all logic</td>
+            <td>Easy extension — new agent type = new prompt file</td>
+          </tr>
+          <tr>
+            <td><strong>Immutable + monotonic</strong></td>
+            <td>feature_list.json structure frozen at Session 1</td>
+            <td>Reliable progress tracking across N sessions</td>
+          </tr>
+          <tr>
+            <td><strong>Regression before progress</strong></td>
+            <td>Mandatory Step 3 Puppeteer regression test</td>
+            <td>Catches regressions before they compound</td>
+          </tr>
+          <tr>
+            <td><strong>Defense in depth</strong></td>
+            <td>OS sandbox + path restrictions + command allowlist</td>
+            <td>Three independent failure modes before a breach</td>
+          </tr>
+          <tr>
+            <td><strong>Proactive context reset</strong></td>
+            <td>Fresh ClaudeSDKClient every iteration</td>
+            <td>Predictable performance over arbitrarily long builds</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <p>OpenClaw Explorer &mdash; Autonomous Coding Harness</p>
+    <p>Source analysis based on Anthropic's claude-quickstarts / autonomous-coding demo</p>
+  </footer>
+
+</main>
+
+<script src="../js/main.js"></script>
+
+</body>
+</html>

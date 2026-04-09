@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Management - OpenClaw Explorer</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Memory Management Explorer</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Sidebar toggle (mobile) -->
+<button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <a class="back-link" href="../" style="padding:8px 16px;display:block">&larr; Back to Topics</a>
+
+  <div class="nav-section">Architecture</div>
+  <a class="nav-link" href="#overview">Architecture Overview</a>
+  <a class="nav-link" href="#tools">Memory Tools</a>
+  <a class="nav-link" href="#storage">Storage Format</a>
+
+  <div class="nav-section">Search &amp; Lifecycle</div>
+  <a class="nav-link" href="#search">Search Pipeline</a>
+  <a class="nav-link" href="#lifecycle">Memory Lifecycle</a>
+  <a class="nav-link" href="#flush">Memory Flush</a>
+
+  <div class="nav-section">Integration</div>
+  <a class="nav-link" href="#system-prompt">System Prompt Integration</a>
+  <a class="nav-link" href="#config">Configuration</a>
+  <a class="nav-link" href="#example">Real-World Example</a>
+</nav>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- 01 Architecture Overview -->
+  <section id="overview">
+    <h2><span class="section-num">01</span>Architecture Overview</h2>
+    <p class="lead">
+      OpenClaw uses a two-layer memory design. <code>MEMORY.md</code> serves as a curated,
+      always-loaded bootstrap file injected into the system prompt. Daily logs in
+      <code>memory/YYYY-MM-DD.md</code> capture session-specific memories that persist across
+      context compactions. Both layers are indexed into a SQLite database for fast hybrid search.
+    </p>
+    <p>
+      A file watcher monitors the workspace for changes and keeps the SQLite index in sync.
+      When the agent needs to recall past context, it uses <code>memory_search</code> to query
+      the index and <code>memory_get</code> to retrieve specific lines from memory files.
+    </p>
+
+    <div class="flow">
+      <div class="flow-row">
+        <div class="flow-box entry">
+          <div class="flow-title">MEMORY.md</div>
+          <div class="flow-file">Curated bootstrap file</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Always loaded into system prompt (Section 23)</div>
+        </div>
+        <div class="flow-box entry">
+          <div class="flow-title">memory/*.md</div>
+          <div class="flow-file">Daily log files</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">memory/YYYY-MM-DD.md per session</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660; &#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">File Watcher</div>
+        <div class="flow-file">1.5s debounce (watchDebounceMs)</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Monitors workspace for .md changes</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">SQLite Index</div>
+        <div class="flow-file">~/.openclaw/memory/{agentId}.sqlite</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Chunks + FTS5 + vector embeddings</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-row">
+        <div class="flow-box hook">
+          <div class="flow-title">memory_search</div>
+          <div class="flow-file">Hybrid vector + keyword search</div>
+        </div>
+        <div class="flow-box hook">
+          <div class="flow-title">memory_get</div>
+          <div class="flow-file">Retrieve specific lines</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Agent Context</div>
+        <div class="flow-file">Retrieved memories injected into conversation</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 Memory Tools -->
+  <section id="tools">
+    <h2><span class="section-num">02</span>Memory Tools</h2>
+    <p>Two tools provide read access to the memory system. Both are defined in
+      <code>src/agents/tools/memory-tool.ts</code>.</p>
+
+    <h3>memory_search</h3>
+    <p>Performs hybrid vector + keyword search across all indexed memory files.</p>
+
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Type</th>
+            <th>Required</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>query</code></td>
+            <td>string</td>
+            <td>Yes</td>
+            <td>&mdash;</td>
+            <td>The search query to match against memory content</td>
+          </tr>
+          <tr>
+            <td><code>maxResults</code></td>
+            <td>number</td>
+            <td>No</td>
+            <td><code>6</code></td>
+            <td>Maximum number of results to return</td>
+          </tr>
+          <tr>
+            <td><code>minScore</code></td>
+            <td>number</td>
+            <td>No</td>
+            <td><code>0.35</code></td>
+            <td>Minimum similarity score threshold (0&ndash;1)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Return structure per result:</p>
+    <pre>
+{
+  path:     "memory/2026-02-24.md",   // relative file path
+  startLine: 12,                       // chunk start line
+  endLine:   28,                       // chunk end line
+  score:     0.72,                     // combined similarity score
+  snippet:   "...",                    // matched text excerpt
+  citation:  "memory/2026-02-24.md#L12-L28"
+}</pre>
+
+    <h3>memory_get</h3>
+    <p>Retrieves raw text content from a specific memory file. Used after <code>memory_search</code>
+      to pull the full context around a matched snippet.</p>
+
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Type</th>
+            <th>Required</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>path</code></td>
+            <td>string</td>
+            <td>Yes</td>
+            <td>&mdash;</td>
+            <td>Relative path to the memory file</td>
+          </tr>
+          <tr>
+            <td><code>from</code></td>
+            <td>integer</td>
+            <td>No</td>
+            <td>&mdash;</td>
+            <td>Starting line number</td>
+          </tr>
+          <tr>
+            <td><code>lines</code></td>
+            <td>integer</td>
+            <td>No</td>
+            <td>&mdash;</td>
+            <td>Number of lines to return</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>Access control:</strong> Both tools only access <code>.md</code> files within the
+      workspace <code>MEMORY.md</code> and <code>memory/</code> directory. Files outside this
+      scope are rejected.</p>
+  </section>
+
+  <!-- 03 Storage Format -->
+  <section id="storage">
+    <h2><span class="section-num">03</span>Storage Format</h2>
+    <p>Memory data lives in two forms: human-readable Markdown files on disk and a SQLite
+      database that indexes them for fast search.</p>
+
+    <h3>File Layout</h3>
+    <pre>
+~/.openclaw/workspace/
+  MEMORY.md                  # Curated bootstrap (always in system prompt)
+  memory/
+    2026-02-11.md            # Daily session logs
+    2026-02-14.md
+    2026-02-17.md
+    ...
+
+~/.openclaw/memory/
+  {agentId}.sqlite           # SQLite index database</pre>
+
+    <h3>SQLite Database</h3>
+    <p>The database at <code>~/.openclaw/memory/{agentId}.sqlite</code> contains six tables.
+      Schema defined in <code>src/memory/memory-schema.ts</code>.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th>Type</th>
+            <th>Purpose</th>
+            <th>Key Columns</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>files</code></td>
+            <td>Regular</td>
+            <td>Tracks indexed files with content hashes for change detection</td>
+            <td><code>path</code> (PK), <code>source</code>, <code>hash</code>, <code>mtime</code>, <code>size</code></td>
+          </tr>
+          <tr>
+            <td><code>chunks</code></td>
+            <td>Regular</td>
+            <td>Stores text chunks with their embedding vectors</td>
+            <td><code>id</code> (PK), <code>path</code>, <code>start_line</code>, <code>end_line</code>, <code>text</code>, <code>embedding</code>, <code>model</code></td>
+          </tr>
+          <tr>
+            <td><code>chunks_fts</code></td>
+            <td>Virtual (FTS5)</td>
+            <td>Full-text search index for BM25 keyword matching</td>
+            <td><code>text</code> (indexed), <code>id</code>, <code>path</code>, <code>start_line</code>, <code>end_line</code> (unindexed)</td>
+          </tr>
+          <tr>
+            <td><code>chunks_vec</code></td>
+            <td>Virtual (sqlite-vec)</td>
+            <td>Vector similarity search using cosine distance</td>
+            <td>Embedding vectors from <code>chunks</code> table</td>
+          </tr>
+          <tr>
+            <td><code>embedding_cache</code></td>
+            <td>Regular</td>
+            <td>Caches embedding API responses to avoid redundant calls</td>
+            <td><code>provider</code>, <code>model</code>, <code>hash</code> (composite PK), <code>embedding</code>, <code>dims</code></td>
+          </tr>
+          <tr>
+            <td><code>meta</code></td>
+            <td>Regular</td>
+            <td>Key-value store for schema version, dirty flags, etc.</td>
+            <td><code>key</code> (PK), <code>value</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 04 Search Pipeline -->
+  <section id="search">
+    <h2><span class="section-num">04</span>Search Pipeline</h2>
+    <p>When <code>memory_search</code> is called, the query passes through a 9-step hybrid
+      search pipeline. Implementation spread across <code>src/memory/hybrid.ts</code>,
+      <code>src/memory/mmr.ts</code>, and <code>src/memory/temporal-decay.ts</code>.</p>
+
+    <div class="flow">
+      <div class="flow-box">
+        <div class="flow-title">1. Check Dirty Flag</div>
+        <div class="flow-file">If files changed, sync before searching</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">2. Extract Keywords</div>
+        <div class="flow-file">Parse query into keyword tokens for BM25</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">3. Generate Embedding</div>
+        <div class="flow-file">Call embedding provider (OpenAI, Gemini, etc.)</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-row">
+        <div class="flow-box core">
+          <div class="flow-title">4a. Vector Search</div>
+          <div class="flow-file">Cosine similarity via chunks_vec</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">sqlite-vec extension</div>
+        </div>
+        <div class="flow-box core">
+          <div class="flow-title">4b. Keyword Search</div>
+          <div class="flow-file">BM25 ranking via chunks_fts (FTS5)</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Full-text search</div>
+        </div>
+      </div>
+      <div class="flow-arrow wide">&#9660; &#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">5. Merge Scores</div>
+        <div class="flow-file">score = 0.7 &times; vector + 0.3 &times; text</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">4&times; candidate pool, then merge</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">6. MMR (optional)</div>
+        <div class="flow-file">Maximal Marginal Relevance &mdash; reduce redundancy</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">lambda=0.7, Jaccard similarity, default: off</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">7. Temporal Decay (optional)</div>
+        <div class="flow-file">score &times; exp(&minus;&#955; &times; age)</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">halfLife=30 days, default: off</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">8. Filter &amp; Rank</div>
+        <div class="flow-file">minScore &ge; 0.35, return top 6</div>
+      </div>
+    </div>
+
+    <h3>Embedding Providers</h3>
+    <p>The embedding step supports multiple providers. Configured via
+      <code>agents.defaults.memorySearch.provider</code>.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Default Model</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>OpenAI</strong></td>
+            <td><code>text-embedding-3-small</code></td>
+            <td>Default provider when set to <code>"auto"</code></td>
+          </tr>
+          <tr>
+            <td><strong>Gemini</strong></td>
+            <td><code>gemini-embedding-001</code></td>
+            <td>Google AI embedding model</td>
+          </tr>
+          <tr>
+            <td><strong>Voyage</strong></td>
+            <td><code>voyage-4-large</code></td>
+            <td>Voyage AI high-dimensional embeddings</td>
+          </tr>
+          <tr>
+            <td><strong>Mistral</strong></td>
+            <td><code>mistral-embed</code></td>
+            <td>Mistral AI embedding model</td>
+          </tr>
+          <tr>
+            <td><strong>Local</strong></td>
+            <td><code>embeddinggemma-300m-qat-Q8_0</code></td>
+            <td>GGUF model via local inference, no API needed</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 05 Memory Lifecycle -->
+  <section id="lifecycle">
+    <h2><span class="section-num">05</span>Memory Lifecycle</h2>
+    <p>From the moment an agent writes a memory file to the moment that content appears in
+      search results, the data passes through a multi-stage pipeline.</p>
+
+    <div class="flow">
+      <div class="flow-box entry">
+        <div class="flow-title">Agent Writes File</div>
+        <div class="flow-file">write MEMORY.md or memory/YYYY-MM-DD.md</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">File Watcher Detects Change</div>
+        <div class="flow-file">1.5s debounce (watchDebounceMs: 1500)</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Chunking</div>
+        <div class="flow-file">400 tokens per chunk, 80 token overlap</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Embedding Generation</div>
+        <div class="flow-file">Provider API call (cached in embedding_cache)</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">SQLite Insert</div>
+        <div class="flow-file">chunks + chunks_fts + chunks_vec tables</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box hook">
+        <div class="flow-title">Search &amp; Retrieve</div>
+        <div class="flow-file">memory_search &rarr; memory_get</div>
+      </div>
+    </div>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Chunking details
+      </div>
+      <div class="collapsible-body">
+        <p>Memory files are split into overlapping chunks for indexing:</p>
+        <ul style="list-style:none;padding:0">
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Chunk size:</strong> 400 tokens (<code>agents.defaults.memorySearch.chunking.tokens</code>)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Overlap:</strong> 80 tokens (<code>agents.defaults.memorySearch.chunking.overlap</code>)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Stride:</strong> 320 tokens (chunk size minus overlap)</li>
+        </ul>
+        <p>The overlap ensures that content near chunk boundaries is still discoverable. Each chunk
+          records its <code>start_line</code> and <code>end_line</code> in the source file so
+          <code>memory_get</code> can retrieve the exact lines later.</p>
+        <p>Chunks are hashed by content &mdash; if the text hasn't changed, the embedding is
+          reused from <code>embedding_cache</code> instead of calling the provider API again.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 Memory Flush -->
+  <section id="flush">
+    <h2><span class="section-num">06</span>Memory Flush</h2>
+    <p>When a session approaches the context window limit, OpenClaw triggers a silent
+      "memory flush" turn before compaction. This ensures important context is written
+      to disk before the conversation history is truncated.</p>
+
+    <h3>Trigger Condition</h3>
+    <pre>totalTokens &ge; contextWindow &minus; reserveTokensFloor &minus; softThresholdTokens</pre>
+    <p>Where <code>softThresholdTokens</code> defaults to <strong>4000</strong>. When the total
+      token count crosses this threshold, a flush is initiated.</p>
+
+    <h3>Flush Process</h3>
+    <div class="flow">
+      <div class="flow-box">
+        <div class="flow-title">Token Threshold Reached</div>
+        <div class="flow-file">totalTokens &ge; contextWindow &minus; reserve &minus; 4000</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box core">
+        <div class="flow-title">Silent Flush Turn</div>
+        <div class="flow-file">"Pre-compaction memory flush. Store durable memories now."</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Injected as a system + user message pair</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box entry">
+        <div class="flow-title">Agent Writes to memory/YYYY-MM-DD.md</div>
+        <div class="flow-file">Creates memory/ directory if needed</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box">
+        <div class="flow-title">Session Compacted</div>
+        <div class="flow-file">Older messages truncated to free tokens</div>
+      </div>
+      <div class="flow-arrow wide">&#9660;</div>
+      <div class="flow-box hook">
+        <div class="flow-title">Memory Persists on Disk</div>
+        <div class="flow-file">Indexed into SQLite, searchable in future turns</div>
+      </div>
+    </div>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        How memory survives compaction
+      </div>
+      <div class="collapsible-body">
+        <p>Context compaction removes older messages from the session to free token space. Without
+          memory flush, all knowledge from those messages would be lost. The flush mechanism ensures
+          that:</p>
+        <ul style="list-style:none;padding:0">
+          <li style="padding:4px 0;color:var(--text-secondary)">1. The agent is prompted to write important context to <code>memory/YYYY-MM-DD.md</code> before compaction occurs</li>
+          <li style="padding:4px 0;color:var(--text-secondary)">2. The file watcher picks up the new file and indexes it into SQLite</li>
+          <li style="padding:4px 0;color:var(--text-secondary)">3. After compaction, the agent can recover the context via <code>memory_search</code></li>
+          <li style="padding:4px 0;color:var(--text-secondary)">4. <code>MEMORY.md</code> is always present in the system prompt (Section 23), providing a baseline context that never gets compacted</li>
+        </ul>
+        <p>The flush prompt and system prompt are customizable via
+          <code>agents.defaults.compaction.memoryFlush.prompt</code> and
+          <code>.systemPrompt</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 07 System Prompt Integration -->
+  <section id="system-prompt">
+    <h2><span class="section-num">07</span>System Prompt Integration</h2>
+    <p>Memory is woven into the system prompt at three points. These only appear in
+      <span class="badge badge-full">full</span> prompt mode.</p>
+
+    <div class="table-wrap" style="margin-bottom:24px">
+      <table>
+        <thead>
+          <tr>
+            <th>Section</th>
+            <th>Name</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>#7</strong></td>
+            <td>Memory Recall</td>
+            <td>Instructions for when and how to use <code>memory_search</code> and <code>memory_get</code>. Tells the agent to search memory before answering questions about prior work, decisions, or dates.</td>
+          </tr>
+          <tr>
+            <td><strong>#23</strong></td>
+            <td>Project Context</td>
+            <td><code>MEMORY.md</code> is loaded as a bootstrap file. Its full contents are injected into the prompt so the agent always has baseline memory without needing to search.</td>
+          </tr>
+          <tr>
+            <td><strong>#26</strong></td>
+            <td>Runtime</td>
+            <td>Runtime metadata line includes memory-related capabilities and configuration state.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Citation Modes</h3>
+    <p>When <code>memory_search</code> returns results, citations can be included automatically.
+      Configured via <code>memory.citations</code>.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>Behavior</th>
+            <th>Format</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>auto</code></td>
+            <td>Show citations in direct chats; suppress in groups/channels. <strong>This is the default.</strong></td>
+            <td><code>memory/2026-02-24.md#L12-L28</code></td>
+          </tr>
+          <tr>
+            <td><code>on</code></td>
+            <td>Always include citations with source file and line range.</td>
+            <td><code>memory/2026-02-24.md#L12-L28</code></td>
+          </tr>
+          <tr>
+            <td><code>off</code></td>
+            <td>Never include citations. Only the snippet text is returned.</td>
+            <td>&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 08 Configuration -->
+  <section id="config">
+    <h2><span class="section-num">08</span>Configuration</h2>
+    <p>The full memory system is controlled by configuration paths under
+      <code>agents.defaults.memorySearch</code> and related namespaces.
+      Defined in <code>src/config/types.tools.ts</code>.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Config Path</th>
+            <th>Default</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>agents.defaults.memorySearch.enabled</code></td>
+            <td><code>true</code></td>
+            <td>Master switch for the memory search system</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.provider</code></td>
+            <td><code>"auto"</code></td>
+            <td>Embedding provider: <code>openai</code>, <code>gemini</code>, <code>voyage</code>, <code>mistral</code>, <code>local</code>, or <code>auto</code></td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.sources</code></td>
+            <td><code>["memory"]</code></td>
+            <td>Which sources to index: <code>memory</code> (files) and/or <code>sessions</code></td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.query.maxResults</code></td>
+            <td><code>6</code></td>
+            <td>Maximum results returned per search</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.query.minScore</code></td>
+            <td><code>0.35</code></td>
+            <td>Minimum similarity score threshold</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.query.hybrid.vectorWeight</code></td>
+            <td><code>0.7</code></td>
+            <td>Weight for vector (cosine) similarity in hybrid scoring</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.query.hybrid.textWeight</code></td>
+            <td><code>0.3</code></td>
+            <td>Weight for keyword (BM25) similarity in hybrid scoring</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.chunking.tokens</code></td>
+            <td><code>400</code></td>
+            <td>Token size per chunk</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.memorySearch.chunking.overlap</code></td>
+            <td><code>80</code></td>
+            <td>Token overlap between adjacent chunks</td>
+          </tr>
+          <tr>
+            <td><code>agents.defaults.compaction.memoryFlush.enabled</code></td>
+            <td><code>true</code></td>
+            <td>Enable pre-compaction memory flush</td>
+          </tr>
+          <tr>
+            <td><code>plugins.slots.memory</code></td>
+            <td><code>"memory-core"</code></td>
+            <td>Plugin slot for memory backend (allows alternative implementations)</td>
+          </tr>
+          <tr>
+            <td><code>memory.backend</code></td>
+            <td><code>"builtin"</code></td>
+            <td>Memory backend: <code>builtin</code> (native SQLite) or <code>qmd</code> (external)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 09 Real-World Example -->
+  <section id="example">
+    <h2><span class="section-num">09</span>Real-World Example</h2>
+    <p>A real OpenClaw workspace's memory footprint, showing how the layers work in practice.</p>
+
+    <h3>MEMORY.md</h3>
+    <p>The curated bootstrap file &mdash; 237 lines covering identity, preferences, workflows,
+      and lessons learned. Always loaded into the system prompt.</p>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        MEMORY.md structure (excerpt)
+      </div>
+      <div class="collapsible-body">
+        <pre>
+# OpenClaw Memory
+
+## Identity &amp; Role
+- Agent name: Claw
+- Primary operator: jingtao
+- Running on: ailearn (Azure VM, Ubuntu 24.04)
+
+## Preferences &amp; Conventions
+- Language: All code, comments, docs in English
+- Git: Imperative mood commits, PRs via gh CLI
+- Docker: V2 plugin syntax (docker compose)
+
+## Workflows
+- Server provisioning via numbered scripts (00-, 01-, 02-...)
+- Docker services at vm/docker-services/&lt;category&gt;/&lt;name&gt;/
+- Projects at projects/&lt;name&gt;/ with Dockerfile + docker-compose.yml
+
+## Lessons Learned
+- Always check CLAUDE.md conventions before modifying ai-learn repo
+- Use set -euo pipefail in all bash scripts
+- nginx-proxy needs VIRTUAL_HOST + LETSENCRYPT_HOST for HTTPS
+...</pre>
+      </div>
+    </div>
+
+    <h3>Daily Logs</h3>
+    <p>Seven daily log files spanning 2026-02-11 to 2026-02-24, capturing session-specific
+      memories written during memory flushes.</p>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Daily log file list
+      </div>
+      <div class="collapsible-body">
+        <pre>
+memory/
+  2026-02-11.md    # Initial setup session
+  2026-02-14.md    # Docker service configurations
+  2026-02-17.md    # OpenClaw Explorer project creation
+  2026-02-19.md    # System prompt page development
+  2026-02-20.md    # Skill system exploration
+  2026-02-22.md    # Multi-page restructuring
+  2026-02-24.md    # Memory management research</pre>
+        <p>Each file contains timestamped entries from that day's sessions, written automatically
+          during memory flush events or manually by the agent when it encounters notable context.</p>
+      </div>
+    </div>
+
+    <h3>SQLite Index</h3>
+    <p>The database file <code>main.sqlite</code> (68 KB) indexes all memory files into
+      searchable chunks with embeddings.</p>
+
+    <div class="collapsible">
+      <div class="collapsible-header" onclick="toggleCollapsible(this)">
+        <span class="collapsible-arrow">&#9654;</span>
+        Index statistics
+      </div>
+      <div class="collapsible-body">
+        <ul style="list-style:none;padding:0">
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Database file:</strong> <code>~/.openclaw/memory/main.sqlite</code> (68 KB)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Indexed files:</strong> 8 (MEMORY.md + 7 daily logs)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Total chunks:</strong> varies with content size (400 tokens each, 80 token overlap)</li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Embedding provider:</strong> OpenAI <code>text-embedding-3-small</code></li>
+          <li style="padding:4px 0;color:var(--text-secondary)"><strong>Embedding cache:</strong> reuses embeddings for unchanged chunks</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <p>OpenClaw Explorer &mdash; Memory Management</p>
+    <p>Source analysis based on the OpenClaw codebase</p>
+  </footer>
+
+</main>
+
+<script src="../js/main.js"></script>
+
+</body>
+</html>

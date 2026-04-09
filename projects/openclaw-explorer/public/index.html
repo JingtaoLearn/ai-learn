@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Explorer</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <h1><span>OpenClaw</span> Explorer</h1>
+  <div class="header-controls">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">Light</button>
+  </div>
+</header>
+
+<!-- Main Content (no sidebar) -->
+<main class="main-landing">
+
+  <h2 style="font-size:28px;font-weight:600;margin-bottom:8px">Topics</h2>
+  <p style="margin-bottom:32px">Deep dives into how OpenClaw works under the hood. Pick a topic to explore.</p>
+
+  <div class="topic-grid">
+    <a class="topic-card" href="pages/system-prompt.html">
+      <div class="topic-num">Topic 01</div>
+      <h3>System Prompt Assembly</h3>
+      <p>How OpenClaw builds its system prompt from 26 sections &mdash; entry points, prompt modes, project context files, plugin hooks, and configuration knobs.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/memory.html">
+      <div class="topic-num">Topic 02</div>
+      <h3>Memory Management</h3>
+      <p>How OpenClaw persists and retrieves memories &mdash; two-layer storage, hybrid search pipeline, embedding providers, memory flush, and configuration.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/session-viewer.html">
+      <div class="topic-num">Topic 03</div>
+      <h3>Session Viewer</h3>
+      <p>Debug timeline showing what the AI agent did step-by-step in each session &mdash; messages, tool calls, results, and model changes. Requires login.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/skill-viewer.html">
+      <div class="topic-num">Topic 04</div>
+      <h3>Skill Viewer</h3>
+      <p>Browse and inspect all installed OpenClaw skills &mdash; bundled and workspace. View documentation, requirements, and file structure.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/cc-viewer.html">
+      <div class="topic-num">Topic 05</div>
+      <h3>Claude Code Viewer</h3>
+      <p>Real-time dashboard for Claude Code tasks &mdash; monitor milestones, progress timeline, hook logs, and task output as coding agents work.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/tool-permissions.html">
+      <div class="topic-num">Topic 06</div>
+      <h3>Tool Permission System</h3>
+      <p>Deep dive into OpenClaw's multi-layer permission stack &mdash; tool profiles, allow/deny lists, exec security modes, safe-bin policy, approval lifecycle, shell hardening, and elevated execution.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+
+    <a class="topic-card" href="pages/ems-viewer.html">
+      <div class="topic-num">Topic 07</div>
+      <h3>EMS Viewer</h3>
+      <p>Browse and manage experiences in the Experience Management System &mdash; guardrails, practices, and lessons. Check actions against guardrails and search with semantic similarity.</p>
+      <div class="topic-arrow">Explore &rarr;</div>
+    </a>
+  </div>
+
+</main>
+
+<script src="js/main.js"></script>
+
+</body>
+</html>
