@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent Orchestration Dashboard</title>
+<style>
+/* ======== RESET & BASE ======== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0d1117;
+  --bg2:       #161b22;
+  --bg3:       #21262d;
+  --bg4:       #30363d;
+  --border:    #30363d;
+  --border2:   #21262d;
+  --text:      #e6edf3;
+  --text2:     #8b949e;
+  --text3:     #6e7681;
+  --blue:      #388bfd;
+  --blue-dim:  #1f3259;
+  --green:     #3fb950;
+  --green-dim: #122b1a;
+  --yellow:    #d29922;
+  --yellow-dim:#2d2100;
+  --red:       #f85149;
+  --red-dim:   #2d1216;
+  --purple:    #bc8cff;
+  --orange:    #e3b341;
+  --accent:    #58a6ff;
+  --sidebar-w: 220px;
+  --drawer-w:  380px;
+  --radius:    6px;
+  --radius2:   10px;
+  --transition: 0.2s ease;
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ======== APP SHELL ======== */
+.app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* ======== HEADER ======== */
+.header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  z-index: 100;
+}
+.header-left  { display: flex; align-items: center; gap: 10px; }
+.header-icon  { width: 28px; height: 28px; background: linear-gradient(135deg,#388bfd,#bc8cff); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.header h1    { font-size: 15px; font-weight: 600; }
+.header h1 span { color: var(--text2); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+
+.status-pill  { display: flex; align-items: center; gap: 6px; background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text2); }
+.status-dot   { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+.status-dot.offline { background: var(--red); animation: none; }
+@keyframes pulse { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(63,185,80,.4)} 50%{opacity:.8;box-shadow:0 0 0 4px rgba(63,185,80,0)} }
+
+.clock { font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; color: var(--text2); }
+
+.btn { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; color: var(--text2); cursor: pointer; font-size: 12px; transition: var(--transition); }
+.btn:hover { background: var(--bg4); color: var(--text); }
+.btn.spinning svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.experiment-banner { background: var(--blue-dim); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; font-size: 11px; color: var(--accent); display: flex; align-items: center; gap: 6px; }
+
+/* ======== STATS BAR ======== */
+.stats-bar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; gap: 0; overflow-x: auto; flex-shrink: 0; }
+.stat-item  { padding: 10px 16px; display: flex; align-items: center; gap: 8px; border-right: 1px solid var(--border2); min-width: 120px; }
+.stat-item:last-child { border-right: none; }
+.stat-icon  { width: 28px; height: 28px; border-radius: var(--radius); display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+.stat-info  { display: flex; flex-direction: column; }
+.stat-value { font-size: 18px; font-weight: 700; line-height: 1.1; }
+.stat-label { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; }
+
+/* ======== CONTENT LAYOUT ======== */
+.content-layout { display: flex; flex: 1; overflow: hidden; }
+
+/* ======== ROUNDS SIDEBAR ======== */
+.rounds-sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 12px 14px 10px;
+  font-size: 11px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .8px;
+  border-bottom: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0;
+}
+.rounds-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+.rounds-list::-webkit-scrollbar { width: 4px; }
+.rounds-list::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 2px; }
+
+.round-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background var(--transition), border-color var(--transition);
+  position: relative;
+}
+.round-item:hover   { background: var(--bg3); }
+.round-item.active  { background: var(--bg3); border-left-color: var(--accent); }
+
+.round-item-label   { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.round-item-num     { font-size: 10px; color: var(--text3); margin-bottom: 4px; }
+.round-item-summary { font-size: 11px; color: var(--text2); }
+.round-item-time    { font-size: 10px; color: var(--text3); margin-top: 3px; font-family: 'SF Mono','Fira Code',monospace; }
+
+.round-status-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+.round-status-dot.running  { background: var(--blue); animation: pulse 2s infinite; }
+.round-status-dot.blocked  { background: var(--yellow); animation: blink 1.5s infinite; }
+.round-status-dot.complete { background: var(--green); }
+.round-status-dot.mixed    { background: var(--text3); }
+
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ======== MAIN AREA ======== */
+.main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ======== TAB BAR ======== */
+.tab-bar { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg2); padding: 0 20px; }
+.tab-btn {
+  padding: 10px 16px;
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text2); cursor: pointer; font-size: 13px;
+  transition: color var(--transition), border-color var(--transition);
+  margin-bottom: -1px;
+}
+.tab-btn:hover  { color: var(--text); }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* ======== TAB CONTENT ======== */
+.tab-content { flex: 1; overflow-y: auto; display: none; }
+.tab-content.active { display: flex; flex-direction: column; }
+.tab-content::-webkit-scrollbar { width: 6px; }
+.tab-content::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+
+/* ======== ROUND DETAIL (workers tab) ======== */
+.round-detail { flex: 1; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+
+.round-header {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius2);
+  padding: 14px 18px;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+}
+.round-header-info { flex: 1; min-width: 0; }
+.round-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.round-meta  { font-size: 12px; color: var(--text2); display: flex; gap: 16px; flex-wrap: wrap; }
+.round-meta-item { display: flex; align-items: center; gap: 4px; }
+
+.round-status-badge {
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; flex-shrink: 0;
+}
+.round-status-badge.running  { background: var(--blue-dim); color: var(--blue); }
+.round-status-badge.blocked  { background: var(--yellow-dim); color: var(--yellow); }
+.round-status-badge.complete { background: var(--green-dim); color: var(--green); }
+.round-status-badge.mixed    { background: var(--bg3); color: var(--text2); }
+
+/* ======== MINI FLOW ======== */
+.mini-flow {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius2);
+  padding: 14px 18px;
+}
+.mini-flow-title { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 12px; }
+.mini-flow-steps {
+  display: flex; align-items: center; gap: 0; flex-wrap: wrap;
+  overflow-x: auto;
+}
+.flow-step {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 80px; padding: 6px 10px;
+  border-radius: var(--radius); text-align: center;
+}
+.flow-step-count { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.flow-step-label { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; }
+.flow-step.spawn   { background: var(--blue-dim);  }
+.flow-step.spawn   .flow-step-count { color: var(--blue); }
+.flow-step.blocked { background: var(--yellow-dim); }
+.flow-step.blocked .flow-step-count { color: var(--yellow); }
+.flow-step.steered { background: rgba(188,140,255,.12); }
+.flow-step.steered .flow-step-count { color: var(--purple); }
+.flow-step.complete { background: var(--green-dim); }
+.flow-step.complete .flow-step-count { color: var(--green); }
+.flow-step.running  { background: var(--bg3); }
+.flow-step.running  .flow-step-count { color: var(--text2); }
+
+.flow-arrow { color: var(--text3); padding: 0 4px; font-size: 14px; flex-shrink: 0; align-self: center; margin-bottom: 14px; }
+
+/* ======== WORKERS SECTION HEADER ======== */
+.section-header { display: flex; align-items: center; justify-content: space-between; }
+.section-title  { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .8px; display: flex; align-items: center; gap: 8px; }
+.section-badge  { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; font-size: 11px; color: var(--text3); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+/* ======== WORKER CARDS ======== */
+.workers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+
+.worker-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius2); overflow: hidden;
+  cursor: pointer; transition: border-color var(--transition), transform var(--transition);
+}
+.worker-card:hover   { border-color: var(--accent); transform: translateY(-1px); }
+.worker-card.active  { border-color: var(--accent); }
+
+.worker-card-header {
+  padding: 10px 12px; display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border2);
+}
+.worker-avatar { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.worker-meta   { flex: 1; min-width: 0; }
+.worker-name   { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.worker-session { font-size: 10px; color: var(--text3); font-family: 'SF Mono','Fira Code',monospace; }
+
+.status-badge { padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .3px; white-space: nowrap; }
+.status-badge.running  { background: var(--blue-dim); color: var(--blue); }
+.status-badge.blocked  { background: var(--yellow-dim); color: var(--yellow); animation: blink 1.5s ease-in-out infinite; }
+.status-badge.complete { background: var(--green-dim); color: var(--green); }
+.status-badge.unknown  { background: var(--bg3); color: var(--text3); }
+.status-badge.blocked_then_replaced { background: var(--bg3); color: var(--text3); }
+
+.worker-card-body { padding: 10px 12px; }
+.worker-task  { font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-bottom: 8px; }
+.worker-meta-row { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--text3); }
+.progress-bar  { height: 3px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+.progress-fill { height: 100%; border-radius: 2px; transition: width .5s ease; }
+.progress-fill.running  { background: var(--blue); animation: ppulse 1.5s ease-in-out infinite; }
+.progress-fill.complete { background: var(--green); }
+.progress-fill.blocked  { background: var(--yellow); }
+@keyframes ppulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+/* ======== DETAIL DRAWER ======== */
+.drawer-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.4);
+  z-index: 200;
+}
+.drawer-overlay.open { display: block; }
+
+.detail-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: var(--drawer-w);
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  z-index: 201;
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .25s ease;
+  overflow: hidden;
+}
+.detail-drawer.open { transform: translateX(0); }
+
+.drawer-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0;
+}
+.drawer-title { font-size: 14px; font-weight: 600; }
+.drawer-close { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: var(--radius); }
+.drawer-close:hover { background: var(--bg3); color: var(--text); }
+
+.drawer-body { flex: 1; overflow-y: auto; padding: 16px; }
+.drawer-body::-webkit-scrollbar { width: 6px; }
+.drawer-body::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+
+.drawer-section { margin-bottom: 16px; }
+.drawer-section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--text3); margin-bottom: 6px; }
+.drawer-section-body  { font-size: 12px; color: var(--text2); line-height: 1.6; }
+
+.task-text {
+  font-size: 12px; color: var(--text2); line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 120px; overflow: hidden;
+}
+.task-text.expanded { max-height: none; }
+.expand-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; padding: 2px 0; margin-top: 4px; }
+
+.blocked-box {
+  background: var(--yellow-dim); border: 1px solid rgba(210,153,34,.3);
+  border-radius: var(--radius); padding: 10px 12px;
+  font-size: 12px; color: var(--text2); line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto;
+}
+.kb-box {
+  background: rgba(188,140,255,.08); border: 1px solid rgba(188,140,255,.25);
+  border-radius: var(--radius); padding: 10px 12px;
+  font-size: 12px; color: var(--text2); line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto;
+}
+.complete-box {
+  background: var(--green-dim); border: 1px solid rgba(63,185,80,.25);
+  border-radius: var(--radius); padding: 10px 12px;
+  font-size: 12px; color: var(--text2); line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto;
+}
+
+/* ======== TIMELINE ======== */
+.timeline { display: flex; flex-direction: column; gap: 0; }
+.tl-item  { display: flex; gap: 10px; position: relative; padding-left: 20px; padding-bottom: 12px; }
+.tl-item::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 0; width: 1px; background: var(--border); }
+.tl-item:last-child::before { display: none; }
+.tl-dot   { position: absolute; left: 0; top: 4px; width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg2); flex-shrink: 0; }
+.tl-dot.spawned  { background: var(--blue); }
+.tl-dot.running  { background: var(--blue); }
+.tl-dot.blocked  { background: var(--yellow); }
+.tl-dot.steered  { background: var(--purple); }
+.tl-dot.complete { background: var(--green); }
+.tl-dot.kb_query { background: var(--orange); }
+.tl-content { flex: 1; }
+.tl-event  { font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.tl-detail { font-size: 11px; color: var(--text2); }
+.tl-time   { font-size: 10px; color: var(--text3); font-family: 'SF Mono','Fira Code',monospace; }
+
+/* ======== KB PANEL ======== */
+.kb-entry { padding: 10px 0; border-bottom: 1px solid var(--border2); cursor: pointer; }
+.kb-entry:last-child { border-bottom: none; }
+.kb-entry-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.kb-entry-title { font-size: 13px; font-weight: 600; }
+.kb-date  { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.kb-context { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+.kb-details { display: none; margin-top: 8px; }
+.kb-entry.expanded .kb-details { display: block; }
+.kb-detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--text3); margin-bottom: 2px; }
+.kb-detail-value { font-size: 12px; color: var(--text2); line-height: 1.5; margin-bottom: 6px; }
+.kb-source { font-size: 11px; color: var(--text3); margin-top: 6px; }
+.kb-chevron { transition: transform var(--transition); color: var(--text3); flex-shrink: 0; }
+.kb-entry.expanded .kb-chevron { transform: rotate(90deg); }
+
+/* ======== ARCH SECTION ======== */
+.arch-section { padding: 20px; }
+.arch-svg-wrap { display: flex; justify-content: center; overflow-x: auto; }
+
+/* ======== ABOUT TAB CONTENT ======== */
+.about-content { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; }
+.panel-header { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.panel-body   { padding: 16px; }
+.panel-scroll { max-height: 400px; overflow-y: auto; }
+.panel-scroll::-webkit-scrollbar { width: 6px; }
+.panel-scroll::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+
+/* ======== LOG ======== */
+.log-entry { padding: 6px 0; border-bottom: 1px solid var(--border2); display: flex; gap: 8px; align-items: flex-start; font-size: 12px; }
+.log-entry:last-child { border-bottom: none; }
+.log-time { font-family: 'SF Mono','Fira Code',monospace; color: var(--text3); font-size: 11px; white-space: nowrap; flex-shrink: 0; min-width: 70px; }
+.log-icon { width: 16px; text-align: center; flex-shrink: 0; }
+.log-text { color: var(--text2); flex: 1; }
+.log-text strong { color: var(--text); }
+.log-tag  { padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; flex-shrink: 0; }
+.log-tag.spawn    { background: var(--blue-dim); color: var(--blue); }
+.log-tag.block    { background: var(--yellow-dim); color: var(--yellow); }
+.log-tag.kb       { background: rgba(188,140,255,.15); color: var(--purple); }
+.log-tag.steer    { background: rgba(188,140,255,.15); color: var(--purple); }
+.log-tag.complete { background: var(--green-dim); color: var(--green); }
+.log-tag.error    { background: var(--red-dim); color: var(--red); }
+.log-tag.info     { background: var(--bg3); color: var(--text3); }
+
+/* ======== EMPTY STATE ======== */
+.empty-state { text-align: center; padding: 40px 20px; color: var(--text3); }
+.empty-icon  { font-size: 28px; margin-bottom: 8px; }
+.empty-state p { font-size: 13px; }
+
+/* ======== MISC ======== */
+.fade-in { animation: fadeIn .3s ease; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ======== HEADER ======== -->
+<header class="header">
+  <div class="header-left">
+    <div class="header-icon">⚡</div>
+    <h1>Multi-Agent Orchestration Dashboard <span>Zhang ↔ Workers</span></h1>
+  </div>
+  <div class="header-right">
+    <div id="experimentBanner" class="experiment-banner" style="display:none">
+      <span>🧪</span><span id="experimentName">—</span>
+    </div>
+    <div class="status-pill">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connecting…</span>
+    </div>
+    <div class="clock" id="clock">—</div>
+    <button class="btn" id="refreshBtn" onclick="fetchAll()" title="Refresh now">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-1px">
+        <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+        <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+</header>
+
+<!-- ======== STATS BAR ======== -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <div class="stat-icon" style="background:var(--blue-dim)">⚙️</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--blue)" id="statActive">—</div>
+      <div class="stat-label">Running</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:var(--yellow-dim)">⚠️</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--yellow)" id="statBlocked">—</div>
+      <div class="stat-label">Blocked</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:var(--green-dim)">✅</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--green)" id="statComplete">—</div>
+      <div class="stat-label">Complete</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:var(--bg3)">👷</div>
+    <div class="stat-info">
+      <div class="stat-value" id="statTotal">—</div>
+      <div class="stat-label">Total</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:rgba(188,140,255,.15)">📚</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--purple)" id="statKB">—</div>
+      <div class="stat-label">KB Entries</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:rgba(227,179,65,.15)">🎫</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--orange)" id="statTickets">—</div>
+      <div class="stat-label">Tickets</div>
+    </div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-icon" style="background:var(--bg3)">🔄</div>
+    <div class="stat-info">
+      <div class="stat-value" style="color:var(--text2)" id="statLastUpdate">—</div>
+      <div class="stat-label">Updated</div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== CONTENT LAYOUT ======== -->
+<div class="content-layout">
+
+  <!-- Rounds Sidebar -->
+  <nav class="rounds-sidebar">
+    <div class="sidebar-header">
+      Rounds
+      <span class="section-badge" id="roundsCount">0</span>
+    </div>
+    <div class="rounds-list" id="roundsList">
+      <div class="empty-state" style="padding:20px 10px">
+        <div class="empty-icon">⌛</div>
+        <p>Loading…</p>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Area -->
+  <div class="main-area">
+
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('workers')" id="tab-btn-workers">👷 Workers</button>
+      <button class="tab-btn" onclick="switchTab('kb')" id="tab-btn-kb">📚 Knowledge Base</button>
+      <button class="tab-btn" onclick="switchTab('about')" id="tab-btn-about">🏗 About</button>
+    </div>
+
+    <!-- Tab: Workers -->
+    <div id="tab-workers" class="tab-content active">
+      <div class="round-detail" id="roundDetail">
+        <div class="empty-state">
+          <div class="empty-icon">⌛</div>
+          <p>Select a round from the sidebar</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: KB -->
+    <div id="tab-kb" class="tab-content">
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;flex:1">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="section-title">📚 Knowledge Base <span class="section-badge" id="kbCount">0</span></div>
+          </div>
+          <div class="panel-scroll">
+            <div class="panel-body" id="kbBody">
+              <div class="empty-state fade-in"><div class="empty-icon">⌛</div><p>Loading KB entries…</p></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="section-title">📋 Orchestrator Log</div>
+            <button class="btn" onclick="clearLog()" style="font-size:11px">Clear</button>
+          </div>
+          <div class="panel-scroll" id="logScroll">
+            <div class="panel-body" id="logBody">
+              <div class="empty-state"><div class="empty-icon">📭</div><p>No log entries yet</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: About -->
+    <div id="tab-about" class="tab-content">
+      <div class="about-content">
+        <!-- Orchestration Flow Diagram -->
+        <div class="panel">
+          <div class="panel-header"><div class="section-title">⚡ Orchestration Flow</div></div>
+          <div class="panel-body" style="overflow-x:auto">
+            <div style="min-width:700px;display:flex;justify-content:center">
+              <svg viewBox="0 0 780 410" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px;height:420px">
+                <defs>
+                  <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#388bfd"/></marker>
+                  <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#bc8cff"/></marker>
+                  <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#3fb950"/></marker>
+                  <marker id="arrn" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#6e7681"/></marker>
+                  <marker id="arry" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d29922"/></marker>
+                  <marker id="arrc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#58a6ff"/></marker>
+                </defs>
+
+                <!-- ===== Single Task input ===== -->
+                <rect x="15" y="10" width="110" height="36" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="70" y="33" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="600">Task</text>
+                <line x1="70" y1="46" x2="70" y2="68" stroke="#388bfd" stroke-width="1.5" marker-end="url(#arr)"/>
+
+                <!-- ===== Leader Agent box ===== -->
+                <rect x="10" y="70" width="760" height="330" rx="8" fill="rgba(56,139,253,0.06)" stroke="#388bfd" stroke-width="1.5" stroke-dasharray="6,3"/>
+                <text x="390" y="90" text-anchor="middle" fill="#388bfd" font-size="11" font-weight="700">Leader Agent · Zhang · claude-opus-4.6</text>
+
+                <!-- DISPATCH -->
+                <rect x="30" y="104" width="130" height="38" rx="6" fill="#1f3259" stroke="#388bfd" stroke-width="1.5"/>
+                <text x="95" y="121" text-anchor="middle" fill="#388bfd" font-size="10" font-weight="700">DISPATCH</text>
+                <text x="95" y="135" text-anchor="middle" fill="#8b949e" font-size="9">sessions_spawn×N</text>
+
+                <!-- Arrow DISPATCH → Workers sub-box -->
+                <line x1="95" y1="142" x2="95" y2="168" stroke="#388bfd" stroke-width="1.5" marker-end="url(#arr)"/>
+
+                <!-- ===== Workers sub-box (inside Leader) ===== -->
+                <rect x="25" y="170" width="490" height="60" rx="6" fill="rgba(48,54,61,0.3)" stroke="#30363d" stroke-width="1.2"/>
+                <text x="270" y="187" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">Workers · haiku-4.5 × N (parallel)</text>
+                <rect x="40" y="196" width="90" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+                <text x="85" y="213" text-anchor="middle" fill="#8b949e" font-size="9">Worker 1</text>
+                <rect x="145" y="196" width="90" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+                <text x="190" y="213" text-anchor="middle" fill="#8b949e" font-size="9">Worker 2</text>
+                <rect x="250" y="196" width="90" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+                <text x="295" y="213" text-anchor="middle" fill="#8b949e" font-size="9">Worker 3</text>
+                <text x="358" y="213" fill="#6e7681" font-size="10">...</text>
+                <rect x="380" y="196" width="90" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+                <text x="425" y="213" text-anchor="middle" fill="#8b949e" font-size="9">Worker N</text>
+
+                <!-- Workers bottom → monitoring spine -->
+                <line x1="270" y1="230" x2="270" y2="252" stroke="#6e7681" stroke-width="1"/>
+
+                <!-- ===== Monitoring spine ===== -->
+                <line x1="270" y1="252" x2="270" y2="390" stroke="#6e7681" stroke-width="1"/>
+                <text x="256" y="262" fill="#6e7681" font-size="8" text-anchor="end">monitors</text>
+
+                <!-- Row A: CHECK STATUS (y=272) -->
+                <line x1="270" y1="272" x2="308" y2="272" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#arrc)"/>
+                <rect x="310" y="256" width="150" height="32" rx="5" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" stroke-width="1.5"/>
+                <text x="385" y="276" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="700">CHECK STATUS</text>
+                <!-- status loops back to Workers -->
+                <path d="M460,272 L490,272 L490,200 L517,200" stroke="#58a6ff" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arrc)"/>
+                <text x="504" y="213" fill="#58a6ff" font-size="7">poll</text>
+
+                <!-- Row B: DETECT BLOCK → KB QUERY → STEER (y=320) -->
+                <line x1="270" y1="320" x2="308" y2="320" stroke="#d29922" stroke-width="1.2" marker-end="url(#arry)"/>
+                <rect x="310" y="304" width="150" height="32" rx="5" fill="#2d2100" stroke="#d29922" stroke-width="1.5"/>
+                <text x="385" y="324" text-anchor="middle" fill="#d29922" font-size="10" font-weight="700">DETECT BLOCK</text>
+
+                <line x1="460" y1="320" x2="488" y2="320" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+                <rect x="490" y="304" width="110" height="32" rx="5" fill="rgba(188,140,255,0.12)" stroke="#bc8cff" stroke-width="1.5"/>
+                <text x="545" y="324" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">KB QUERY</text>
+
+                <line x1="600" y1="320" x2="628" y2="320" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+                <rect x="630" y="304" width="110" height="32" rx="5" fill="rgba(188,140,255,0.12)" stroke="#bc8cff" stroke-width="1.5"/>
+                <text x="685" y="324" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">STEER</text>
+
+                <!-- STEER → Workers (dashed arc back up) -->
+                <path d="M740,320 L755,320 L755,200 L517,200" stroke="#bc8cff" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr2)"/>
+                <text x="752" y="262" fill="#bc8cff" font-size="7">steer back</text>
+
+                <!-- Row C: DETECT INSIGHT → KB WRITE (y=370) -->
+                <line x1="270" y1="370" x2="308" y2="370" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arr3)"/>
+                <rect x="310" y="354" width="150" height="32" rx="5" fill="#122b1a" stroke="#3fb950" stroke-width="1.5"/>
+                <text x="385" y="374" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="700">DETECT INSIGHT</text>
+
+                <line x1="460" y1="370" x2="488" y2="370" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+                <rect x="490" y="354" width="110" height="32" rx="5" fill="#122b1a" stroke="#3fb950" stroke-width="1.5"/>
+                <text x="545" y="374" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="700">KB WRITE</text>
+
+                <!-- Flywheel: KB WRITE ↑ KB QUERY -->
+                <line x1="545" y1="354" x2="545" y2="338" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arr3)"/>
+                <text x="560" y="350" fill="#3fb950" font-size="8">flywheel</text>
+
+                <!-- ===== COMPLETE (outside Leader box, right) ===== -->
+                <rect x="640" y="10" width="120" height="36" rx="6" fill="#122b1a" stroke="#3fb950" stroke-width="1.5"/>
+                <text x="700" y="33" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700">COMPLETE</text>
+                <!-- Arrow from Leader box up to COMPLETE -->
+                <line x1="700" y1="70" x2="700" y2="48" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arr3)"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <!-- System Architecture -->
+        <div class="panel">
+          <div class="panel-header"><div class="section-title">🏗 System Architecture</div></div>
+          <div class="panel-body">
+            <div class="arch-svg-wrap">
+              <svg viewBox="0 0 520 310" width="520" height="310" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <marker id="aarr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#388bfd"/></marker>
+                  <marker id="aarr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#bc8cff"/></marker>
+                </defs>
+                <rect x="170" y="10" width="180" height="58" rx="8" fill="#1f3259" stroke="#388bfd" stroke-width="2"/>
+                <text x="260" y="33" text-anchor="middle" fill="#388bfd" font-size="13" font-weight="700">Zhang (Orchestrator)</text>
+                <text x="260" y="48" text-anchor="middle" fill="#8b949e" font-size="10">claude-opus-4.6</text>
+                <text x="260" y="61" text-anchor="middle" fill="#6e7681" font-size="8">sessions_spawn · sessions_send · memory_search</text>
+                <line x1="200" y1="68" x2="80" y2="128" stroke="#388bfd" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#aarr)"/>
+                <line x1="230" y1="68" x2="200" y2="128" stroke="#388bfd" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#aarr)"/>
+                <line x1="290" y1="68" x2="320" y2="128" stroke="#388bfd" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#aarr)"/>
+                <line x1="320" y1="68" x2="440" y2="128" stroke="#388bfd" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#aarr)"/>
+                <rect x="20" y="128" width="110" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="75" y="149" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">Worker 1</text>
+                <text x="75" y="163" text-anchor="middle" fill="#8b949e" font-size="9">haiku-4.5</text>
+                <text x="75" y="173" text-anchor="middle" fill="#3fb950" font-size="8">COMPLETE</text>
+                <rect x="145" y="128" width="110" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="200" y="149" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">Worker 2</text>
+                <text x="200" y="163" text-anchor="middle" fill="#8b949e" font-size="9">haiku-4.5</text>
+                <text x="200" y="173" text-anchor="middle" fill="#d29922" font-size="8">BLOCKED→STEERED</text>
+                <rect x="265" y="128" width="110" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="320" y="149" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">Worker 3</text>
+                <text x="320" y="163" text-anchor="middle" fill="#8b949e" font-size="9">haiku-4.5</text>
+                <text x="320" y="173" text-anchor="middle" fill="#3fb950" font-size="8">COMPLETE</text>
+                <rect x="385" y="128" width="110" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="440" y="149" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">Worker N</text>
+                <text x="440" y="163" text-anchor="middle" fill="#8b949e" font-size="9">haiku-4.5</text>
+                <text x="440" y="173" text-anchor="middle" fill="#3fb950" font-size="8">COMPLETE</text>
+                <circle cx="255" cy="153" r="3" fill="#6e7681"/>
+                <circle cx="268" cy="153" r="3" fill="#6e7681"/>
+                <line x1="75" y1="178" x2="200" y2="232" stroke="#30363d" stroke-width="1.2" marker-end="url(#aarr)"/>
+                <line x1="200" y1="178" x2="220" y2="232" stroke="#30363d" stroke-width="1.2" marker-end="url(#aarr)"/>
+                <line x1="320" y1="178" x2="280" y2="232" stroke="#30363d" stroke-width="1.2" marker-end="url(#aarr)"/>
+                <line x1="440" y1="178" x2="310" y2="232" stroke="#30363d" stroke-width="1.2" marker-end="url(#aarr)"/>
+                <rect x="60" y="232" width="360" height="44" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="240" y="253" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="600">External Services / APIs</text>
+                <text x="240" y="268" text-anchor="middle" fill="#6e7681" font-size="9">Mattermost · GitHub · Discord · etc.</text>
+                <rect x="390" y="58" width="120" height="50" rx="6" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" stroke-width="1.5"/>
+                <text x="450" y="80" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">Knowledge Base</text>
+                <text x="450" y="94" text-anchor="middle" fill="#8b949e" font-size="9">memory/kb/*.md</text>
+                <text x="450" y="104" text-anchor="middle" fill="#6e7681" font-size="8">semantic search</text>
+                <line x1="350" y1="36" x2="390" y2="73" stroke="#bc8cff" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#aarr2)"/>
+                <path d="M390,88 Q370,88 350,63" stroke="#bc8cff" stroke-width="1.2" fill="none" stroke-dasharray="3,3" marker-end="url(#aarr2)"/>
+                <rect x="10" y="58" width="120" height="44" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="70" y="77" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="600">Discord Channel</text>
+                <text x="70" y="91" text-anchor="middle" fill="#6e7681" font-size="9">human escalation</text>
+                <text x="70" y="99" text-anchor="middle" fill="#6e7681" font-size="8">KB miss → ticket</text>
+                <line x1="170" y1="36" x2="130" y2="63" stroke="#6e7681" stroke-width="1.2" stroke-dasharray="4,3"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main-area -->
+</div><!-- /content-layout -->
+
+<!-- ======== DETAIL DRAWER ======== -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<div class="detail-drawer" id="detailDrawer">
+  <div class="drawer-header">
+    <span class="drawer-title" id="drawerTitle">Worker Detail</span>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</div>
+
+</div><!-- /app -->
+
+<script>
+/* ============================================================
+   STATE
+============================================================ */
+let state = {
+  rounds: [],
+  workers: [],
+  kb: [],
+  orchestrator: null,
+  lastUpdate: null,
+  online: false,
+  selectedRoundId: null,
+  selectedSessionId: null,
+};
+
+let logEntries = [];
+let prevWorkerStatuses = {};
+let activeTab = 'workers';
+
+/* ============================================================
+   MOCK DATA
+============================================================ */
+const _now = Date.now();
+const MOCK_ROUNDS = [
+  {
+    id: 'round-3', roundNum: 3,
+    startTime: new Date(_now - 120000).toISOString(),
+    endTime: null,
+    label: 'Monitor Bots',
+    statusSummary: '1/2 running',
+    hasRunning: true, hasBlocked: false, allComplete: false,
+    sessions: [
+      { sessionId: 'demo05', name: 'monitor-town-square', status: 'running', task: 'Create a monitoring bot for Town Square channel', channel: 'Town Square', startTime: new Date(_now - 120000).toISOString(), endTime: null, elapsed: null, taskFull: 'Create a monitoring bot for Town Square channel with periodic health checks and status reporting.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: null, timeline: [{ time: new Date(_now - 120000).toISOString(), event: 'spawned', detail: 'Session started' }] },
+      { sessionId: 'demo06', name: 'monitor-off-topic', status: 'complete', task: 'Create a monitoring bot for Off-Topic channel', channel: 'Off-Topic', startTime: new Date(_now - 118000).toISOString(), endTime: new Date(_now - 30000).toISOString(), elapsed: 88, taskFull: 'Create a monitoring bot for Off-Topic channel.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Created monitor bot for Off-Topic. Webhook ID: 7abc.', timeline: [{ time: new Date(_now - 118000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 30000).toISOString(), event: 'complete', detail: 'Monitor bot created' }] },
+    ],
+  },
+  {
+    id: 'round-2', roundNum: 2,
+    startTime: new Date(_now - 600000).toISOString(),
+    endTime: new Date(_now - 300000).toISOString(),
+    label: 'Outgoing Webhooks v2',
+    statusSummary: '4/4 complete',
+    hasRunning: false, hasBlocked: false, allComplete: true,
+    sessions: [
+      { sessionId: 'demo07', name: 'outgoing-v2-town-square', status: 'complete', task: 'Create outgoing webhook for Town Square', channel: 'Town Square', startTime: new Date(_now - 600000).toISOString(), endTime: new Date(_now - 400000).toISOString(), elapsed: 200, taskFull: 'Create outgoing webhook for Town Square channel.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook created.', timeline: [{ time: new Date(_now - 600000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 400000).toISOString(), event: 'complete', detail: 'Webhook created' }] },
+      { sessionId: 'demo08', name: 'outgoing-v2-off-topic', status: 'complete', task: 'Create outgoing webhook for Off-Topic', channel: 'Off-Topic', startTime: new Date(_now - 598000).toISOString(), endTime: new Date(_now - 380000).toISOString(), elapsed: 218, taskFull: 'Create outgoing webhook for Off-Topic channel.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook created.', timeline: [{ time: new Date(_now - 598000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 380000).toISOString(), event: 'complete', detail: 'Webhook created' }] },
+      { sessionId: 'demo09', name: 'outgoing-v2-approvals', status: 'complete', task: 'Create outgoing webhook for Approvals', channel: 'Approvals', startTime: new Date(_now - 596000).toISOString(), endTime: new Date(_now - 350000).toISOString(), elapsed: 246, taskFull: 'Create outgoing webhook for Approvals channel.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook created.', timeline: [{ time: new Date(_now - 596000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 350000).toISOString(), event: 'complete', detail: 'Webhook created' }] },
+      { sessionId: 'demo10', name: 'outgoing-v2-daily-reports', status: 'complete', task: 'Create outgoing webhook for Daily Reports', channel: 'Daily Reports', startTime: new Date(_now - 594000).toISOString(), endTime: new Date(_now - 310000).toISOString(), elapsed: 284, taskFull: 'Create outgoing webhook for Daily Reports channel.', blockedDetail: null, kbGuidanceText: null, completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook and slash command created.', timeline: [{ time: new Date(_now - 594000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 310000).toISOString(), event: 'complete', detail: 'Webhook created' }] },
+    ],
+  },
+  {
+    id: 'round-1', roundNum: 1,
+    startTime: new Date(_now - 1200000).toISOString(),
+    endTime: new Date(_now - 900000).toISOString(),
+    label: 'Outgoing Webhooks v1',
+    statusSummary: '2/4 complete',
+    hasRunning: false, hasBlocked: true, allComplete: false,
+    sessions: [
+      { sessionId: 'demo01', name: 'outgoing-town-square', status: 'complete', task: 'Create outgoing webhook for Town Square', channel: 'Town Square', startTime: new Date(_now - 1200000).toISOString(), endTime: new Date(_now - 1000000).toISOString(), elapsed: 200, taskFull: 'Create an outgoing webhook for Town Square channel with MonitorBot-TownSquare, trigger words ["!monitor"].', blockedDetail: 'BLOCKED: Unknown callback URL required for outgoing webhook. I need to know what HTTP endpoint is reachable from the Mattermost server.', kbGuidanceText: 'KB_GUIDANCE: Use http://172.19.0.1:9999 as the callback URL. This is the Docker gateway.', completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook created: MonitorBot-TownSquare, slash command /ts-status\nARTIFACTS: webhook_id=abc123', timeline: [{ time: new Date(_now - 1200000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 1180000).toISOString(), event: 'blocked', detail: 'Unknown callback URL required' }, { time: new Date(_now - 1170000).toISOString(), event: 'steered', detail: 'KB_GUIDANCE: Use http://172.19.0.1:9999' }, { time: new Date(_now - 1000000).toISOString(), event: 'complete', detail: 'Webhook created: MonitorBot-TownSquare' }] },
+      { sessionId: 'demo02', name: 'outgoing-off-topic', status: 'complete', task: 'Create outgoing webhook for Off-Topic', channel: 'Off-Topic', startTime: new Date(_now - 1198000).toISOString(), endTime: new Date(_now - 980000).toISOString(), elapsed: 218, taskFull: 'Create an outgoing webhook for Off-Topic channel with slash command for status reporting.', blockedDetail: 'BLOCKED: Unknown callback URL for webhook endpoint.', kbGuidanceText: 'KB_GUIDANCE: Use http://172.19.0.1:9999 as the callback URL.', completeSummaryFull: 'TASK_COMPLETE\nSUMMARY: Webhook and slash command created successfully', timeline: [{ time: new Date(_now - 1198000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 1175000).toISOString(), event: 'blocked', detail: 'Unknown callback URL for webhook endpoint' }, { time: new Date(_now - 1168000).toISOString(), event: 'steered', detail: 'Received KB guidance' }, { time: new Date(_now - 980000).toISOString(), event: 'complete', detail: 'Webhook and slash command created' }] },
+      { sessionId: 'demo03', name: 'outgoing-approvals', status: 'blocked', task: 'Create outgoing webhook for Approvals channel', channel: 'Approvals', startTime: new Date(_now - 1196000).toISOString(), endTime: null, elapsed: null, taskFull: 'Create outgoing webhook for Approvals channel. Callback URL must be a real HTTP endpoint reachable from Mattermost.', blockedDetail: 'BLOCKED: Need real callback URL — do not know what HTTP endpoint is reachable from the Mattermost server. The callback URL must be an external or Docker-gateway-reachable address.', kbGuidanceText: null, completeSummaryFull: null, timeline: [{ time: new Date(_now - 1196000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 1165000).toISOString(), event: 'blocked', detail: 'Need real callback URL' }] },
+      { sessionId: 'demo04', name: 'outgoing-daily-reports', status: 'blocked', task: 'Create outgoing webhook for Daily Reports channel', channel: 'Daily Reports', startTime: new Date(_now - 1194000).toISOString(), endTime: null, elapsed: null, taskFull: 'Create a monitoring bot for the Daily Reports channel with outgoing webhook and monitoring script.', blockedDetail: 'BLOCKED: AllowedUntrustedInternalConnections does not include 172.19.0.1. Mattermost blocks POST requests to reserved IP ranges.', kbGuidanceText: null, completeSummaryFull: null, timeline: [{ time: new Date(_now - 1194000).toISOString(), event: 'spawned', detail: 'Session started' }, { time: new Date(_now - 1160000).toISOString(), event: 'blocked', detail: 'AllowedUntrustedInternalConnections missing 172.19.0.1' }] },
+    ],
+  },
+];
+
+const MOCK_KB = [
+  { title: 'Outgoing Webhook / Slash Command Callback URL', date: '2026-03-31', context: 'When creating outgoing webhooks or slash commands on the Mattermost instance', problem: 'Sub-agents were blocked because they didn\'t know what callback URL to use.', solution: 'Use http://172.19.0.1:9999 as the callback URL. This points to a webhook listener on the zehua-teamclaw host. The IP 172.19.0.1 is the Docker gateway for the mattermost_mattermost network.', source: 'Ticket from 4 blocked sub-agents. Resolved by Jingtao.', file: 'mattermost-api.md' },
+  { title: 'Slash Command trigger "status" is reserved by Mattermost', date: '2026-03-31', context: 'When creating custom slash commands on Mattermost', problem: 'Creating a slash command with trigger "status" fails with duplicate trigger conflict.', solution: 'Use a unique trigger name like /report-status, /daily-status. Avoid built-in triggers: status, away, online, offline, dnd, help, shortcuts, search.', source: 'Observed across 3 sub-agents.', file: 'mattermost-api.md' },
+  { title: 'AllowedUntrustedInternalConnections must include Docker gateway IP', date: '2026-03-31', context: 'When outgoing webhooks try to POST to internal IPs like 172.19.0.1', problem: 'Mattermost blocks POST with: "IP 172.19.0.1 is in a reserved range"', solution: 'In System Console → Environment → Developer, add 172.19.0.1 to AllowedUntrustedInternalConnections.', source: 'Sub-agent notify-bot-daily-reports discovered via Mattermost server logs.', file: 'mattermost-api.md' },
+];
+
+const MOCK_ORCHESTRATOR = {
+  experiment: 'mattermost-webhook-setup (demo)',
+  lastChecked: new Date().toISOString(),
+  agents: {
+    'outgoing-v2-approvals':    { sessionId: '73480b25', status: 'COMPLETE' },
+    'outgoing-v2-daily-reports':{ sessionId: 'd3fe4053', status: 'COMPLETE' },
+    'outgoing-v2-off-topic':    { sessionId: 'bbb4e65b', status: 'COMPLETE' },
+    'outgoing-v2-town-square':  { sessionId: '68ca43c5', status: 'COMPLETE' },
+    'outgoing-daily-reports':   { sessionId: '75c9bd4c', status: 'BLOCKED_THEN_REPLACED' },
+    'outgoing-approvals':       { sessionId: '6ee5f366', status: 'BLOCKED_THEN_REPLACED' },
+  },
+  kbUpdates: 3, ticketsRaised: 1, ticketsResolved: 1,
+};
+
+/* ============================================================
+   FETCH
+============================================================ */
+async function fetchJSON(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function fetchAll() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+
+  let usedMock = false;
+  try {
+    const [workersResp, kb, orch] = await Promise.all([
+      fetchJSON('/api/workers').catch(() => null),
+      fetchJSON('/api/kb').catch(() => null),
+      fetchJSON('/api/orchestrator-state').catch(() => null),
+    ]);
+
+    if (!workersResp && !kb && !orch) {
+      usedMock = true;
+      state.rounds = MOCK_ROUNDS;
+      state.workers = MOCK_ROUNDS.flatMap(r => r.sessions);
+      state.kb = MOCK_KB;
+      state.orchestrator = MOCK_ORCHESTRATOR;
+    } else {
+      // Handle both new {rounds} format and legacy flat array
+      if (workersResp && workersResp.rounds) {
+        state.rounds = workersResp.rounds;
+        state.workers = workersResp.rounds.flatMap(r => r.sessions);
+      } else if (Array.isArray(workersResp)) {
+        // Legacy flat array — wrap in single round
+        state.workers = workersResp;
+        state.rounds = workersResp.length ? [{
+          id: 'round-1', roundNum: 1,
+          startTime: workersResp.reduce((m, w) => (!m || w.startTime < m) ? w.startTime : m, null),
+          endTime: null, label: 'Workers',
+          statusSummary: `${workersResp.length} workers`,
+          hasRunning: workersResp.some(w => w.status === 'running'),
+          hasBlocked: workersResp.some(w => w.status === 'blocked'),
+          allComplete: workersResp.every(w => w.status === 'complete'),
+          sessions: workersResp,
+        }] : [];
+      } else {
+        state.rounds = [];
+        state.workers = [];
+      }
+      state.kb = kb || [];
+      state.orchestrator = orch;
+    }
+
+    state.online = !usedMock;
+    state.lastUpdate = new Date();
+    updateStatusIndicator(usedMock ? 'demo' : 'live');
+    renderAll();
+
+  } catch (err) {
+    state.online = false;
+    updateStatusIndicator('offline');
+    appendLog({ type: 'error', text: `Fetch error: ${err.message}` });
+  }
+
+  btn.classList.remove('spinning');
+}
+
+/* ============================================================
+   RENDER
+============================================================ */
+function renderAll() {
+  renderStats();
+  renderRounds();
+  renderKB();
+  renderOrchestratorLog();
+  detectStatusChanges();
+
+  // Auto-select latest round if none selected
+  if (!state.selectedRoundId && state.rounds.length > 0) {
+    selectRound(state.rounds[state.rounds.length - 1].id);
+  } else {
+    renderRoundDetail();
+  }
+}
+
+function renderStats() {
+  const workers = state.workers;
+  const running  = workers.filter(w => w.status === 'running').length;
+  const blocked  = workers.filter(w => w.status === 'blocked').length;
+  const complete = workers.filter(w => ['complete', 'blocked_then_replaced'].includes((w.status || '').toLowerCase())).length;
+  const total    = workers.length;
+
+  document.getElementById('statActive').textContent   = running;
+  document.getElementById('statBlocked').textContent  = blocked;
+  document.getElementById('statComplete').textContent = complete;
+  document.getElementById('statTotal').textContent    = total;
+  document.getElementById('statKB').textContent       = state.kb.length;
+
+  const orch = state.orchestrator;
+  document.getElementById('statTickets').textContent  = orch ? (orch.ticketsRaised || 0) : '—';
+
+  const lu = state.lastUpdate;
+  document.getElementById('statLastUpdate').textContent = lu
+    ? lu.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—';
+
+  if (orch && orch.experiment) {
+    document.getElementById('experimentName').textContent = orch.experiment;
+    document.getElementById('experimentBanner').style.display = 'flex';
+  }
+
+  document.getElementById('kbCount').textContent = state.kb.length;
+  document.getElementById('roundsCount').textContent = state.rounds.length;
+}
+
+/* -------- Rounds Sidebar -------- */
+function renderRounds() {
+  const list = document.getElementById('roundsList');
+  const rounds = [...state.rounds].reverse(); // newest first
+
+  if (!rounds.length) {
+    list.innerHTML = `<div class="empty-state" style="padding:20px 10px"><div class="empty-icon">👻</div><p>No rounds found</p></div>`;
+    return;
+  }
+
+  list.innerHTML = rounds.map(r => {
+    const dotClass = r.hasBlocked ? 'blocked' : r.hasRunning ? 'running' : r.allComplete ? 'complete' : 'mixed';
+    const isActive = r.id === state.selectedRoundId;
+    return `
+      <div class="round-item${isActive ? ' active' : ''}" onclick="selectRound('${r.id}')">
+        <div class="round-item-num">Round ${r.roundNum}</div>
+        <div class="round-item-label">${escHtml(r.label)}</div>
+        <div class="round-item-summary">
+          <span class="round-status-dot ${dotClass}"></span>${escHtml(r.statusSummary)}
+        </div>
+        <div class="round-item-time">${r.startTime ? fmtDate(r.startTime) : '—'}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function selectRound(roundId) {
+  state.selectedRoundId = roundId;
+  // Update active state in sidebar
+  document.querySelectorAll('.round-item').forEach(el => {
+    el.classList.toggle('active', el.getAttribute('onclick') === `selectRound('${roundId}')`);
+  });
+  renderRoundDetail();
+  // Switch to workers tab if not already there
+  if (activeTab !== 'workers') switchTab('workers');
+}
+
+/* -------- Round Detail -------- */
+function renderRoundDetail() {
+  const container = document.getElementById('roundDetail');
+  if (!state.selectedRoundId) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">👈</div><p>Select a round from the sidebar</p></div>`;
+    return;
+  }
+
+  const round = state.rounds.find(r => r.id === state.selectedRoundId);
+  if (!round) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><p>Round not found</p></div>`;
+    return;
+  }
+
+  const sessions = round.sessions;
+  const badgeClass = round.hasBlocked ? 'blocked' : round.hasRunning ? 'running' : round.allComplete ? 'complete' : 'mixed';
+  const badgeText  = round.hasBlocked ? 'Has Blocked' : round.hasRunning ? 'In Progress' : round.allComplete ? 'All Complete' : 'Mixed';
+
+  // Flow stats
+  const spawned   = sessions.length;
+  const everBlocked = sessions.filter(s => s.timeline && s.timeline.some(t => t.event === 'blocked')).length;
+  const everSteered = sessions.filter(s => s.timeline && s.timeline.some(t => t.event === 'steered')).length;
+  const complete  = sessions.filter(s => s.status === 'complete').length;
+  const running   = sessions.filter(s => s.status === 'running').length;
+
+  const timeRange = round.startTime
+    ? `${fmtDateFull(round.startTime)}${round.endTime ? ` → ${fmtDateFull(round.endTime)}` : ' → now'}`
+    : '—';
+
+  container.innerHTML = `
+    <div class="round-header">
+      <div class="round-header-info">
+        <div class="round-title">${escHtml(round.label)}</div>
+        <div class="round-meta">
+          <div class="round-meta-item">📋 Round ${round.roundNum}</div>
+          <div class="round-meta-item">⏱ ${timeRange}</div>
+          <div class="round-meta-item">👷 ${sessions.length} workers</div>
+        </div>
+      </div>
+      <span class="round-status-badge ${badgeClass}">${badgeText}</span>
+    </div>
+
+    <div class="mini-flow">
+      <div class="mini-flow-title">Round Flow</div>
+      <div class="mini-flow-steps">
+        <div class="flow-step spawn">
+          <div class="flow-step-count">${spawned}</div>
+          <div class="flow-step-label">Spawned</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        ${running > 0 ? `
+        <div class="flow-step running">
+          <div class="flow-step-count">${running}</div>
+          <div class="flow-step-label">Running</div>
+        </div>
+        <div class="flow-arrow">→</div>` : ''}
+        <div class="flow-step blocked">
+          <div class="flow-step-count">${everBlocked}</div>
+          <div class="flow-step-label">Blocked</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step steered">
+          <div class="flow-step-count">${everSteered}</div>
+          <div class="flow-step-label">Steered</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step complete">
+          <div class="flow-step-count">${complete}</div>
+          <div class="flow-step-label">Complete</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-header" style="margin-bottom:10px">
+        <div class="section-title">👷 Workers <span class="section-badge">${sessions.length}</span></div>
+      </div>
+      <div class="workers-grid">
+        ${sessions.map(w => workerCardHTML(w)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function workerCardHTML(w) {
+  const statusClass = (w.status || 'unknown').toLowerCase().replace(/[^a-z_]/g, '');
+  const elapsed = w.elapsed ? fmtElapsed(w.elapsed) : (w.startTime ? fmtElapsedSince(w.startTime) : '—');
+  const progress = statusProgressPct(w.status);
+  const initials = workerInitials(w.name);
+  const avatarColor = workerColor(w.name);
+  const isActive = w.sessionId === state.selectedSessionId;
+
+  return `
+    <div class="worker-card${isActive ? ' active' : ''}" data-session="${w.sessionId}" onclick="showWorkerDetail('${w.sessionId}')">
+      <div class="worker-card-header">
+        <div class="worker-avatar" style="background:${avatarColor.bg};color:${avatarColor.fg}">${initials}</div>
+        <div class="worker-meta">
+          <div class="worker-name">${escHtml(w.name)}</div>
+          <div class="worker-session">${w.sessionId}</div>
+        </div>
+        <span class="status-badge ${statusClass}">${statusLabel(w.status)}</span>
+      </div>
+      <div class="worker-card-body">
+        <div class="worker-task">${escHtml(w.task || 'No task description')}</div>
+        <div class="worker-meta-row">
+          ${w.channel ? `<span>📢 ${escHtml(w.channel)}</span>` : ''}
+          <span>⏱ ${elapsed}</span>
+          ${(w.timeline || []).length ? `<span>📌 ${w.timeline.length}</span>` : ''}
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill ${statusClass}" style="width:${progress}%"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* -------- Worker Detail Drawer -------- */
+function showWorkerDetail(sessionId) {
+  const worker = state.workers.find(w => w.sessionId === sessionId);
+  if (!worker) return;
+
+  state.selectedSessionId = sessionId;
+
+  // Highlight active card
+  document.querySelectorAll('.worker-card').forEach(el => {
+    el.classList.toggle('active', el.dataset.session === sessionId);
+  });
+
+  const avatarColor = workerColor(worker.name);
+  const initials = workerInitials(worker.name);
+
+  const timelineHTML = (worker.timeline || []).map(t => `
+    <div class="tl-item">
+      <div class="tl-dot ${t.event || 'running'}"></div>
+      <div class="tl-content">
+        <div class="tl-event">${escHtml(t.event || '')}</div>
+        <div class="tl-detail">${escHtml(t.detail || '')}</div>
+        <div class="tl-time">${fmtTime(t.time)}</div>
+      </div>
+    </div>
+  `).join('');
+
+  document.getElementById('drawerTitle').innerHTML = `
+    <span style="display:inline-flex;align-items:center;gap:8px">
+      <span style="width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:${avatarColor.bg};color:${avatarColor.fg}">${initials}</span>
+      ${escHtml(worker.name)}
+      <span class="status-badge ${(worker.status || 'unknown').toLowerCase()}" style="font-size:10px">${statusLabel(worker.status)}</span>
+    </span>
+  `;
+
+  const taskPreview = worker.taskFull || worker.task || '';
+  const isLong = taskPreview.length > 300;
+
+  document.getElementById('drawerBody').innerHTML = `
+    <div class="drawer-section">
+      <div class="drawer-section-label">Session ID</div>
+      <div class="drawer-section-body" style="font-family:'SF Mono','Fira Code',monospace;font-size:11px">${escHtml(worker.sessionId)}</div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-label">Task Prompt</div>
+      <div class="task-text${isLong ? '' : ' expanded'}" id="taskTextEl">${escHtml(taskPreview)}</div>
+      ${isLong ? `<button class="expand-btn" onclick="toggleTaskExpand(this)">Show more</button>` : ''}
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-label">Timeline</div>
+      <div class="timeline">${timelineHTML || '<div style="color:var(--text3);font-size:12px">No events</div>'}</div>
+    </div>
+
+    ${worker.blockedDetail ? `
+    <div class="drawer-section">
+      <div class="drawer-section-label">⚠️ Blocked Message</div>
+      <div class="blocked-box">${escHtml(worker.blockedDetail)}</div>
+    </div>` : ''}
+
+    ${worker.kbGuidanceText ? `
+    <div class="drawer-section">
+      <div class="drawer-section-label">📚 KB Guidance Received</div>
+      <div class="kb-box">${escHtml(worker.kbGuidanceText)}</div>
+    </div>` : ''}
+
+    ${worker.completeSummaryFull ? `
+    <div class="drawer-section">
+      <div class="drawer-section-label">✅ Completion Summary</div>
+      <div class="complete-box">${escHtml(worker.completeSummaryFull)}</div>
+    </div>` : ''}
+
+    <div class="drawer-section" style="margin-top:8px">
+      <div class="drawer-section-label">Times</div>
+      <div class="drawer-section-body">
+        ${worker.startTime ? `<div>Started: ${fmtDateFull(worker.startTime)}</div>` : ''}
+        ${worker.endTime   ? `<div>Ended:   ${fmtDateFull(worker.endTime)}</div>` : ''}
+        ${worker.elapsed   ? `<div>Elapsed: ${fmtElapsed(worker.elapsed)}</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('detailDrawer').classList.add('open');
+  document.getElementById('drawerOverlay').classList.add('open');
+}
+
+function toggleTaskExpand(btn) {
+  const el = document.getElementById('taskTextEl');
+  const expanded = el.classList.toggle('expanded');
+  btn.textContent = expanded ? 'Show less' : 'Show more';
+}
+
+function closeDrawer() {
+  document.getElementById('detailDrawer').classList.remove('open');
+  document.getElementById('drawerOverlay').classList.remove('open');
+  state.selectedSessionId = null;
+  document.querySelectorAll('.worker-card').forEach(el => el.classList.remove('active'));
+}
+
+/* -------- KB Panel -------- */
+function renderKB() {
+  const body = document.getElementById('kbBody');
+  const entries = state.kb;
+  document.getElementById('kbCount').textContent = entries.length;
+
+  if (!entries.length) {
+    body.innerHTML = `<div class="empty-state fade-in"><div class="empty-icon">📭</div><p>No KB entries found</p></div>`;
+    return;
+  }
+
+  body.innerHTML = entries.map(e => `
+    <div class="kb-entry" onclick="this.classList.toggle('expanded')">
+      <div class="kb-entry-header">
+        <div class="kb-entry-title">${escHtml(e.title)}</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          ${e.date ? `<div class="kb-date">${e.date}</div>` : ''}
+          <svg class="kb-chevron" width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
+          </svg>
+        </div>
+      </div>
+      ${e.context ? `<div class="kb-context">${escHtml(e.context.substring(0, 120))}${e.context.length > 120 ? '…' : ''}</div>` : ''}
+      <div class="kb-details">
+        ${e.problem  ? `<div class="kb-detail-label">Problem</div><div class="kb-detail-value">${escHtml(e.problem)}</div>` : ''}
+        ${e.solution ? `<div class="kb-detail-label">Solution</div><div class="kb-detail-value">${escHtml(e.solution)}</div>` : ''}
+        ${e.source   ? `<div class="kb-source">Source: ${escHtml(e.source)}</div>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+/* -------- Orchestrator Log -------- */
+function renderOrchestratorLog() {
+  const orch = state.orchestrator;
+  const entries = [];
+
+  if (orch) {
+    if (orch.experiment) entries.push({ type: 'info', text: `Experiment: <strong>${escHtml(orch.experiment)}</strong>`, tag: 'INFO', time: orch.lastChecked });
+    if (orch.agents) {
+      const agentList = Object.entries(orch.agents);
+      entries.push({ type: 'spawn', text: `Dispatched <strong>${agentList.length}</strong> worker sessions`, tag: 'SPAWN', time: orch.lastChecked });
+      const blocked = agentList.filter(([, v]) => v.status?.includes('BLOCKED'));
+      if (blocked.length) entries.push({ type: 'block', text: `<strong>${blocked.length}</strong> workers reported BLOCKED`, tag: 'BLOCK', time: orch.lastChecked });
+      if (orch.kbUpdates) entries.push({ type: 'kb', text: `KB updated with <strong>${orch.kbUpdates}</strong> new entries`, tag: 'KB', time: orch.lastChecked });
+      if (orch.ticketsRaised) entries.push({ type: 'block', text: `<strong>${orch.ticketsRaised}</strong> ticket(s) raised to Discord`, tag: 'ESCALATE', time: orch.lastChecked });
+      if (orch.ticketsResolved) entries.push({ type: 'complete', text: `<strong>${orch.ticketsResolved}</strong> ticket(s) resolved`, tag: 'RESOLVED', time: orch.lastChecked });
+      const completed = agentList.filter(([, v]) => v.status === 'COMPLETE');
+      if (completed.length) entries.push({ type: 'complete', text: `<strong>${completed.length}</strong> workers reached COMPLETE`, tag: 'DONE', time: orch.lastChecked });
+    }
+  }
+
+  const allEntries = [...entries, ...logEntries].slice(-80);
+  const logBody = document.getElementById('logBody');
+
+  if (!allEntries.length) {
+    logBody.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>No log entries</p></div>`;
+    return;
+  }
+
+  logBody.innerHTML = allEntries.map(e => `
+    <div class="log-entry fade-in">
+      <div class="log-time">${e.time ? fmtTime(e.time) : 'now'}</div>
+      <div class="log-icon">${logIcon(e.type)}</div>
+      <div class="log-text">${e.text}</div>
+      ${e.tag ? `<span class="log-tag ${e.type || 'info'}">${escHtml(e.tag)}</span>` : ''}
+    </div>
+  `).join('');
+
+  const scroll = document.getElementById('logScroll');
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+function appendLog(entry) {
+  entry.time = new Date().toISOString();
+  logEntries.push(entry);
+  if (logEntries.length > 200) logEntries = logEntries.slice(-200);
+}
+
+function clearLog() {
+  logEntries = [];
+  renderOrchestratorLog();
+}
+
+function detectStatusChanges() {
+  state.workers.forEach(w => {
+    const prev = prevWorkerStatuses[w.sessionId];
+    if (prev !== undefined && prev !== w.status) {
+      appendLog({
+        type: w.status === 'blocked' ? 'block' : w.status === 'complete' ? 'complete' : 'info',
+        text: `<strong>${escHtml(w.name)}</strong> changed: ${prev} → ${w.status}`,
+        tag: w.status.toUpperCase(),
+      });
+    }
+    prevWorkerStatuses[w.sessionId] = w.status;
+  });
+}
+
+/* ============================================================
+   TABS
+============================================================ */
+function switchTab(tab) {
+  activeTab = tab;
+  ['workers', 'kb', 'about'].forEach(t => {
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === tab);
+    document.getElementById(`tab-btn-${t}`).classList.toggle('active', t === tab);
+  });
+}
+
+/* ============================================================
+   HELPERS
+============================================================ */
+function statusLabel(status) {
+  const map = { running: 'Running', blocked: 'Blocked', complete: 'Complete', waiting: 'Waiting', unknown: 'Unknown', blocked_then_replaced: 'Replaced' };
+  return map[(status || '').toLowerCase()] || status || '?';
+}
+
+function statusProgressPct(status) {
+  const map = { running: 55, blocked: 30, complete: 100, waiting: 5, unknown: 0, blocked_then_replaced: 100 };
+  return map[(status || '').toLowerCase()] || 0;
+}
+
+function workerInitials(name) {
+  if (!name) return '??';
+  const parts = name.replace(/-/g, ' ').split(' ').filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return name.substring(0, 2).toUpperCase();
+}
+
+const AVATAR_COLORS = [
+  { bg: 'rgba(56,139,253,.2)',  fg: '#388bfd' },
+  { bg: 'rgba(63,185,80,.2)',   fg: '#3fb950' },
+  { bg: 'rgba(188,140,255,.2)', fg: '#bc8cff' },
+  { bg: 'rgba(210,153,34,.2)',  fg: '#d29922' },
+  { bg: 'rgba(248,81,73,.2)',   fg: '#f85149' },
+  { bg: 'rgba(227,179,65,.2)',  fg: '#e3b341' },
+];
+
+function workerColor(name) {
+  let hash = 0;
+  for (const c of (name || '')) hash = (hash << 5) - hash + c.charCodeAt(0);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function fmtElapsed(secs) {
+  if (secs == null) return '—';
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+}
+
+function fmtElapsedSince(isoTime) {
+  if (!isoTime) return '—';
+  const secs = Math.round((Date.now() - new Date(isoTime)) / 1000);
+  return fmtElapsed(secs);
+}
+
+function fmtTime(isoTime) {
+  if (!isoTime) return '—';
+  try { return new Date(isoTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
+  catch { return '—'; }
+}
+
+function fmtDate(isoTime) {
+  if (!isoTime) return '—';
+  try {
+    const d = new Date(isoTime);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  } catch { return '—'; }
+}
+
+function fmtDateFull(isoTime) {
+  if (!isoTime) return '—';
+  try { return new Date(isoTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
+  catch { return '—'; }
+}
+
+function logIcon(type) {
+  const icons = { spawn: '🚀', block: '⚠️', kb: '📚', steer: '🎯', complete: '✅', error: '❌', info: 'ℹ️' };
+  return icons[type] || 'ℹ️';
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function updateStatusIndicator(mode) {
+  const dot  = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  if (mode === 'live') {
+    dot.className = 'status-dot'; dot.style.background = '';
+    text.textContent = 'Live';
+  } else if (mode === 'demo') {
+    dot.className = 'status-dot'; dot.style.background = 'var(--yellow)';
+    text.textContent = 'Demo mode';
+  } else {
+    dot.className = 'status-dot offline'; dot.style.background = '';
+    text.textContent = 'Offline';
+  }
+}
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toUTCString().replace('GMT', 'UTC');
+}
+
+/* ============================================================
+   INIT
+============================================================ */
+updateClock();
+setInterval(updateClock, 1000);
+fetchAll();
+setInterval(fetchAll, 5000);
+</script>
+</body>
+</html>

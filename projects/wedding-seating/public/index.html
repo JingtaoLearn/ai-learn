@@ -1,0 +1,1760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>婚礼喜宴座位安排</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --gold: #c9a96e;
+  --gold-light: #f5e6c8;
+  --gold-dark: #8b6914;
+  --bg: #faf7f2;
+  --card-bg: #fff;
+  --text: #333;
+  --text-light: #777;
+  --green: #4caf50;
+  --yellow: #ff9800;
+  --red: #f44336;
+  --blue: #2196f3;
+  --shadow: 0 2px 8px rgba(0,0,0,0.1);
+  --radius: 12px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding-bottom: 80px;
+}
+
+header {
+  background: linear-gradient(135deg, var(--gold-dark), var(--gold));
+  color: white;
+  padding: 12px 16px;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.project-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 1px;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.btn-header {
+  padding: 6px 12px;
+  border: 1.5px solid rgba(255,255,255,0.7);
+  border-radius: 8px;
+  background: transparent;
+  color: white;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s;
+}
+.btn-header:hover { background: rgba(255,255,255,0.2); }
+.btn-header:active { transform: scale(0.96); }
+
+.stats {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  font-size: 0.8rem;
+  opacity: 0.9;
+  flex-wrap: wrap;
+}
+
+.container { max-width: 900px; margin: 0 auto; padding: 16px; }
+
+/* --- Add Guest Section --- */
+.add-guest-section {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.add-guest-section input[type="text"] {
+  flex: 1;
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 2px solid var(--gold-light);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.add-guest-section input[type="text"]:focus { border-color: var(--gold); }
+
+.side-selector {
+  display: flex;
+  gap: 4px;
+}
+
+.side-btn {
+  padding: 10px 14px;
+  border: 2px solid var(--gold-light);
+  border-radius: var(--radius);
+  background: white;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: var(--text-light);
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.side-btn.active-male {
+  background: #e3f2fd;
+  border-color: #90caf9;
+  color: #1565c0;
+  font-weight: 600;
+}
+.side-btn.active-female {
+  background: #fce4ec;
+  border-color: #f48fb1;
+  color: #c2185b;
+  font-weight: 600;
+}
+
+.add-row-2 {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.btn {
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.btn-primary { background: var(--gold); color: white; }
+.btn-primary:hover { background: var(--gold-dark); }
+.btn-primary:active { transform: scale(0.96); }
+
+.btn-secondary { background: #e8f5e9; color: #2e7d32; border: 1.5px solid #a5d6a7; }
+.btn-secondary:hover { background: #c8e6c9; }
+
+.btn-danger { background: var(--red); color: white; font-size: 0.8rem; padding: 4px 8px; }
+.btn-danger:hover { opacity: 0.85; }
+
+.btn-sm { padding: 6px 12px; font-size: 0.85rem; }
+
+.btn-outline {
+  background: transparent;
+  border: 2px solid var(--gold);
+  color: var(--gold-dark);
+}
+.btn-outline:hover { background: var(--gold-light); }
+
+/* --- Pool Sections --- */
+.pool-section {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.2s, background 0.2s;
+}
+.pool-section.drop-zone {
+  box-shadow: 0 0 0 3px var(--blue), var(--shadow) !important;
+  background: #e8f4fd !important;
+}
+
+/* Sub-group titles inside pool */
+.pool-subgroup { margin-bottom: 12px; }
+.pool-subgroup:last-child { margin-bottom: 0; }
+.pool-subgroup-title {
+  font-size: 0.82rem;
+  color: var(--text-light);
+  margin-bottom: 6px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pool-subgroup-title .subgroup-count {
+  font-weight: 400;
+  font-size: 0.78rem;
+}
+
+.section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--gold-dark);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.section-title .count { font-size: 0.85rem; color: var(--text-light); font-weight: 400; }
+.section-title .title-left { display: flex; align-items: center; gap: 8px; }
+
+.section-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--gold-dark);
+  cursor: pointer;
+  font-size: 0.9rem;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0.7;
+}
+.section-collapse-btn:hover { opacity: 1; }
+
+.guest-chips { display: flex; flex-wrap: wrap; gap: 8px; min-height: 40px; }
+
+.guest-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--gold-light);
+  border-radius: 20px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+  border: 2px solid transparent;
+  touch-action: none;
+}
+.guest-chip:hover { border-color: var(--gold); transform: translateY(-1px); }
+.guest-chip:active { transform: scale(0.96); }
+.guest-chip.dragging { opacity: 0.35; }
+
+.guest-chip.pending {
+  background: #fff8e1;
+  border: 2px dashed #ffb300;
+  opacity: 0.9;
+}
+.guest-chip.pending:hover { border-color: #e65100; }
+
+.side-badge {
+  font-size: 0.7rem;
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.side-badge-male { background: #e3f2fd; color: #1565c0; }
+.side-badge-female { background: #fce4ec; color: #c2185b; }
+
+/* Subtle pending tag toggle in pool */
+.pending-tag {
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 0.62rem;
+  cursor: pointer;
+  white-space: nowrap;
+  background: transparent;
+  color: #bbb;
+  font-weight: 500;
+  min-height: 18px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+  line-height: 1.4;
+}
+.pending-tag:hover { color: #e65100; background: #fff8e1; }
+.pending-tag.is-pending {
+  background: #fff3e0;
+  border-color: #ffcc80;
+  color: #e65100;
+  font-weight: 600;
+}
+
+.guest-chip .delete-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #555;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.guest-chip .delete-btn:hover { background: var(--red); color: white; }
+
+.empty-hint { color: var(--text-light); font-size: 0.9rem; padding: 8px 0; }
+
+/* --- Tables Section --- */
+.tables-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.tables-header h2 { font-size: 1rem; font-weight: 600; color: var(--gold-dark); }
+
+.tables-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 600px) { .tables-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.table-card {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  transition: box-shadow 0.2s, background 0.2s;
+  border-left: 5px solid var(--yellow);
+}
+.table-card.status-full { border-left-color: var(--green); }
+.table-card.status-over { border-left-color: var(--red); }
+.table-card.drop-zone {
+  box-shadow: 0 0 0 3px var(--blue), var(--shadow) !important;
+  background: #e8f4fd !important;
+}
+
+.table-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid #f0ebe2;
+  flex-wrap: nowrap;
+}
+
+.table-info { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.table-number { font-weight: 700; font-size: 1rem; color: var(--gold-dark); white-space: nowrap; }
+
+.table-label-input {
+  border: none;
+  background: transparent;
+  font-size: 0.9rem;
+  color: var(--text);
+  width: 60px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  min-width: 0;
+}
+.table-label-input:focus { outline: none; background: var(--gold-light); }
+
+.table-tag-input {
+  border: 1px dashed #ccc;
+  background: transparent;
+  font-size: 0.78rem;
+  color: var(--text-light);
+  width: 64px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  min-width: 0;
+}
+.table-tag-input:focus { outline: none; border-color: var(--gold); background: var(--gold-light); color: var(--text); }
+.table-tag-input::placeholder { color: #ccc; font-style: italic; }
+
+.table-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.table-count.full { background: #e8f5e9; color: var(--green); }
+.table-count.under { background: #fff3e0; color: var(--yellow); }
+.table-count.over { background: #ffebee; color: var(--red); }
+
+.collapse-btn {
+  background: none;
+  border: none;
+  color: var(--gold-dark);
+  cursor: pointer;
+  font-size: 0.85rem;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.7;
+}
+.collapse-btn:hover { opacity: 1; }
+
+.table-delete-btn {
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 0 2px;
+  flex-shrink: 0;
+  min-width: 32px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.table-delete-btn:hover { color: var(--red); }
+
+.table-swap-btn {
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0 2px;
+  flex-shrink: 0;
+  min-width: 32px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.table-swap-btn:hover { color: var(--blue); }
+
+.swap-select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 2px solid var(--gold-light);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  outline: none;
+  margin-bottom: 14px;
+  font-family: inherit;
+  background: white;
+}
+.swap-select:focus { border-color: var(--gold); }
+
+.swap-actions {
+  display: flex;
+  gap: 8px;
+}
+.swap-actions .btn { flex: 1; }
+
+.table-body { padding: 10px 14px; }
+.seat-list { display: flex; flex-direction: column; gap: 6px; }
+
+.seat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  min-height: 44px;
+}
+.seat-row:nth-child(odd) { background: #faf7f2; }
+.seat-row.dragging { opacity: 0.35; }
+
+.seat-label {
+  font-weight: 600;
+  color: var(--gold-dark);
+  min-width: 42px;
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+
+/* Guest info row in seat row */
+.seat-guest {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.seat-guest-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.seat-guest-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.seat-empty {
+  color: #ccc;
+  font-size: 0.82rem;
+  font-style: italic;
+  padding-top: 6px;
+}
+
+/* Action buttons inline with guest name */
+.seat-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.seat-action-btn {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+.seat-action-btn:active { transform: scale(0.94); }
+
+.seat-action-change {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.seat-action-change:hover { background: #bbdefb; }
+
+.seat-action-remove {
+  background: #ffebee;
+  color: #c62828;
+}
+.seat-action-remove:hover { background: #ffcdd2; }
+
+.unseated-section { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e0d9cc; }
+.unseated-title { font-size: 0.78rem; color: var(--text-light); margin-bottom: 6px; }
+
+.unseated-guest {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 0.88rem;
+  border-radius: 6px;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.unseated-guest:hover { background: #faf7f2; }
+.unseated-name { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+.unseated-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unseated-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+/* --- Modal --- */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200;
+  justify-content: center;
+  align-items: flex-end;
+  padding: 16px;
+}
+.modal-overlay.active { display: flex; }
+
+@media (min-width: 600px) { .modal-overlay { align-items: center; } }
+
+.modal {
+  background: white;
+  border-radius: 16px 16px 0 0;
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  animation: slideUp 0.25s ease-out;
+}
+@media (min-width: 600px) { .modal { border-radius: 16px; } }
+
+.modal-lg { max-width: 500px; }
+
+@keyframes slideUp {
+  from { transform: translateY(30px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid #f0ebe2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 1;
+}
+.modal-header h3 { font-size: 1rem; color: var(--gold-dark); }
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: #aaa;
+  cursor: pointer;
+  line-height: 1;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 16px 18px; }
+
+.modal-option {
+  padding: 12px 16px;
+  border: 2px solid #f0ebe2;
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-option:hover { border-color: var(--gold); background: var(--gold-light); }
+.modal-option.occupied { opacity: 0.5; cursor: not-allowed; }
+
+.modal-table-option {
+  padding: 12px 16px;
+  border: 2px solid #f0ebe2;
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.modal-table-option:hover { border-color: var(--gold); background: var(--gold-light); }
+.modal-table-name { font-weight: 600; }
+.modal-table-meta { font-size: 0.82rem; color: var(--text-light); margin-top: 2px; }
+
+/* Batch import */
+.batch-textarea {
+  width: 100%;
+  height: 160px;
+  padding: 10px 12px;
+  border: 2px solid var(--gold-light);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  resize: vertical;
+  outline: none;
+  margin-bottom: 12px;
+  font-family: inherit;
+  line-height: 1.6;
+}
+.batch-textarea:focus { border-color: var(--gold); }
+
+.batch-side-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.batch-side-btn {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid #e0e0e0;
+  border-radius: var(--radius);
+  background: white;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+  font-weight: 500;
+  color: var(--text-light);
+}
+.batch-side-btn.active-male { border-color: #90caf9; background: #e3f2fd; color: #1565c0; }
+.batch-side-btn.active-female { border-color: #f48fb1; background: #fce4ec; color: #c2185b; }
+
+.batch-hint { font-size: 0.82rem; color: var(--text-light); margin-bottom: 10px; line-height: 1.5; }
+
+/* --- Toast --- */
+#toast-container {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  width: 90%;
+  max-width: 420px;
+}
+.toast-item {
+  background: #444;
+  color: white;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  word-break: break-word;
+  animation: toastSlideIn 0.25s ease-out;
+}
+.toast-item.success { background: #2e7d32; }
+.toast-item.error { background: #c62828; }
+.toast-item.fade-out { animation: toastFadeOut 0.3s ease-in forwards; }
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(-16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes toastFadeOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-8px); }
+}
+
+/* --- Seat drop zone --- */
+.seat-row.seat-drop-zone {
+  background: #e3f2fd !important;
+  outline: 2px dashed #2196f3;
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+/* Touch drag clone */
+#touch-drag-clone {
+  position: fixed;
+  pointer-events: none;
+  z-index: 999;
+  opacity: 0.8;
+  transform: scale(1.05);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  border-radius: 20px;
+}
+
+/* Inline rename input */
+.guest-rename-input {
+  border: none;
+  border-bottom: 2px solid var(--gold);
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  color: inherit;
+  padding: 0;
+  margin: 0;
+  outline: none;
+  width: auto;
+  min-width: 2em;
+  max-width: 100%;
+  line-height: inherit;
+}
+[data-guest-rename] {
+  cursor: text;
+  -webkit-user-select: none;
+  user-select: none;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-top">
+    <div class="project-name" id="project-name">婚礼喜宴座位安排</div>
+    <div class="header-actions">
+      <button class="btn-header" onclick="refreshData()">🔄 刷新</button>
+      <button class="btn-header" onclick="copyShareLink()">分享链接</button>
+      <button class="btn-header" onclick="exportCSV()">导出CSV</button>
+    </div>
+  </div>
+  <div class="stats">
+    <span id="stats-guests">宾客: 0</span>
+    <span>|</span>
+    <span id="stats-tables">桌数: 0</span>
+    <span>|</span>
+    <span id="stats-assigned">已安排: 0</span>
+    <span>|</span>
+    <span id="stats-unassigned">未分配: 0</span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Add Guest -->
+  <div class="add-guest-section">
+    <input type="text" id="guest-name-input" placeholder="输入宾客姓名..." maxlength="30">
+    <div class="side-selector">
+      <button class="side-btn active-male" id="side-male" onclick="setSide('男方')">男方</button>
+      <button class="side-btn" id="side-female" onclick="setSide('女方')">女方</button>
+    </div>
+  </div>
+  <div class="add-row-2">
+    <button class="btn btn-primary" style="flex:1" onclick="addGuest()">添加宾客</button>
+    <button class="btn btn-secondary" onclick="openBatchModal()">批量添加</button>
+  </div>
+
+  <!-- Unassigned Guests (merged: 未分配 + 待定) -->
+  <div class="pool-section" id="unassigned-pool-section" data-pool="unassigned"
+    ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDropPool(event)">
+    <div class="section-title">
+      <div class="title-left">
+        <span>未安排宾客</span>
+        <span class="count" id="pool-count">0人</span>
+      </div>
+      <button class="section-collapse-btn" id="pool-collapse-btn" onclick="togglePoolCollapse()">▼</button>
+    </div>
+    <div id="pool-body">
+      <div id="subgroup-unassigned" class="pool-subgroup">
+        <div class="pool-subgroup-title">未分配 <span class="subgroup-count" id="unassigned-count">0人</span></div>
+        <div class="guest-chips" id="guest-pool"></div>
+      </div>
+      <div id="subgroup-pending" class="pool-subgroup">
+        <div class="pool-subgroup-title">待定 <span class="subgroup-count" id="pending-count">0人</span></div>
+        <div class="guest-chips" id="pending-pool"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tables -->
+  <div class="tables-header">
+    <h2>餐桌</h2>
+    <button class="btn btn-sm btn-outline" onclick="addTable()">+ 添加桌</button>
+  </div>
+  <div class="tables-grid" id="tables-grid"></div>
+</div>
+
+<!-- Table Select Modal -->
+<div class="modal-overlay" id="table-select-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="table-modal-title">选择餐桌</h3>
+      <button class="modal-close" onclick="closeModal('table-select-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="table-modal-body"></div>
+  </div>
+</div>
+
+<!-- Seat Select Modal -->
+<div class="modal-overlay" id="seat-select-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="seat-modal-title">选择座位</h3>
+      <button class="modal-close" onclick="closeModal('seat-select-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="seat-modal-body"></div>
+  </div>
+</div>
+
+<!-- Batch Import Modal -->
+<div class="modal-overlay" id="batch-modal">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>批量添加宾客</h3>
+      <button class="modal-close" onclick="closeModal('batch-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="batch-hint">每行一个姓名，空行自动跳过。最多一次添加100人。</p>
+      <textarea class="batch-textarea" id="batch-names" placeholder="张三&#10;李四&#10;王五&#10;..."></textarea>
+      <div class="batch-side-row">
+        <button class="batch-side-btn active-male" id="batch-side-male" onclick="setBatchSide('男方')">男方宾客</button>
+        <button class="batch-side-btn" id="batch-side-female" onclick="setBatchSide('女方')">女方宾客</button>
+      </div>
+      <button class="btn btn-primary" style="width:100%" onclick="submitBatch()">确认添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- Swap Seat Confirm Modal -->
+<div class="modal-overlay" id="swap-confirm-modal">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-header">
+      <h3>确认交换座位</h3>
+      <button class="modal-close" onclick="cancelSwapConfirm()">&times;</button>
+    </div>
+    <div class="modal-body" style="text-align:center">
+      <p style="margin-bottom:16px;font-size:0.95rem;line-height:1.6" id="swap-confirm-text"></p>
+      <div class="swap-actions">
+        <button class="btn btn-primary" onclick="resolveSwapConfirm(true)">确认</button>
+        <button class="btn btn-outline" onclick="resolveSwapConfirm(false)">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Swap Tables Modal -->
+<div class="modal-overlay" id="swap-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="swap-modal-title">交换桌位</h3>
+      <button class="modal-close" onclick="closeModal('swap-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:12px;font-size:0.9rem;color:var(--text-light)" id="swap-modal-text"></p>
+      <select class="swap-select" id="swap-target-select"></select>
+      <div class="swap-actions">
+        <button class="btn btn-primary" onclick="confirmSwap()">确认交换</button>
+        <button class="btn btn-outline" onclick="closeModal('swap-modal')">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+const SEAT_LABELS = ['主陪', '副陪', '1席', '2席', '3席', '4席', '5席', '6席', '7席', '8席'];
+
+const projectId = (function() {
+  const m = location.pathname.match(/^\/p\/([^\/]+)/);
+  if (!m) { document.body.innerHTML = '<div style="padding:40px;text-align:center;color:#c00">无效的项目链接</div>'; return null; }
+  return m[1];
+})();
+
+let data = { name: '', guests: [], tables: [] };
+let currentSide = '男方';
+let batchSide = '男方';
+
+// --- API ---
+async function api(method, path, body) {
+  if (!projectId) return null;
+  const base = '/api/p/' + projectId;
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(base + path, opts);
+  if (res.status === 204) return null;
+  const json = await res.json();
+  if (!res.ok) {
+    toast('❌ 保存失败，请刷新页面重试' + (json.error ? '：' + json.error : ''), 'error');
+    throw new Error(json.error);
+  }
+  return json;
+}
+
+async function loadData() {
+  if (!projectId) return;
+  data = await api('GET', '/data');
+  document.title = (data.name || '婚礼喜宴') + ' — 座位安排';
+  document.getElementById('project-name').textContent = data.name || '婚礼喜宴座位安排';
+  render();
+}
+
+async function refreshData() {
+  await loadData();
+  toast('✅ 已刷新', 'success');
+}
+
+// --- Side selector ---
+function setSide(side) {
+  currentSide = side;
+  document.getElementById('side-male').className = 'side-btn' + (side === '男方' ? ' active-male' : '');
+  document.getElementById('side-female').className = 'side-btn' + (side === '女方' ? ' active-female' : '');
+}
+
+function setBatchSide(side) {
+  batchSide = side;
+  document.getElementById('batch-side-male').className = 'batch-side-btn' + (side === '男方' ? ' active-male' : '');
+  document.getElementById('batch-side-female').className = 'batch-side-btn' + (side === '女方' ? ' active-female' : '');
+}
+
+// --- Actions ---
+async function addGuest() {
+  const input = document.getElementById('guest-name-input');
+  const name = input.value.trim();
+  if (!name) return;
+  input.value = '';
+  await api('POST', '/guests', { name, side: currentSide });
+  toast(`✅ 已添加宾客：${name}`, 'success');
+  await loadData();
+  input.focus();
+}
+
+async function deleteGuest(id, e) {
+  if (e) e.stopPropagation();
+  const guest = data.guests.find(g => g.id === id);
+  const name = guest ? guest.name : '';
+  await api('DELETE', '/guests/' + id);
+  toast(`✅ 已删除宾客${name ? '：' + name : ''}`, 'success');
+  await loadData();
+}
+
+async function addTable() {
+  await api('POST', '/tables');
+  toast('✅ 已添加新桌', 'success');
+  await loadData();
+}
+
+async function deleteTable(id) {
+  try {
+    const table = data.tables.find(t => t.id === id);
+    await api('DELETE', '/tables/' + id);
+    toast(`✅ 已删除${table ? table.number + '号桌' : '餐桌'}`, 'success');
+    await loadData();
+  } catch (e) {
+    await loadData();
+  }
+}
+
+async function assignGuest(guestId, tableId, seatLabel) {
+  await api('POST', '/guests/' + guestId + '/assign', { tableId, seatLabel: seatLabel || null });
+  const table = data.tables.find(t => t.id === tableId);
+  const tableNum = table ? table.number + '桌' : '桌';
+  toast(`✅ 已分配到${seatLabel ? tableNum + seatLabel : tableNum}`, 'success');
+  await loadData();
+}
+
+async function unassignGuest(guestId) {
+  await api('POST', '/guests/' + guestId + '/unassign');
+  toast('✅ 已移除座位安排', 'success');
+  await loadData();
+}
+
+async function updateTableLabel(tableId, label) {
+  await api('PUT', '/tables/' + tableId, { label });
+  toast('✅ 已更新桌名', 'success');
+}
+
+async function updateTableTag(tableId, tag) {
+  await api('PUT', '/tables/' + tableId, { tag: tag.trim() || null });
+  toast('✅ 已更新备注', 'success');
+}
+
+async function changeSeat(guestId, tableId) {
+  showSeatModal(guestId, tableId);
+}
+
+// --- Pending ---
+async function updatePending(guestId, pending) {
+  await api('PUT', '/guests/' + guestId, { pending });
+  toast(pending ? '✅ 已标记为待定' : '✅ 已取消待定状态', 'success');
+  await loadData();
+}
+
+async function togglePending(guestId, currentPending, e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  await updatePending(guestId, !currentPending);
+}
+
+// --- Pool collapse ---
+function togglePoolCollapse() {
+  const body = document.getElementById('pool-body');
+  const btn = document.getElementById('pool-collapse-btn');
+  const isCollapsed = sessionStorage.getItem('collapsed_pool') === '1';
+  if (isCollapsed) {
+    sessionStorage.removeItem('collapsed_pool');
+    body.style.display = '';
+    btn.textContent = '▼';
+  } else {
+    sessionStorage.setItem('collapsed_pool', '1');
+    body.style.display = 'none';
+    btn.textContent = '▲';
+  }
+}
+
+function exportCSV() {
+  if (!projectId) return;
+  window.open('/api/p/' + projectId + '/export/csv');
+}
+
+function copyShareLink() {
+  const url = location.origin + '/p/' + projectId;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => toast('链接已复制！', true));
+  } else {
+    const el = document.createElement('input');
+    el.value = url;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    toast('链接已复制！', true);
+  }
+}
+
+// --- Batch import ---
+function openBatchModal() {
+  document.getElementById('batch-names').value = '';
+  openModal('batch-modal');
+  setTimeout(() => document.getElementById('batch-names').focus(), 100);
+}
+
+async function submitBatch() {
+  const raw = document.getElementById('batch-names').value;
+  const names = raw.split('\n').map(s => s.trim()).filter(Boolean).slice(0, 100);
+  if (names.length === 0) { toast('请输入至少一个姓名'); return; }
+
+  closeModal('batch-modal');
+  try {
+    const added = await api('POST', '/guests/batch', { names, side: batchSide });
+    await loadData();
+    toast(`已添加 ${added.length} 位${batchSide}宾客`, true);
+  } catch {}
+}
+
+// --- Modals ---
+let selectedGuestId = null;
+
+function showTableModal(guestId) {
+  selectedGuestId = guestId;
+  const guest = data.guests.find(g => g.id === guestId);
+  document.getElementById('table-modal-title').textContent = `为 ${guest.name} 选择餐桌`;
+
+  const body = document.getElementById('table-modal-body');
+  if (data.tables.length === 0) {
+    body.innerHTML = '<div class="empty-hint">暂无餐桌，请先添加桌</div>';
+  } else {
+    body.innerHTML = [...data.tables]
+      .sort((a, b) => a.number - b.number)
+      .map(t => {
+        const count = data.guests.filter(g => g.tableId === t.id).length;
+        const tagText = t.tag ? ` · ${esc(t.tag)}` : '';
+        return `<div class="modal-table-option" onclick="selectTableForGuest('${t.id}')">
+          <div class="modal-table-name">${t.number}号桌 — ${esc(t.label)}${tagText}</div>
+          <div class="modal-table-meta">${count}/10 位宾客</div>
+        </div>`;
+      }).join('');
+  }
+  openModal('table-select-modal');
+}
+
+async function selectTableForGuest(tableId) {
+  closeModal('table-select-modal');
+  await assignGuest(selectedGuestId, tableId, null);
+}
+
+function showSeatModal(guestId, tableId) {
+  const guest = data.guests.find(g => g.id === guestId);
+  const tableGuests = data.guests.filter(g => g.tableId === tableId);
+
+  document.getElementById('seat-modal-title').textContent = `${guest.name} — 选择座位`;
+
+  const body = document.getElementById('seat-modal-body');
+  body.innerHTML = SEAT_LABELS.map(label => {
+    const occupant = tableGuests.find(g => g.seatLabel === label && g.id !== guestId);
+    if (occupant) {
+      return `<div class="modal-option occupied">
+        <span>${label}</span>
+        <span style="font-size:0.82rem;color:#aaa">${esc(occupant.name)}</span>
+      </div>`;
+    }
+    const isCurrent = guest.seatLabel === label;
+    return `<div class="modal-option${isCurrent ? ' selected' : ''}" onclick="selectSeat('${guestId}','${tableId}','${label}')">
+      <span>${label}</span>
+      ${isCurrent ? '<span style="color:var(--gold)">当前</span>' : '<span style="color:#ccc">空位</span>'}
+    </div>`;
+  }).join('') + `<div class="modal-option" onclick="selectSeat('${guestId}','${tableId}','')">
+    <span>取消座位指定</span>
+    <span style="color:#ccc">仅在桌</span>
+  </div>`;
+
+  openModal('seat-select-modal');
+}
+
+async function selectSeat(guestId, tableId, seatLabel) {
+  closeModal('seat-select-modal');
+  await assignGuest(guestId, tableId, seatLabel || null);
+}
+
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+function toggleCollapse(tableId) {
+  const key = 'collapsed_' + tableId;
+  const body = document.getElementById('tbody_' + tableId);
+  const btn = document.getElementById('cbtn_' + tableId);
+  const isCollapsed = sessionStorage.getItem(key) === '1';
+  if (isCollapsed) {
+    sessionStorage.removeItem(key);
+    body.style.display = '';
+    btn.textContent = '▼';
+    btn.title = '收起';
+  } else {
+    sessionStorage.setItem(key, '1');
+    body.style.display = 'none';
+    btn.textContent = '▲';
+    btn.title = '展开';
+  }
+}
+
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('active'); });
+});
+
+// ---- Drag and Drop (HTML5 + Touch) ----
+let dragGuestId = null;
+let currentDropTarget = null;
+let touchDragState = null;
+
+function onDragStart(e, guestId) {
+  if (e.target.tagName === 'BUTTON' || e.target.closest('button') || e.target.tagName === 'INPUT') {
+    e.preventDefault();
+    return;
+  }
+  dragGuestId = guestId;
+  e.dataTransfer.setData('text/plain', guestId);
+  e.dataTransfer.effectAllowed = 'move';
+  setTimeout(() => {
+    document.querySelectorAll('[data-drag-guest="' + guestId + '"]').forEach(el => el.classList.add('dragging'));
+  }, 0);
+}
+
+function onDragEnd(e) {
+  dragGuestId = null;
+  document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+  clearDropHighlights();
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const target = e.currentTarget;
+  if (target !== currentDropTarget) {
+    clearDropHighlights();
+    target.classList.add('drop-zone');
+    currentDropTarget = target;
+  }
+}
+
+function onDragLeave(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    e.currentTarget.classList.remove('drop-zone');
+    if (currentDropTarget === e.currentTarget) currentDropTarget = null;
+  }
+}
+
+async function onDropTable(e, tableId) {
+  e.preventDefault();
+  const guestId = e.dataTransfer.getData('text/plain') || dragGuestId;
+  clearDropHighlights();
+  dragGuestId = null;
+  if (!guestId) return;
+  const guest = data.guests.find(g => g.id === guestId);
+  if (!guest || guest.tableId === tableId) return;
+  // Auto-assign to first available empty seat
+  const tableGuests = data.guests.filter(g => g.tableId === tableId);
+  const takenSeats = new Set(tableGuests.map(g => g.seatLabel).filter(Boolean));
+  const firstEmpty = SEAT_LABELS.find(l => !takenSeats.has(l)) || null;
+  await assignGuest(guestId, tableId, firstEmpty);
+}
+
+function onDragOverSeat(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  const row = e.currentTarget;
+  if (row !== currentDropTarget) {
+    clearDropHighlights();
+    row.classList.add('seat-drop-zone');
+    currentDropTarget = row;
+  }
+}
+
+function onDragLeaveSeat(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    e.currentTarget.classList.remove('seat-drop-zone');
+    if (currentDropTarget === e.currentTarget) currentDropTarget = null;
+  }
+}
+
+// --- Swap seat confirmation ---
+let swapConfirmResolve = null;
+function showSwapConfirm(nameA, nameB) {
+  document.getElementById('swap-confirm-text').textContent = `将 ${nameA} 与 ${nameB} 互换位置？`;
+  openModal('swap-confirm-modal');
+  return new Promise(resolve => { swapConfirmResolve = resolve; });
+}
+function resolveSwapConfirm(result) {
+  closeModal('swap-confirm-modal');
+  if (swapConfirmResolve) { swapConfirmResolve(result); swapConfirmResolve = null; }
+}
+function cancelSwapConfirm() { resolveSwapConfirm(false); }
+
+async function onDropSeat(e, tableId, seatLabel, existingGuestId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const guestId = e.dataTransfer.getData('text/plain') || dragGuestId;
+  clearDropHighlights();
+  dragGuestId = null;
+  if (!guestId) return;
+  const guest = data.guests.find(g => g.id === guestId);
+  if (!guest) return;
+  if (guestId === existingGuestId) return;
+  if (guest.tableId === tableId && guest.seatLabel === seatLabel) return;
+
+  if (existingGuestId) {
+    // Occupied seat — confirm then atomically swap positions
+    const existingGuest = data.guests.find(g => g.id === existingGuestId);
+    const confirmed = await showSwapConfirm(guest.name, existingGuest ? existingGuest.name : '');
+    if (!confirmed) return;
+    await api('POST', '/guests/swap-seats', { guestIdA: guestId, guestIdB: existingGuestId });
+    await loadData();
+    toast(`✅ 已交换座位：${guest.name} ↔ ${existingGuest ? existingGuest.name : ''}`, 'success');
+  } else {
+    // Empty seat — assign directly
+    await assignGuest(guestId, tableId, seatLabel);
+  }
+}
+
+async function onDropPool(e) {
+  e.preventDefault();
+  const guestId = e.dataTransfer.getData('text/plain') || dragGuestId;
+  clearDropHighlights();
+  dragGuestId = null;
+  if (!guestId) return;
+  const guest = data.guests.find(g => g.id === guestId);
+  if (!guest) return;
+  if (guest.tableId) {
+    await unassignGuest(guestId);
+  }
+}
+
+function clearDropHighlights() {
+  document.querySelectorAll('.drop-zone').forEach(el => el.classList.remove('drop-zone'));
+  document.querySelectorAll('.seat-drop-zone').forEach(el => el.classList.remove('seat-drop-zone'));
+  currentDropTarget = null;
+}
+
+// --- Touch drag (event delegation on document) ---
+document.addEventListener('touchstart', (e) => {
+  const draggable = e.target.closest('[data-drag-guest]');
+  if (!draggable) return;
+  // Ignore touches that start on buttons/inputs
+  if (e.target.tagName === 'BUTTON' || e.target.closest('button') || e.target.tagName === 'INPUT') return;
+
+  const touch = e.touches[0];
+  touchDragState = {
+    guestId: draggable.dataset.dragGuest,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    el: draggable,
+    isDragging: false,
+    clone: null,
+  };
+}, { passive: true });
+
+document.addEventListener('touchmove', (e) => {
+  if (!touchDragState) return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - touchDragState.startX;
+  const dy = touch.clientY - touchDragState.startY;
+
+  if (!touchDragState.isDragging && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+    touchDragState.isDragging = true;
+    const rect = touchDragState.el.getBoundingClientRect();
+    const clone = touchDragState.el.cloneNode(true);
+    clone.id = 'touch-drag-clone';
+    clone.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:999;opacity:0.8;transform:scale(1.05);box-shadow:0 8px 24px rgba(0,0,0,0.25);border-radius:20px;`;
+    document.body.appendChild(clone);
+    touchDragState.clone = clone;
+    touchDragState.el.style.opacity = '0.3';
+  }
+
+  if (!touchDragState.isDragging) return;
+  e.preventDefault();
+
+  const clone = touchDragState.clone;
+  const w = clone.offsetWidth;
+  clone.style.left = (touch.clientX - w / 2) + 'px';
+  clone.style.top = (touch.clientY - 24) + 'px';
+
+  clone.style.visibility = 'hidden';
+  const below = document.elementFromPoint(touch.clientX, touch.clientY);
+  clone.style.visibility = '';
+
+  clearDropHighlights();
+  if (below) {
+    const sc = below.closest('[data-seat-label]');
+    const tc = below.closest('[data-table-id]');
+    const ps = below.closest('[data-pool]');
+    if (sc && sc.dataset.seatTableId) sc.classList.add('seat-drop-zone');
+    else if (tc) tc.classList.add('drop-zone');
+    else if (ps) ps.classList.add('drop-zone');
+  }
+}, { passive: false });
+
+document.addEventListener('touchend', async (e) => {
+  if (!touchDragState) return;
+  const state = touchDragState;
+  touchDragState = null;
+
+  if (state.clone) state.clone.remove();
+  state.el.style.opacity = '';
+
+  if (!state.isDragging) return;
+
+  const touch = e.changedTouches[0];
+  const below = document.elementFromPoint(touch.clientX, touch.clientY);
+  clearDropHighlights();
+  if (!below) return;
+
+  const sc = below.closest('[data-seat-label]');
+  const tc = below.closest('[data-table-id]');
+  const ps = below.closest('[data-pool]');
+  const guest = data.guests.find(g => g.id === state.guestId);
+  if (!guest) return;
+
+  if (sc && sc.dataset.seatTableId) {
+    const targetTableId = sc.dataset.seatTableId;
+    const targetSeatLabel = sc.dataset.seatLabel;
+    const existingGuestId = sc.dataset.dragGuest || null;
+    if (existingGuestId && existingGuestId !== guest.id) {
+      // Confirm then swap positions
+      const existingGuest = data.guests.find(g => g.id === existingGuestId);
+      const confirmed = await showSwapConfirm(guest.name, existingGuest ? existingGuest.name : '');
+      if (!confirmed) return;
+      await api('POST', '/guests/swap-seats', { guestIdA: guest.id, guestIdB: existingGuestId });
+      await loadData();
+      toast(`✅ 已交换座位：${guest.name} ↔ ${existingGuest ? existingGuest.name : ''}`, 'success');
+    } else if (!existingGuestId || existingGuestId === guest.id) {
+      if (guest.tableId !== targetTableId || guest.seatLabel !== targetSeatLabel) {
+        await assignGuest(guest.id, targetTableId, targetSeatLabel);
+      }
+    }
+  } else if (tc) {
+    const tableId = tc.dataset.tableId;
+    if (guest.tableId !== tableId) {
+      const tableGuests = data.guests.filter(g => g.tableId === tableId);
+      const takenSeats = new Set(tableGuests.map(g => g.seatLabel).filter(Boolean));
+      const firstEmpty = SEAT_LABELS.find(l => !takenSeats.has(l)) || null;
+      await assignGuest(guest.id, tableId, firstEmpty);
+    }
+  } else if (ps) {
+    if (guest.tableId) await unassignGuest(guest.id);
+  }
+});
+
+// --- Swap tables ---
+let swapSourceTableId = null;
+
+function openSwapModal(tableId) {
+  swapSourceTableId = tableId;
+  const table = data.tables.find(t => t.id === tableId);
+  if (!table) return;
+
+  document.getElementById('swap-modal-text').textContent = `将 ${table.number}桌 的所有宾客与哪一桌交换？`;
+
+  const select = document.getElementById('swap-target-select');
+  const sortedTables = [...data.tables].sort((a, b) => a.number - b.number);
+  select.innerHTML = sortedTables
+    .filter(t => t.id !== tableId)
+    .map(t => {
+      const count = data.guests.filter(g => g.tableId === t.id).length;
+      const tagText = t.tag ? ` [${t.tag}]` : '';
+      return `<option value="${t.id}">${t.number}号桌 — ${esc(t.label)}${tagText} (${count}人)</option>`;
+    }).join('');
+
+  if (select.options.length === 0) {
+    toast('没有其他桌可以交换', 'error');
+    return;
+  }
+  openModal('swap-modal');
+}
+
+async function confirmSwap() {
+  const targetId = document.getElementById('swap-target-select').value;
+  if (!targetId || !swapSourceTableId) return;
+
+  closeModal('swap-modal');
+  try {
+    await api('POST', '/tables/swap', { tableIdA: swapSourceTableId, tableIdB: targetId });
+    const tableA = data.tables.find(t => t.id === swapSourceTableId);
+    const tableB = data.tables.find(t => t.id === targetId);
+    toast(`✅ 已交换：${tableA ? tableA.number + '桌' : ''} ↔ ${tableB ? tableB.number + '桌' : ''}`, 'success');
+    await loadData();
+  } catch {}
+  swapSourceTableId = null;
+}
+
+// --- Render ---
+function sideBadge(side) {
+  if (side === '男方') return `<span class="side-badge side-badge-male">男</span>`;
+  if (side === '女方') return `<span class="side-badge side-badge-female">女</span>`;
+  return '';
+}
+
+let _chipClickTimer = null;
+function onChipClick(e, guestId) {
+  // If an inline rename input is active, don't open modal
+  if (e.target.closest('[data-guest-rename]') && e.target.closest('[data-guest-rename]').querySelector('input')) return;
+  // If clicking on the guest name, delay to allow double-click to cancel
+  if (e.target.closest('[data-guest-rename]')) {
+    if (_chipClickTimer) { clearTimeout(_chipClickTimer); _chipClickTimer = null; return; }
+    _chipClickTimer = setTimeout(() => { _chipClickTimer = null; showTableModal(guestId); }, 300);
+    return;
+  }
+  showTableModal(guestId);
+}
+
+function guestChipHtml(g) {
+  const isPending = !!g.pending;
+  return `<div class="guest-chip${isPending ? ' pending' : ''}"
+    draggable="true" data-drag-guest="${g.id}"
+    ondragstart="onDragStart(event,'${g.id}')"
+    ondragend="onDragEnd(event)"
+    onclick="onChipClick(event,'${g.id}')">
+    ${sideBadge(g.side)}
+    <span data-guest-rename="${g.id}">${esc(g.name)}</span>
+    <button class="pending-tag${isPending ? ' is-pending' : ''}"
+      onclick="togglePending('${g.id}',${isPending},event)">${isPending ? '待定' : '待定'}</button>
+    <span class="delete-btn" onclick="deleteGuest('${g.id}',event)">&times;</span>
+  </div>`;
+}
+
+function render() {
+  const pendingGuests = data.guests.filter(g => g.pending && !g.tableId);
+  const unassigned = data.guests.filter(g => !g.tableId && !g.pending);
+  const assigned = data.guests.filter(g => g.tableId);
+
+  document.getElementById('stats-guests').textContent = `宾客: ${data.guests.length}`;
+  document.getElementById('stats-tables').textContent = `桌数: ${data.tables.length}`;
+  document.getElementById('stats-assigned').textContent = `已安排: ${assigned.length}`;
+  document.getElementById('stats-unassigned').textContent = `未分配: ${unassigned.length + pendingGuests.length}`;
+
+  // Pool section (merged)
+  const totalPool = unassigned.length + pendingGuests.length;
+  document.getElementById('pool-count').textContent = `${totalPool}人`;
+  const isPoolCollapsed = sessionStorage.getItem('collapsed_pool') === '1';
+  document.getElementById('pool-body').style.display = isPoolCollapsed ? 'none' : '';
+  document.getElementById('pool-collapse-btn').textContent = isPoolCollapsed ? '▲' : '▼';
+
+  // Unassigned sub-group
+  document.getElementById('unassigned-count').textContent = `${unassigned.length}人`;
+  const pool = document.getElementById('guest-pool');
+  pool.innerHTML = unassigned.length === 0
+    ? '<div class="empty-hint">暂无未分配宾客</div>'
+    : unassigned.map(g => guestChipHtml(g)).join('');
+
+  // Pending sub-group
+  document.getElementById('pending-count').textContent = `${pendingGuests.length}人`;
+  const pendingEl = document.getElementById('pending-pool');
+  pendingEl.innerHTML = pendingGuests.length === 0
+    ? '<div class="empty-hint">暂无待定宾客</div>'
+    : pendingGuests.map(g => guestChipHtml(g)).join('');
+
+  // Hide pending sub-group if empty
+  document.getElementById('subgroup-pending').style.display = pendingGuests.length === 0 ? 'none' : '';
+
+  // Tables
+  const grid = document.getElementById('tables-grid');
+  const sortedTables = [...data.tables].sort((a, b) => a.number - b.number);
+
+  if (sortedTables.length === 0) {
+    grid.innerHTML = '<div class="empty-hint" style="padding:20px;text-align:center">暂无餐桌，点击"添加桌"开始安排</div>';
+    return;
+  }
+
+  const maxTableNumber = sortedTables.length > 0 ? sortedTables[sortedTables.length - 1].number : 0;
+
+  grid.innerHTML = sortedTables.map(t => {
+    const tableGuests = data.guests.filter(g => g.tableId === t.id);
+    const count = tableGuests.length;
+    const isLastEmpty = t.number === maxTableNumber && count === 0;
+    const statusClass = count === 10 ? 'status-full' : count > 10 ? 'status-over' : '';
+    const countClass = count === 10 ? 'full' : count > 10 ? 'over' : 'under';
+    const countText = count > 10 ? `${count}/10 超员` : `${count}/10`;
+    const isCollapsed = sessionStorage.getItem('collapsed_' + t.id) === '1';
+    const chevron = isCollapsed ? '▲' : '▼';
+
+    const seatRows = SEAT_LABELS.map(label => {
+      const guest = tableGuests.find(g => g.seatLabel === label);
+      if (guest) {
+        return `<div class="seat-row" draggable="true" data-drag-guest="${guest.id}"
+          data-seat-label="${label}" data-seat-table-id="${t.id}"
+          ondragstart="onDragStart(event,'${guest.id}')"
+          ondragend="onDragEnd(event)"
+          ondragover="onDragOverSeat(event)"
+          ondragleave="onDragLeaveSeat(event)"
+          ondrop="onDropSeat(event,'${t.id}','${label}','${guest.id}')">
+          <span class="seat-label">${label}</span>
+          <div class="seat-guest">
+            <div class="seat-guest-top">
+              ${sideBadge(guest.side)}
+              <span class="seat-guest-name" data-guest-rename="${guest.id}">${esc(guest.name)}</span>
+            </div>
+            <div class="seat-actions">
+              <button class="seat-action-btn seat-action-change" onclick="changeSeat('${guest.id}','${t.id}')">换座</button>
+              <button class="seat-action-btn seat-action-remove" onclick="unassignGuest('${guest.id}')">移除</button>
+            </div>
+          </div>
+        </div>`;
+      }
+      return `<div class="seat-row"
+        data-seat-label="${label}" data-seat-table-id="${t.id}"
+        ondragover="onDragOverSeat(event)"
+        ondragleave="onDragLeaveSeat(event)"
+        ondrop="onDropSeat(event,'${t.id}','${label}',null)">
+        <span class="seat-label">${label}</span>
+        <span class="seat-empty">空位</span>
+      </div>`;
+    }).join('');
+
+    const unseated = tableGuests.filter(g => !g.seatLabel);
+    const unseatedHtml = unseated.length > 0 ? `
+      <div class="unseated-section">
+        <div class="unseated-title">未指定座位 (${unseated.length}人)</div>
+        ${unseated.map(g => {
+          return `<div class="unseated-guest" draggable="true" data-drag-guest="${g.id}"
+            ondragstart="onDragStart(event,'${g.id}')"
+            ondragend="onDragEnd(event)">
+            <div class="unseated-name">${sideBadge(g.side)}<span data-guest-rename="${g.id}">${esc(g.name)}</span></div>
+            <div class="unseated-actions">
+              <button class="seat-action-btn seat-action-change" onclick="changeSeat('${g.id}','${t.id}')">换座</button>
+              <button class="seat-action-btn seat-action-remove" onclick="unassignGuest('${g.id}')">移除</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    ` : '';
+
+    return `<div class="table-card ${statusClass}" data-table-id="${t.id}"
+      ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDropTable(event,'${t.id}')">
+      <div class="table-header">
+        <div class="table-info">
+          <span class="table-number">${t.number}</span>
+          <input class="table-label-input" value="${esc(t.label)}" title="桌子名称"
+            onchange="updateTableLabel('${t.id}', this.value)"
+            onkeydown="if(event.key==='Enter') this.blur()">
+          <input class="table-tag-input" value="${esc(t.tag || '')}" placeholder="备注" title="备注标签"
+            onchange="updateTableTag('${t.id}', this.value)"
+            onkeydown="if(event.key==='Enter') this.blur()">
+        </div>
+        <span class="table-count ${countClass}">${countText}</span>
+        <button class="collapse-btn" id="cbtn_${t.id}" title="${isCollapsed ? '展开' : '收起'}" onclick="toggleCollapse('${t.id}')">${chevron}</button>
+        <button class="table-swap-btn" title="换桌" onclick="openSwapModal('${t.id}')">换桌</button>
+        ${isLastEmpty ? `<button class="table-delete-btn" title="删除桌" onclick="deleteTable('${t.id}')">&times;</button>` : ''}
+      </div>
+      <div class="table-body" id="tbody_${t.id}"${isCollapsed ? ' style="display:none"' : ''}>
+        <div class="seat-list">${seatRows}</div>
+        ${unseatedHtml}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function toast(msg, type) {
+  const container = document.getElementById('toast-container');
+  const item = document.createElement('div');
+  let cls = 'toast-item';
+  if (type === true || type === 'success') cls += ' success';
+  else if (type === 'error') cls += ' error';
+  item.className = cls;
+  item.textContent = msg;
+  container.appendChild(item);
+  const duration = type === 'error' ? 5000 : 2500;
+  setTimeout(() => {
+    item.classList.add('fade-out');
+    setTimeout(() => item.remove(), 320);
+  }, duration);
+}
+
+document.getElementById('guest-name-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addGuest();
+});
+
+// --- Inline rename on double-click / double-tap ---
+let _renameTapState = null; // for mobile double-tap detection
+
+function startGuestRename(nameEl) {
+  if (nameEl.querySelector('input')) return; // already editing
+  const guestId = nameEl.dataset.guestRename;
+  const guest = data.guests.find(g => g.id === guestId);
+  if (!guest) return;
+
+  const oldName = guest.name;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'guest-rename-input';
+  input.value = oldName;
+  // Match surrounding font size
+  const computed = window.getComputedStyle(nameEl);
+  input.style.fontSize = computed.fontSize;
+  input.style.color = computed.color;
+
+  nameEl.textContent = '';
+  nameEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let saved = false;
+  function finish(save) {
+    if (saved) return;
+    saved = true;
+    const newName = input.value.trim();
+    if (save && newName && newName !== oldName) {
+      api('PUT', '/guests/' + guestId, { name: newName })
+        .then(() => {
+          guest.name = newName;
+          toast(`✅ 已修改姓名：${oldName} → ${newName}`, 'success');
+          render();
+        })
+        .catch(() => {
+          nameEl.textContent = oldName;
+        });
+      nameEl.textContent = newName;
+    } else {
+      nameEl.textContent = oldName;
+    }
+  }
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+// Desktop: double-click via event delegation
+document.addEventListener('dblclick', e => {
+  const nameEl = e.target.closest('[data-guest-rename]');
+  if (!nameEl) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (_chipClickTimer) { clearTimeout(_chipClickTimer); _chipClickTimer = null; }
+  startGuestRename(nameEl);
+});
+
+// Prevent double-click from opening table modal on guest chips
+document.addEventListener('click', e => {
+  const nameEl = e.target.closest('[data-guest-rename]');
+  if (nameEl && nameEl.querySelector('input')) {
+    e.stopPropagation();
+  }
+}, true);
+
+// Mobile: double-tap detection via event delegation
+document.addEventListener('touchend', e => {
+  const nameEl = e.target.closest('[data-guest-rename]');
+  if (!nameEl) { _renameTapState = null; return; }
+  // Don't interfere with drag
+  if (touchDragState && touchDragState.isDragging) { _renameTapState = null; return; }
+  // Don't trigger if already editing
+  if (nameEl.querySelector('input')) { _renameTapState = null; return; }
+
+  const now = Date.now();
+  if (_renameTapState && _renameTapState.guestId === nameEl.dataset.guestRename && (now - _renameTapState.time) < 300) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_chipClickTimer) { clearTimeout(_chipClickTimer); _chipClickTimer = null; }
+    _renameTapState = null;
+    startGuestRename(nameEl);
+  } else {
+    _renameTapState = { guestId: nameEl.dataset.guestRename, time: now };
+  }
+}, { capture: true });
+
+if (projectId) loadData();
+</script>
+</body>
+</html>

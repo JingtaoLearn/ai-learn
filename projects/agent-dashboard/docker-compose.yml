@@ -1,0 +1,21 @@
+services:
+  agent-dashboard:
+    build: ./
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: agent-dashboard.ai.jingtao.fun
+      VIRTUAL_PORT: 3847
+      LETSENCRYPT_HOST: agent-dashboard.ai.jingtao.fun
+      LETSENCRYPT_EMAIL: ${S_EMAIL}
+    volumes:
+      - /home/jingtao/.openclaw/agents/worker-leader/sessions:/home/jingtao/.openclaw/agents/worker-leader/sessions:ro
+      - /home/jingtao/.openclaw/agents/worker/sessions:/home/jingtao/.openclaw/agents/worker/sessions:ro
+      - /home/jingtao/.openclaw/workspace/memory/kb:/home/jingtao/.openclaw/workspace/memory/kb:ro
+      - /home/jingtao/.openclaw/workspace/subagent-tracking:/home/jingtao/.openclaw/workspace/subagent-tracking:ro
+      - /home/jingtao/.openclaw/workspace-worker-leader:/home/jingtao/.openclaw/workspace-worker-leader:ro
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true

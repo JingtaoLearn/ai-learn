@@ -1,0 +1,11 @@
+services:
+  kinship-calculator:
+    build: .
+    container_name: kinship-calculator
+    restart: always
+    environment:
+      - VIRTUAL_HOST=kinship.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=kinship.${S_DOMAIN}
+    expose:
+      - "80"

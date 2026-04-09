@@ -19,7 +19,7 @@ A mobile-first wedding item preparation and checklist web app. Each project gets
 | quantity | number | Quantity needed |
 | venue | enum | Location: 丰县, 婚房, 婚礼现场, 宴会厅, 埠口家 |
 | person | enum | Person in charge: 张景涛, 渠琪, 丛领兹 |
-| status | enum | Status: 采买中, 已收货, 已取货, 已就绪 |
+| status | enum | Status: 采买中, 待发货, 已收货, 已就绪 |
 | nextCheckDate | date | Next check-in date (optional) |
 | notes | string | Free-text notes (optional) |
 
