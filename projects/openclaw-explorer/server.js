@@ -1,8 +1,6 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const http = require('http');
-const { URL } = require('url');
 const jwt = require('jsonwebtoken');
 const session = require('express-session');
 
@@ -17,8 +15,6 @@ const VIRTUAL_HOST = process.env.VIRTUAL_HOST || 'oc.ai.jingtao.fun';
 const SELF_CALLBACK = process.env.SELF_CALLBACK || `https://${VIRTUAL_HOST}/auth/callback`;
 const SESSIONS_DIR = process.env.OPENCLAW_SESSIONS_DIR || '/data/sessions';
 const CC_RESULTS_DIR = process.env.CC_RESULTS_DIR || '/data/cc-results';
-const EMS_UPSTREAM = process.env.EMS_UPSTREAM || 'http://experience-manager:8100';
-
 // Multi-host Claude Code results directories
 const CC_HOSTS = {
   ailearn: { dir: process.env.CC_RESULTS_DIR || '/data/cc-results', label: 'ailearn', emoji: '☁️' },
@@ -434,10 +430,15 @@ app.get('/api/cc/tasks', (req, res) => {
         milestoneCount = Array.isArray(progress.milestones) ? progress.milestones.length : 0;
       } catch { /* ignore */ }
 
+      // exit_code lives in task-meta.json; result.json does not have it
+      const exitCode = meta.exit_code !== undefined ? meta.exit_code : (result ? result.exit_code : null);
+
       let status;
-      if (!result || result.status !== 'done') {
+      if (meta.status === 'watchdog-dead') {
+        status = 'dead';
+      } else if (!result || result.status !== 'done') {
         status = 'running';
-      } else if (result.exit_code === 0) {
+      } else if (exitCode === 0 || exitCode === null) {
         status = 'done';
       } else {
         status = 'failed';
@@ -449,11 +450,11 @@ app.get('/api/cc/tasks', (req, res) => {
         prompt: meta.prompt || '',
         workdir: meta.workdir || '',
         startedAt: meta.started_at || meta.startedAt || null,
-        completedAt: result ? (result.completed_at || result.completedAt || null) : null,
+        completedAt: result ? (result.completed_at || result.timestamp || null) : null,
         elapsed: result ? (result.elapsed || '') : '',
         elapsedSecs: result ? (result.elapsed_secs || result.elapsedSecs || 0) : 0,
         milestoneCount,
-        exitCode: result ? (result.exit_code !== undefined ? result.exit_code : result.exitCode) : null,
+        exitCode,
       });
     }
   } catch (err) {
@@ -508,10 +509,15 @@ app.get('/api/cc/tasks/:name', (req, res) => {
     hookLogTail = lines.slice(-100).join('\n');
   } catch { /* ignore */ }
 
+  // exit_code lives in task-meta.json; result.json does not have it
+  const exitCode = meta.exit_code !== undefined ? meta.exit_code : (result ? result.exit_code : null);
+
   let status;
-  if (!result || result.status !== 'done') {
+  if (meta.status === 'watchdog-dead') {
+    status = 'dead';
+  } else if (!result || result.status !== 'done') {
     status = 'running';
-  } else if (result.exit_code === 0) {
+  } else if (exitCode === 0 || exitCode === null) {
     status = 'done';
   } else {
     status = 'failed';
@@ -549,51 +555,6 @@ app.get('/api/cc/tasks/:name/output', (req, res) => {
     res.status(500).send('Failed to read output');
   }
 });
-
-// --- EMS (Experience Management System) reverse proxy ---
-
-function proxyToEms(req, res) {
-  const upstream = new URL(EMS_UPSTREAM);
-  // Strip /api/ems prefix to get the path the EMS service expects
-  const emsPath = req.originalUrl.replace(/^\/api\/ems/, '') || '/';
-
-  const options = {
-    hostname: upstream.hostname,
-    port: upstream.port || 80,
-    path: emsPath,
-    method: req.method,
-    headers: {
-      'accept': 'application/json',
-    },
-  };
-
-  // Forward JSON body for POST requests
-  let bodyData = null;
-  if (req.method === 'POST' && req.body) {
-    bodyData = JSON.stringify(req.body);
-    options.headers['content-type'] = 'application/json';
-    options.headers['content-length'] = Buffer.byteLength(bodyData);
-  }
-
-  const proxyReq = http.request(options, (proxyRes) => {
-    res.status(proxyRes.statusCode);
-    // Forward content-type header
-    if (proxyRes.headers['content-type']) {
-      res.set('content-type', proxyRes.headers['content-type']);
-    }
-    proxyRes.pipe(res);
-  });
-
-  proxyReq.on('error', (err) => {
-    console.error('EMS proxy error:', err.message);
-    res.status(502).json({ error: 'EMS service unavailable' });
-  });
-
-  if (bodyData) proxyReq.write(bodyData);
-  proxyReq.end();
-}
-
-app.all('/api/ems/*', proxyToEms);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenClaw Explorer running on port ${PORT}`);

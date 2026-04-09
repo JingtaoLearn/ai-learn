@@ -38,6 +38,7 @@
     <div class="cc-host-switch" id="hostSwitch"></div>
     <div class="cc-search-wrap">
       <input class="cc-search" id="searchInput" type="text" placeholder="Search tasks...">
+      <button class="cc-refresh-btn" id="refreshListBtn" title="Refresh task list">&#8635;</button>
     </div>
     <div class="cc-task-list" id="taskList">
       <div class="cc-loading"><div class="cc-spinner"></div> Loading tasks...</div>
@@ -157,7 +158,7 @@
       const icon = statusIcon(t.status);
       const active = currentTask === t.name ? ' active' : '';
       const workdirShort = t.workdir ? t.workdir.replace(/^\/home\/[^/]+\//, '~/') : '';
-      const elapsedStr = t.status === 'running' ? 'running...' : (t.elapsed || '');
+      const elapsedStr = t.status === 'running' ? 'running...' : (t.status === 'dead' ? 'dead' : (t.elapsed || ''));
       html.push(
         '<div class="cc-task-item' + active + '" data-name="' + escapeHtml(t.name) + '">' +
           '<span class="cc-task-status-icon">' + icon + '</span>' +
@@ -181,6 +182,7 @@
   function statusIcon(status) {
     if (status === 'running') return '<span class="cc-status-running">🟢</span>';
     if (status === 'done') return '✅';
+    if (status === 'dead') return '💀';
     return '❌';
   }
 
@@ -189,6 +191,18 @@
   searchInput.addEventListener('input', () => {
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => renderTaskList(), 200);
+  });
+
+  // Refresh list button
+  document.getElementById('refreshListBtn').addEventListener('click', () => {
+    loadTasks();
+  });
+
+  // Refresh detail button (delegated)
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'refreshDetailBtn' && currentTask) {
+      loadTaskDetail(currentTask);
+    }
   });
 
   // Task list polling (every 10s)
@@ -269,11 +283,12 @@
 
   function renderDetail(task) {
     const statusClass = task.status;
-    const statusLabel = { running: '⚡ Running', done: '✅ Done', failed: '❌ Failed' }[task.status] || task.status;
+    const statusLabel = { running: '⚡ Running', done: '✅ Done', failed: '❌ Failed', dead: '💀 Dead' }[task.status] || task.status;
     const meta = task.meta || {};
+    const result = task.result || {};
     const startedAt = meta.started_at || meta.startedAt || '';
-    const completedAt = task.result ? (task.result.completed_at || task.result.completedAt || '') : '';
-    const elapsed = task.result ? (task.result.elapsed || '') : '';
+    const completedAt = result.completed_at || result.timestamp || '';
+    const elapsed = result.elapsed || '';
 
     let html = '<div class="cc-detail-header">';
 
@@ -281,12 +296,23 @@
     html += '<div class="cc-detail-title-row">';
     html += '<span class="cc-detail-name">' + escapeHtml(task.name) + '</span>';
     html += '<span class="cc-status-badge ' + statusClass + '">' + statusLabel + '</span>';
+    if (meta.resume_session) {
+      html += '<span class="cc-info-badge resumed">&#128260; Resumed</span>';
+    }
+    if (meta.agent_teams) {
+      html += '<span class="cc-info-badge teams">&#129309; Agent Teams</span>';
+    }
     if (task.status === 'running') {
       html += '<span class="cc-elapsed" id="elapsedCounter">...</span>';
     } else if (elapsed) {
       html += '<span class="cc-elapsed">' + escapeHtml(elapsed) + '</span>';
     }
     html += '</div>';
+
+    // Session ID row
+    if (result.session_id) {
+      html += '<div class="cc-session-id">&#128279; Session: <code>' + escapeHtml(result.session_id) + '</code></div>';
+    }
 
     // Meta row
     html += '<div class="cc-detail-meta-row">';
@@ -297,6 +323,23 @@
 
     if (meta.workdir) {
       html += '<div class="cc-workdir">&#128193; ' + escapeHtml(meta.workdir) + '</div>';
+    }
+
+    // Notification target
+    if (meta.notify_channel || meta.notify_to) {
+      html += '<div class="cc-notify-info">&#128276; Notify: ';
+      if (meta.notify_channel) html += '<span class="cc-info-badge notify">' + escapeHtml(meta.notify_channel) + '</span> ';
+      if (meta.notify_to) html += '<code>' + escapeHtml(meta.notify_to) + '</code>';
+      html += '</div>';
+    }
+
+    // Nudge stats
+    if (result.nudge_count > 0) {
+      html += '<div class="cc-nudge-info">&#9200; Auto-nudged ' + result.nudge_count + ' time' + (result.nudge_count > 1 ? 's' : '');
+      if (result.nudge_log) {
+        html += ' &mdash; <span class="cc-nudge-log">' + escapeHtml(result.nudge_log) + '</span>';
+      }
+      html += '</div>';
     }
 
     // Prompt collapsible
@@ -312,6 +355,7 @@
     // Tabs
     html += '<div class="cc-tabs">';
     html += '<button class="cc-tab active" data-tab="timeline">&#127937; Timeline</button>';
+    html += '<button class="cc-refresh-btn cc-refresh-detail" id="refreshDetailBtn" title="Refresh task detail">&#8635;</button>';
     html += '<button class="cc-tab" data-tab="log">&#128220; Hook Log</button>';
     html += '<button class="cc-tab" data-tab="output">&#128196; Output</button>';
     html += '</div>';

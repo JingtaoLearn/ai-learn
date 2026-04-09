@@ -112,10 +112,13 @@
 .cc-search-wrap {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .cc-search {
-  width: 100%;
+  flex: 1;
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -125,10 +128,46 @@
   outline: none;
   transition: border-color 0.2s;
   box-sizing: border-box;
+  min-width: 0;
 }
 
 .cc-search:focus {
   border-color: var(--accent);
+}
+
+/* Refresh buttons */
+.cc-refresh-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+
+.cc-refresh-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+}
+
+.cc-refresh-btn:active {
+  transform: rotate(180deg);
+}
+
+.cc-refresh-detail {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
 }
 
 /* Task list */
@@ -280,10 +319,98 @@
   color: #f85149;
 }
 
+.cc-status-badge.dead {
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
+}
+
 .cc-elapsed {
   font-size: 13px;
   color: var(--text-secondary);
   font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+/* Info badges (resumed, agent teams, notify) */
+.cc-info-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 10px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.cc-info-badge.resumed {
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
+}
+
+.cc-info-badge.teams {
+  background: rgba(163, 113, 247, 0.15);
+  color: #a371f7;
+}
+
+.cc-info-badge.notify {
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent);
+  text-transform: capitalize;
+}
+
+/* Session ID */
+.cc-session-id {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cc-session-id code {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 3px;
+  user-select: all;
+}
+
+/* Notification target */
+.cc-notify-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cc-notify-info code {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+/* Nudge stats */
+.cc-nudge-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid rgba(210, 153, 34, 0.2);
+  border-radius: 6px;
+}
+
+.cc-nudge-log {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 .cc-detail-meta-row {
