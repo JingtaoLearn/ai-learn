@@ -7,7 +7,7 @@ import asyncio
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Ensure the project root is on the path when run directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -101,7 +101,7 @@ async def seed(db_path: str = DB_PATH) -> None:
 
     for i, item in enumerate(SEED_DATA, start=1):
         exp_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         print(f"  [{i}/{len(SEED_DATA)}] Embedding: {item['content'][:60]}...")
         embedding = await get_embedding(item["content"])
