@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent Orchestration — Live Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 24px; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 0.95rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+  
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; }
+  .card h3 { font-size: 1rem; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-blocked { background: #da3633; color: white; }
+  .badge-steered { background: #d29922; color: white; }
+  .badge-complete { background: #238636; color: white; }
+  .badge-waiting { background: #30363d; color: #8b949e; }
+  
+  .timeline { position: relative; padding-left: 24px; }
+  .timeline::before { content: ''; position: absolute; left: 8px; top: 4px; bottom: 4px; width: 2px; background: #30363d; }
+  .timeline-item { position: relative; margin-bottom: 12px; font-size: 0.85rem; line-height: 1.5; }
+  .timeline-item::before { content: ''; position: absolute; left: -20px; top: 6px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid; }
+  .timeline-item.spawn::before { border-color: #58a6ff; background: #58a6ff; }
+  .timeline-item.blocked::before { border-color: #da3633; background: #da3633; }
+  .timeline-item.kb::before { border-color: #d29922; background: #d29922; }
+  .timeline-item.steer::before { border-color: #bc8cff; background: #bc8cff; }
+  .timeline-item.complete::before { border-color: #238636; background: #238636; }
+  .timeline-item .time { color: #8b949e; font-size: 0.75rem; }
+  
+  .flow-section { margin-bottom: 32px; }
+  .flow-section h2 { font-size: 1.2rem; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  
+  .orchestrator-box { background: linear-gradient(135deg, #161b22, #1c2333); border: 1px solid #388bfd40; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+  .orchestrator-box h2 { color: #58a6ff; }
+  
+  .kb-box { background: linear-gradient(135deg, #161b22, #2d1f0e); border: 1px solid #d2992240; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+  .kb-box h2 { color: #d29922; }
+  .kb-entry { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin-top: 8px; font-size: 0.85rem; }
+  .kb-entry .kb-title { color: #d29922; font-weight: 600; }
+  
+  .flow-diagram { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 20px; background: #0d1117; border-radius: 8px; margin-bottom: 16px; }
+  .flow-node { padding: 10px 16px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; text-align: center; min-width: 100px; }
+  .flow-node.spawn-n { background: #1f6feb20; border: 1px solid #1f6feb; color: #58a6ff; }
+  .flow-node.block-n { background: #da363320; border: 1px solid #da3633; color: #f85149; }
+  .flow-node.kb-n { background: #d2992220; border: 1px solid #d29922; color: #d29922; }
+  .flow-node.steer-n { background: #8957e520; border: 1px solid #8957e5; color: #bc8cff; }
+  .flow-node.done-n { background: #23863620; border: 1px solid #238636; color: #3fb950; }
+  .flow-arrow { color: #484f58; font-size: 1.2rem; }
+  
+  .stats-row { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 24px; }
+  .stat { text-align: center; }
+  .stat .num { font-size: 2rem; font-weight: 700; }
+  .stat .label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; }
+  .stat.blue .num { color: #58a6ff; }
+  .stat.red .num { color: #f85149; }
+  .stat.yellow .num { color: #d29922; }
+  .stat.green .num { color: #3fb950; }
+  .stat.purple .num { color: #bc8cff; }
+  
+  /* Animation */
+  .phase { opacity: 0; transform: translateY(20px); animation: fadeIn 0.6s forwards; }
+  .phase:nth-child(1) { animation-delay: 0.2s; }
+  .phase:nth-child(2) { animation-delay: 0.8s; }
+  .phase:nth-child(3) { animation-delay: 1.4s; }
+  .phase:nth-child(4) { animation-delay: 2.0s; }
+  .phase:nth-child(5) { animation-delay: 2.6s; }
+  .phase:nth-child(6) { animation-delay: 3.2s; }
+  @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
+  
+  .pulse { animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  footer { text-align: center; color: #484f58; font-size: 0.8rem; margin-top: 40px; padding-top: 20px; border-top: 1px solid #21262d; }
+</style>
+</head>
+<body>
+
+<h1>🤖 Multi-Agent Orchestration</h1>
+<p class="subtitle">Zhang (Orchestrator) + 4 Worker Agents — Live Demo Results · March 31, 2026</p>
+
+<!-- Stats -->
+<div class="phase">
+<div class="stats-row">
+  <div class="stat blue"><div class="num">4</div><div class="label">Workers Spawned</div></div>
+  <div class="stat red"><div class="num">4</div><div class="label">Blocks Detected</div></div>
+  <div class="stat yellow"><div class="num">1</div><div class="label">KB Queries</div></div>
+  <div class="stat purple"><div class="num">4</div><div class="label">Sessions Steered</div></div>
+  <div class="stat green"><div class="num">4</div><div class="label">Tasks Completed</div></div>
+</div>
+</div>
+
+<!-- Flow Diagram -->
+<div class="phase">
+<div class="flow-section">
+  <h2>🔄 Orchestration Flow</h2>
+  <div class="flow-diagram">
+    <div class="flow-node spawn-n">📤 Spawn<br>4 Workers</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node block-n">🔴 4/4<br>BLOCKED</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node kb-n">📚 KB<br>Query</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node steer-n">💬 Steer<br>× 4</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node done-n">✅ 4/4<br>Complete</div>
+  </div>
+</div>
+</div>
+
+<!-- Worker Cards -->
+<div class="phase">
+<div class="flow-section">
+  <h2>👷 Worker Status</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>🏠 W1 — Town Square <span class="badge badge-complete">COMPLETE</span></h3>
+      <div class="timeline">
+        <div class="timeline-item spawn"><span class="time">11:58</span> Spawned (session mode + thread)</div>
+        <div class="timeline-item blocked"><span class="time">11:59</span> BLOCKED: Missing callback URL</div>
+        <div class="timeline-item steer"><span class="time">12:00</span> KB_GUIDANCE received via sessions_send</div>
+        <div class="timeline-item complete"><span class="time">12:02</span> TASK_COMPLETE — MonitorBot-TownSquare created</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>💬 W2 — Off-Topic <span class="badge badge-complete">COMPLETE</span></h3>
+      <div class="timeline">
+        <div class="timeline-item spawn"><span class="time">11:58</span> Spawned (session mode + thread)</div>
+        <div class="timeline-item blocked"><span class="time">11:59</span> BLOCKED: No accessible callback URL</div>
+        <div class="timeline-item steer"><span class="time">12:00</span> KB_GUIDANCE received via sessions_send</div>
+        <div class="timeline-item complete"><span class="time">12:03</span> TASK_COMPLETE — MonitorBot-OffTopic created</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>✅ W3 — Approvals <span class="badge badge-complete">COMPLETE</span></h3>
+      <div class="timeline">
+        <div class="timeline-item spawn"><span class="time">11:58</span> Spawned (session mode + thread)</div>
+        <div class="timeline-item blocked"><span class="time">11:59</span> BLOCKED: Cannot create webhook without URL</div>
+        <div class="timeline-item steer"><span class="time">12:00</span> KB_GUIDANCE received via sessions_send</div>
+        <div class="timeline-item complete"><span class="time">12:03</span> TASK_COMPLETE — MonitorBot-Approvals created</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>📊 W4 — Daily Reports <span class="badge badge-complete">COMPLETE</span></h3>
+      <div class="timeline">
+        <div class="timeline-item spawn"><span class="time">11:58</span> Spawned (session mode + thread)</div>
+        <div class="timeline-item blocked"><span class="time">11:59</span> BLOCKED: Missing callback URL</div>
+        <div class="timeline-item steer"><span class="time">12:00</span> KB_GUIDANCE received via sessions_send</div>
+        <div class="timeline-item complete"><span class="time">12:04</span> TASK_COMPLETE — MonitorBot-DailyReports created</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- Orchestrator -->
+<div class="phase">
+<div class="orchestrator-box">
+  <h2>🧠 Orchestrator (Zhang)</h2>
+  <div class="timeline" style="margin-top: 12px;">
+    <div class="timeline-item spawn"><span class="time">11:58</span> <strong>Phase 1 — Dispatch:</strong> sessions_spawn × 4 (mode=session, thread=true, agent=worker/haiku-4.5)</div>
+    <div class="timeline-item blocked"><span class="time">11:59</span> <strong>Phase 2 — Detect:</strong> 4 BLOCKED events received via auto-announce (push-based, no polling)</div>
+    <div class="timeline-item kb"><span class="time">12:00</span> <strong>Phase 3 — KB Query:</strong> memory_search("callback URL") → HIT in memory/kb/mattermost-api.md → http://172.19.0.1:9999</div>
+    <div class="timeline-item steer"><span class="time">12:00</span> <strong>Phase 4 — Steer:</strong> sessions_send × 4 (inject KB_GUIDANCE into same session)</div>
+    <div class="timeline-item complete"><span class="time">12:04</span> <strong>Phase 5 — Complete:</strong> 4/4 TASK_COMPLETE, zero human intervention required</div>
+  </div>
+</div>
+</div>
+
+<!-- KB -->
+<div class="phase">
+<div class="kb-box">
+  <h2>📚 Knowledge Base (Flywheel)</h2>
+  <p style="font-size: 0.85rem; color: #8b949e; margin-bottom: 8px;">Accumulated from sub-agent experiences — each entry prevents future blocks</p>
+  <div class="kb-entry">
+    <div class="kb-title">1. Outgoing Webhook Callback URL</div>
+    <div>Use <code>http://172.19.0.1:9999</code> — Docker gateway IP for mattermost_mattermost network → webhook listener on zehua-teamclaw host</div>
+  </div>
+  <div class="kb-entry">
+    <div class="kb-title">2. /status is a Reserved Slash Command</div>
+    <div>Mattermost built-in. Use <code>/report-status</code>, <code>/daily-status</code>, or <code>/&lt;channel&gt;-status</code> instead.</div>
+  </div>
+  <div class="kb-entry">
+    <div class="kb-title">3. AllowedUntrustedInternalConnections</div>
+    <div>Mattermost blocks POST to internal IPs. Add <code>172.19.0.1</code> to ServiceSettings.AllowedUntrustedInternalConnections.</div>
+  </div>
+</div>
+</div>
+
+<!-- Architecture -->
+<div class="phase">
+<div class="flow-section">
+  <h2>🏗️ Architecture</h2>
+  <div class="card">
+    <pre style="font-size: 0.8rem; line-height: 1.6; color: #8b949e; overflow-x: auto;">
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Zhang (Orchestrator)                           │
+│                    claude-opus-4.6 · main agent                     │
+│                                                                     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
+│  │ Dispatch  │→ │ Detect   │→ │ KB Query │→ │ Steer / Ticket   │   │
+│  │ spawn×N  │  │ BLOCKED  │  │ memory/  │  │ sessions_send    │   │
+│  └──────────┘  └──────────┘  │ kb/*.md  │  │ or escalate      │   │
+│       │                      └──────────┘  └──────────────────┘   │
+│       │              ↑ auto-announce              │                 │
+│       ↓              │                            ↓                 │
+│  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐           │
+│  │Worker 1 │   │Worker 2 │   │Worker 3 │   │Worker 4 │           │
+│  │haiku4.5 │   │haiku4.5 │   │haiku4.5 │   │haiku4.5 │           │
+│  │session  │   │session  │   │session  │   │session  │           │
+│  └─────────┘   └─────────┘   └─────────┘   └─────────┘           │
+│       │              │              │              │                 │
+│       ↓              ↓              ↓              ↓                 │
+│  ┌─────────────────────────────────────────────────────────┐       │
+│  │              Mattermost API / External Services          │       │
+│  └─────────────────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────────────────┘
+
+Key Capabilities:
+  • sessions_spawn(mode=session, thread=true) — persistent worker sessions
+  • sessions_send — inject guidance into blocked sessions (same session steer)
+  • memory_search + memory/kb/*.md — semantic KB for accumulated knowledge
+  • Auto-announce — push-based completion events, no polling needed
+    </pre>
+  </div>
+</div>
+</div>
+
+<footer>
+  Multi-Agent Orchestration Demo · Built with OpenClaw · March 31, 2026
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="description" content="中国亲戚关系称呼计算器 - 快速查询亲属称谓">
+  <meta name="theme-color" content="#e63946">
+  <title>亲戚称呼计算器</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="header">
+    <h1>亲戚称呼计算器</h1>
+    <p>点击关系，算出称呼</p>
+  </header>
+
+  <main class="container">
+
+    <!-- Relationship chain -->
+    <section class="card">
+      <div class="card-title">关系链</div>
+      <div class="chain-area" id="chain-container">
+        <span class="chain-empty" id="chain-empty">点击下方按钮开始添加关系</span>
+      </div>
+    </section>
+
+    <!-- Result display -->
+    <section class="card result-area" id="result-section">
+      <div class="card-title">称呼结果</div>
+      <div class="result-default" id="result-default">等待输入关系...</div>
+      <div class="result-term" id="result-term" style="display:none;"></div>
+      <div class="result-explanation" id="result-explanation" style="display:none;"></div>
+    </section>
+
+    <!-- Relationship buttons -->
+    <section class="card">
+      <div class="card-title">选择关系</div>
+      <div class="buttons-grid" id="buttons-grid"></div>
+    </section>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button class="ctrl-btn ctrl-btn--undo" id="undo-btn" disabled>撤销</button>
+      <button class="ctrl-btn ctrl-btn--reset" id="reset-btn" disabled>重置</button>
+    </div>
+
+  </main>
+
+  <footer class="footer">
+    亲戚称呼计算器 &middot; 聚会必备
+  </footer>
+
+  <script src="js/kinship.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

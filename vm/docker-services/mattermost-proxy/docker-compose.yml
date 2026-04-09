@@ -1,0 +1,21 @@
+services:
+  mattermost-proxy:
+    image: nginx:alpine
+    container_name: mattermost-proxy
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      - VIRTUAL_HOST=mattermost.ai.jingtao.fun
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=mattermost.ai.jingtao.fun
+      - LETSENCRYPT_EMAIL=jingtao_buaa@icloud.com
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    external: true
+    name: nginx-proxy

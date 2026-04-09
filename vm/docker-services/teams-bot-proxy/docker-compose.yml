@@ -1,0 +1,21 @@
+services:
+  teams-bot-proxy:
+    image: nginx:alpine
+    container_name: teams-bot-proxy
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      - VIRTUAL_HOST=teams-bot.ai.jingtao.fun
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=teams-bot.ai.jingtao.fun
+      - LETSENCRYPT_EMAIL=jingtao_buaa@icloud.com
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    external: true
+    name: nginx-proxy
