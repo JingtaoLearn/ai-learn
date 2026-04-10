@@ -33,15 +33,16 @@ All available tools are enabled in the configuration:
 | `read` | Read files from filesystem |
 | `write` | Write files to filesystem |
 | `edit` | Edit existing files |
-| `apply_patch` | Apply patches to files |
 | `browser` | Browser automation (Playwright, headless Chromium) |
-| `web` | Web access |
 | `web_fetch` | Fetch web content |
 | `web_search` | Web search capability |
 | `memory_search` | Memory semantic search |
 | `memory_get` | Memory snippet retrieval |
-| `cron` | Scheduled task execution |
 | `tts` | Text-to-speech synthesis |
+| `sessions_spawn` | Spawn isolated sub-agent sessions |
+| `sessions_send` | Send messages to other sessions |
+| `sessions_list` | List visible sessions |
+| `sessions_history` | Fetch session message history |
 
 ### Media Settings
 
@@ -107,6 +108,28 @@ All available tools are enabled in the configuration:
 | `logging.redactSensitive` | `"tools"` | Redacts sensitive data in tool logs |
 | `discovery.mdns.mode` | `"minimal"` | Limits mDNS information disclosure |
 
+## Session Management
+
+```json
+{
+  "session": {
+    "dmScope": "per-channel-peer",
+    "maintenance": {
+      "mode": "enforce",
+      "pruneDays": 7,
+      "maxEntries": 100
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `dmScope` | DM session scoping (`"per-channel-peer"` — separate sessions per channel+user) |
+| `maintenance.mode` | Session maintenance mode (`"enforce"` — automatically prune old sessions) |
+| `maintenance.pruneDays` | Delete sessions older than this many days (7) |
+| `maintenance.maxEntries` | Maximum number of sessions to keep (100) |
+
 ## Environment Variables
 
 ### Required Variables
@@ -120,6 +143,9 @@ S_LITELLM_API_KEY="your-api-key-here"
 # Gateway authentication token
 OPENCLAW_GATEWAY_TOKEN="your-secure-random-token-here"
 
+# Hooks authentication token (for webhook endpoint)
+OPENCLAW_HOOKS_TOKEN="your-secure-random-token-here"
+
 # Discord bot token
 S_DISCORD_BOT_TOKEN="your-discord-bot-token-here"
 
@@ -131,6 +157,7 @@ S_AGENTMAIL_API_KEY="your-agentmail-api-key-here"
 |----------|---------|---------|
 | `S_LITELLM_API_KEY` | Authenticate with LiteLLM proxy | litellm provider, memory search |
 | `OPENCLAW_GATEWAY_TOKEN` | Authenticate gateway access | openclaw.json gateway config |
+| `OPENCLAW_HOOKS_TOKEN` | Authenticate webhook endpoint | hooks config |
 | `S_DISCORD_BOT_TOKEN` | Discord bot authentication | channels.discord config |
 | `S_AGENTMAIL_API_KEY` | AgentMail API authentication | skills.entries.agentmail |
 
@@ -173,12 +200,7 @@ openssl rand -base64 24
   "hooks": {
     "enabled": true,
     "path": "/hooks",
-    "token": "${OPENCLAW_GATEWAY_TOKEN}",
-    "allowRequestSessionKey": true,
-    "allowedSessionKeyPrefixes": [
-      "hook:",
-      "cc-task:"
-    ]
+    "token": "${OPENCLAW_HOOKS_TOKEN}",
   }
 }
 ```
@@ -187,7 +209,7 @@ openssl rand -base64 24
 |---------|-------------|
 | `enabled` | Enable/disable webhook endpoint |
 | `path` | URL path for the hooks endpoint |
-| `token` | Authentication token for incoming webhooks |
+| `token` | Authentication token for incoming webhooks (uses `OPENCLAW_HOOKS_TOKEN`) |
 | `allowRequestSessionKey` | Allow incoming hooks to specify a session key for routing |
 | `allowedSessionKeyPrefixes` | List of allowed session key prefixes (e.g., `"hook:"`, `"cc-task:"`) |
 
@@ -233,30 +255,22 @@ openssl rand -base64 24
       "model": {
         "primary": "litellm/github-copilot/claude-opus-4.6",
         "fallbacks": [
-          "litellm/github-copilot/claude-sonnet-4.5",
-          "openai-codex/gpt-5.3-codex",
-          "openai-codex/gpt-5.2-codex"
+          "litellm/github-copilot/claude-sonnet-4.6",
+          "litellm/github-copilot/claude-opus-4.6-1m",
+          "openai-codex/gpt-5.4",
+          "openai-codex/gpt-5.3-codex"
         ]
       },
       "models": {
         "litellm/github-copilot/claude-opus-4.6": {},
-        "litellm/github-copilot/claude-sonnet-4.5": {},
-        "openai-codex/gpt-5.3-codex": {},
-        "openai-codex/gpt-5.2-codex": {}
+        "litellm/github-copilot/claude-sonnet-4.6": {},
+        "litellm/github-copilot/claude-opus-4.6-1m": {},
+        "openai-codex/gpt-5.4": {},
+        "openai-codex/gpt-5.3-codex": {}
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
-      },
-      "heartbeat": {
-        "every": "30m",
-        "activeHours": {
-          "start": "08:00",
-          "end": "24:00",
-          "timezone": "Asia/Shanghai"
-        },
-        "target": "discord",
-        "to": "channel:<channel-id>"
       },
       "maxConcurrent": 4,
       "subagents": {
@@ -273,12 +287,20 @@ openssl rand -base64 24
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
-| `heartbeat.every` | Heartbeat polling interval (e.g., `"30m"`) |
-| `heartbeat.activeHours` | Time window for heartbeats (`start`/`end` in HH:MM, with `timezone`) |
-| `heartbeat.target` | Channel to deliver heartbeat responses (e.g., `"discord"`) |
-| `heartbeat.to` | Specific channel/user target (e.g., `"channel:<id>"`) |
 | `maxConcurrent` | Maximum concurrent agents |
 | `subagents.maxConcurrent` | Maximum concurrent subagents per agent |
+
+### Named Agents
+
+Beyond the defaults, OpenClaw supports named agent instances with dedicated workspaces and models:
+
+| Agent ID | Model | Purpose |
+|----------|-------|---------|
+| `main` | (uses defaults) | Main orchestrator agent |
+| `codex` | `openai-codex/gpt-5.4` | OpenAI Codex agent |
+| `opus` | `litellm/github-copilot/claude-opus-4.6` | Dedicated Claude Opus agent |
+| `worker-leader` | `litellm/github-copilot/claude-sonnet-4.6` | Worker orchestration leader |
+| `worker` | `litellm/github-copilot/claude-haiku-4.5` | Lightweight worker agent |
 
 ## Memory Search
 
@@ -340,6 +362,15 @@ openssl rand -base64 24
       "agentmail": {
         "enabled": true,
         "env": { "AGENTMAIL_API_KEY": "${S_AGENTMAIL_API_KEY}" }
+      },
+      "clawhub": {
+        "enabled": true
+      },
+      "coding-agent": {
+        "enabled": false
+      },
+      "claude-code-supervisor": {
+        "enabled": false
       }
     }
   }
@@ -364,13 +395,22 @@ openssl rand -base64 24
       "memory-core": {
         "enabled": true
       },
-      "whatsapp": {
-        "enabled": true
-      },
       "discord": {
         "enabled": true
       },
-      "msteams": {
+      "xai": {
+        "enabled": false
+      },
+      "litellm": {
+        "enabled": true
+      },
+      "openai": {
+        "enabled": true
+      },
+      "browser": {
+        "enabled": true
+      },
+      "memory-wiki": {
         "enabled": true
       }
     }
@@ -381,9 +421,12 @@ openssl rand -base64 24
 | Plugin | Description |
 |--------|-------------|
 | `memory-core` | Memory and embedding search plugin |
-| `whatsapp` | WhatsApp messaging integration |
 | `discord` | Discord messaging integration |
-| `msteams` | Microsoft Teams messaging integration |
+| `xai` | xAI integration (disabled) |
+| `litellm` | LiteLLM provider plugin |
+| `openai` | OpenAI provider plugin |
+| `browser` | Browser automation plugin |
+| `memory-wiki` | Memory wiki vault integration |
 
 ## Channels
 
@@ -396,7 +439,9 @@ openssl rand -base64 24
       "token": "${S_DISCORD_BOT_TOKEN}",
       "allowBots": true,
       "groupPolicy": "open",
-      "streaming": "off",
+      "streaming": {
+        "mode": "off"
+      },
       "dmPolicy": "open",
       "allowFrom": ["*"],
       "guilds": {
@@ -439,10 +484,13 @@ openssl rand -base64 24
       "provider": "openai",
       "maxTextLength": 4000,
       "timeoutMs": 30000,
-      "openai": {
-        "apiKey": "${S_LITELLM_API_KEY}",
-        "model": "gpt-4o-mini-tts",
-        "voice": "alloy"
+      "providers": {
+        "openai": {
+          "apiKey": "${S_LITELLM_API_KEY}",
+          "model": "gpt-4o-mini-tts",
+          "voice": "alloy",
+          "baseUrl": "https://litellm.us.jingtao.fun/v1"
+        }
       },
       "modelOverrides": {
         "enabled": true,
@@ -462,8 +510,9 @@ openssl rand -base64 24
 | `tts.provider` | TTS provider (`"openai"`) |
 | `tts.maxTextLength` | Maximum text length for TTS (4000 chars) |
 | `tts.timeoutMs` | TTS generation timeout in milliseconds |
-| `tts.openai.model` | OpenAI TTS model (`"gpt-4o-mini-tts"`) |
-| `tts.openai.voice` | Default voice (`"alloy"`, options: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer) |
+| `tts.providers.openai.model` | OpenAI TTS model (`"gpt-4o-mini-tts"`) |
+| `tts.providers.openai.voice` | Default voice (`"alloy"`, options: alloy, ash, coral, echo, fable, nova, onyx, sage, shimmer) |
+| `tts.providers.openai.baseUrl` | TTS API base URL (routed via LiteLLM) |
 | `tts.modelOverrides.enabled` | Allow model override tags in messages |
 | `tts.modelOverrides.allowText` | Allow text content override via tags |
 | `tts.modelOverrides.allowVoice` | Allow voice selection override via tags |
