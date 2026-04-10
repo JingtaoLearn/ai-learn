@@ -13,7 +13,7 @@
         "provider": "litellm",
         "mode": "api_key"
       },
-      "openai-codex:default": {
+      "openai-codex:qfpppp@gmail.com": {
         "provider": "openai-codex",
         "mode": "oauth"
       }
@@ -21,11 +21,6 @@
   },
   "models": {
     "providers": {
-      "openai": {
-        "baseUrl": "https://litellm.us.jingtao.fun/v1",
-        "apiKey": "${S_LITELLM_API_KEY}",
-        "models": []
-      },
       "litellm": {
         "baseUrl": "https://litellm.us.jingtao.fun/",
         "apiKey": "${S_LITELLM_API_KEY}",
@@ -49,8 +44,8 @@
             "maxTokens": 64000
           },
           {
-            "id": "github-copilot/claude-sonnet-4.5",
-            "name": "Claude Sonnet 4.5",
+            "id": "github-copilot/claude-sonnet-4.6",
+            "name": "Claude Sonnet 4.6",
             "reasoning": true,
             "input": [
               "text",
@@ -64,8 +59,30 @@
             },
             "contextWindow": 200000,
             "maxTokens": 64000
+          },
+          {
+            "id": "github-copilot/claude-opus-4.6-1m",
+            "name": "Claude Opus 4.6 (1M)",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 5,
+              "output": 25,
+              "cacheRead": 0.5,
+              "cacheWrite": 6.25
+            },
+            "contextWindow": 1000000,
+            "maxTokens": 64000
           }
         ]
+      },
+      "openai": {
+        "apiKey": "${S_LITELLM_API_KEY}",
+        "baseUrl": "https://litellm.us.jingtao.fun/v1",
+        "models": []
       }
     }
   },
@@ -74,16 +91,18 @@
       "model": {
         "primary": "litellm/github-copilot/claude-opus-4.6",
         "fallbacks": [
-          "litellm/github-copilot/claude-sonnet-4.5",
-          "openai-codex/gpt-5.3-codex",
-          "openai-codex/gpt-5.2-codex"
+          "litellm/github-copilot/claude-sonnet-4.6",
+          "litellm/github-copilot/claude-opus-4.6-1m",
+          "openai-codex/gpt-5.4",
+          "openai-codex/gpt-5.3-codex"
         ]
       },
       "models": {
         "litellm/github-copilot/claude-opus-4.6": {},
-        "litellm/github-copilot/claude-sonnet-4.5": {},
-        "openai-codex/gpt-5.3-codex": {},
-        "openai-codex/gpt-5.2-codex": {}
+        "litellm/github-copilot/claude-sonnet-4.6": {},
+        "litellm/github-copilot/claude-opus-4.6-1m": {},
+        "openai-codex/gpt-5.4": {},
+        "openai-codex/gpt-5.3-codex": {}
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "memorySearch": {
@@ -131,21 +150,68 @@
       "compaction": {
         "mode": "safeguard"
       },
-      "heartbeat": {
-        "every": "30m",
-        "activeHours": {
-          "start": "08:00",
-          "end": "24:00",
-          "timezone": "Asia/Shanghai"
-        },
-        "target": "discord",
-        "to": "channel:1471477049108729926"
-      },
       "maxConcurrent": 4,
       "subagents": {
         "maxConcurrent": 8
       }
-    }
+    },
+    "list": [
+      {
+        "id": "main",
+        "subagents": {
+          "allowAgents": [
+            "worker",
+            "worker-leader",
+            "dev-planner",
+            "dev-coder-1",
+            "debate-child-a",
+            "debate-child-b"
+          ]
+        }
+      },
+      {
+        "id": "codex",
+        "name": "codex",
+        "workspace": "/home/jingtao/.openclaw/workspace",
+        "agentDir": "/home/jingtao/.openclaw/agents/codex/agent",
+        "model": {
+          "primary": "openai-codex/gpt-5.4",
+          "fallbacks": []
+        }
+      },
+      {
+        "id": "opus",
+        "name": "opus",
+        "workspace": "/home/jingtao/.openclaw/workspace",
+        "agentDir": "/home/jingtao/.openclaw/agents/opus/agent",
+        "model": {
+          "primary": "litellm/github-copilot/claude-opus-4.6",
+          "fallbacks": []
+        }
+      },
+      {
+        "id": "worker-leader",
+        "name": "worker-leader",
+        "workspace": "/home/jingtao/.openclaw/workspace-worker-leader",
+        "agentDir": "/home/jingtao/.openclaw/agents/worker-leader/agent",
+        "model": {
+          "primary": "litellm/github-copilot/claude-sonnet-4.6",
+          "fallbacks": []
+        },
+        "subagents": {
+          "allowAgents": [
+            "worker"
+          ]
+        }
+      },
+      {
+        "id": "worker",
+        "name": "worker",
+        "workspace": "/home/jingtao/.openclaw/workspace-worker",
+        "agentDir": "/home/jingtao/.openclaw/agents/worker/agent",
+        "model": "litellm/github-copilot/claude-haiku-4.5"
+      }
+    ]
   },
   "tools": {
     "allow": [
@@ -154,15 +220,16 @@
       "read",
       "write",
       "edit",
-      "apply_patch",
       "browser",
-      "web",
       "web_fetch",
       "web_search",
       "memory_search",
       "memory_get",
-      "cron",
-      "tts"
+      "tts",
+      "sessions_spawn",
+      "sessions_send",
+      "sessions_list",
+      "sessions_history"
     ],
     "deny": [],
     "media": {
@@ -171,22 +238,59 @@
         "models": [
           {
             "provider": "openai",
-            "model": "gpt-4o-transcribe",
-            "type": "provider",
-            "timeoutSeconds": 60,
-            "baseUrl": "https://litellm.us.jingtao.fun/v1",
-            "headers": {
-              "authorization": "Bearer ${S_LITELLM_API_KEY}"
-            }
+            "model": "gpt-4o-transcribe"
           }
-        ]
+        ],
+        "timeoutSeconds": 60,
+        "echoTranscript": true
       }
+    },
+    "sessions": {
+      "visibility": "all"
+    },
+    "agentToAgent": {
+      "enabled": true
     },
     "exec": {
       "security": "full",
       "ask": "off"
     }
   },
+  "bindings": [
+    {
+      "type": "route",
+      "agentId": "codex",
+      "match": {
+        "channel": "discord",
+        "peer": {
+          "kind": "channel",
+          "id": "1488351896249827438"
+        }
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "opus",
+      "match": {
+        "channel": "discord",
+        "peer": {
+          "kind": "channel",
+          "id": "1488351898187862038"
+        }
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "worker-leader",
+      "match": {
+        "channel": "discord",
+        "peer": {
+          "kind": "channel",
+          "id": "1488680941495914496"
+        }
+      }
+    }
+  ],
   "messages": {
     "ackReactionScope": "group-mentions",
     "tts": {
@@ -198,10 +302,13 @@
         "allowText": true,
         "allowVoice": true
       },
-      "openai": {
-        "apiKey": "${S_LITELLM_API_KEY}",
-        "model": "gpt-4o-mini-tts",
-        "voice": "alloy"
+      "providers": {
+        "openai": {
+          "apiKey": "${S_LITELLM_API_KEY}",
+          "model": "gpt-4o-mini-tts",
+          "voice": "alloy",
+          "baseUrl": "https://litellm.us.jingtao.fun/v1"
+        }
       },
       "maxTextLength": 4000,
       "timeoutMs": 30000
@@ -214,12 +321,17 @@
     "ownerDisplay": "raw"
   },
   "session": {
-    "dmScope": "per-channel-peer"
+    "dmScope": "per-channel-peer",
+    "maintenance": {
+      "mode": "enforce",
+      "pruneDays": 7,
+      "maxEntries": 100
+    }
   },
   "hooks": {
     "enabled": true,
     "path": "/hooks",
-    "token": "${OPENCLAW_GATEWAY_TOKEN}",
+    "token": "${OPENCLAW_HOOKS_TOKEN}",
     "allowRequestSessionKey": true,
     "allowedSessionKeyPrefixes": [
       "hook:",
@@ -233,7 +345,9 @@
       "token": "${S_DISCORD_BOT_TOKEN}",
       "allowBots": true,
       "groupPolicy": "open",
-      "streaming": "off",
+      "streaming": {
+        "mode": "off"
+      },
       "dmPolicy": "open",
       "allowFrom": [
         "*"
@@ -256,6 +370,10 @@
             }
           }
         }
+      },
+      "threadBindings": {
+        "enabled": true,
+        "spawnSubagentSessions": true
       }
     }
   },
@@ -288,6 +406,15 @@
         "env": {
           "AGENTMAIL_API_KEY": "${S_AGENTMAIL_API_KEY}"
         }
+      },
+      "clawhub": {
+        "enabled": true
+      },
+      "coding-agent": {
+        "enabled": false
+      },
+      "claude-code-supervisor": {
+        "enabled": false
       }
     }
   },
@@ -297,17 +424,56 @@
     },
     "entries": {
       "memory-core": {
-        "enabled": true
-      },
-      "whatsapp": {
-        "enabled": true
+        "enabled": true,
+        "config": {}
       },
       "discord": {
+        "enabled": true,
+        "config": {}
+      },
+      "xai": {
+        "enabled": false
+      },
+      "litellm": {
         "enabled": true
       },
-      "msteams": {
+      "openai": {
         "enabled": true
+      },
+      "browser": {
+        "enabled": true
+      },
+      "memory-wiki": {
+        "enabled": true,
+        "config": {
+          "vaultMode": "isolated",
+          "vault": {
+            "path": "/home/jingtao/.openclaw/wiki/main",
+            "renderMode": "native"
+          },
+          "bridge": {
+            "enabled": false,
+            "readMemoryArtifacts": true,
+            "indexDailyNotes": true,
+            "indexMemoryRoot": true,
+            "followMemoryEvents": true,
+            "indexDreamReports": false
+          },
+          "search": {
+            "backend": "shared",
+            "corpus": "wiki"
+          },
+          "context": {
+            "includeCompiledDigestPrompt": true
+          },
+          "render": {
+            "preserveHumanBlocks": true,
+            "createBacklinks": true,
+            "createDashboards": true
+          }
+        }
       }
-    }
+    },
+    "installs": {}
   }
 }
