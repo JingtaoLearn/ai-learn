@@ -2,7 +2,7 @@
   "_comment": "EXAMPLE CONFIG - For reference only. Actual config is at ~/.openclaw/openclaw.json. Sensitive values use ${ENV_VAR} placeholders.",
   "browser": {
     "enabled": true,
-    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome",
+    "executablePath": "/home/jingtao/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome",
     "headless": true,
     "noSandbox": true,
     "defaultProfile": "openclaw"
@@ -89,7 +89,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/github-copilot/claude-opus-4.6",
+        "primary": "litellm/github-copilot/claude-opus-4.6-1m",
         "fallbacks": [
           "litellm/github-copilot/claude-sonnet-4.6",
           "litellm/github-copilot/claude-opus-4.6-1m",
@@ -425,11 +425,18 @@
     "entries": {
       "memory-core": {
         "enabled": true,
-        "config": {}
+        "config": {
+          "dreaming": {
+            "enabled": true
+          }
+        }
       },
       "discord": {
         "enabled": true,
         "config": {}
+      },
+      "bonjour": {
+        "enabled": false
       },
       "xai": {
         "enabled": false
