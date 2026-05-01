@@ -482,5 +482,11 @@
       }
     },
     "installs": {}
+  },
+  "acp": {
+    "allowedAgents": [
+      "codex"
+    ],
+    "defaultAgent": "codex"
   }
 }
