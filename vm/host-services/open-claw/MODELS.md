@@ -21,11 +21,8 @@ OpenClaw Gateway (18789)
 **Fallback chain (as configured):**
 
 ```
-Primary:    litellm/github-copilot/claude-opus-4.6
-Fallback 1: litellm/github-copilot/claude-sonnet-4.6
-Fallback 2: litellm/github-copilot/claude-opus-4.6-1m
-Fallback 3: openai-codex/gpt-5.4
-Fallback 4: openai-codex/gpt-5.3-codex
+Primary:    litellm/github-copilot/claude-opus-4.7-1m-internal
+Fallback 1: litellm/github-copilot/claude-opus-4.6-1m
 ```
 
 ## Provider Configuration
@@ -43,6 +40,14 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
         "apiKey": "${S_LITELLM_API_KEY}",
         "api": "openai-completions",
         "models": [
+          {
+            "id": "github-copilot/claude-opus-4.7-1m-internal",
+            "name": "Claude Opus 4.7 (1M Internal)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "contextWindow": 1000000,
+            "maxTokens": 64000
+          },
           {
             "id": "github-copilot/claude-opus-4.6",
             "name": "Claude Opus 4.6",
@@ -78,9 +83,10 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
 
 | Model Ref | Context | Input | Role |
 |-----------|---------|-------|------|
-| `litellm/github-copilot/claude-opus-4.6` | 200k | text+image | Primary |
-| `litellm/github-copilot/claude-sonnet-4.6` | 200k | text+image | Fallback 1 |
-| `litellm/github-copilot/claude-opus-4.6-1m` | 1M | text+image | Fallback 2 |
+| `litellm/github-copilot/claude-opus-4.7-1m-internal` | 1M | text+image | Primary |
+| `litellm/github-copilot/claude-opus-4.6-1m` | 1M | text+image | Fallback 1 |
+| `litellm/github-copilot/claude-opus-4.6` | 200k | text+image | Available |
+| `litellm/github-copilot/claude-sonnet-4.6` | 200k | text+image | Available |
 
 ### openai-codex (Fallback)
 
@@ -111,8 +117,10 @@ Direct connection to OpenAI API using OAuth authentication via ChatGPT Plus acco
 
 | Model Ref | Context | Role |
 |-----------|---------|------|
-| `openai-codex/gpt-5.4` | 200k | Fallback 3 |
-| `openai-codex/gpt-5.3-codex` | 200k | Fallback 4 |
+| `openai/gpt-5.4` | 200k | Codex runtime |
+| `openai/gpt-5.3-codex` | 200k | Codex runtime |
+
+Note: GPT-5 models are now registered under the `openai/` provider with `agentRuntime.id = codex`, used by the dedicated `codex` agent rather than as defaults agent fallbacks.
 
 ## Services
 

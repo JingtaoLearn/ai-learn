@@ -253,20 +253,18 @@ openssl rand -base64 24
   "agents": {
     "defaults": {
       "model": {
-        "primary": "litellm/github-copilot/claude-opus-4.6",
+        "primary": "litellm/github-copilot/claude-opus-4.7-1m-internal",
         "fallbacks": [
-          "litellm/github-copilot/claude-sonnet-4.6",
-          "litellm/github-copilot/claude-opus-4.6-1m",
-          "openai-codex/gpt-5.4",
-          "openai-codex/gpt-5.3-codex"
+          "litellm/github-copilot/claude-opus-4.6-1m"
         ]
       },
       "models": {
+        "litellm/github-copilot/claude-opus-4.7-1m-internal": {},
         "litellm/github-copilot/claude-opus-4.6": {},
         "litellm/github-copilot/claude-sonnet-4.6": {},
         "litellm/github-copilot/claude-opus-4.6-1m": {},
-        "openai-codex/gpt-5.4": {},
-        "openai-codex/gpt-5.3-codex": {}
+        "openai/gpt-5.4": { "agentRuntime": { "id": "codex" } },
+        "openai/gpt-5.3-codex": { "agentRuntime": { "id": "codex" } }
       },
       "workspace": "/home/jingtao/.openclaw/workspace",
       "compaction": {
@@ -283,7 +281,7 @@ openssl rand -base64 24
 
 | Setting | Description |
 |---------|-------------|
-| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.6`) |
+| `model.primary` | Primary model (`litellm/github-copilot/claude-opus-4.7-1m-internal`) |
 | `model.fallbacks` | Fallback models in priority order |
 | `workspace` | Default agent workspace directory |
 | `compaction.mode` | Context compaction strategy (`"safeguard"`) |
@@ -297,7 +295,7 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
 | Agent ID | Model | Purpose |
 |----------|-------|---------|
 | `main` | (uses defaults) | Main orchestrator agent |
-| `codex` | `openai-codex/gpt-5.4` | OpenAI Codex agent |
+| `codex` | `openai/gpt-5.4` (codex runtime) | OpenAI Codex agent |
 | `opus` | `litellm/github-copilot/claude-opus-4.6` | Dedicated Claude Opus agent |
 | `worker-leader` | `litellm/github-copilot/claude-sonnet-4.6` | Worker orchestration leader |
 | `worker` | `litellm/github-copilot/claude-haiku-4.5` | Lightweight worker agent |
