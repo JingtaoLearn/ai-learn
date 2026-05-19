@@ -387,7 +387,8 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
 {
   "plugins": {
     "slots": {
-      "memory": "memory-core"
+      "memory": "memory-core",
+      "contextEngine": "openviking"
     },
     "entries": {
       "memory-core": {
@@ -410,8 +411,21 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
       },
       "memory-wiki": {
         "enabled": true
+      },
+      "openviking": {
+        "enabled": true,
+        "config": {
+          "mode": "remote",
+          "baseUrl": "https://ov.us.jingtao.fun",
+          "apiKey": "${S_OPENVIKING_API_KEY}"
+        }
       }
-    }
+    },
+    "allow": [
+      "openviking",
+      "discord",
+      "memory-wiki"
+    ]
   }
 }
 ```
@@ -425,6 +439,7 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
 | `openai` | OpenAI provider plugin |
 | `browser` | Browser automation plugin |
 | `memory-wiki` | Memory wiki vault integration |
+| `openviking` | OpenViking context engine (remote, fills `contextEngine` slot) |
 
 ## Channels
 

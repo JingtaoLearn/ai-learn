@@ -586,7 +586,8 @@
   },
   "plugins": {
     "slots": {
-      "memory": "memory-core"
+      "memory": "memory-core",
+      "contextEngine": "openviking"
     },
     "entries": {
       "memory-core": {
@@ -648,7 +649,20 @@
       },
       "codex": {
         "enabled": true
+      },
+      "openviking": {
+        "enabled": true,
+        "config": {
+          "mode": "remote",
+          "baseUrl": "https://ov.us.jingtao.fun",
+          "apiKey": "${S_OPENVIKING_API_KEY}"
+        }
       }
-    }
+    },
+    "allow": [
+      "openviking",
+      "discord",
+      "memory-wiki"
+    ]
   }
 }
