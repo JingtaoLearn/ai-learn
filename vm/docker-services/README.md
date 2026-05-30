@@ -10,6 +10,7 @@ Docker Compose services deployed using **pre-built images from public registries
 | --- | --- | --- | --- |
 | `https-proxy-services` | [nginx-proxy](https-proxy-services/nginx-proxy/) | Reverse proxy with automatic HTTPS via Let's Encrypt | [README](https-proxy-services/nginx-proxy/README.md) |
 | `paste-services` | [pastebin](paste-services/pastebin/) | Lightweight pastebin service | [README](paste-services/pastebin/README.md) |
+| `share-hosting` | [share-hosting](share-hosting/) | UUID-only static file share (scan-resistant) at `share.${S_DOMAIN}` | [README](share-hosting/README.md) |
 
 ## Directory Structure
 
