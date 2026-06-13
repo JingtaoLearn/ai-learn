@@ -33,7 +33,7 @@ projects/
 | [nav-portal](nav-portal/) | `nav.${S_DOMAIN}` | Navigation dashboard with Docker service auto-discovery |
 | [experience-manager](experience-manager/) | `ems.ai.jingtao.fun` | AI agent experience storage and semantic search (EMS) |
 | [ai-task-engine](ai-task-engine/) | `localhost:3200` | Workflow engine for AI task orchestration with Discord, EMS, and OpenClaw integration |
-| [licai](licai/) | `licai.${S_DOMAIN}` | Dashboard + per-product browser for the wealth-products research archive at `~/finance/wealth-products/` |
+| [finance](finance/) | `finance.${S_DOMAIN}` | Unified investment-research hub — dashboard + per-report browser for `~/finance/reports/` (理财/股票/保险/基金/...); also serves `licai.${S_DOMAIN}` via 301 redirect for legacy URLs |
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
 
 ## Adding a New Project

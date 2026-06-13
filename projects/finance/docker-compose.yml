@@ -1,16 +1,18 @@
 services:
-  licai:
+  finance:
     image: nginx:alpine
-    container_name: licai
+    container_name: finance
     restart: unless-stopped
     volumes:
       # Mount the unified investment-research archive
       - /home/jingtao/finance/reports:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     environment:
-      VIRTUAL_HOST: licai.ai.jingtao.fun
+      # Primary hostname: finance. Legacy: licai (301-redirects to finance — see nginx.conf).
+      # nginx-proxy + acme-companion will request a SAN cert covering both.
+      VIRTUAL_HOST: finance.ai.jingtao.fun,licai.ai.jingtao.fun
       VIRTUAL_PORT: 80
-      LETSENCRYPT_HOST: licai.ai.jingtao.fun
+      LETSENCRYPT_HOST: finance.ai.jingtao.fun,licai.ai.jingtao.fun
       LETSENCRYPT_EMAIL: jingtao_buaa@icloud.com
     networks:
       - nginx-proxy
