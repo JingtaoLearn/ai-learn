@@ -1,0 +1,20 @@
+services:
+  licai:
+    image: nginx:alpine
+    container_name: licai
+    restart: unless-stopped
+    volumes:
+      # Mount the wealth-products archive — dashboard.html lives at the root
+      - /home/jingtao/finance/wealth-products:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      VIRTUAL_HOST: licai.ai.jingtao.fun
+      VIRTUAL_PORT: 80
+      LETSENCRYPT_HOST: licai.ai.jingtao.fun
+      LETSENCRYPT_EMAIL: jingtao_buaa@icloud.com
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true
