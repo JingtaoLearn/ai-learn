@@ -34,6 +34,7 @@ projects/
 | [experience-manager](experience-manager/) | `ems.ai.jingtao.fun` | AI agent experience storage and semantic search (EMS) |
 | [ai-task-engine](ai-task-engine/) | `localhost:3200` | Workflow engine for AI task orchestration with Discord, EMS, and OpenClaw integration |
 | [licai](licai/) | `licai.${S_DOMAIN}` | Dashboard + per-product browser for the wealth-products research archive at `~/finance/wealth-products/` |
+| [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
 
 ## Adding a New Project
 

@@ -1,0 +1,19 @@
+services:
+  share-hosting:
+    image: nginx:alpine
+    container_name: share-hosting
+    restart: unless-stopped
+    volumes:
+      - /data_static/share-hosting:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      VIRTUAL_HOST: share.ai.jingtao.fun
+      VIRTUAL_PORT: 80
+      LETSENCRYPT_HOST: share.ai.jingtao.fun
+      LETSENCRYPT_EMAIL: jingtao_buaa@icloud.com
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true
