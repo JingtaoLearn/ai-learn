@@ -2,8 +2,7 @@
 
 Dedicated subdomain for Jingtao's investment-research archive across all asset classes (理财 / 股票 / 保险 / 基金 / 债券 / 加密 / ...).
 
-**Primary URL**: https://finance.ai.jingtao.fun
-**Legacy URL** (301-redirects to primary): https://licai.ai.jingtao.fun
+**URL**: https://finance.ai.jingtao.fun
 
 ## What it serves
 
@@ -38,7 +37,7 @@ Read-only mount of `/home/jingtao/finance/reports/`. The dashboard regenerates o
 
 ## Naming history
 
-Originally deployed as `licai.ai.jingtao.fun` (理财 = wealth management) when the hub only covered bank wealth products. Renamed to `finance.ai.jingtao.fun` on 2026-06-13 once coverage expanded to all asset classes. The legacy hostname does a 301 permanent redirect.
+Originally deployed as `licai.ai.jingtao.fun` (理财 = wealth management) when the hub only covered bank wealth products. Renamed to `finance.ai.jingtao.fun` on 2026-06-13 once coverage expanded to all asset classes.
 
 ## Deploy / update
 
@@ -47,7 +46,7 @@ cd ~/ai-learn/projects/finance
 docker compose down && docker compose up -d
 ```
 
-First request after fresh deploy may take 5-30s while letsencrypt-companion issues the SAN cert (covers both `finance.*` and `licai.*`).
+First request after fresh deploy may take 5-30s while letsencrypt-companion issues the cert.
 
 ## Related
 
