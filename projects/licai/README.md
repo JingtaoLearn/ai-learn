@@ -1,39 +1,52 @@
-# licai — Wealth-Products Dashboard
+# licai — Investment Research Hub
 
-Dedicated subdomain for Jingtao's wealth-management research archive.
+Dedicated subdomain for Jingtao's investment-research archive across all asset classes (理财 / 股票 / 保险 / 基金 / 债券 / 加密 / ...).
 
 **URL**: https://licai.ai.jingtao.fun
 
 ## What it serves
 
-- `/` → `dashboard.html` — the aggregate dashboard (auto-refreshed on every `build_dashboard.py` run)
-- `/<bank>/<code>/report.html` — individual product reports (e.g. `/icbc/25G2488A/report.html`)
-- `/<bank>/<code>/chart.svg` — net-value charts
-- `/<bank>/<code>/meta.json` — structured product metadata
-- `/<bank>/<code>/pdfs/*.pdf` — official disclosure PDFs
+- `/` → `dashboard.html` — tab-grouped aggregate dashboard (auto-refreshed on every `build_dashboard.py` run)
+- `/<asset_class>/<owner>/<code>/report.html` — per-report full reports
+  - `asset_class` ∈ `wealth` | `stock` | `insurance` | `fund` | `bond` | `crypto` | `other`
+  - `owner` = bank/market/insurer slug, lowercase alnum + hyphen
+  - `code` = product code, alnum
+- `/<asset_class>/<owner>/<code>/card.json` — structured dashboard card data
+- `/<asset_class>/<owner>/<code>/meta.json` — structured product metadata (per-skill schema)
+- `/<asset_class>/<owner>/<code>/chart.svg` — charts
+- `/<asset_class>/<owner>/<code>/pdfs/*.pdf` — official disclosure PDFs
+- `/<asset_class>/<owner>/<code>/assets/*.{png,jpg,svg,webp}` — skill-specific images
+- `/index.json` — machine-readable aggregate summary
+- `/README.md` — archive documentation
 
 Hidden from web (server-side raw data only):
 - `data.json` / `nv_full.json` / `reports.json` — raw API dumps
-- `*.py` — build scripts
+- `*.py` — build/register scripts
 - `share_url.txt` — back-pointers to share-hosting
+- `.history/` — version-history snapshots (internal use)
 
 ## Data source
 
-Read-only mount of `/home/jingtao/finance/wealth-products/`. The dashboard regenerates on every `build_dashboard.py` run; nginx serves the freshly-written file with no restart needed.
+Read-only mount of `/home/jingtao/finance/reports/`. The dashboard regenerates on every `register_report.py` call (which any analysis skill invokes after publishing). nginx serves the freshly-written file with no restart needed.
 
-## Deploy
+## Architecture
+
+- **Concurrency-safe**: each report lives in its own dir, dashboard build is pure scan. Multiple skills can register simultaneously.
+- **URL stable**: nginx whitelist regex on path means the URL contract is enforced — re-running an analysis with the same `(asset_class, owner, code)` reuses the URL.
+- **Overwrite semantics**: re-analysis replaces in place (typically what you want — show latest verdict). `--keep-history` flag preserves old version under `.history/`.
+
+## Deploy / update
 
 ```bash
 cd ~/ai-learn/projects/licai
-docker compose up -d
+docker compose down && docker compose up -d
 ```
 
-First request after fresh deploy may take 5-30s while letsencrypt-companion fetches a cert. Watch with:
-```bash
-docker logs -f nginx-proxy-acme | grep licai
-```
+First request after fresh deploy may take 5-30s while letsencrypt-companion fetches a cert.
 
 ## Related
 
-- **share-hosting** (`share.ai.jingtao.fun`): UUID-only file share for ad-hoc reports
-- **licai** (this): Dedicated dashboard + per-product browser for the wealth-products archive
+- **share-hosting** (`share.ai.jingtao.fun`): UUID-only file share for ad-hoc reports — complements this with unstructured paths
+- **investment-research-registry** Hermes skill: the registration contract that all analysis skills follow
+- **cn-bank-wealth-products / cn-stock-financial-analysis / insurance-brochure-analysis** Hermes skills: analysis skills that populate this dashboard
+
