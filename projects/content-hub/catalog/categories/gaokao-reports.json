@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "gaokao-reports",
+  "title": "Gaokao Reports",
+  "subtitle": "高考志愿与专业研究",
+  "description": "志愿方案、既有草稿诊断、院校专业组评估与录取后专业解读。",
+  "icon": "🎯",
+  "accent": "purple",
+  "sort_order": 40,
+  "item_label": "份高考报告",
+  "source_skill": "jiangsu-gaokao"
+}

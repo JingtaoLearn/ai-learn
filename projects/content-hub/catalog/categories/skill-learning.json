@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "skill-learning",
+  "title": "Skill Learning",
+  "subtitle": "双语技能学习",
+  "description": "保留原始 SKILL.md，提供段落对齐中文阅读、语境词汇弹窗与工程设计拆解。",
+  "icon": "📘",
+  "accent": "terracotta",
+  "sort_order": 20,
+  "item_label": "份学习报告",
+  "source_skill": "skill-learning-reports"
+}

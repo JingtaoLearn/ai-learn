@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "investment-research",
+  "title": "Investment Research",
+  "subtitle": "投资研究",
+  "description": "股票、银行理财、基金、保险与跨资产比较的结构化研究归档。每个条目直接进入完整报告。",
+  "icon": "📈",
+  "accent": "teal",
+  "sort_order": 10,
+  "item_label": "份研究报告",
+  "source_skill": "content-hub-registry"
+}
