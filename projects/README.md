@@ -33,7 +33,7 @@ projects/
 | [nav-portal](nav-portal/) | `nav.${S_DOMAIN}` | Navigation dashboard with Docker service auto-discovery |
 | [experience-manager](experience-manager/) | `ems.ai.jingtao.fun` | AI agent experience storage and semantic search (EMS) |
 | [ai-task-engine](ai-task-engine/) | `localhost:3200` | Workflow engine for AI task orchestration with Discord, EMS, and OpenClaw integration |
-| [finance](finance/) | `finance.${S_DOMAIN}` | Unified investment-research hub — dashboard + per-report browser for `~/finance/reports/` (理财/股票/保险/基金/...) |
+| [finance](finance/) | `finance.${S_DOMAIN}` | Legacy read-only investment-report archive retained for historical URL compatibility |
 | [content-hub](content-hub/) | `hub.${S_DOMAIN}` | Generic two-level content registry: category directory → searchable category dashboards → canonical artifact links |
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
 

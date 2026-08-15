@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "skills": {
+    "aee-episode-pipeline": {
+      "mode": "collection",
+      "category_id": "english-learning",
+      "identity_policy": "collection"
+    },
+    "cn-bank-wealth-products": {
+      "mode": "direct",
+      "category_id": "investment-research",
+      "identity_policy": "stable"
+    },
+    "cn-stock-financial-analysis": {
+      "mode": "direct",
+      "category_id": "investment-research",
+      "identity_policy": "stable"
+    },
+    "financial-education-webpage": {
+      "mode": "direct",
+      "category_id": "financial-education",
+      "identity_policy": "stable"
+    },
+    "haier-product-spec-docs": {
+      "mode": "direct",
+      "category_id": "product-research",
+      "identity_policy": "stable"
+    },
+    "insurance-brochure-analysis": {
+      "mode": "direct",
+      "category_id": "investment-research",
+      "identity_policy": "stable"
+    },
+    "jiangsu-gaokao": {
+      "mode": "direct",
+      "category_id": "gaokao-reports",
+      "identity_policy": "stable"
+    },
+    "scheduled-content-learning": {
+      "mode": "none",
+      "reason": "Framework skill; the owning producer chooses the category."
+    },
+    "share-hosting": {
+      "mode": "none",
+      "reason": "Publisher only; the owning producer decides whether an artifact is durable."
+    },
+    "skill-learning-reports": {
+      "mode": "direct",
+      "category_id": "skill-learning",
+      "identity_policy": "versioned"
+    }
+  }
+}

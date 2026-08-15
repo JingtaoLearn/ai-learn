@@ -13,9 +13,10 @@ import uuid
 from pathlib import Path
 
 from build_site import write_public_site
-from registry_schema import ValidationError, validate_category, validate_item
+from registry_schema import CATEGORY_ID, ValidationError, validate_category, validate_item
 
 DEFAULT_ARCHIVE = Path.home() / "content-hub"
+DEFAULT_CATEGORY_CATALOG = Path(__file__).resolve().parent / "catalog" / "categories"
 RegistrationError = ValidationError
 
 
@@ -227,18 +228,46 @@ def register_item(payload: object, root: Path = DEFAULT_ARCHIVE) -> Path:
     )
 
 
+def load_catalog_category(
+    category_id: str, catalog_root: Path = DEFAULT_CATEGORY_CATALOG
+) -> dict:
+    if not CATEGORY_ID.fullmatch(category_id):
+        raise RegistrationError("invalid category_id")
+    path = Path(catalog_root).expanduser().resolve() / f"{category_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RegistrationError(f"cannot load category catalog entry: {category_id}") from exc
+    category = validate_category(payload)
+    if category["category_id"] != category_id:
+        raise RegistrationError("catalog filename and category_id disagree")
+    return category
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("category", "item"):
-        child = subparsers.add_parser(command)
-        child.add_argument("--card-json", required=True, type=Path)
-        child.add_argument("--root", type=Path, default=DEFAULT_ARCHIVE)
+    category_parser = subparsers.add_parser("category")
+    category_source = category_parser.add_mutually_exclusive_group(required=True)
+    category_source.add_argument("--card-json", type=Path)
+    category_source.add_argument("--category-id")
+    category_parser.add_argument(
+        "--catalog-root", type=Path, default=DEFAULT_CATEGORY_CATALOG
+    )
+    category_parser.add_argument("--root", type=Path, default=DEFAULT_ARCHIVE)
+
+    item_parser = subparsers.add_parser("item")
+    item_parser.add_argument("--card-json", required=True, type=Path)
+    item_parser.add_argument("--root", type=Path, default=DEFAULT_ARCHIVE)
     args = parser.parse_args()
-    payload = json.loads(args.card_json.read_text(encoding="utf-8"))
     if args.command == "category":
+        if args.card_json:
+            payload = json.loads(args.card_json.read_text(encoding="utf-8"))
+        else:
+            payload = load_catalog_category(args.category_id, args.catalog_root)
         destination = register_category(payload, args.root)
     else:
+        payload = json.loads(args.card_json.read_text(encoding="utf-8"))
         destination = register_item(payload, args.root)
     print(f"Registered {destination}")
     print(f"Hub {args.root / 'current' / 'dashboard.html'}")

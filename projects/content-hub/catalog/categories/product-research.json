@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "product-research",
+  "title": "Product Research",
+  "subtitle": "产品规格与购买研究",
+  "description": "基于官方说明书、产品页与可靠证据形成的产品规格、安装和横向对比报告。",
+  "icon": "🔎",
+  "accent": "amber",
+  "sort_order": 50,
+  "item_label": "份产品报告",
+  "source_skill": "content-hub-registry"
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "english-learning",
+  "title": "English Learning",
+  "subtitle": "英语学习站点",
+  "description": "具有独立内部导航的长期英语学习项目与内容站点入口。",
+  "icon": "🎧",
+  "accent": "green",
+  "sort_order": 60,
+  "item_label": "个学习项目",
+  "source_skill": "aee-episode-pipeline"
+}

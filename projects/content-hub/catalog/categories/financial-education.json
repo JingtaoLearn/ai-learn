@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "financial-education",
+  "title": "Financial Education",
+  "subtitle": "金融知识学习",
+  "description": "面向非专业读者的金融指标、估值、现金流与股东回报教育网页。",
+  "icon": "🎓",
+  "accent": "blue",
+  "sort_order": 30,
+  "item_label": "份教育网页",
+  "source_skill": "financial-education-webpage"
+}

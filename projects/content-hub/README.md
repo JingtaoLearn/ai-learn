@@ -16,14 +16,14 @@ Examples of categories:
 - `skill-learning` — bilingual Skill Learning reports
 - future categories can be added without changing the renderer or Nginx configuration
 
-## Registry API
+## Single registry CLI
 
-One CLI owns both registration levels:
+This is the only active registration mechanism for durable HTML artifacts. One CLI owns both registration levels:
 
 ```bash
-# Register or update a category
+# Ensure a category from the version-controlled catalog
 python3 ~/ai-learn/projects/content-hub/register.py category \
-  --card-json /path/to/category.json
+  --category-id investment-research
 
 # Register or update an item inside an existing category
 python3 ~/ai-learn/projects/content-hub/register.py item \
@@ -31,6 +31,18 @@ python3 ~/ai-learn/projects/content-hub/register.py item \
 ```
 
 Category registration is idempotent by `category_id`. Item registration is idempotent by `(category_id, item_id)`. An item cannot be registered before its category exists.
+
+The previous finance-specific registry is retired. Existing `finance.ai.jingtao.fun` report URLs remain online as read-only compatibility targets, but all new investment reports publish their canonical HTML first and register directly into `investment-research` through this CLI.
+
+## Catalog and Skill integration audit
+
+- `catalog/categories/*.json` is the version-controlled source of truth for category presentation.
+- `catalog/integrations.json` records which Hermes Skills register durable artifacts, their category, and whether identities are stable, versioned, or collection-level.
+- `scripts/audit_integrations.py` checks the installed profile's Skills and rejects any remaining reference to the retired finance registry.
+
+```bash
+python3 scripts/audit_integrations.py
+```
 
 ## Atomic publication model
 
@@ -77,6 +89,7 @@ Private `_registry/`, `.releases/`, lock files, scripts, temporary files, and un
 ```bash
 cd ~/ai-learn/projects/content-hub
 python3 -m unittest -v tests/test_registry.py
+python3 -m unittest -v tests/test_audit_integrations.py
 python3 -m py_compile register.py build_site.py registry_schema.py
 docker run --rm \
   -v "$PWD/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \

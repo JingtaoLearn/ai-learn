@@ -131,7 +131,7 @@ class ContentHubRegistryTests(unittest.TestCase):
             accent="teal",
             sort_order=10,
             item_label="份研究报告",
-            source_skill="investment-research-registry",
+            source_skill="content-hub-registry",
         )
         register_category(finance, self.root)
 
@@ -434,6 +434,48 @@ class ContentHubRegistryTests(unittest.TestCase):
         self.assertEqual(
             json.loads((self.public_root / "index.json").read_text())["item_count"], 1
         )
+
+    def test_cli_registers_category_from_central_catalog(self):
+        from register import main
+        from unittest.mock import patch
+
+        catalog_root = self.root / "catalog"
+        catalog_root.mkdir()
+        (catalog_root / "skill-learning.json").write_text(
+            json.dumps(self.category), encoding="utf-8"
+        )
+
+        with redirect_stdout(io.StringIO()):
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "register.py",
+                    "category",
+                    "--category-id",
+                    "skill-learning",
+                    "--catalog-root",
+                    str(catalog_root),
+                    "--root",
+                    str(self.root),
+                ],
+            ):
+                main()
+
+        category = json.loads(
+            (self.public_root / "categories" / "skill-learning" / "category.json").read_text()
+        )
+        self.assertEqual(category, self.category)
+
+    def test_all_shipped_catalog_categories_validate(self):
+        from register import DEFAULT_CATEGORY_CATALOG, load_catalog_category
+
+        paths = sorted(DEFAULT_CATEGORY_CATALOG.glob("*.json"))
+        self.assertGreaterEqual(len(paths), 6)
+        for path in paths:
+            with self.subTest(category_id=path.stem):
+                category = load_catalog_category(path.stem)
+                self.assertEqual(category["category_id"], path.stem)
 
 
 if __name__ == "__main__":
