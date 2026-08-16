@@ -1,0 +1,60 @@
+services:
+  mlflow:
+    image: gold-quant-research:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--workers", "1", "--allowed-hosts", "mlflow:5000,localhost:*,127.0.0.1:*", "--backend-store-uri", "sqlite:////state/mlflow/mlflow.db", "--artifacts-destination", "/state/mlflow/artifacts", "--serve-artifacts"]
+    ports: ["127.0.0.1:5000:5000"]
+    volumes: ["./state/mlflow:/state/mlflow"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 1600m
+    cpus: 0.50
+    restart: unless-stopped
+
+  prefect:
+    image: gold-quant-research:0.1.0
+    command: ["prefect", "server", "start", "--host", "0.0.0.0", "--port", "4200"]
+    ports: ["127.0.0.1:4200:4200"]
+    volumes: ["./state/prefect:/root/.prefect"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    mem_limit: 1600m
+    cpus: 0.75
+    restart: unless-stopped
+
+  jupyter:
+    image: gold-quant-research:0.1.0
+    user: "1000:1000"
+    command: ["sh", "-c", "exec jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --IdentityProvider.token=$${JUPYTER_TOKEN} --ServerApp.root_dir=/workspace"]
+    environment:
+      HOME: /home/research
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:?Create a private .env with JUPYTER_TOKEN}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PREFECT_API_URL: http://prefect:4200/api
+      PYTHONPATH: /workspace/src
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
+    ports: ["127.0.0.1:8888:8888"]
+    volumes:
+      - ./:/workspace
+      - ./state/jupyter:/home/research/.jupyter
+    depends_on:
+      mlflow: {condition: service_healthy}
+      prefect: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/api/status?token='+os.environ['JUPYTER_TOKEN'], timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 2600m
+    cpus: 1.00
+    restart: unless-stopped
