@@ -18,6 +18,26 @@ A reproducible, research-only vertical slice for daily gold strategy analysis. I
 6. Produces decision-first, 390 px-friendly HTML with comparisons, equity/trade charts, ledger, caveats, and run metadata.
 7. Uses a Prefect flow and logs one MLflow run per symbol/strategy, including full, OOS, and cost-stress prefixed metrics plus complete research artifacts.
 
+## Round-two robustness study
+
+`gold_research.round2.run_round2_research` adds four frozen, long-only candidates without selecting a winner after seeing the results:
+
+- close above the 200-session moving average;
+- positive 252-session absolute momentum;
+- a two-of-three vote across 63/126/252-session momentum;
+- the 200-session trend filter scaled to a 10% volatility target.
+
+The study aligns every strategy after a shared 315-session warm-up, evaluates 5/10/20 bps one-way costs, reports calendar-year pseudo-out-of-sample folds from 2010, checks small parameter neighborhoods, and compares each timing rule with buy-and-hold using a paired 20-session moving-block bootstrap. Its familywise confidence level is Bonferroni-adjusted across the 12 strategy/instrument comparisons. Because the complete historical period has already been inspected, these folds are retrospective stress tests, not a pristine final holdout.
+
+Round-two runs add:
+
+- `summary.csv` and `daily_returns.csv`;
+- `annual_folds.csv`;
+- `bootstrap.json`;
+- `parameter_stability.csv`;
+- `current_signals.csv`;
+- `report.html`.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.

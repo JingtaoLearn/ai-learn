@@ -51,6 +51,19 @@ def test_open_trade_is_not_counted_as_closed_or_charged_exit_cost():
     assert result["cost"].sum() == pytest.approx(0.0005)
 
 
+def test_fractional_rebalancing_does_not_create_phantom_round_trips():
+    from gold_research.backtest import trade_ledger
+
+    idx = pd.bdate_range("2024-01-01", periods=7)
+    opens = pd.Series([100, 101, 102, 103, 104, 105, 106], index=idx, dtype=float)
+    signal = pd.Series([0.0, 0.4, 0.6, 0.5, 0.8, 0.0, 0.0], index=idx)
+    ledger = trade_ledger(backtest(opens, signal, cost_bps=0))
+    assert len(ledger) == 1
+    assert ledger.iloc[0]["entry_date"] == idx[1]
+    assert ledger.iloc[0]["exit_date"] == idx[5]
+    assert not bool(ledger.iloc[0]["is_open"])
+
+
 def test_max_drawdown_includes_starting_capital_and_sortino_uses_target_downside():
     idx = pd.bdate_range("2024-01-01", periods=3)
     opens = pd.Series([100.0, 80.0, 80.0], index=idx)
