@@ -36,6 +36,7 @@ projects/
 | [finance](finance/) | `finance.${S_DOMAIN}` | Legacy read-only investment-report archive retained for historical URL compatibility |
 | [content-hub](content-hub/) | `hub.${S_DOMAIN}` | Generic two-level content registry: category directory → searchable category dashboards → canonical artifact links |
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
+| [quant-research-platform](quant-research-platform/) | `localhost:8888/5000/4200` on `feng-learn` | Reproducible human-agent strategy research with JupyterLab, MLflow, Prefect, and a gold trend-study vertical slice |
 
 ## Adding a New Project
 
