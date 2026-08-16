@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+  <title>黄金策略实验室</title>
+  <style>/*__STYLE__*/</style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Gold strategy lab</div>
+      <h1>黄金策略实验室</h1>
+      <p>调整参数，收益、回撤、Sharpe、交易次数与曲线立即重算。全部计算在你的浏览器中完成。</p>
+      <div class="hero-meta"><span id="data-status">正在载入数据…</span><span>研究模式 · 无实盘连接</span></div>
+    </header>
+
+    <section class="workspace">
+      <aside class="controls">
+        <div class="control-head"><h2>实验参数</h2><button id="reset" class="text-button" type="button">恢复默认</button></div>
+        <label>黄金代理<select id="symbol"><option value="GLD">GLD · 黄金ETF</option><option value="GC=F">GC=F · 期货代理</option></select></label>
+        <label>评估区间<select id="years"><option value="1">最近1年</option><option value="3" selected>最近3年</option><option value="5">最近5年</option><option value="all">全部历史</option></select></label>
+        <label>策略<select id="strategy"><option value="buyhold">买入持有</option><option value="sma">SMA均线</option><option value="donchian">Donchian突破</option><option value="trend">长期趋势</option><option value="momentum">绝对动量</option><option value="vote">多周期多数票</option><option value="trendVol">趋势＋波动降仓</option><option value="persistence" selected>强趋势＋低波动候选</option></select></label>
+        <label>单边成本（bps）<div class="range-row"><input id="costBps" type="range" min="0" max="50" step="1" value="5"><output for="costBps">5</output></div></label>
+
+        <div class="param-group" data-for="sma">
+          <label>快均线（日）<div class="range-row"><input id="fast" type="range" min="5" max="150" step="5" value="50"><output>50</output></div></label>
+          <label>慢均线（日）<div class="range-row"><input id="slow" type="range" min="50" max="400" step="10" value="200"><output>200</output></div></label>
+        </div>
+        <div class="param-group" data-for="donchian">
+          <label>突破窗口（日）<div class="range-row"><input id="entryWindow" type="range" min="10" max="150" step="5" value="55"><output>55</output></div></label>
+          <label>退出窗口（日）<div class="range-row"><input id="exitWindow" type="range" min="5" max="80" step="5" value="20"><output>20</output></div></label>
+        </div>
+        <div class="param-group" data-for="trend trendVol">
+          <label>趋势窗口（日）<div class="range-row"><input id="trendWindow" type="range" min="20" max="400" step="10" value="200"><output>200</output></div></label>
+        </div>
+        <div class="param-group" data-for="momentum">
+          <label>动量回看（日）<div class="range-row"><input id="momentumLookback" type="range" min="20" max="400" step="1" value="252"><output>252</output></div></label>
+        </div>
+        <div class="param-group" data-for="vote">
+          <label>短周期（日）<div class="range-row"><input id="voteShort" type="range" min="10" max="120" step="1" value="63"><output>63</output></div></label>
+          <label>中周期（日）<div class="range-row"><input id="voteMedium" type="range" min="40" max="240" step="1" value="126"><output>126</output></div></label>
+          <label>长周期（日）<div class="range-row"><input id="voteLong" type="range" min="100" max="400" step="1" value="252"><output>252</output></div></label>
+          <label>需要几票<div class="range-row"><input id="votesRequired" type="range" min="1" max="3" step="1" value="2"><output>2</output></div></label>
+        </div>
+        <div class="param-group" data-for="trendVol">
+          <label>波动窗口（日）<div class="range-row"><input id="volWindow" type="range" min="10" max="150" step="5" value="60"><output>60</output></div></label>
+          <label>目标波动率<div class="range-row"><input id="targetVol" type="range" min="0.04" max="0.30" step="0.01" value="0.10"><output>10%</output></div></label>
+        </div>
+        <div class="param-group" data-for="persistence">
+          <label>趋势回看（日）<div class="range-row"><input id="trendLookback" type="range" min="5" max="120" step="5" value="20"><output>20</output></div></label>
+          <label>趋势强度阈值<div class="range-row"><input id="trendThreshold" type="range" min="0.2" max="3" step="0.1" value="1"><output>1.0</output></div></label>
+          <label>短波动窗口<div class="range-row"><input id="volShort" type="range" min="5" max="80" step="5" value="20"><output>20</output></div></label>
+          <label>长波动窗口<div class="range-row"><input id="volLong" type="range" min="60" max="400" step="1" value="252"><output>252</output></div></label>
+          <label>波动比上限<div class="range-row"><input id="volRatioThreshold" type="range" min="0.4" max="2" step="0.05" value="1"><output>1.00</output></div></label>
+          <label>持有天数<div class="range-row"><input id="holdDays" type="range" min="1" max="80" step="1" value="20"><output>20</output></div></label>
+        </div>
+
+        <div class="presets"><button type="button" data-preset="persistence">当前候选</button><button type="button" data-preset="buyhold">长期持有</button><button type="button" data-preset="trend">200日趋势</button><button type="button" data-preset="trendVol">波动降仓</button></div>
+        <div id="error" class="error" hidden></div>
+      </aside>
+
+      <div class="results">
+        <section class="status-card"><div><span>当前策略状态</span><strong id="current-position">—</strong></div><p id="current-explanation">—</p></section>
+        <section class="metrics" id="metrics"></section>
+        <section class="panel"><div class="panel-head"><div><h2>净值曲线</h2><p>策略与买入持有基准，起点均为1</p></div><div class="legend"><span class="dot strategy"></span>策略 <span class="dot benchmark"></span>持有</div></div><div id="equity-chart" class="chart"></div></section>
+        <section class="panel"><div class="panel-head"><div><h2>回撤曲线</h2><p>从历史高点向下跌了多少</p></div></div><div id="drawdown-chart" class="chart compact"></div></section>
+        <section class="panel"><div class="panel-head"><div><h2>年度结果</h2><p>策略净收益，已计所选成本</p></div></div><div class="table-wrap"><table><thead><tr><th>年份</th><th>策略</th><th>买入持有</th><th>差值</th></tr></thead><tbody id="yearly"></tbody></table></div></section>
+        <section class="method"><h2>口径</h2><ul><li>信号只使用执行开盘前已经获得的信息。</li><li>按开盘到下一开盘计算收益，仓位变化收取单边成本。</li><li>修改参数属于探索；漂亮结果不等于未来有效。</li><li>GC=F是连续期货代理，不是可直接下单的具体合约。</li></ul></section>
+      </div>
+    </section>
+  </main>
+  <script>window.GOLD_LAB_DATA=/*__DATA__*/;</script>
+  <script>/*__CORE__*/</script>
+  <script>/*__APP__*/</script>
+</body>
+</html>

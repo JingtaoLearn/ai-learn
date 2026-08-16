@@ -38,6 +38,28 @@ Round-two runs add:
 - `current_signals.csv`;
 - `report.html`.
 
+## Interactive strategy lab
+
+`web/strategy-lab/` is a zero-backend, browser-local backtesting interface. It embeds public daily `GLD` and `GC=F` data into one self-contained HTML file. A researcher can change the instrument, evaluation period, one-way cost, and parameters for buy-and-hold, SMA, Donchian, trend, momentum, multi-horizon voting, volatility-managed trend, and the frozen strong-trend/low-volatility candidate. Metrics, current position, yearly returns, net equity, and drawdown update immediately without sending parameters to a server.
+
+Build from saved runtime CSVs:
+
+```bash
+python3 scripts/build_strategy_lab.py \
+  --data-dir data/raw \
+  --output /tmp/gold-strategy-lab.html
+```
+
+Or refresh directly from Yahoo before building:
+
+```bash
+python3 scripts/build_strategy_lab.py \
+  --refresh \
+  --output /tmp/gold-strategy-lab.html
+```
+
+The output is research-only and contains no order path, credentials, or broker integration. JavaScript core behavior is covered by `node --test tests/test_strategy_lab.js`; the Python builder has a deterministic synthetic-data test.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.
