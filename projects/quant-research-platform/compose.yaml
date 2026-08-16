@@ -12,7 +12,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    mem_limit: 1600m
+    mem_limit: 2200m
     cpus: 0.50
     restart: unless-stopped
 
