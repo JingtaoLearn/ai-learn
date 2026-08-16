@@ -40,11 +40,10 @@ def backtest(open_price: pd.Series, signal: pd.Series, cost_bps: float = 5.0) ->
 
 
 def trade_ledger(result: pd.DataFrame) -> pd.DataFrame:
-    change = result["signal"].diff()
-    if not change.empty:
-        change.iloc[0] = result["signal"].iloc[0]
-    entries = list(np.flatnonzero(change.to_numpy() > 0))
-    exits = list(np.flatnonzero(change.to_numpy() < 0))
+    held = result["signal"].astype(float) > 0.0
+    previously_held = held.shift(1, fill_value=False)
+    entries = list(np.flatnonzero((held & ~previously_held).to_numpy()))
+    exits = list(np.flatnonzero((~held & previously_held).to_numpy()))
     records: list[dict] = []
     for entry in entries:
         exit_candidates = [candidate for candidate in exits if candidate > entry]
