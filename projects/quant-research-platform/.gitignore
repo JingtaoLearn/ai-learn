@@ -7,6 +7,8 @@ __pycache__/
 .ipynb_checkpoints/
 data/raw/*
 !data/raw/.gitkeep
+data/cmb/*
+!data/cmb/.gitkeep
 runs/*
 !runs/.gitkeep
 state/*

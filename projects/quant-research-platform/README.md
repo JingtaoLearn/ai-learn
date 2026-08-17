@@ -101,6 +101,7 @@ After connecting, run `./scripts/jupyter_url.sh` on the server yourself to displ
 ./scripts/manage.sh test           # deterministic synthetic unit tests; no network dependency
 ./scripts/manage.sh lint           # Ruff
 ./scripts/manage.sh run            # Yahoo -> Prefect -> research -> MLflow
+./scripts/manage.sh cmb-snapshot   # Append CMB public SGE market snapshot
 ./scripts/manage.sh infra-down
 ```
 
@@ -108,6 +109,18 @@ The `Makefile` is a convenience alias for hosts that already have GNU Make; the 
 entry point above is canonical and needs no package beyond Bash, Python, and Docker Compose.
 
 A Yahoo/network failure raises `DataDownloadError` with the affected symbol and underlying HTTP/parse detail. Online acquisition is intentionally excluded from unit tests.
+
+## CMB public gold snapshot
+
+`./scripts/manage.sh cmb-snapshot` appends the current public CMB gold-market payload to
+`data/cmb/` as CSV and Parquet with a manifest. The endpoint exposes Shanghai Gold Exchange
+reference-market snapshots such as `Au(T+D)` and `Au99.99`.
+
+This is **not** the authenticated CMB Gold Account purchase or redemption quote, contains no
+bank bid/ask spread, and provides no historical backfill. It can be used for timestamped
+reference-market cross-checks and forward data collection, but the public snapshot may be delayed
+or stale. It must not be presented as an executable CMB Gold Account price or used alone for a
+historical strategy backtest. Each collected row stores a canonical payload checksum for provenance.
 
 ## Artifacts
 
