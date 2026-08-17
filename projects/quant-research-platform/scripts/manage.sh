@@ -24,8 +24,12 @@ case "${1:-}" in
     docker compose exec -T -e PYTHONPATH=/workspace/src jupyter python -m gold_research.flow \
       --tracking-uri http://mlflow:5000
     ;;
+  cmb-snapshot)
+    docker compose exec -T -e PYTHONPATH=/workspace/src jupyter python -m gold_research.cmb \
+      --output data/cmb
+    ;;
   *)
-    printf 'Usage: %s {infra-up|infra-health|infra-down|test|lint|run}\n' "$0" >&2
+    printf 'Usage: %s {infra-up|infra-health|infra-down|test|lint|run|cmb-snapshot}\n' "$0" >&2
     exit 2
     ;;
 esac
