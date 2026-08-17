@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
 
 
@@ -67,6 +68,89 @@ def risk_managed_trend_signal(
     scale = target_volatility / realized.replace(0.0, pd.NA)
     raw = trend * scale.astype(float).clip(lower=0.0, upper=1.0).fillna(0.0)
     return raw.shift(1).fillna(0.0).rename("signal")
+
+
+def trend_temperature_score(close: pd.Series, lookback: int = 63) -> pd.Series:
+    """Return volatility-normalized log momentum over a frozen lookback."""
+    if lookback <= 1:
+        raise ValueError("lookback must be greater than one")
+    close = close.astype(float)
+    log_return = np.log(close.div(close.shift(1)))
+    momentum = np.log(close.div(close.shift(lookback)))
+    realized = log_return.rolling(lookback).std(ddof=0) * math.sqrt(lookback)
+    return (
+        momentum.div(realized.replace(0.0, np.nan))
+        .replace([np.inf, -np.inf], np.nan)
+        .rename("temperature_score")
+    )
+
+
+def trend_temperature(
+    close: pd.Series | None = None,
+    *,
+    score: pd.Series | None = None,
+    lookback: int = 63,
+    cold_threshold: float = -0.5,
+    warm_threshold: float = 0.5,
+    hot_threshold: float = 1.0,
+) -> pd.Series:
+    """Classify a transparent trend score into cold, flat, warm, and hot states."""
+    if not cold_threshold < warm_threshold < hot_threshold:
+        raise ValueError("temperature thresholds must be strictly increasing")
+    if score is None:
+        if close is None:
+            raise ValueError("close or score is required")
+        score = trend_temperature_score(close, lookback)
+    assert score is not None
+    values = pd.Series(pd.NA, index=score.index, dtype="string", name="state")
+    valid = score.notna()
+    values.loc[valid & (score < cold_threshold)] = "cold"
+    values.loc[valid & (score >= cold_threshold) & (score < warm_threshold)] = "flat"
+    values.loc[valid & (score >= warm_threshold) & (score < hot_threshold)] = "warm"
+    values.loc[valid & (score >= hot_threshold)] = "hot"
+    return values
+
+
+def trend_temperature_signal(
+    close: pd.Series,
+    lookback: int = 63,
+    entry_threshold: float = 1.0,
+    exit_threshold: float = 0.5,
+) -> pd.Series:
+    """Enter when trend is hot and exit after it cools to flat, with next-open delay."""
+    if entry_threshold <= exit_threshold:
+        raise ValueError("entry_threshold must exceed exit_threshold")
+    score = trend_temperature_score(close, lookback)
+    held = 0.0
+    raw: list[float] = []
+    for value in score:
+        if pd.notna(value):
+            if not held and value >= entry_threshold:
+                held = 1.0
+            elif held and value < exit_threshold:
+                held = 0.0
+        raw.append(held)
+    return pd.Series(raw, index=close.index, name="signal").shift(1).fillna(0.0)
+
+
+def risk_managed_trend_temperature_signal(
+    close: pd.Series,
+    lookback: int = 63,
+    entry_threshold: float = 1.0,
+    exit_threshold: float = 0.5,
+    volatility_window: int = 60,
+    target_volatility: float = 0.10,
+) -> pd.Series:
+    """Apply a capped volatility target to the delayed temperature state."""
+    if volatility_window <= 1:
+        raise ValueError("volatility_window must be greater than one")
+    if target_volatility <= 0:
+        raise ValueError("target_volatility must be positive")
+    regime = trend_temperature_signal(close, lookback, entry_threshold, exit_threshold)
+    log_return = np.log(close.astype(float).div(close.astype(float).shift(1)))
+    realized = log_return.rolling(volatility_window).std(ddof=0) * math.sqrt(252)
+    scale = target_volatility / realized.shift(1).replace(0.0, np.nan)
+    return (regime * scale.clip(lower=0.0, upper=1.0).fillna(0.0)).rename("signal")
 
 
 def strategy_signals(close: pd.Series) -> dict[str, pd.Series]:
