@@ -7,7 +7,10 @@ from gold_research.strategies import (
     donchian_signal,
     multi_horizon_momentum_signal,
     risk_managed_trend_signal,
+    risk_managed_trend_temperature_signal,
     sma_signal,
+    trend_temperature,
+    trend_temperature_signal,
     trend_filter_signal,
 )
 
@@ -74,4 +77,39 @@ def test_risk_managed_trend_reduces_exposure_when_volatility_rises():
     volatile.iloc[-80:] *= np.cumprod(np.tile([1.04, 0.97], 40))
     calm_signal = risk_managed_trend_signal(calm, 100, 60, 0.10)
     volatile_signal = risk_managed_trend_signal(volatile, 100, 60, 0.10)
+    assert volatile_signal.iloc[-1] < calm_signal.iloc[-1]
+
+
+def test_trend_temperature_assigns_ordered_states_from_frozen_thresholds():
+    score = pd.Series([-1.0, -0.25, 0.75, 1.25])
+    states = trend_temperature(score=score)
+    assert states.tolist() == ["cold", "flat", "warm", "hot"]
+
+
+def test_trend_temperature_signal_is_delayed_hysteretic_and_prefix_stable():
+    index = pd.bdate_range("2020-01-01", periods=260)
+    rising = np.exp(np.linspace(0, 1.0, 160))
+    falling = rising[-1] * np.exp(np.linspace(0, -0.8, 100))
+    close = pd.Series(np.concatenate([rising, falling]), index=index)
+    signal = trend_temperature_signal(close, lookback=42, entry_threshold=1.0, exit_threshold=0.5)
+    assert signal.between(0.0, 1.0).all()
+    assert signal.max() == 1.0
+    assert signal.iloc[-1] == 0.0
+    pd.testing.assert_series_equal(
+        signal.iloc[:220],
+        trend_temperature_signal(close.iloc[:220], 42, 1.0, 0.5),
+    )
+    altered = close.copy()
+    altered.iloc[-1] *= 100
+    assert trend_temperature_signal(altered, 42, 1.0, 0.5).iloc[-1] == signal.iloc[-1]
+
+
+def test_risk_managed_temperature_reduces_exposure_when_volatility_rises():
+    index = pd.bdate_range("2020-01-01", periods=360)
+    calm = pd.Series(100 * np.exp(np.linspace(0, 0.8, 360)), index=index)
+    volatile = calm.copy()
+    volatile.iloc[-80:] *= np.exp(np.cumsum(np.tile([0.04, -0.03], 40)))
+    calm_signal = risk_managed_trend_temperature_signal(calm, 42, 0.2, 0.0, 60, 0.10)
+    volatile_signal = risk_managed_trend_temperature_signal(volatile, 42, 0.2, 0.0, 60, 0.10)
+    assert calm_signal.iloc[-1] > 0
     assert volatile_signal.iloc[-1] < calm_signal.iloc[-1]

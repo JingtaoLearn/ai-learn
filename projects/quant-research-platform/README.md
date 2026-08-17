@@ -60,6 +60,38 @@ python3 scripts/build_strategy_lab.py \
 
 The output is research-only and contains no order path, credentials, or broker integration. JavaScript core behavior is covered by `node --test tests/test_strategy_lab.js`; the Python builder has a deterministic synthetic-data test.
 
+## Trend-temperature study
+
+`gold_research.round3.run_trend_temperature_research` adds a transparent,
+Trend Animal-inspired state machine. It is explicitly not a reconstruction of
+the proprietary model. The frozen score is 63-session log momentum divided by
+63-session log-return volatility scaled by the square root of the lookback:
+
+- cold: score below `-0.5`;
+- flat: `-0.5` to below `0.5`;
+- warm: `0.5` to below `1.0`;
+- hot: `1.0` or above.
+
+The binary strategy enters after the score reaches hot and exits after it cools
+below `0.5`. The risk-managed variant applies a capped 10% annualized
+volatility target. Both use prior-close information and execute at the next
+open. The run compares them with buy-and-hold, Donchian 55/20, the 200-session
+trend filter, and 252-session momentum; it also records 5/10/20 bps cost tests,
+calendar-year folds, paired block bootstrap intervals, and one-at-a-time
+parameter neighborhoods.
+
+```python
+from pathlib import Path
+
+from gold_research.round3 import run_trend_temperature_research
+
+result = run_trend_temperature_research(data, Path("runs/trend-temperature"))
+```
+
+Each immutable run writes `summary.csv`, `annual_folds.csv`, `bootstrap.json`,
+`parameter_stability.csv`, `current_signals.csv`, `state_history.csv`,
+`trades.csv`, and a decision-first `report.html`.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.
