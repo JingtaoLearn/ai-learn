@@ -92,6 +92,41 @@ Each immutable run writes `summary.csv`, `annual_folds.csv`, `bootstrap.json`,
 `parameter_stability.csv`, `current_signals.csv`, `state_history.csv`,
 `trades.csv`, and a decision-first `report.html`.
 
+## Three-year walk-forward study
+
+`gold_research.round4.run_round4_research` evaluates exactly the latest three
+calendar years ending at the latest common completed daily bar. Earlier bars
+warm indicators only. Its fixed seven-candidate set is buy-and-hold, the
+200-session trend filter, 252-session momentum, Donchian 55/20, the
+63/126/252 momentum vote, 10% volatility-managed trend, and the transparent
+63-session temperature proxy.
+
+The study uses anchored expanding training (at least 252 sessions) followed by
+complete 63-session test blocks. Within each fold it aggregates equal-weight
+CAGR, Sharpe, and Calmar ranks across `GC=F`, `GLD`, and 5/20 bps one-way costs,
+then breaks ties by lower turnover and candidate name. It writes stitched
+**retrospective pseudo-OOS** paths for the adaptive selector and every frozen
+candidate. `GC=F` and `GLD` are correlated confirmations, not independent
+samples; alternative score weights, especially a risk-first objective, can
+change the winner.
+
+```python
+from pathlib import Path
+
+from gold_research.round4 import run_round4_research
+
+result = run_round4_research(data, Path("runs/three-year-walk-forward"))
+```
+
+Each immutable run writes `candidate_summary.csv`, `walk_forward_folds.csv`,
+`walk_forward_daily.csv`, `pseudo_oos_summary.csv`, `latest_signals.csv`,
+`markers.csv`, `trades.csv`, and a mobile-readable `report.html` with an
+embedded transition chart, alongside configuration and provenance manifests.
+Fold selection retains the known train-end rebalance cost but excludes its
+forward return because that return is only known at the test-start open.
+`markers.csv` records fractional `ADD`/`REDUCE` rebalances that incur costs,
+while `trades.csv` remains a zero-to-positive round-trip ledger.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.
