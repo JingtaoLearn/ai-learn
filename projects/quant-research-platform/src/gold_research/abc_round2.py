@@ -31,9 +31,13 @@ def _validated_frame(frame: pd.DataFrame) -> pd.DataFrame:
     ):
         raise ValueError("OHLC prices must be finite and strictly positive")
     numeric = numeric.astype(float)
-    if (numeric["High"] < numeric["Low"]).any():
+    tolerance = numeric.abs().max(axis=1).clip(lower=1.0) * 1e-12
+    if (numeric["High"] + tolerance < numeric["Low"]).any():
         raise ValueError("OHLC High must be greater than or equal to Low")
-    if ((numeric["Close"] < numeric["Low"]) | (numeric["Close"] > numeric["High"])).any():
+    if (
+        (numeric["Close"] + tolerance < numeric["Low"])
+        | (numeric["Close"] - tolerance > numeric["High"])
+    ).any():
         raise ValueError("OHLC Close must be within the High-Low range")
     return numeric
 

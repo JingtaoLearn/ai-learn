@@ -223,8 +223,10 @@ def _verified_symbol_frame(
     numeric = prices.apply(pd.to_numeric, errors="coerce")
     if not np.isfinite(numeric.to_numpy(dtype=float)).all() or (numeric <= 0.0).any().any():
         raise ValueError(f"normalized prices must be finite and strictly positive for {symbol}")
-    impossible_signal_geometry = (numeric["High"] < numeric["Low"]) | (
-        (numeric["Close"] < numeric["Low"]) | (numeric["Close"] > numeric["High"])
+    tolerance = numeric.abs().max(axis=1).clip(lower=1.0) * 1e-12
+    impossible_signal_geometry = (numeric["High"] + tolerance < numeric["Low"]) | (
+        (numeric["Close"] + tolerance < numeric["Low"])
+        | (numeric["Close"] - tolerance > numeric["High"])
     )
     if impossible_signal_geometry.any():
         raise ValueError(f"normalized signal OHLC relationships are invalid for {symbol}")

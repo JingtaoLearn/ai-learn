@@ -197,6 +197,18 @@ def test_dmi_state_retains_adx_threshold_equality_but_exits_on_direction_equalit
     assert state.tolist() == [0.0, 1.0, 1.0, 0.0]
 
 
+def test_signal_validation_allows_machine_roundoff_at_range_boundary():
+    high = np.full(60, 10.0)
+    low = np.full(60, 9.0)
+    close = np.full(60, 10.0)
+    close[10] = np.nextafter(10.0, np.inf)
+    frame = ohlc_frame(close, high=high, low=low)
+
+    signal = d55_20_close_signal(frame)
+
+    assert len(signal) == len(frame)
+
+
 @pytest.mark.parametrize("bad", [0.0, np.nan, np.inf])
 def test_dmi_adx_rejects_invalid_ohlc(bad):
     frame = dmi_fixture()
