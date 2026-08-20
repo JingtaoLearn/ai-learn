@@ -127,6 +127,51 @@ forward return because that return is only known at the test-start open.
 `markers.csv` records fractional `ADD`/`REDUCE` rebalances that incur costs,
 while `trades.csv` remains a zero-to-positive round-trip ledger.
 
+## Agricultural Bank Round-2 evidence study
+
+`gold_research.abc_round2_study.run_abc_round2_study` runs the frozen Round-2
+protocol for Agricultural Bank of China (`601288.SS`) and six predeclared bank
+peers. It evaluates exactly four public-formula long-or-cash candidates after
+each symbol's own 315-session warm-up. There is no parameter search, candidate
+selection, or forced winner.
+
+Every manifest entry is bound to the exact symbol's canonical Yahoo chart URL
+and verified against the referenced CSV checksum, row count, date range, and
+parsed contents. Session dates are normalized to Shanghai dates, and bars on or
+after the analysis date are excluded before scoring. Yahoo's adjusted-close
+factor puts all OHLC fields on one total-return scale. The base 8/13 bps and
+stress 20/25 bps cost cases are optimistic comparability scenarios, not claims
+of real fill completeness.
+
+```python
+from pathlib import Path
+
+from gold_research.abc_round2_study import run_abc_round2_study
+
+result = run_abc_round2_study(
+    data_dir=Path("data/agricultural-bank-round2"),
+    output_root=Path("runs/agricultural-bank-round2"),
+    analysis_date="2026-08-20T13:00:00+08:00",
+    protocol_path=Path("protocol.yaml"),
+)
+```
+
+The runner applies every promotion gate independently to all four candidates.
+`execution_complete` defaults to `False`, so the execution-completeness gate
+fails until separate fill evidence exists. Target-only evidence includes exact
+circular-shift timing placebos, complete four-calendar-year blocks, every
+modeled trade, daily returns, and a next-open target derived only from the last
+completed real close. Peer validation compares each rule with each peer's own
+buy-and-hold Sharpe.
+
+Publishing uses a temporary sibling directory and atomic rename. The immutable
+run ID binds canonical configuration, completed normalized data, protocol bytes,
+and Git/source state. The non-HTML artifact contract contains configuration and
+provenance JSON, a four-row trial registry, candidate and benchmark summaries,
+peer validation, target daily returns and trades, subperiods, timing results,
+independent gate decisions, and current modeled signals. The study remains
+retrospective and research-only; it has no broker or live-order path.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.

@@ -19,6 +19,31 @@ def test_costs_are_reported_before_and_after_and_reduce_return():
     assert result["cost"].sum() > 0
 
 
+def test_asymmetric_costs_charge_buy_and_sell_turnover_separately():
+    index = pd.bdate_range("2024-01-02", periods=5)
+    opens = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0], index=index)
+    signal = pd.Series([0.0, 1.0, 1.0, 0.0, 0.0], index=index)
+    result = backtest(opens, signal, buy_cost_bps=8.0, sell_cost_bps=13.0)
+    assert result["buy_turnover"].sum() == pytest.approx(1.0)
+    assert result["sell_turnover"].sum() == pytest.approx(1.0)
+    assert result["cost"].sum() == pytest.approx(0.0021)
+
+
+@pytest.mark.parametrize(
+    ("buy_cost_bps", "sell_cost_bps"),
+    [(-1.0, 5.0), (5.0, -1.0), (np.nan, 5.0), (5.0, np.inf), (True, 5.0)],
+)
+def test_backtest_rejects_invalid_asymmetric_costs(buy_cost_bps, sell_cost_bps):
+    p = sample(10)
+    with pytest.raises(ValueError, match="cost"):
+        backtest(
+            p,
+            pd.Series(1.0, index=p.index),
+            buy_cost_bps=buy_cost_bps,
+            sell_cost_bps=sell_cost_bps,
+        )
+
+
 def test_trade_ledger_uses_attainable_next_open_execution():
     from gold_research.backtest import trade_ledger
 

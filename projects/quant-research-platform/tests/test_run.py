@@ -24,6 +24,18 @@ def test_data_hash_covers_all_present_canonical_input_columns():
     assert _data_hash(left) != _data_hash(right)
 
 
+def test_data_hash_distinguishes_every_behaviorally_relevant_float64_value():
+    idx = pd.bdate_range("2024-01-01", periods=2)
+    left = {"ABC": pd.DataFrame({"Open": [100.0, 101.0], "Close": [100.0, 101.0]}, index=idx)}
+    right = {
+        "ABC": pd.DataFrame(
+            {"Open": [100.0, 101.0], "Close": [100.000000001, 101.0]},
+            index=idx,
+        )
+    }
+    assert _data_hash(left) != _data_hash(right)
+
+
 def test_source_tree_hash_changes_with_effective_source(tmp_path):
     (tmp_path / "src").mkdir()
     source = tmp_path / "src" / "strategy.py"

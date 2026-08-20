@@ -110,16 +110,25 @@ def _next_session_signals(close: pd.Series) -> dict[str, float]:
 
 
 def completed_signal_close(
-    close: pd.Series, analysis_date: pd.Timestamp | datetime
+    close: pd.Series,
+    analysis_date: pd.Timestamp | datetime,
+    *,
+    exchange_timezone: str | None = None,
 ) -> tuple[pd.Series, bool]:
-    """Exclude a same-date daily bar that may still be forming."""
+    """Exclude daily bars that are not completed in the exchange calendar."""
     analysis_day = pd.Timestamp(analysis_date)
     if analysis_day.tzinfo is not None:
-        analysis_day = analysis_day.tz_convert(None)
+        if exchange_timezone is not None:
+            analysis_day = analysis_day.tz_convert(exchange_timezone).tz_localize(None)
+        else:
+            analysis_day = analysis_day.tz_convert(None)
     analysis_day = analysis_day.normalize()
     observed_days = pd.DatetimeIndex(close.index)
     if observed_days.tz is not None:
-        observed_days = observed_days.tz_convert(None)
+        if exchange_timezone is not None:
+            observed_days = observed_days.tz_convert(exchange_timezone).tz_localize(None)
+        else:
+            observed_days = observed_days.tz_convert(None)
     completed = close.loc[observed_days.normalize() < analysis_day]
     if completed.empty:
         raise ValueError("no completed daily bar is available for the current signal")

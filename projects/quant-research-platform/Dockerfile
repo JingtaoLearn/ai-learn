@@ -6,7 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git=1:2.39.5-0+deb12u3 \
+    && apt-get install -y --no-install-recommends \
+        fonts-wqy-zenhei=0.9.45-8 \
+        git=1:2.39.5-0+deb12u3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash research
 
