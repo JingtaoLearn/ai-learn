@@ -9,6 +9,8 @@ import pytest
 
 from gold_research.abc import (
     ABC_CANDIDATES,
+    ABC_PARAMETERS,
+    _strategy_chart,
     adjusted_ohlc,
     abc_candidate_signals,
     run_abc_trend_research,
@@ -252,6 +254,18 @@ def test_abc_research_rejects_noncanonical_holdout_boundary(tmp_path):
         )
 
 
+def test_strategy_chart_fails_closed_without_cjk_font(monkeypatch):
+    monkeypatch.setattr("gold_research.abc.CJK_FONT_FAMILY", None)
+    with pytest.raises(RuntimeError, match="CJK font"):
+        _strategy_chart(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            "breakout_20_10",
+        )
+
+
 def test_research_freezes_candidate_before_holdout_and_emits_immutable_artifacts(tmp_path):
     frame = synthetic_abc(periods=2400)
     holdout_start = pd.Timestamp("2023-01-01")
@@ -267,6 +281,8 @@ def test_research_freezes_candidate_before_holdout_and_emits_immutable_artifacts
             data_manifest=manifest,
             holdout_start="2023-01-01",
             analysis_date=analysis_date,
+            buy_cost_bps=3.0,
+            sell_cost_bps=7.0,
             bootstrap_samples=200,
         )
     finally:
@@ -300,9 +316,9 @@ def test_research_freezes_candidate_before_holdout_and_emits_immutable_artifacts
     assert config["development_warmup_sessions"] == 120
     assert config["development_evaluation_start"] > frame.index[0].date().isoformat()
     assert config["execution"] == "completed close signal; next-session adjusted open fill"
-    assert config["buy_cost_bps"] == 8.0
-    assert config["sell_cost_bps"] == 13.0
-    assert config["best_frozen_candidate"] in ABC_CANDIDATES[1:]
+    assert config["buy_cost_bps"] == 3.0
+    assert config["sell_cost_bps"] == 7.0
+    assert config["best_frozen_candidate"] == "breakout_40_20"
 
     holdout = pd.read_csv(run_dir / "holdout_summary.csv")
     assert set(holdout["candidate"]) == {"buy_and_hold", config["best_frozen_candidate"]}
@@ -322,17 +338,25 @@ def test_research_freezes_candidate_before_holdout_and_emits_immutable_artifacts
     assert {"entry_date", "exit_date", "trade_return", "cumulative_return"} <= set(trade_path)
     assert trade_path["cumulative_return"].notna().all()
     chart = (run_dir / "strategy_chart.svg").read_text()
+    entry_window, exit_window = ABC_PARAMETERS[config["best_frozen_candidate"]]
     assert "<svg" in chart
-    assert "BUY" in chart and "SELL" in chart
+    assert f"买入：收盘价突破前{entry_window}日最高收盘价" in chart
+    assert f"卖出：收盘价跌破前{exit_window}日最低收盘价" in chart
 
     report = (run_dir / "report.html").read_text()
-    assert "Agricultural Bank of China" in report
-    assert "retrospective holdout" in report
-    assert "CAGR" in report
-    assert "Maximum drawdown" in report
-    assert "Buy / sell points and cumulative return" in report
+    assert '<html lang="zh-CN">' in report
+    assert "农业银行趋势交易研究" in report
+    assert "回顾性留出期" in report
+    assert "年化收益率" in report
+    assert "最大回撤" in report
+    assert "买卖点与累计收益率" in report
+    assert f"此前{entry_window}个交易日的最高收盘价" in report
+    assert f"此前{exit_window}个交易日的最低收盘价" in report
+    assert "下一交易日开盘，按策略资金100%买入" in report
+    assert "下一交易日开盘全部卖出" in report
+    assert "基础交易成本：买入3个基点，卖出7个基点" in report
     assert "data:image/svg+xml;base64," in report
-    assert "Swipe horizontally for the full table" in report
+    assert "← 横向滑动查看完整表格 →" in report
     assert "window.addEventListener('load', refreshAll)" in report
     assert "&lt;script&gt;bad()&lt;/script&gt;" in report
     assert "<script>bad()</script>" not in report

@@ -162,7 +162,7 @@ immutable run records development and holdout summaries, cost stress,
 annual returns, paired block-bootstrap uncertainty, daily returns, trades, a
 trade-by-trade cumulative return path, an SVG price chart with modeled buy/sell
 points and cumulative strategy versus buy-and-hold returns, the latest modeled
-action, configuration, provenance, and a mobile-readable HTML report. The
+action, configuration, provenance, and a Chinese mobile-readable HTML report. The
 holdout remains retrospective because it has now been inspected; only future
 paper observation can provide genuinely unseen evidence.
 

@@ -18,6 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import font_manager
 
 from .backtest import backtest, metrics, trade_ledger
 from .round3 import completed_signal_close
@@ -40,6 +41,22 @@ ABC_PARAMETERS = {
 }
 ABC_SYMBOL = "601288.SS"
 ABC_HOLDOUT_START = pd.Timestamp("2023-01-01")
+CJK_FONT_PATH = Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc")
+if CJK_FONT_PATH.is_file():
+    font_manager.fontManager.addfont(str(CJK_FONT_PATH))
+    CJK_FONT_FAMILY = font_manager.FontProperties(fname=str(CJK_FONT_PATH)).get_name()
+else:
+    CJK_FONT_FAMILY = None
+
+
+STRATEGY_LABELS_ZH = {
+    "buy_and_hold": "买入并持有",
+    "breakout_20_10": "20日突破 / 10日退出",
+    "breakout_40_20": "40日突破 / 20日退出",
+    "breakout_60_20": "60日突破 / 20日退出",
+    "breakout_120_40": "120日突破 / 40日退出",
+}
+ACTION_LABELS_ZH = {"BUY": "买入", "SELL": "卖出", "HOLD": "继续持有", "CASH": "空仓等待"}
 
 
 def _session_index(index: pd.Index) -> pd.DatetimeIndex:
@@ -228,8 +245,16 @@ def _strategy_chart(
     trade_path: pd.DataFrame,
     strategy_name: str,
 ) -> str:
-    """Render adjusted price transitions and costed cumulative-return paths."""
-    with plt.rc_context({"svg.hashsalt": "abc-breakout-trend-v1"}):
+    """Render a Chinese-labeled chart of transactions and cumulative returns."""
+    if CJK_FONT_FAMILY is None:
+        raise RuntimeError(f"CJK font is required to render the Chinese chart: {CJK_FONT_PATH}")
+    entry_window, exit_window = ABC_PARAMETERS[strategy_name]
+    chart_context = {
+        "svg.hashsalt": "abc-breakout-trend-v1",
+        "font.family": CJK_FONT_FAMILY,
+        "axes.unicode_minus": False,
+    }
+    with plt.rc_context(chart_context):
         figure, axes = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True, constrained_layout=True)
         price_axis, return_axis = axes
         price_axis.plot(
@@ -237,7 +262,7 @@ def _strategy_chart(
             holdout["Close"],
             color="#25364d",
             linewidth=1.35,
-            label="Adjusted close",
+            label="农业银行复权收盘价",
         )
         if not trade_path.empty:
             price_axis.scatter(
@@ -248,7 +273,7 @@ def _strategy_chart(
                 color="#16855b",
                 edgecolors="white",
                 linewidths=0.6,
-                label="BUY",
+                label="买入（下一交易日开盘）",
                 zorder=3,
             )
             closed = trade_path.loc[~trade_path["is_open"].astype(bool)]
@@ -261,13 +286,27 @@ def _strategy_chart(
                     color="#c93f3f",
                     edgecolors="white",
                     linewidths=0.6,
-                    label="SELL",
+                    label="卖出（下一交易日开盘）",
                     zorder=3,
                 )
-        price_axis.set_title("Agricultural Bank adjusted price with modeled transitions")
-        price_axis.set_ylabel("Adjusted price (CNY)")
+        price_axis.set_title("农业银行复权股价与策略买卖点")
+        price_axis.set_ylabel("复权价格（元）")
         price_axis.grid(alpha=0.22)
         price_axis.legend(loc="upper left", ncols=3, frameon=False)
+        price_axis.text(
+            0.985,
+            0.035,
+            f"买入：收盘价突破前{entry_window}日最高收盘价\n"
+            "→ 下一交易日开盘，按策略资金100%买入\n"
+            f"卖出：收盘价跌破前{exit_window}日最低收盘价\n"
+            "→ 下一交易日开盘，全部卖出",
+            transform=price_axis.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=10.5,
+            color="#172033",
+            bbox={"boxstyle": "round,pad=0.55", "facecolor": "#f7f9fc", "edgecolor": "#b8c2d1", "alpha": 0.96},
+        )
 
         strategy_curve = (strategy_result["equity_net"] - 1.0) * 100.0
         benchmark_curve = (benchmark_result["equity_net"] - 1.0) * 100.0
@@ -276,19 +315,19 @@ def _strategy_chart(
             strategy_curve,
             color="#405cf5",
             linewidth=1.7,
-            label=f"{strategy_name} after costs",
+            label=f"{STRATEGY_LABELS_ZH[strategy_name]}（已扣交易成本）",
         )
         return_axis.plot(
             benchmark_curve.index,
             benchmark_curve,
             color="#8a94a6",
             linewidth=1.25,
-            label="Buy-and-hold after costs",
+            label="买入并持有（已扣交易成本）",
         )
         return_axis.axhline(0.0, color="#98a2b3", linewidth=0.8)
-        return_axis.set_title("Cumulative return")
-        return_axis.set_ylabel("Return (%)")
-        return_axis.set_xlabel("Date")
+        return_axis.set_title("累计收益率")
+        return_axis.set_ylabel("累计收益率（%）")
+        return_axis.set_xlabel("日期")
         return_axis.grid(alpha=0.22)
         return_axis.legend(loc="upper left", frameon=False)
         for curve, color in ((strategy_curve, "#405cf5"), (benchmark_curve, "#687386")):
@@ -305,7 +344,15 @@ def _strategy_chart(
         buffer = io.StringIO()
         figure.savefig(buffer, format="svg", metadata={"Date": None})
         plt.close(figure)
-    return buffer.getvalue()
+    svg = buffer.getvalue()
+    svg_start = svg.find("<svg")
+    svg_open_end = svg.find(">", svg_start) + 1
+    description = (
+        "<title>农业银行趋势交易买卖点与累计收益率</title>"
+        f"<desc>买入：收盘价突破前{entry_window}日最高收盘价，下一交易日开盘按策略资金100%买入；"
+        f"卖出：收盘价跌破前{exit_window}日最低收盘价，下一交易日开盘全部卖出。</desc>"
+    )
+    return svg[:svg_open_end] + description + svg[svg_open_end:]
 
 
 def _latest_action(close: pd.Series, candidate: str) -> dict:
@@ -347,6 +394,7 @@ def _render_report(
     chart_svg: str,
 ) -> str:
     best = config["best_frozen_candidate"]
+    entry_window, exit_window = ABC_PARAMETERS[best]
     holdout_view = holdout.loc[
         :, ["candidate", "cumulative_return", "cagr", "max_drawdown", "sharpe", "calmar"]
     ].copy()
@@ -354,14 +402,15 @@ def _render_report(
         holdout_view[column] = holdout_view[column].map(_format_percent)
     for column in ("sharpe", "calmar"):
         holdout_view[column] = holdout_view[column].map(lambda value: f"{value:.2f}")
+    holdout_view["candidate"] = holdout_view["candidate"].map(STRATEGY_LABELS_ZH)
     holdout_view = holdout_view.rename(
         columns={
-            "candidate": "Strategy",
-            "cumulative_return": "Cumulative return",
-            "cagr": "CAGR",
-            "max_drawdown": "Maximum drawdown",
-            "sharpe": "Sharpe",
-            "calmar": "Calmar",
+            "candidate": "策略",
+            "cumulative_return": "累计收益率",
+            "cagr": "年化收益率",
+            "max_drawdown": "最大回撤",
+            "sharpe": "夏普比率",
+            "calmar": "卡玛比率",
         }
     )
     development_view = development.loc[
@@ -371,24 +420,26 @@ def _render_report(
         development_view[column] = development_view[column].map(_format_percent)
     for column in ("sharpe", "calmar", "turnover"):
         development_view[column] = development_view[column].map(lambda value: f"{value:.2f}")
+    development_view["candidate"] = development_view["candidate"].map(STRATEGY_LABELS_ZH)
     development_view = development_view.rename(
         columns={
-            "candidate": "Strategy",
-            "cagr": "CAGR",
-            "max_drawdown": "Maximum drawdown",
-            "sharpe": "Sharpe",
-            "calmar": "Calmar",
-            "turnover": "Turnover",
+            "candidate": "策略",
+            "cagr": "年化收益率",
+            "max_drawdown": "最大回撤",
+            "sharpe": "夏普比率",
+            "calmar": "卡玛比率",
+            "turnover": "换手次数",
         }
     )
     annual_view = annual.pivot(index="year", columns="candidate", values="total_return").reset_index()
     for column in annual_view.columns[1:]:
         annual_view[column] = annual_view[column].map(_format_percent)
+    annual_view = annual_view.rename(columns={"year": "年份", **STRATEGY_LABELS_ZH})
     trade_view = trade_path.loc[
         :, ["entry_date", "entry_price", "exit_date", "exit_price", "trade_return", "cumulative_return"]
     ].copy()
     trade_view["entry_date"] = pd.to_datetime(trade_view["entry_date"]).dt.date.astype(str)
-    trade_view["exit_date"] = pd.to_datetime(trade_view["exit_date"]).dt.date.astype("string").fillna("OPEN")
+    trade_view["exit_date"] = pd.to_datetime(trade_view["exit_date"]).dt.date.astype("string").fillna("持仓中")
     for column in ("entry_price", "exit_price"):
         trade_view[column] = trade_view[column].map(
             lambda value: "—" if pd.isna(value) else f"{float(value):.3f}"
@@ -397,27 +448,28 @@ def _render_report(
         trade_view[column] = trade_view[column].map(_format_percent)
     trade_view = trade_view.rename(
         columns={
-            "entry_date": "Buy date",
-            "entry_price": "Buy price",
-            "exit_date": "Sell date",
-            "exit_price": "Sell price",
-            "trade_return": "Trade return",
-            "cumulative_return": "Cumulative return",
+            "entry_date": "买入日期",
+            "entry_price": "买入价",
+            "exit_date": "卖出日期",
+            "exit_price": "卖出价",
+            "trade_return": "单笔收益率",
+            "cumulative_return": "卖出后累计收益率",
         }
     )
     chart_data = base64.b64encode(chart_svg.encode()).decode()
     strategy_row = holdout.loc[holdout["candidate"] == best].iloc[0]
     benchmark_row = holdout.loc[holdout["candidate"] == "buy_and_hold"].iloc[0]
     lead = (
-        f"The frozen {best} rule produced {_format_percent(strategy_row['cagr'])} annualized "
-        f"with {_format_percent(strategy_row['max_drawdown'])} maximum drawdown in the retrospective "
-        f"holdout, versus {_format_percent(benchmark_row['cagr'])} and "
-        f"{_format_percent(benchmark_row['max_drawdown'])} for buy-and-hold."
+        f"冻结后的{STRATEGY_LABELS_ZH[best]}策略，在回顾性留出期内年化收益率为"
+        f"{_format_percent(strategy_row['cagr'])}，最大回撤为"
+        f"{_format_percent(strategy_row['max_drawdown'])}；同期买入并持有的年化收益率为"
+        f"{_format_percent(benchmark_row['cagr'])}，最大回撤为"
+        f"{_format_percent(benchmark_row['max_drawdown'])}。"
     )
     escaped_manifest = html.escape(json.dumps(manifest, indent=2, default=str))
     return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agricultural Bank of China breakout trend research</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>农业银行趋势交易研究</title>
 <style>
 :root{{--ink:#172033;--muted:#617087;--line:#dfe5ec;--brand:#405cf5;--good:#147d55;--bad:#bd3f3f}}
 *{{box-sizing:border-box}}body{{margin:0;background:#f5f7fa;color:var(--ink);font:15px/1.6 system-ui,sans-serif}}
@@ -435,26 +487,28 @@ th,td{{padding:8px;border-bottom:1px solid var(--line);text-align:right;white-sp
 .scroll-shell.overflows .scroll-hint{{display:block;background:#eef1ff;color:#3146b8;text-align:center;padding:6px 10px;border-radius:8px 8px 0 0;font-size:12px;font-weight:650}}
 .scroll-shell.overflows:not(.at-end)::after{{content:"";position:absolute;right:0;bottom:6px;width:34px;height:calc(100% - 32px);pointer-events:none;background:linear-gradient(90deg,transparent,rgba(89,104,216,.28))}}}}
 </style></head><body><main>
-<p class="pills"><span class="pill">601288.SS</span><span class="pill">long or cash</span><span class="pill">next-open execution</span></p>
-<h1>Agricultural Bank of China: buy strength, sell weakness</h1>
+<p class="pills"><span class="pill">601288.SS</span><span class="pill">只做多或空仓</span><span class="pill">下一交易日开盘执行</span></p>
+<h1>农业银行：突破后买入，趋势破坏后卖出</h1>
 <p class="lead">{html.escape(lead)}</p>
-<section><h2>Decision</h2><div class="grid">
-<div class="card">Frozen rule<b>{html.escape(best)}</b><span>selected before the holdout</span></div>
-<div class="card">Next action<b>{html.escape(latest['action'])}</b><span>target exposure {latest['target_exposure']:.0%}</span></div>
-<div class="card">Bootstrap resamples above zero<b>{bootstrap['probability_annual_return_diff_positive']:.1%}</b><span>fraction of paired block resamples with a positive mean-return difference</span></div>
-</div><p class="warning"><strong>Research only.</strong> The holdout is retrospective, not genuinely unseen future data. No broker connection or automatic order path exists.</p></section>
-<section><h2>Rule</h2><p>Enter after the completed close breaks above the prior N-session high; exit after it breaks below the prior M-session low. The order is modeled at the next adjusted open. This is the literal "chase strength and cut weakness" interpretation.</p>
-<ul><li>Long-only; no short selling or leverage.</li><li>Total-return adjusted prices include dividend effects while held.</li><li>Base friction: {config['buy_cost_bps']:g} bps on buys and {config['sell_cost_bps']:g} bps on sells.</li><li>Candidate selection used only dates through {config['selection_end']}.</li></ul></section>
-<section><h2>Buy / sell points and cumulative return</h2>
-<p>Green triangles are modeled next-open buys; red triangles are modeled next-open sells. The lower panel shows cumulative return after transaction costs.</p>
-<img class="chart" src="data:image/svg+xml;base64,{chart_data}" alt="Agricultural Bank adjusted price with buy and sell points, plus cumulative strategy and buy-and-hold returns">
+<section><h2>结论</h2><div class="grid">
+<div class="card">冻结策略<b>{html.escape(STRATEGY_LABELS_ZH[best])}</b><span>仅使用2022年及以前数据选定</span></div>
+<div class="card">当前动作<b>{html.escape(ACTION_LABELS_ZH[latest['action']])}</b><span>策略资金目标仓位 {latest['target_exposure']:.0%}</span></div>
+<div class="card">相对收益为正的重采样占比<b>{bootstrap['probability_annual_return_diff_positive']:.1%}</b><span>成对区块重采样中，策略平均收益差大于零的比例</span></div>
+</div><p class="warning"><strong>仅供研究。</strong> 2023年后的留出期已经被查看，因此属于回顾性检验，不是真正未见的未来数据；本研究不连接券商，也不会自动下单。</p></section>
+<section><h2>什么时候买，什么时候卖</h2>
+<p><strong>买入：</strong>当日收盘价突破此前{entry_window}个交易日的最高收盘价，收盘后确认信号；<strong>下一交易日开盘，按策略资金100%买入。</strong></p>
+<p><strong>卖出：</strong>持仓后，当日收盘价跌破此前{exit_window}个交易日的最低收盘价，收盘后确认信号；<strong>下一交易日开盘全部卖出。</strong></p>
+<ul><li>仓位只有两种：100%持有农业银行，或者0%空仓；不分批、不做空、不加杠杆。</li><li>使用总回报复权价格，持仓期间的分红影响计入收益。</li><li>基础交易成本：买入{config['buy_cost_bps']:g}个基点，卖出{config['sell_cost_bps']:g}个基点。</li><li>候选参数只使用截至{config['selection_end']}的数据选择，之后参数冻结。</li></ul></section>
+<section><h2>买卖点与累计收益率</h2>
+<p>绿色上三角表示下一交易日开盘买入，红色下三角表示下一交易日开盘卖出；图内规则框直接写明触发条件。下半图展示扣除交易成本后的累计收益率。</p>
+<img class="chart" src="data:image/svg+xml;base64,{chart_data}" alt="农业银行复权股价、买卖点，以及趋势策略与买入持有的累计收益率">
 <div class="scroll">{trade_view.to_html(index=False, border=0, escape=True)}</div></section>
-<section><h2>Retrospective holdout</h2><div class="scroll">{holdout_view.to_html(index=False, border=0, escape=True)}</div></section>
-<section><h2>Development candidates</h2><div class="scroll">{development_view.to_html(index=False, border=0, escape=True)}</div></section>
-<section><h2>Annual return path</h2><div class="scroll">{annual_view.to_html(index=False, border=0, escape=True)}</div></section>
-<section><h2>Uncertainty</h2><p>Annualized mean daily return difference from the paired moving-block bootstrap: {bootstrap['annual_return_diff']:.2%}; confidence interval {bootstrap['annual_return_diff_ci_low']:.2%} to {bootstrap['annual_return_diff_ci_high']:.2%}. This is not a CAGR difference or a posterior probability of an edge. An interval crossing zero means the historical difference is unresolved.</p></section>
-<section><h2>Failure conditions</h2><ul><li>Sideways markets can cause repeated false breakouts and small losses.</li><li>Gap-down opens can make the modeled exit materially worse than the signal close.</li><li>A single bank stock carries policy, credit-cycle, and company-specific concentration risk.</li><li>Stop using the rule if future paper results materially diverge from the recorded cost and execution assumptions.</li></ul></section>
-<section><h2>Provenance</h2><p>Run ID: <code>{html.escape(run_id)}</code></p><pre>{escaped_manifest}</pre></section>
+<section><h2>回顾性留出期</h2><div class="scroll">{holdout_view.to_html(index=False, border=0, escape=True)}</div></section>
+<section><h2>开发期候选策略</h2><div class="scroll">{development_view.to_html(index=False, border=0, escape=True)}</div></section>
+<section><h2>分年度收益率</h2><div class="scroll">{annual_view.to_html(index=False, border=0, escape=True)}</div></section>
+<section><h2>不确定性</h2><p>成对移动区块自助法估计的“日均收益差年化值”为 {bootstrap['annual_return_diff']:.2%}，95%区间为 {bootstrap['annual_return_diff_ci_low']:.2%} 至 {bootstrap['annual_return_diff_ci_high']:.2%}。这不是年化复合收益率之差，也不是策略存在优势的后验概率；区间跨过零，说明历史相对收益差尚无定论。</p></section>
+<section><h2>策略可能失效的情况</h2><ul><li>横盘震荡会反复出现假突破，造成连续小亏。</li><li>跳空低开时，实际卖出价可能明显差于发出信号时的收盘价。</li><li>单押一只银行股，仍承担政策、信用周期和公司个体风险。</li><li>如果未来模拟结果持续偏离本报告的成本与成交假设，应停止使用该规则并重新评估。</li></ul></section>
+<section><h2>运行溯源</h2><p>运行编号：<code>{html.escape(run_id)}</code></p><p>以下为机器可读字段，字段名保留英文以便复现。</p><pre>{escaped_manifest}</pre></section>
 <script>(()=>{{
   const update=(shell,scroll)=>{{
     const overflow=scroll.scrollWidth>scroll.clientWidth+1;
@@ -468,7 +522,7 @@ th,td{{padding:8px;border-bottom:1px solid var(--line);text-align:right;white-sp
     scroll.parentNode.insertBefore(shell,scroll);
     const hint=document.createElement('div');
     hint.className='scroll-hint';
-    hint.textContent='← Swipe horizontally for the full table →';
+    hint.textContent='← 横向滑动查看完整表格 →';
     shell.append(hint,scroll);
     pairs.push([shell,scroll]);
     scroll.addEventListener('scroll',()=>update(shell,scroll),{{passive:true}});
