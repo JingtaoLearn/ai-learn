@@ -40,14 +40,14 @@ def test_four_year_blocks_use_exact_calendar_boundaries_and_drop_trailing_block(
     blocks = non_overlapping_four_year_blocks(index)
 
     assert blocks == [
-        (pd.Timestamp("2011-01-01"), pd.Timestamp("2014-12-31")),
-        (pd.Timestamp("2015-01-01"), pd.Timestamp("2018-12-31")),
-        (pd.Timestamp("2019-01-01"), pd.Timestamp("2022-12-31")),
+        (pd.Timestamp("2012-01-01"), pd.Timestamp("2015-12-31")),
+        (pd.Timestamp("2016-01-01"), pd.Timestamp("2019-12-31")),
+        (pd.Timestamp("2020-01-01"), pd.Timestamp("2023-12-31")),
     ]
 
 
 def test_four_year_blocks_include_a_final_block_ending_with_the_calendar_year():
-    index = pd.bdate_range("2012-06-01", "2023-12-29")
+    index = pd.bdate_range("2012-01-02", "2023-12-29")
 
     blocks = non_overlapping_four_year_blocks(index)
 
@@ -56,7 +56,7 @@ def test_four_year_blocks_include_a_final_block_ending_with_the_calendar_year():
 
 
 def test_four_year_blocks_exclude_a_final_block_before_the_last_business_day():
-    index = pd.bdate_range("2012-06-01", "2023-12-28")
+    index = pd.bdate_range("2012-01-02", "2023-12-28")
 
     blocks = non_overlapping_four_year_blocks(index)
 
@@ -99,8 +99,8 @@ def test_subperiod_stability_reports_compounded_relative_log_rows_and_passes():
     assert summary["positive_fraction"] == pytest.approx(2 / 3)
     assert [row["pass"] for row in summary["blocks"]] == [True, True, False]
     first = summary["blocks"][0]
-    candidate_factor = (1.0 + candidate_returns.loc["2011":"2014"]).prod()
-    constant_factor = (1.0 + constant_returns.loc["2011":"2014"]).prod()
+    candidate_factor = (1.0 + candidate_returns.loc["2012":"2015"]).prod()
+    constant_factor = (1.0 + constant_returns.loc["2012":"2015"]).prod()
     assert first["candidate_compounded_return"] == pytest.approx(candidate_factor - 1.0)
     assert first["constant_compounded_return"] == pytest.approx(constant_factor - 1.0)
     assert first["relative_log_return"] == pytest.approx(
@@ -213,7 +213,71 @@ def test_circular_shift_timing_test_accepts_fractional_exposure():
         min_shift=60,
     )
 
+    assert result["requested_samples"] == 10
     assert result["samples"] == 10
+    assert result["evaluated_samples"] == 10
+    assert result["distinct_shift_count"] == 10
+
+
+def test_circular_shift_timing_test_evaluates_the_only_allowed_shift_once():
+    index = pd.bdate_range("2024-01-02", periods=120)
+    signal = pd.Series(np.r_[np.ones(60), np.zeros(60)], index=index)
+    forward_returns = np.r_[np.full(60, 0.01), np.full(59, -0.01)]
+    prices = pd.Series(
+        np.r_[100.0, 100.0 * np.cumprod(1.0 + forward_returns)],
+        index=index,
+    )
+
+    result = circular_shift_timing_test(
+        prices,
+        signal,
+        buy_cost_bps=0,
+        sell_cost_bps=0,
+        samples=1_000,
+        min_shift=60,
+        seed=17,
+        family_size=4,
+    )
+
+    assert result["requested_samples"] == 1_000
+    assert result["samples"] == 1
+    assert result["evaluated_samples"] == 1
+    assert result["distinct_shift_count"] == 1
+    assert result["random_cagr_q95"] < result["actual_cagr"]
+    assert result["raw_p_value"] == 0.5
+    assert result["bonferroni_p_value"] == 1.0
+
+
+def test_circular_shift_timing_test_rejects_invalid_actual_net_returns():
+    index = pd.bdate_range("2024-01-02", periods=120)
+    prices = pd.Series(100.0, index=index)
+    signal = pd.Series(np.r_[np.ones(60), np.zeros(60)], index=index)
+
+    with pytest.raises(ValueError, match="net returns.*greater than negative one"):
+        circular_shift_timing_test(
+            prices,
+            signal,
+            buy_cost_bps=10_000,
+            sell_cost_bps=0,
+            samples=1,
+            min_shift=60,
+        )
+
+
+def test_circular_shift_timing_test_rejects_invalid_randomized_net_returns():
+    index = pd.bdate_range("2024-01-02", periods=120)
+    prices = pd.Series(100.0, index=index)
+    signal = pd.Series(np.r_[np.zeros(60), np.ones(60)], index=index)
+
+    with pytest.raises(ValueError, match="randomized net returns.*greater than negative one"):
+        circular_shift_timing_test(
+            prices,
+            signal,
+            buy_cost_bps=0,
+            sell_cost_bps=10_000,
+            samples=1,
+            min_shift=60,
+        )
 
 
 @pytest.mark.parametrize(
@@ -313,6 +377,25 @@ def test_risk_utility_pass_implements_either_declared_branch_exactly():
     assert not risk_utility_pass(weak, buy_hold)
 
 
+@pytest.mark.parametrize(
+    ("side", "invalid_drawdown"),
+    [
+        ("candidate", 0.01),
+        ("candidate", -1.01),
+        ("buy_hold", 0.01),
+        ("buy_hold", -1.01),
+    ],
+)
+def test_risk_utility_pass_rejects_drawdowns_outside_financial_bounds(side, invalid_drawdown):
+    candidate = _metric_set(sharpe=1.1, max_drawdown=-0.30, calmar=0.40)
+    buy_hold = _metric_set(sharpe=1.0, max_drawdown=-0.40, calmar=0.20)
+    metrics = candidate if side == "candidate" else buy_hold
+    metrics["max_drawdown"] = invalid_drawdown
+
+    with pytest.raises(ValueError, match="maximum drawdowns.*between negative one and zero"):
+        risk_utility_pass(candidate, buy_hold)
+
+
 def _passing_gate_inputs() -> dict[str, object]:
     return {
         "target_base_metrics": _metric_set(),
@@ -382,4 +465,33 @@ def test_candidate_gate_decision_is_insufficient_when_no_gate_fails():
 
     assert decision["gates"][5]["status"] == "INSUFFICIENT"
     assert decision["gates"][7]["status"] == "INSUFFICIENT"
+    assert decision["overall"] == "INSUFFICIENT_EVIDENCE"
+
+
+@pytest.mark.parametrize("side", ["target_base_metrics", "target_buy_hold"])
+def test_candidate_gate_decision_is_insufficient_for_invalid_drawdown(side):
+    inputs = _passing_gate_inputs()
+    metrics = inputs[side]
+    assert isinstance(metrics, dict)
+    metrics["max_drawdown"] = 0.01
+    target_base = inputs["target_base_metrics"]
+    assert isinstance(target_base, dict)
+    target_base["calmar"] = 0.40
+
+    decision = candidate_gate_decision(**inputs)
+
+    assert decision["gates"][3]["status"] == "INSUFFICIENT"
+    assert decision["overall"] == "INSUFFICIENT_EVIDENCE"
+
+
+@pytest.mark.parametrize("invalid_p_value", [-0.01, 1.01])
+def test_candidate_gate_decision_is_insufficient_for_out_of_range_timing_p_value(
+    invalid_p_value,
+):
+    inputs = _passing_gate_inputs()
+    inputs["timing_result"] = {"bonferroni_p_value": invalid_p_value}
+
+    decision = candidate_gate_decision(**inputs)
+
+    assert decision["gates"][4]["status"] == "INSUFFICIENT"
     assert decision["overall"] == "INSUFFICIENT_EVIDENCE"

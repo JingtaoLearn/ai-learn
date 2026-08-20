@@ -37,13 +37,19 @@ def _validate_datetime_index(index: pd.Index) -> pd.DatetimeIndex:
 def non_overlapping_four_year_blocks(
     index: pd.Index,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Return complete four-calendar-year block boundaries for a scored index."""
+    """Return complete four-calendar-year block boundaries for a scored index.
+
+    Coverage in the first seven calendar days counts as a complete opening year.
+    This deterministic rule accommodates New Year market holidays without assuming
+    that every generic weekday, especially January 1, was a trading session.
+    """
     dates = _validate_datetime_index(index)
     first_year = int(dates[0].year)
     last_date = dates[-1]
     blocks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     timezone = dates.tz
-    start_year = first_year
+    starts_in_opening_week = dates[0].month == 1 and dates[0].day <= 7
+    start_year = first_year if starts_in_opening_week else first_year + 1
     while start_year + 3 <= int(last_date.year):
         end_year = start_year + 3
         calendar_end = pd.Timestamp(year=end_year, month=12, day=31, tz=timezone)
@@ -171,7 +177,12 @@ def circular_shift_timing_test(
 
     allowed_shifts = np.arange(minimum_shift, observations - minimum_shift + 1)
     rng = np.random.default_rng(int(seed))
-    shifts = rng.choice(allowed_shifts, size=sample_count, replace=True)
+    if sample_count >= len(allowed_shifts):
+        shifts = allowed_shifts
+    else:
+        shifts = rng.choice(allowed_shifts, size=sample_count, replace=False)
+    evaluated_count = len(shifts)
+    distinct_shift_count = int(np.unique(shifts).size)
     forward_returns = np.zeros(observations, dtype=float)
     forward_returns[:-1] = prices[1:] / prices[:-1] - 1.0
     elapsed_years = max(
@@ -179,12 +190,20 @@ def circular_shift_timing_test(
         max(observations - 1, 1) / 252.0,
     )
 
-    random_cagrs = np.empty(sample_count, dtype=float)
-    random_drawdowns = np.empty(sample_count, dtype=float)
+    actual_result = backtest(
+        open_price,
+        signal,
+        buy_cost_bps=buy_cost,
+        sell_cost_bps=sell_cost,
+    )
+    _validated_result_returns(actual_result, "actual timing")
+
+    random_cagrs = np.empty(evaluated_count, dtype=float)
+    random_drawdowns = np.empty(evaluated_count, dtype=float)
     positions = np.arange(observations)
     chunk_size = 256
-    for start in range(0, sample_count, chunk_size):
-        stop = min(start + chunk_size, sample_count)
+    for start in range(0, evaluated_count, chunk_size):
+        stop = min(start + chunk_size, evaluated_count)
         chunk_shifts = shifts[start:stop]
         shifted = exposures[(positions[None, :] - chunk_shifts[:, None]) % observations]
         delta = np.diff(shifted, axis=1, prepend=np.zeros((len(chunk_shifts), 1)))
@@ -193,6 +212,8 @@ def circular_shift_timing_test(
             + np.clip(-delta, 0.0, None) * sell_cost / 10_000.0
         )
         net_returns = shifted * forward_returns - costs
+        if not np.isfinite(net_returns).all() or (net_returns <= -1.0).any():
+            raise ValueError("randomized net returns must be finite and greater than negative one")
         equity = np.cumprod(1.0 + net_returns, axis=1)
         terminal = equity[:, -1]
         chunk_cagrs = np.full(len(chunk_shifts), -1.0)
@@ -202,19 +223,15 @@ def circular_shift_timing_test(
         random_cagrs[start:stop] = chunk_cagrs
         random_drawdowns[start:stop] = np.min(equity / peaks - 1.0, axis=1)
 
-    actual_metrics = metrics(
-        backtest(
-            open_price,
-            signal,
-            buy_cost_bps=buy_cost,
-            sell_cost_bps=sell_cost,
-        )
-    )
+    actual_metrics = metrics(actual_result)
     actual_cagr = float(actual_metrics["cagr"])
-    raw_p_value = float((1 + np.count_nonzero(random_cagrs >= actual_cagr)) / (sample_count + 1))
+    raw_p_value = float((1 + np.count_nonzero(random_cagrs >= actual_cagr)) / (evaluated_count + 1))
     return {
         "observations": observations,
-        "samples": sample_count,
+        "samples": evaluated_count,
+        "requested_samples": sample_count,
+        "evaluated_samples": evaluated_count,
+        "distinct_shift_count": distinct_shift_count,
         "min_shift": minimum_shift,
         "seed": int(seed),
         "family_size": family_count,
@@ -265,6 +282,10 @@ def risk_utility_pass(
     )
     if any(value is None for value in values):
         raise ValueError("risk utility metrics must be present and finite")
+    assert candidate_drawdown is not None
+    assert buy_hold_drawdown is not None
+    if not (-1.0 <= candidate_drawdown <= 0.0 and -1.0 <= buy_hold_drawdown <= 0.0):
+        raise ValueError("maximum drawdowns must be between negative one and zero")
     return bool(
         (
             candidate_sharpe > buy_hold_sharpe
@@ -287,6 +308,10 @@ def _risk_utility_status(candidate: object, buy_hold: object) -> str:
     buy_hold_sharpe = _finite_mapping_value(buy_hold, "sharpe")
     buy_hold_drawdown = _finite_mapping_value(buy_hold, "max_drawdown")
     buy_hold_calmar = _finite_mapping_value(buy_hold, "calmar")
+    if candidate_drawdown is not None and not -1.0 <= candidate_drawdown <= 0.0:
+        return "INSUFFICIENT"
+    if buy_hold_drawdown is not None and not -1.0 <= buy_hold_drawdown <= 0.0:
+        return "INSUFFICIENT"
 
     branch_one_values = (
         candidate_sharpe,
@@ -329,6 +354,8 @@ def candidate_gate_decision(
     buy_hold_cagr = _finite_mapping_value(target_buy_hold, "cagr")
     constant_cagr = _finite_mapping_value(constant_benchmark, "cagr")
     timing_p = _finite_mapping_value(timing_result, "bonferroni_p_value")
+    if timing_p is not None and not 0.0 <= timing_p <= 1.0:
+        timing_p = None
 
     base_status = _status_for_comparison(
         (base_cagr, base_sharpe),
