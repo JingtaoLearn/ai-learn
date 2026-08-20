@@ -132,54 +132,24 @@ def test_monthly_momentum_equality_retains_state_and_is_prefix_stable():
     pd.testing.assert_series_equal(full.iloc[:-1], mom_12m_monthly_signal(prefix))
 
 
-def reference_dmi(frame: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    high = frame["High"].to_numpy(dtype=float)
-    low = frame["Low"].to_numpy(dtype=float)
-    close = frame["Close"].to_numpy(dtype=float)
-    size = len(frame)
-    tr = np.full(size, np.nan)
-    plus_dm = np.full(size, np.nan)
-    minus_dm = np.full(size, np.nan)
-    for position in range(1, size):
-        tr[position] = max(
-            high[position] - low[position],
-            abs(high[position] - close[position - 1]),
-            abs(low[position] - close[position - 1]),
-        )
-        up = high[position] - high[position - 1]
-        down = low[position - 1] - low[position]
-        plus_dm[position] = up if up > down and up > 0.0 else 0.0
-        minus_dm[position] = down if down > up and down > 0.0 else 0.0
+def test_monthly_momentum_fails_closed_when_a_calendar_month_is_missing():
+    dates = []
+    values = []
+    for month in pd.period_range("2018-12", "2020-02", freq="M"):
+        if month == pd.Period("2019-07", freq="M"):
+            continue
+        first = month.start_time + pd.offsets.BMonthBegin(0)
+        last = pd.offsets.BMonthEnd().rollback(month.end_time).normalize()
+        dates.extend([first, last])
+        month_end = 90.0 if month == pd.Period("2018-12", freq="M") else 100.0
+        if month == pd.Period("2020-01", freq="M"):
+            month_end = 110.0
+        values.extend([100.0, month_end])
+    close = pd.Series(values, index=pd.DatetimeIndex(dates), dtype=float)
 
-    smooth_tr = np.full(size, np.nan)
-    smooth_plus = np.full(size, np.nan)
-    smooth_minus = np.full(size, np.nan)
-    if size > period:
-        smooth_tr[period] = tr[1 : period + 1].sum()
-        smooth_plus[period] = plus_dm[1 : period + 1].sum()
-        smooth_minus[period] = minus_dm[1 : period + 1].sum()
-        for position in range(period + 1, size):
-            smooth_tr[position] = (
-                smooth_tr[position - 1] - smooth_tr[position - 1] / period + tr[position]
-            )
-            smooth_plus[position] = (
-                smooth_plus[position - 1] - smooth_plus[position - 1] / period + plus_dm[position]
-            )
-            smooth_minus[position] = (
-                smooth_minus[position - 1]
-                - smooth_minus[position - 1] / period
-                + minus_dm[position]
-            )
-    plus_di = 100.0 * smooth_plus / smooth_tr
-    minus_di = 100.0 * smooth_minus / smooth_tr
-    dx = 100.0 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = np.full(size, np.nan)
-    first_adx = 2 * period - 1
-    if size > first_adx:
-        adx[first_adx] = dx[period : first_adx + 1].mean()
-        for position in range(first_adx + 1, size):
-            adx[position] = ((period - 1) * adx[position - 1] + dx[position]) / period
-    return pd.DataFrame({"+DI": plus_di, "-DI": minus_di, "DX": dx, "ADX": adx}, index=frame.index)
+    signal = mom_12m_monthly_signal(close)
+
+    assert signal.eq(0.0).all()
 
 
 def dmi_fixture(periods: int = 70) -> pd.DataFrame:
@@ -189,14 +159,23 @@ def dmi_fixture(periods: int = 70) -> pd.DataFrame:
     return ohlc_frame(close, high=close + width, low=close - width)
 
 
-def test_dmi_adx_matches_reference_and_has_exact_wilder_warmup():
+def test_dmi_adx_matches_talib_0_6_7_points_and_exact_wilder_warmup():
     frame = dmi_fixture()
-    expected = reference_dmi(frame)
     actual = _dmi_adx_14(frame)
 
     assert actual["ADX"].iloc[:27].isna().all()
     assert actual["ADX"].iloc[27:].notna().all()
-    pd.testing.assert_frame_equal(actual, expected, rtol=1e-12, atol=1e-12)
+    assert actual.iloc[14]["+DI"] == pytest.approx(35.88541666666655, rel=1e-12, abs=1e-12)
+    assert actual.iloc[14]["-DI"] == pytest.approx(2.057291666666842, rel=1e-12, abs=1e-12)
+    assert actual.iloc[14]["DX"] == pytest.approx(89.15579958819401, rel=1e-12, abs=1e-12)
+    assert np.isnan(actual.iloc[14]["ADX"])
+    assert actual.iloc[27]["+DI"] == pytest.approx(38.55678552886503, rel=1e-12, abs=1e-12)
+    assert actual.iloc[27]["-DI"] == pytest.approx(1.9898397363845517, rel=1e-12, abs=1e-12)
+    assert actual.iloc[27]["DX"] == pytest.approx(90.18493044307714, rel=1e-12, abs=1e-12)
+    assert actual.iloc[27]["ADX"] == pytest.approx(90.63333449919035, rel=1e-12, abs=1e-12)
+    assert actual.iloc[28]["ADX"] == pytest.approx(90.6013056380394, rel=1e-12, abs=1e-12)
+    assert actual.iloc[40]["ADX"] == pytest.approx(90.21533860650113, rel=1e-12, abs=1e-12)
+    assert actual.iloc[69]["ADX"] == pytest.approx(90.4833624970207, rel=1e-12, abs=1e-12)
 
 
 def test_dmi_adx_signal_enters_only_after_completed_first_adx_close():
@@ -225,6 +204,32 @@ def test_dmi_adx_rejects_invalid_ohlc(bad):
     frame.iloc[3, frame.columns.get_loc("High")] = bad
     with pytest.raises(ValueError, match="finite and strictly positive"):
         dmi_adx_14_25_20_signal(frame)
+
+
+def test_signal_validation_rejects_empty_ohlc_and_close_inputs():
+    empty_index = pd.DatetimeIndex([])
+    empty_frame = pd.DataFrame(columns=["High", "Low", "Close"], index=empty_index)
+    empty_close = pd.Series(index=empty_index, dtype=float)
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        d55_20_close_signal(empty_frame)
+    with pytest.raises(ValueError, match="must not be empty"):
+        ma_hys_1_200_b1_signal(empty_close)
+
+
+@pytest.mark.parametrize(
+    ("high", "low", "close"),
+    [
+        (9.0, 10.0, 9.5),
+        (10.0, 9.0, 10.1),
+        (10.0, 9.0, 8.9),
+    ],
+)
+def test_signal_validation_rejects_impossible_ohlc_bars(high, low, close):
+    frame = ohlc_frame([close], high=[high], low=[low])
+
+    with pytest.raises(ValueError, match="High.*Low|Close.*range"):
+        d55_20_close_signal(frame)
 
 
 def test_dmi_adx_rejects_duplicate_and_non_monotonic_dates():

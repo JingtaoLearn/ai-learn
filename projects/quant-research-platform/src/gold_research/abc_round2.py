@@ -19,6 +19,8 @@ def _validated_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"missing required OHLC columns: {', '.join(sorted(missing))}")
     _validate_index(frame.index)
+    if frame.empty:
+        raise ValueError("OHLC frame must not be empty")
     values = frame.loc[:, required]
     contains_boolean = values.map(lambda value: isinstance(value, (bool, np.bool_))).any().any()
     numeric = values.apply(pd.to_numeric, errors="coerce")
@@ -28,13 +30,20 @@ def _validated_frame(frame: pd.DataFrame) -> pd.DataFrame:
         or (numeric <= 0.0).any().any()
     ):
         raise ValueError("OHLC prices must be finite and strictly positive")
-    return numeric.astype(float)
+    numeric = numeric.astype(float)
+    if (numeric["High"] < numeric["Low"]).any():
+        raise ValueError("OHLC High must be greater than or equal to Low")
+    if ((numeric["Close"] < numeric["Low"]) | (numeric["Close"] > numeric["High"])).any():
+        raise ValueError("OHLC Close must be within the High-Low range")
+    return numeric
 
 
 def _validated_close(close: pd.Series) -> pd.Series:
     if not isinstance(close, pd.Series):
         raise ValueError("close must be a pandas Series")
     _validate_index(close.index)
+    if close.empty:
+        raise ValueError("close series must not be empty")
     contains_boolean = close.map(lambda value: isinstance(value, (bool, np.bool_))).any()
     numeric = pd.to_numeric(close, errors="coerce")
     if (
@@ -90,17 +99,22 @@ def mom_12m_monthly_signal(close: pd.Series) -> pd.Series:
     """Return exposure updated at each first session from the prior month-end close."""
     prices = _validated_close(close)
     exposure = pd.Series(0.0, index=prices.index, name="mom_12m_monthly")
-    month_ends: list[float] = []
+    month_ends: dict[pd.Period, float] = {}
     current = 0.0
     periods = prices.index.to_period("M")
     for position in range(1, len(prices)):
         if periods[position] != periods[position - 1]:
-            month_ends.append(float(prices.iloc[position - 1]))
-            if len(month_ends) >= 13:
-                if month_ends[-1] > month_ends[-13]:
+            completed_month = periods[position - 1]
+            comparison_month = completed_month - 12
+            month_ends[completed_month] = float(prices.iloc[position - 1])
+            scored_months = pd.period_range(comparison_month, completed_month, freq="M")
+            if all(month in month_ends for month in scored_months):
+                if month_ends[completed_month] > month_ends[comparison_month]:
                     current = 1.0
-                elif month_ends[-1] < month_ends[-13]:
+                elif month_ends[completed_month] < month_ends[comparison_month]:
                     current = 0.0
+            else:
+                current = 0.0
         exposure.iloc[position] = current
     return exposure
 
@@ -130,9 +144,12 @@ def _dmi_adx_14(frame: pd.DataFrame) -> pd.DataFrame:
     smooth_plus = np.full(size, np.nan)
     smooth_minus = np.full(size, np.nan)
     if size > period:
-        smooth_tr[period] = tr[1 : period + 1].sum()
-        smooth_plus[period] = plus_dm[1 : period + 1].sum()
-        smooth_minus[period] = minus_dm[1 : period + 1].sum()
+        seed_tr = tr[1:period].sum()
+        seed_plus = plus_dm[1:period].sum()
+        seed_minus = minus_dm[1:period].sum()
+        smooth_tr[period] = seed_tr - seed_tr / period + tr[period]
+        smooth_plus[period] = seed_plus - seed_plus / period + plus_dm[period]
+        smooth_minus[period] = seed_minus - seed_minus / period + minus_dm[period]
         for position in range(period + 1, size):
             smooth_tr[position] = (
                 smooth_tr[position - 1] - smooth_tr[position - 1] / period + tr[position]
@@ -238,7 +255,11 @@ def _turtle_n_20(prices: pd.DataFrame) -> pd.Series:
 
 
 def turtle_n_entry_weight(frame: pd.DataFrame, binary_signal: pd.Series) -> pd.Series:
-    """Size next-open entries using prior-close Turtle N and freeze each holding weight."""
+    """Freeze signal-close risk sizing for each next-open holding segment.
+
+    The frozen candidate formula is ``min(1, 0.01 * C_t / N_t)`` at the signal close.
+    An opening gap can therefore make exact realized next-open risk differ from this weight.
+    """
     prices = _validated_frame(frame)
     if not isinstance(binary_signal, pd.Series) or not binary_signal.index.equals(prices.index):
         raise ValueError("binary signal index must exactly match the OHLC frame")
