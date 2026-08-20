@@ -147,9 +147,8 @@ def test_monthly_momentum_fails_closed_when_a_calendar_month_is_missing():
         values.extend([100.0, month_end])
     close = pd.Series(values, index=pd.DatetimeIndex(dates), dtype=float)
 
-    signal = mom_12m_monthly_signal(close)
-
-    assert signal.eq(0.0).all()
+    with pytest.raises(ValueError, match="calendar month"):
+        mom_12m_monthly_signal(close)
 
 
 def dmi_fixture(periods: int = 70) -> pd.DataFrame:

@@ -107,14 +107,14 @@ def mom_12m_monthly_signal(close: pd.Series) -> pd.Series:
             completed_month = periods[position - 1]
             comparison_month = completed_month - 12
             month_ends[completed_month] = float(prices.iloc[position - 1])
-            scored_months = pd.period_range(comparison_month, completed_month, freq="M")
-            if all(month in month_ends for month in scored_months):
+            if len(month_ends) >= 13:
+                scored_months = pd.period_range(comparison_month, completed_month, freq="M")
+                if not all(month in month_ends for month in scored_months):
+                    raise ValueError("monthly momentum requires every calendar month")
                 if month_ends[completed_month] > month_ends[comparison_month]:
                     current = 1.0
                 elif month_ends[completed_month] < month_ends[comparison_month]:
                     current = 0.0
-            else:
-                current = 0.0
         exposure.iloc[position] = current
     return exposure
 
