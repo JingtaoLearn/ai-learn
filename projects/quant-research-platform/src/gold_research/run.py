@@ -116,7 +116,7 @@ def _data_hash(data: dict[str, pd.DataFrame]) -> str:
         digest.update(symbol.encode())
         frame = data[symbol].sort_index()
         columns = [column for column in canonical if column in frame.columns]
-        digest.update(frame.loc[:, columns].to_csv(index=True, float_format="%.10g", na_rep="NA").encode())
+        digest.update(frame.loc[:, columns].to_csv(index=True, float_format="%.17g", na_rep="NA").encode())
     return digest.hexdigest()
 
 

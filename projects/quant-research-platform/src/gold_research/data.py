@@ -61,7 +61,7 @@ def save_dataset(
     safe = symbol.replace("=", "_")
     csv_path = output_dir / f"{safe}.csv"
     parquet_path = output_dir / f"{safe}.parquet"
-    clean.to_csv(csv_path, index=False, float_format="%.10g")
+    clean.to_csv(csv_path, index=False, float_format="%.17g")
     clean.to_parquet(parquet_path, index=False)
     csv_digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
     parquet_digest = hashlib.sha256(parquet_path.read_bytes()).hexdigest()

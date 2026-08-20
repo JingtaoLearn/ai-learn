@@ -127,6 +127,45 @@ forward return because that return is only known at the test-start open.
 `markers.csv` records fractional `ADD`/`REDUCE` rebalances that incur costs,
 while `trades.csv` remains a zero-to-positive round-trip ledger.
 
+## Agricultural Bank breakout study
+
+`gold_research.abc.run_abc_trend_research` implements the literal long-or-cash
+"buy strength, sell weakness" interpretation for Agricultural Bank of China
+(`601288.SS`). It compares four fixed Donchian breakout pairs (`20/10`, `40/20`,
+`60/20`, and `120/40`) using only data through 2022, freezes the balanced
+CAGR/Sharpe/Calmar rank winner, and evaluates that rule on a retrospective
+2023+ holdout against buy-and-hold.
+
+Yahoo's adjusted-close factor is applied to every OHLC field so both execution
+prices and held returns share one total-return scale. Base A-share friction is
+modeled asymmetrically at 8 bps on buys and 13 bps on sells, with a 20/25 bps
+stress case. Signals use the completed close and execute at the next adjusted
+open. The module has no broker or live-order path.
+
+```python
+from pathlib import Path
+
+from gold_research.abc import run_abc_trend_research
+
+result = run_abc_trend_research(
+    agricultural_bank_frame,
+    Path("runs/agricultural-bank"),
+    symbol="601288.SS",
+    data_manifest=verified_manifest,
+    holdout_start="2023-01-01",
+)
+```
+
+The runner verifies the Yahoo symbol URL, source CSV checksum, row count, date
+range, and exact canonical frame contents before the study begins. Each
+immutable run records development and holdout summaries, cost stress,
+annual returns, paired block-bootstrap uncertainty, daily returns, trades, a
+trade-by-trade cumulative return path, an SVG price chart with modeled buy/sell
+points and cumulative strategy versus buy-and-hold returns, the latest modeled
+action, configuration, provenance, and a mobile-readable HTML report. The
+holdout remains retrospective because it has now been inspected; only future
+paper observation can provide genuinely unseen evidence.
+
 ## Execution convention
 
 Signals use closes through day `t-1`, enter at the next available daily open `t`, and earn the open-`t` to open-`t+1` return. This removes the unattainable same-close fill from the first prototype. The model still does **not** simulate opening-auction slippage, bid/ask spread, market impact, or intraday execution.

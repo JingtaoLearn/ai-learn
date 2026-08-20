@@ -6,22 +6,49 @@ import numpy as np
 import pandas as pd
 
 
-def backtest(open_price: pd.Series, signal: pd.Series, cost_bps: float = 5.0) -> pd.DataFrame:
+def backtest(
+    open_price: pd.Series,
+    signal: pd.Series,
+    cost_bps: float = 5.0,
+    *,
+    buy_cost_bps: float | None = None,
+    sell_cost_bps: float | None = None,
+) -> pd.DataFrame:
     """Backtest positions entered at each session's open.
 
     ``signal[t]`` must be knowable before ``open[t]``. The position then earns the
     open[t]-to-open[t+1] return. This makes a close[t-1] signal executable at the
     next available daily open without a same-close fill assumption.
+
+    ``buy_cost_bps`` and ``sell_cost_bps`` allow markets with asymmetric taxes.
+    When omitted, both sides use the legacy symmetric ``cost_bps`` value.
     """
+    raw_costs = {
+        "cost_bps": cost_bps,
+        "buy_cost_bps": cost_bps if buy_cost_bps is None else buy_cost_bps,
+        "sell_cost_bps": cost_bps if sell_cost_bps is None else sell_cost_bps,
+    }
+    if any(isinstance(value, (bool, np.bool_)) for value in raw_costs.values()):
+        raise ValueError("cost values must be finite and non-negative")
+    costs = {name: float(value) for name, value in raw_costs.items()}
+    if any(not np.isfinite(value) or value < 0.0 for value in costs.values()):
+        raise ValueError("cost values must be finite and non-negative")
+
     open_price = open_price.astype(float).dropna().rename("open")
     signal = signal.reindex(open_price.index).fillna(0.0).clip(0.0, 1.0).rename("signal")
     forward_return = open_price.shift(-1).div(open_price).sub(1.0).fillna(0.0)
     gross_return = signal * forward_return
-    turnover = signal.diff().abs()
-    if not turnover.empty:
-        turnover.iloc[0] = abs(signal.iloc[0])
-    turnover = turnover.fillna(0.0)
-    cost = turnover * cost_bps / 10_000.0
+    delta = signal.diff()
+    if not delta.empty:
+        delta.iloc[0] = signal.iloc[0]
+    delta = delta.fillna(0.0)
+    buy_turnover = delta.clip(lower=0.0)
+    sell_turnover = (-delta.clip(upper=0.0)).astype(float)
+    turnover = buy_turnover + sell_turnover
+    cost = (
+        buy_turnover * costs["buy_cost_bps"] / 10_000.0
+        + sell_turnover * costs["sell_cost_bps"] / 10_000.0
+    )
     net_return = gross_return - cost
     return pd.DataFrame(
         {
@@ -29,6 +56,8 @@ def backtest(open_price: pd.Series, signal: pd.Series, cost_bps: float = 5.0) ->
             "signal": signal,
             "asset_forward_return": forward_return,
             "gross_return": gross_return,
+            "buy_turnover": buy_turnover,
+            "sell_turnover": sell_turnover,
             "turnover": turnover,
             "cost": cost,
             "net_return": net_return,
