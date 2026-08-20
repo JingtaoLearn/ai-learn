@@ -127,44 +127,50 @@ forward return because that return is only known at the test-start open.
 `markers.csv` records fractional `ADD`/`REDUCE` rebalances that incur costs,
 while `trades.csv` remains a zero-to-positive round-trip ledger.
 
-## Agricultural Bank breakout study
+## Agricultural Bank Round-2 evidence study
 
-`gold_research.abc.run_abc_trend_research` implements the literal long-or-cash
-"buy strength, sell weakness" interpretation for Agricultural Bank of China
-(`601288.SS`). It compares four fixed Donchian breakout pairs (`20/10`, `40/20`,
-`60/20`, and `120/40`) using only data through 2022, freezes the balanced
-CAGR/Sharpe/Calmar rank winner, and evaluates that rule on a retrospective
-2023+ holdout against buy-and-hold.
+`gold_research.abc_round2_study.run_abc_round2_study` runs the frozen Round-2
+protocol for Agricultural Bank of China (`601288.SS`) and six predeclared bank
+peers. It evaluates exactly four public-formula long-or-cash candidates after
+each symbol's own 315-session warm-up. There is no parameter search, candidate
+selection, or forced winner.
 
-Yahoo's adjusted-close factor is applied to every OHLC field so both execution
-prices and held returns share one total-return scale. Base A-share friction is
-modeled asymmetrically at 8 bps on buys and 13 bps on sells, with a 20/25 bps
-stress case. Signals use the completed close and execute at the next adjusted
-open. The module has no broker or live-order path.
+Every manifest entry is bound to the exact symbol's canonical Yahoo chart URL
+and verified against the referenced CSV checksum, row count, date range, and
+parsed contents. Session dates are normalized to Shanghai dates, and bars on or
+after the analysis date are excluded before scoring. Yahoo's adjusted-close
+factor puts all OHLC fields on one total-return scale. The base 8/13 bps and
+stress 20/25 bps cost cases are optimistic comparability scenarios, not claims
+of real fill completeness.
 
 ```python
 from pathlib import Path
 
-from gold_research.abc import run_abc_trend_research
+from gold_research.abc_round2_study import run_abc_round2_study
 
-result = run_abc_trend_research(
-    agricultural_bank_frame,
-    Path("runs/agricultural-bank"),
-    symbol="601288.SS",
-    data_manifest=verified_manifest,
-    holdout_start="2023-01-01",
+result = run_abc_round2_study(
+    data_dir=Path("data/agricultural-bank-round2"),
+    output_root=Path("runs/agricultural-bank-round2"),
+    analysis_date="2026-08-20T13:00:00+08:00",
+    protocol_path=Path("protocol.yaml"),
 )
 ```
 
-The runner verifies the Yahoo symbol URL, source CSV checksum, row count, date
-range, and exact canonical frame contents before the study begins. Each
-immutable run records development and holdout summaries, cost stress,
-annual returns, paired block-bootstrap uncertainty, daily returns, trades, a
-trade-by-trade cumulative return path, an SVG price chart with modeled buy/sell
-points and cumulative strategy versus buy-and-hold returns, the latest modeled
-action, configuration, provenance, and a Chinese mobile-readable HTML report. The
-holdout remains retrospective because it has now been inspected; only future
-paper observation can provide genuinely unseen evidence.
+The runner applies every promotion gate independently to all four candidates.
+`execution_complete` defaults to `False`, so the execution-completeness gate
+fails until separate fill evidence exists. Target-only evidence includes exact
+circular-shift timing placebos, complete four-calendar-year blocks, every
+modeled trade, daily returns, and a next-open target derived only from the last
+completed real close. Peer validation compares each rule with each peer's own
+buy-and-hold Sharpe.
+
+Publishing uses a temporary sibling directory and atomic rename. The immutable
+run ID binds canonical configuration, completed normalized data, protocol bytes,
+and Git/source state. The non-HTML artifact contract contains configuration and
+provenance JSON, a four-row trial registry, candidate and benchmark summaries,
+peer validation, target daily returns and trades, subperiods, timing results,
+independent gate decisions, and current modeled signals. The study remains
+retrospective and research-only; it has no broker or live-order path.
 
 ## Execution convention
 
