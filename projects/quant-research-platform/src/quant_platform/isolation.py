@@ -9,9 +9,9 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from .datasets import _verify_snapshot
-from .submissions import DIGEST_PINNED_IMAGE
 from .submissions import EXECUTION_ENVELOPE
 from .submissions import _verify_submission
+from .submissions import is_immutable_runner_image
 
 
 PROTECTED_FENG_PATHS = (
@@ -180,7 +180,7 @@ def build_docker_command(
     if manifest.get("execution_envelope") != EXECUTION_ENVELOPE:
         raise IsolationError("submission integrity check failed: execution envelope was modified")
     image = manifest.get("runner_image")
-    if not isinstance(image, str) or not DIGEST_PINNED_IMAGE.fullmatch(image):
+    if not isinstance(image, str) or not is_immutable_runner_image(image):
         raise IsolationError("submission integrity check failed: runner image is not digest pinned")
     entrypoint = manifest.get("spec", {}).get("entrypoint")
     if not isinstance(entrypoint, str) or not entrypoint:

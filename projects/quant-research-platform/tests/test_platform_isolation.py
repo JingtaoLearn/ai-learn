@@ -111,6 +111,23 @@ def test_docker_command_enforces_fixed_research_sandbox(tmp_path: Path):
     assert "/var/run/docker.sock" not in joined
 
 
+def test_docker_command_uses_exact_verified_local_image_id(tmp_path: Path):
+    root, submission, dataset, artifacts = _foundation(tmp_path)
+    manifest_path = submission / "submission.json"
+    manifest = json.loads(manifest_path.read_text())
+    spec = manifest["spec"] | {"runner_image": "sha256:" + "b" * 64}
+    shutil.rmtree(submission)
+    project = tmp_path / "project"
+    published = publish_submission(spec, project, root)
+    shutil.rmtree(artifacts.parent)
+    artifacts = root / "artifacts" / published["submission_id"] / "attempt-001"
+    artifacts.mkdir(parents=True)
+
+    command = build_docker_command(Path(published["path"]), dataset, artifacts)
+
+    assert command[command.index("--workdir") + 2] == "sha256:" + "b" * 64
+
+
 def test_isolation_rejects_protected_paths_and_tampered_runner_image(tmp_path: Path):
     _, submission, dataset, artifacts = _foundation(tmp_path)
 

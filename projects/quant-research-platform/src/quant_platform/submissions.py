@@ -36,9 +36,10 @@ IGNORED_DIRECTORIES = {
     "dist",
 }
 SNAPSHOT_ID = re.compile(r"^[0-9a-f]{64}$")
-DIGEST_PINNED_IMAGE = re.compile(
-    r"^(?:[A-Za-z0-9._/:=-]+@)?sha256:[0-9a-f]{64}$"
+REGISTRY_DIGEST_IMAGE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._/:=-]*@sha256:[0-9a-f]{64}$"
 )
+LOCAL_DOCKER_IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 SECRET_FILENAMES = {
     ".env",
     ".netrc",
@@ -73,6 +74,15 @@ EXECUTION_ENVELOPE = {
 
 class SubmissionValidationError(ValueError):
     """Raised when an experiment cannot be submitted safely or reproducibly."""
+
+
+def is_immutable_runner_image(value: str) -> bool:
+    """Return whether an image is a registry digest or full local Docker image ID."""
+
+    return bool(
+        REGISTRY_DIGEST_IMAGE.fullmatch(value)
+        or LOCAL_DOCKER_IMAGE_ID.fullmatch(value)
+    )
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -203,7 +213,7 @@ def _validate_spec(spec: dict[str, Any], project_root: Path, root: Path) -> dict
     _bound_snapshot(root, snapshot_id)
 
     runner_image = spec["runner_image"]
-    if not isinstance(runner_image, str) or not DIGEST_PINNED_IMAGE.fullmatch(runner_image):
+    if not isinstance(runner_image, str) or not is_immutable_runner_image(runner_image):
         raise SubmissionValidationError("runner_image must be pinned by a sha256 digest")
 
     normalized = {
@@ -362,7 +372,7 @@ def _verify_submission(
             raise ValueError("dataset identity mismatch")
         if manifest["runner_image"] != manifest["spec"]["runner_image"]:
             raise ValueError("runner image identity mismatch")
-        if not DIGEST_PINNED_IMAGE.fullmatch(manifest["runner_image"]):
+        if not is_immutable_runner_image(manifest["runner_image"]):
             raise ValueError("runner image is not digest pinned")
         if manifest["execution_envelope"] != EXECUTION_ENVELOPE:
             raise ValueError("execution envelope does not match the fixed policy")

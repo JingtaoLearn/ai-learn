@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import tomllib
 
 import pandas as pd
 import pytest
@@ -10,6 +11,14 @@ from quant_platform.submissions import (
     publish_submission,
     submission_status,
 )
+
+
+def test_python_runtime_support_is_bounded_to_verified_versions():
+    pyproject = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert pyproject["project"]["requires-python"] == ">=3.12,<3.14"
 
 
 def _dataset(root: Path) -> str:
