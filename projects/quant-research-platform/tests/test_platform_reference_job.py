@@ -57,10 +57,12 @@ def _foundation(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
         project,
         root,
     )
-    artifacts = root / "artifacts" / submission["submission_id"] / "attempt-001"
-    artifacts.mkdir(parents=True)
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-001"
+    attempt.mkdir(parents=True)
+    artifacts = attempt / "payload"
+    artifacts.mkdir()
     command = build_docker_command(
-        Path(submission["path"]), Path(dataset["path"]), artifacts
+        Path(submission["path"]), Path(dataset["path"]), attempt
     )
     run_mount = next(value for value in command if "dst=/run-contract/run.json" in value)
     run_contract = Path(run_mount.split("src=", 1)[1].split(",dst=", 1)[0])

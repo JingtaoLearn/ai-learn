@@ -56,13 +56,18 @@ class FakeLauncher:
         exit_status: int = 0,
         times_out: bool = False,
         artifact_kind: str = "regular",
+        write_cid: bool = True,
     ):
         self.process = FakeProcess(exit_status, times_out=times_out)
         self.artifact_kind = artifact_kind
+        self.write_cid = write_cid
         self.calls: list[tuple[list[str], dict]] = []
 
     def __call__(self, command: list[str], **kwargs) -> FakeProcess:
         self.calls.append((command, kwargs))
+        cidfile = Path(command[command.index("--cidfile") + 1])
+        if self.write_cid:
+            cidfile.write_text("d" * 64 + "\n")
         kwargs["stdout"].write(b"internal standard output\n")
         kwargs["stderr"].write(b"internal standard error\n")
         kwargs["stdout"].flush()
@@ -82,6 +87,15 @@ class FakeLauncher:
                 service_socket.close()
             finally:
                 os.close(descriptor)
+        elif self.artifact_kind == "reserved":
+            (artifact_dir / "attempt.json").write_text('{"forged": true}\n')
+        elif self.artifact_kind == "locked-reserved":
+            (artifact_dir / "attempt.json").write_text('{"forged": true}\n')
+            artifact_dir.chmod(0o000)
+        elif self.artifact_kind == "hardlinks":
+            first = artifact_dir / "first.json"
+            first.write_text('{"value": 1}\n')
+            os.link(first, artifact_dir / "second.json")
         return self.process
 
 
@@ -230,12 +244,13 @@ def test_runner_invokes_exact_command_without_shell_or_host_environment(
 
 def test_runner_keeps_logs_in_attempt_and_out_of_terminal_record(tmp_path: Path):
     root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher()
     result = run_submission(
         root,
         submission["submission_id"],
         "attempt-001",
         30,
-        process_launcher=FakeLauncher(),
+        process_launcher=launcher,
         clock=FakeClock(),
     )
 
@@ -243,6 +258,9 @@ def test_runner_keeps_logs_in_attempt_and_out_of_terminal_record(tmp_path: Path)
     assert "stdout" not in result
     assert (Path(result["path"]) / "stdout.log").read_text() == "internal standard output\n"
     assert (Path(result["path"]) / "stderr.log").read_text() == "internal standard error\n"
+    command = json.dumps(launcher.calls[0][0])
+    assert "stdout.log" not in command
+    assert "stderr.log" not in command
 
 
 @pytest.mark.parametrize(
@@ -257,8 +275,11 @@ def test_runner_seals_process_terminal_outcomes(
     tmp_path: Path, monkeypatch, launcher, expected_outcome: str, expected_status: int
 ):
     root, _, submission = _foundation(tmp_path)
-    signals: list[tuple[int, int]] = []
-    monkeypatch.setattr(os, "killpg", lambda pid, signal: signals.append((pid, signal)))
+    terminated: list[str] = []
+
+    def terminate(cidfile: Path, container_name: str, process) -> int:
+        terminated.append(cidfile.read_text().strip())
+        return process.wait()
 
     result = run_submission(
         root,
@@ -267,6 +288,7 @@ def test_runner_seals_process_terminal_outcomes(
         30,
         process_launcher=launcher,
         clock=FakeClock(),
+        container_terminator=terminate,
     )
     manifest = _manifest(result)
 
@@ -274,7 +296,7 @@ def test_runner_seals_process_terminal_outcomes(
     assert manifest["outcome"] == expected_outcome
     assert manifest["exit_status"] == expected_status
     if expected_outcome == "TIMED_OUT":
-        assert signals
+        assert terminated == ["d" * 64]
 
 
 def test_runner_seals_launch_failure(tmp_path: Path):
@@ -319,7 +341,12 @@ def test_attempt_manifest_records_contract_timing_and_artifact_checksums(tmp_pat
     assert manifest["started_at"] == "2026-08-26T12:00:00+00:00"
     assert manifest["finished_at"] == "2026-08-26T12:00:02.500000+00:00"
     assert manifest["duration_seconds"] == 2.5
-    assert set(manifest["files"]) == {"result.json", "stderr.log", "stdout.log"}
+    assert set(manifest["files"]) == {
+        "container.cid",
+        "payload/result.json",
+        "stderr.log",
+        "stdout.log",
+    }
     for relative, identity in manifest["files"].items():
         payload = (Path(result["path"]) / relative).read_bytes()
         assert identity == {
@@ -347,7 +374,20 @@ def test_runner_rejects_unsafe_artifacts_and_still_seals_attempt(
 
     attempt = root / "artifacts" / submission["submission_id"] / f"attempt-{artifact_kind}"
     manifest = json.loads((attempt / "attempt.json").read_text())
+    artifact_name = {
+        "symlink": "result-link",
+        "fifo": "result.pipe",
+        "socket": "result.sock",
+    }[artifact_kind]
     assert manifest["outcome"] == "ARTIFACT_REJECTED"
+    assert set(manifest["files"]) == {"container.cid", "stderr.log", "stdout.log"}
+    assert manifest["rejected_entries"] == [
+        {
+            "path": f"payload/{artifact_name}",
+            "reason": artifact_kind,
+        }
+    ]
+    assert not any(path.is_symlink() for path in attempt.rglob("*"))
     assert attempt.stat().st_mode & 0o222 == 0
 
 
@@ -392,6 +432,284 @@ def test_attempt_is_sealed_after_manifest_publication(tmp_path: Path):
     assert (attempt / "attempt.json").is_file()
     assert attempt.stat().st_mode & 0o222 == 0
     assert all(path.stat().st_mode & 0o222 == 0 for path in attempt.rglob("*"))
+
+
+def test_runner_rejects_container_created_reserved_control_filename(tmp_path: Path):
+    root, _, submission = _foundation(tmp_path)
+
+    with pytest.raises(RunnerIntegrityError, match="reserved"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-reserved",
+            30,
+            process_launcher=FakeLauncher(artifact_kind="reserved"),
+            clock=FakeClock(),
+        )
+
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-reserved"
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["outcome"] == "ARTIFACT_REJECTED"
+    assert manifest["rejected_entries"] == [
+        {"path": "payload/attempt.json", "reason": "reserved"}
+    ]
+    assert not (attempt / "payload" / "attempt.json").exists()
+
+
+def test_runner_exhaustively_validates_mode_zero_payload(tmp_path: Path):
+    root, _, submission = _foundation(tmp_path)
+
+    with pytest.raises(RunnerIntegrityError, match="reserved"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-locked",
+            30,
+            process_launcher=FakeLauncher(artifact_kind="locked-reserved"),
+            clock=FakeClock(),
+        )
+
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-locked"
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["rejected_entries"] == [
+        {"path": "payload/attempt.json", "reason": "reserved"}
+    ]
+    assert not (attempt / "payload" / "attempt.json").exists()
+    assert all(path.stat().st_mode & 0o222 == 0 for path in attempt.rglob("*"))
+
+
+def test_timeout_does_not_treat_docker_daemon_error_as_confirmed_removal(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+
+    def daemon_unavailable(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0], 1, stdout="", stderr="Cannot connect to the Docker daemon"
+        )
+
+    monkeypatch.setattr(subprocess, "run", daemon_unavailable)
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="confirm"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-daemon-error",
+            1,
+            process_launcher=launcher,
+            clock=FakeClock(),
+        )
+
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-daemon-error"
+    assert not (attempt / "attempt.json").exists()
+
+
+def test_timeout_without_cid_uses_name_and_terminates_docker_process_group(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True, write_cid=False)
+    signals: list[tuple[int, int]] = []
+    commands: list[list[str]] = []
+
+    def docker_absent(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="Error: No such object: quant-research-test"
+        )
+
+    monkeypatch.setattr(subprocess, "run", docker_absent)
+    monkeypatch.setattr(os, "killpg", lambda pid, value: signals.append((pid, value)))
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="container ID"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-no-cid",
+            1,
+            process_launcher=launcher,
+            clock=FakeClock(),
+        )
+
+    assert signals
+    container_name = launcher.calls[0][0][launcher.calls[0][0].index("--name") + 1]
+    assert any(container_name in command for command in commands)
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-no-cid"
+    assert not (attempt / "attempt.json").exists()
+
+
+def test_timeout_confirms_container_absence_by_immutable_cid(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+    commands: list[list[str]] = []
+
+    def docker_absent(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr=f"Error: No such object: {'d' * 64}",
+        )
+
+    monkeypatch.setattr(subprocess, "run", docker_absent)
+
+    result = run_submission(
+        root,
+        submission["submission_id"],
+        "attempt-cid-confirmed",
+        1,
+        process_launcher=launcher,
+        clock=FakeClock(),
+    )
+
+    assert result["outcome"] == "TIMED_OUT"
+    inspect_commands = [command for command in commands if command[:2] == ["docker", "inspect"]]
+    assert inspect_commands
+    assert all(command[-1] == "d" * 64 for command in inspect_commands)
+
+
+def test_timeout_reaps_docker_process_when_control_command_times_out(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+    signals: list[tuple[int, int]] = []
+
+    def control_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 10)
+
+    monkeypatch.setattr(subprocess, "run", control_timeout)
+    monkeypatch.setattr(os, "killpg", lambda pid, value: signals.append((pid, value)))
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="confirm"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-control-timeout",
+            1,
+            process_launcher=launcher,
+            clock=FakeClock(),
+        )
+
+    assert signals
+    attempt = (
+        root
+        / "artifacts"
+        / submission["submission_id"]
+        / "attempt-control-timeout"
+    )
+    assert not (attempt / "attempt.json").exists()
+
+
+def test_inaccessible_payload_failure_is_recorded_and_sealed(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+
+    def inaccessible(payload_dir: Path) -> None:
+        raise RunnerIntegrityError("artifact payload is inaccessible")
+
+    monkeypatch.setattr(
+        runner_module, "_prepare_payload_for_validation", inaccessible
+    )
+
+    with pytest.raises(RunnerIntegrityError, match="inaccessible"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-inaccessible",
+            30,
+            process_launcher=FakeLauncher(),
+            clock=FakeClock(),
+        )
+
+    attempt = (
+        root / "artifacts" / submission["submission_id"] / "attempt-inaccessible"
+    )
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["outcome"] == "ARTIFACT_REJECTED"
+    assert manifest["rejected_entries"] == [
+        {"path": "payload", "reason": "inaccessible"}
+    ]
+    assert set(manifest["files"]) == {"container.cid", "stderr.log", "stdout.log"}
+    assert not any((attempt / "payload").iterdir())
+    assert all(path.stat().st_mode & 0o222 == 0 for path in attempt.rglob("*"))
+
+
+def test_runner_rejects_every_path_in_hard_link_set(tmp_path: Path):
+    root, _, submission = _foundation(tmp_path)
+
+    with pytest.raises(RunnerIntegrityError, match="hardlink"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-hardlinks",
+            30,
+            process_launcher=FakeLauncher(artifact_kind="hardlinks"),
+            clock=FakeClock(),
+        )
+
+    attempt = root / "artifacts" / submission["submission_id"] / "attempt-hardlinks"
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["rejected_entries"] == [
+        {"path": "payload/first.json", "reason": "hardlink"},
+        {"path": "payload/second.json", "reason": "hardlink"},
+    ]
+    assert not any((attempt / "payload").iterdir())
+
+
+def test_post_seal_verification_detects_attempt_manifest_replacement(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    real_seal = runner_module._seal_attempt
+
+    def replace_manifest_after_seal(attempt_dir: Path) -> None:
+        real_seal(attempt_dir)
+        manifest_path = attempt_dir / "attempt.json"
+        manifest_path.chmod(0o644)
+        manifest_path.write_text("{}")
+        manifest_path.chmod(0o444)
+
+    monkeypatch.setattr(runner_module, "_seal_attempt", replace_manifest_after_seal)
+
+    with pytest.raises(RunnerIntegrityError, match="manifest"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-manifest-replaced",
+            30,
+            process_launcher=FakeLauncher(),
+            clock=FakeClock(),
+        )
+
+
+def test_post_seal_verification_rejects_hard_linked_attempt_manifest(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    real_seal = runner_module._seal_attempt
+    alias = tmp_path / "attempt-manifest-alias.json"
+
+    def hard_link_manifest_after_seal(attempt_dir: Path) -> None:
+        real_seal(attempt_dir)
+        os.link(attempt_dir / "attempt.json", alias)
+
+    monkeypatch.setattr(runner_module, "_seal_attempt", hard_link_manifest_after_seal)
+
+    with pytest.raises(RunnerIntegrityError, match="manifest.*hard link"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-manifest-hardlink",
+            30,
+            process_launcher=FakeLauncher(),
+            clock=FakeClock(),
+        )
 
 
 def test_callback_receives_terminal_record_and_failure_cannot_rewrite_attempt(tmp_path: Path):

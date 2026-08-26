@@ -21,6 +21,12 @@ PROTECTED_FENG_PATHS = (
     Path("/run/docker.sock"),
 )
 SAFE_ATTEMPT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RUNNER_CONTROL_FILENAMES = {
+    "attempt.json",
+    "container.cid",
+    "stderr.log",
+    "stdout.log",
+}
 
 
 class IsolationError(ValueError):
@@ -161,8 +167,17 @@ def build_docker_command(
         raise IsolationError(
             "artifact directory must be <platform>/artifacts/<submission-id>/<attempt-id>"
         )
-    if any(artifact_dir.iterdir()):
-        raise IsolationError("artifact attempt directory must be empty")
+    existing = {path.name for path in artifact_dir.iterdir()}
+    controls = sorted(existing & RUNNER_CONTROL_FILENAMES)
+    if controls:
+        raise IsolationError(f"artifact directory contains runner control files: {controls}")
+    if existing != {"payload"}:
+        raise IsolationError("artifact attempt directory must contain only an empty payload")
+    payload_dir = artifact_dir / "payload"
+    if payload_dir.is_symlink() or not payload_dir.is_dir():
+        raise IsolationError("artifact payload directory must be a regular directory")
+    if any(payload_dir.iterdir()):
+        raise IsolationError("artifact payload directory must be empty")
 
     try:
         manifest = _verify_submission(submission_dir, submission_dir.name)
@@ -198,11 +213,17 @@ def build_docker_command(
         image,
         artifact_dir,
     )
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    container_name = f"quant-research-{run_manifest['run_id'][:32]}"
 
     return [
         "docker",
         "run",
         "--rm",
+        "--cidfile",
+        str(artifact_dir / "container.cid"),
+        "--name",
+        container_name,
         "--pull",
         "never",
         "--network",
@@ -227,7 +248,7 @@ def build_docker_command(
         "--mount",
         f"type=bind,src={dataset_dir},dst=/data,readonly",
         "--mount",
-        f"type=bind,src={artifact_dir},dst=/artifacts",
+        f"type=bind,src={payload_dir},dst=/artifacts",
         "--mount",
         f"type=bind,src={submission_dir / 'submission.json'},dst=/run-contract/submission.json,readonly",
         "--mount",
