@@ -92,13 +92,13 @@ def _execute(args: argparse.Namespace) -> dict[str, str | int]:
         metadata = _metadata(args)
         if args.data_command == "update":
             sessions = pd.read_csv(Path(args.expected_sessions))
-            if len(sessions.columns) != 1:
+            if list(sessions.columns) != ["Date"]:
                 raise CLIUsageError(
-                    "expected-sessions input must contain exactly one date column"
+                    "expected-sessions input schema must be exactly one column named Date"
                 )
             result = reconcile_daily_history(
                 frame,
-                sessions.iloc[:, 0],
+                sessions["Date"],
                 Path(args.root),
                 metadata,
                 args.start,

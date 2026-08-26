@@ -268,7 +268,60 @@ def test_cli_update_requires_exactly_one_expected_session_column(tmp_path: Path,
     failure = _json_output(capsys)
 
     assert code == 2
-    assert "exactly one date column" in failure["error"]
+    assert "exactly one column named Date" in failure["error"]
+
+
+def test_cli_update_rejects_headerless_sessions_without_moving_latest(
+    tmp_path: Path, capsys
+):
+    root = tmp_path / "state"
+    market_csv = tmp_path / "bars.csv"
+    sessions_csv = tmp_path / "sessions.csv"
+    _write_market_csv(market_csv)
+    _write_sessions_csv(sessions_csv, ["2026-08-18"])
+    initial_args = _update_args(
+        root, market_csv, sessions_csv, "2026-08-18", "2026-08-18"
+    )
+    assert main(initial_args) == 0
+    _json_output(capsys)
+    latest = root / "datasets" / "601288.SS" / "latest.json"
+    before = latest.read_bytes()
+
+    pd.read_csv(market_csv).iloc[[1]].to_csv(market_csv, index=False)
+    sessions_csv.write_text("2026-08-18\n2026-08-19\n", encoding="utf-8")
+    failed_args = _update_args(
+        root, market_csv, sessions_csv, "2026-08-18", "2026-08-19"
+    )
+
+    assert main(failed_args) == 2
+    failure = _json_output(capsys)
+    assert failure["ok"] is False
+    assert "exactly one column named Date" in failure["error"]
+    assert latest.read_bytes() == before
+
+
+def test_cli_update_requires_case_sensitive_date_session_header(tmp_path: Path, capsys):
+    market_csv = tmp_path / "bars.csv"
+    sessions_csv = tmp_path / "sessions.csv"
+    _write_market_csv(market_csv)
+    pd.DataFrame({"date": ["2026-08-18", "2026-08-19"]}).to_csv(
+        sessions_csv, index=False
+    )
+
+    code = main(
+        _update_args(
+            tmp_path / "state",
+            market_csv,
+            sessions_csv,
+            "2026-08-18",
+            "2026-08-19",
+        )
+    )
+    failure = _json_output(capsys)
+
+    assert code == 2
+    assert "exactly one column named Date" in failure["error"]
+    assert not (tmp_path / "state" / "datasets").exists()
 
 
 def test_cli_run_returns_only_sealed_attempt_identity(
