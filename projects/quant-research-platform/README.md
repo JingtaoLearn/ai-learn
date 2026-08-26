@@ -2,6 +2,21 @@
 
 A reproducible, research-only vertical slice for daily gold strategy analysis. It is designed for both human researchers and agents, uses transparent pandas code, and contains no broker integration or live-order path.
 
+## Generic platform foundation
+
+The repository now also provides a market-agnostic `research` CLI for immutable data and experiment governance:
+
+```bash
+research data snapshot --input daily.csv --root state/platform \
+  --instrument 601288.SS --provider vendor-name --market XSHG \
+  --currency CNY --adjustment unadjusted
+research data status --root state/platform --instrument 601288.SS
+research submit --spec experiment.json --project-root . --root state/platform
+research submission show --root state/platform --submission-id SHA256
+```
+
+Dataset snapshots and experiment submissions are content-addressed, atomically published, and never overwritten. Experiment submissions freeze the source bundle, dataset identity, digest-pinned runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every prepared attempt also receives a content-addressed run contract and a fresh scoped artifact directory. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
+
 ## Decision boundary
 
 - `GC=F` is Yahoo's continuous gold-futures **research proxy**. It is not an executable futures contract and hides roll construction.
