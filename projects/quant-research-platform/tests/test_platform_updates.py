@@ -386,6 +386,53 @@ def test_update_provenance_rejects_symlinked_store_components_without_moving_lat
     assert latest.read_bytes() == before
 
 
+def test_update_provenance_pins_staging_directory_during_record_creation(
+    tmp_path: Path, monkeypatch
+):
+    root, mirrored = _seed_update_and_mirror(tmp_path)
+    instrument = METADATA["instrument"]
+    latest = root / "datasets" / instrument / "latest.json"
+    before = latest.read_bytes()
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    original_validate = updates_module._validate_update_store_path
+    swapped = False
+
+    def swap_staging_after_validation(path, configured_root):
+        nonlocal swapped
+        original_validate(path, configured_root)
+        staging = path.parent
+        if (
+            not swapped
+            and path.name == "update.json"
+            and staging.name.startswith(f".{mirrored['update_id']}.")
+        ):
+            displaced = staging.with_name(f"{staging.name}.pinned")
+            staging.rename(displaced)
+            staging.symlink_to(outside, target_is_directory=True)
+            swapped = True
+
+    monkeypatch.setattr(
+        updates_module, "_validate_update_store_path", swap_staging_after_validation
+    )
+
+    with pytest.raises(RuntimeError, match="symlink|changed"):
+        _reconcile(
+            root,
+            _bars(["2026-08-19"]),
+            ["2026-08-19"],
+            "2026-08-19",
+            "2026-08-19",
+        )
+
+    assert swapped is True
+    assert (
+        outside.stat().st_mode & 0o777,
+        sorted(path.name for path in outside.iterdir()),
+    ) == (0o700, [])
+    assert latest.read_bytes() == before
+
+
 @pytest.mark.parametrize("corrupt_record", ["{", "{}", "[]"])
 def test_corrupt_existing_update_record_does_not_move_latest(
     tmp_path: Path, corrupt_record: str

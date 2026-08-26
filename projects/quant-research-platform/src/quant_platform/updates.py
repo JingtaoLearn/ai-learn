@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
-import shutil
-import tempfile
+import secrets
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,7 +15,6 @@ from .datasets import (
     DatasetValidationError,
     _atomic_json,
     _canonical_json,
-    _fsync_directory,
     _InstrumentLock,
     _normalize_frame,
     _sha256,
@@ -86,83 +86,346 @@ def _validate_update_store_path(path: Path, root: Path) -> None:
         raise RuntimeError(f"update provenance path escapes configured root: {path}")
 
 
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _open_absolute_directory(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OSError:
+        os.close(descriptor)
+        raise
+
+
+def _open_directory_at(
+    parent_fd: int,
+    name: str,
+    label: str,
+    *,
+    create: bool = False,
+    mode: int = 0o755,
+) -> tuple[int | None, bool]:
+    created = False
+    if create:
+        try:
+            os.mkdir(name, mode=mode, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        return os.open(name, flags, dir_fd=parent_fd), created
+    except FileNotFoundError:
+        if not create:
+            return None, False
+        raise
+    except OSError as exc:
+        try:
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            metadata = None
+        if metadata is not None and stat.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(
+                f"update provenance {label} cannot be a symlink: {name}"
+            ) from exc
+        raise RuntimeError(
+            f"update provenance {label} is not a safe directory: {name}: {exc}"
+        ) from exc
+
+
+def _require_pinned_entry(
+    parent_fd: int,
+    name: str,
+    pinned_fd: int,
+    label: str,
+    *,
+    directory: bool,
+) -> None:
+    try:
+        entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        pinned = os.fstat(pinned_fd)
+    except OSError as exc:
+        raise RuntimeError(f"update provenance {label} changed during use: {name}") from exc
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(entry.st_mode) or not _same_inode(entry, pinned):
+        raise RuntimeError(f"update provenance {label} changed during use: {name}")
+
+
+def _create_staging_directory(updates_fd: int, update_id: str) -> tuple[str, int]:
+    for _ in range(100):
+        name = f".{update_id}.{secrets.token_hex(8)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=updates_fd)
+        except FileExistsError:
+            continue
+        staging_fd, _ = _open_directory_at(
+            updates_fd, name, "staging directory", mode=0o700
+        )
+        if staging_fd is None:
+            raise RuntimeError("update provenance staging directory disappeared")
+        return name, staging_fd
+    raise FileExistsError("could not allocate a unique update provenance staging directory")
+
+
+def _write_update_record(directory_fd: int, record: dict[str, Any]) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("update.json", flags, 0o600, dir_fd=directory_fd)
+    try:
+        payload = (
+            json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode()
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written == 0:
+                raise OSError("short write while publishing update provenance")
+            remaining = remaining[written:]
+        os.fchmod(descriptor, 0o644)
+        os.fsync(descriptor)
+        return os.dup(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _read_update_record(directory_fd: int) -> tuple[dict[str, Any], int]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        descriptor = os.open("update.json", flags, dir_fd=directory_fd)
+    except OSError as exc:
+        try:
+            metadata = os.stat(
+                "update.json", dir_fd=directory_fd, follow_symlinks=False
+            )
+        except OSError:
+            metadata = None
+        if metadata is not None and stat.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(
+                "update provenance update.json cannot be a symlink"
+            ) from exc
+        raise
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("update.json is not a regular file")
+        chunks = []
+        while chunk := os.read(descriptor, 64 * 1024):
+            chunks.append(chunk)
+        return json.loads(b"".join(chunks).decode("utf-8")), os.dup(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _discard_staging_directory(
+    updates_fd: int, staging_name: str, staging_fd: int
+) -> None:
+    try:
+        entry = os.stat(staging_name, dir_fd=updates_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(entry.st_mode) or not _same_inode(entry, os.fstat(staging_fd)):
+        return
+    try:
+        os.unlink("update.json", dir_fd=staging_fd)
+    except FileNotFoundError:
+        pass
+    os.rmdir(staging_name, dir_fd=updates_fd)
+
+
 def _publish_update_record(
     root: Path, instrument: str, identity: dict[str, Any]
 ) -> tuple[str, Path]:
     root = root.resolve()
     update_id = _sha256(_canonical_json(identity))
-    store_root = root / "updates"
-    updates_root = store_root / instrument
-    target = updates_root / update_id
+    target = root / "updates" / instrument / update_id
     record_path = target / "update.json"
     record = identity | {
         "update_id": update_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    _validate_update_store_path(store_root, root)
-    store_root.mkdir(exist_ok=True)
-    _validate_update_store_path(store_root, root)
-    if not store_root.is_dir():
-        raise RuntimeError(f"update provenance store is not a directory: {store_root}")
-
-    _validate_update_store_path(updates_root, root)
-    updates_root.mkdir(exist_ok=True)
-    _validate_update_store_path(updates_root, root)
-    if not updates_root.is_dir():
-        raise RuntimeError(f"update provenance store is not a directory: {updates_root}")
-    _validate_update_store_path(updates_root, root)
-    updates_root.chmod(0o755)
-
-    _validate_update_store_path(target, root)
-    if not target.exists():
-        _validate_update_store_path(updates_root, root)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{update_id}.", dir=updates_root))
-        try:
-            _validate_update_store_path(temporary, root)
-            _validate_update_store_path(temporary / "update.json", root)
-            _atomic_json(temporary / "update.json", record)
-            _validate_update_store_path(temporary, root)
-            temporary.chmod(0o755)
-            _validate_update_store_path(temporary, root)
-            _fsync_directory(temporary)
-            _validate_update_store_path(temporary, root)
-            _validate_update_store_path(target, root)
-            try:
-                os.rename(temporary, target)
-            except FileExistsError:
-                pass
-            else:
-                _validate_update_store_path(updates_root, root)
-                _fsync_directory(updates_root)
-        finally:
-            _validate_update_store_path(temporary, root)
-            if temporary.exists():
-                shutil.rmtree(temporary)
-
-    _validate_update_store_path(target, root)
-    _validate_update_store_path(record_path, root)
+    root_fd = _open_absolute_directory(root)
     try:
-        if not target.is_dir():
-            raise ValueError("record target is not a directory")
-        if not record_path.is_file():
-            raise ValueError("update.json is not a regular file")
-        stored = json.loads(record_path.read_text(encoding="utf-8"))
-        if not isinstance(stored, dict):
-            raise ValueError("record must be a JSON object")
-        expected_fields = set(identity) | {"update_id", "created_at"}
-        if set(stored) != expected_fields:
-            raise ValueError("unexpected or missing record fields")
-        stored_identity = {
-            key: value for key, value in stored.items() if key not in {"update_id", "created_at"}
-        }
-        if stored.get("update_id") != update_id or stored_identity != identity:
-            raise ValueError("record identity mismatch")
-        datetime.fromisoformat(stored["created_at"])
-    except (KeyError, OSError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"corrupt update provenance {target}: {exc}") from exc
-    _validate_update_store_path(target, root)
-    _validate_update_store_path(record_path, root)
+        store_fd, store_created = _open_directory_at(
+            root_fd, "updates", "store root", create=True
+        )
+        if store_fd is None:
+            raise RuntimeError("update provenance store root disappeared")
+        try:
+            if store_created:
+                os.fsync(root_fd)
+            updates_fd, updates_created = _open_directory_at(
+                store_fd, instrument, "instrument directory", create=True
+            )
+            if updates_fd is None:
+                raise RuntimeError("update provenance instrument directory disappeared")
+            try:
+                if updates_created:
+                    os.fsync(store_fd)
+                os.fchmod(updates_fd, 0o755)
+                target_fd, _ = _open_directory_at(
+                    updates_fd, update_id, "target directory"
+                )
+                published_inode: os.stat_result | None = None
+                if target_fd is None:
+                    staging_name, staging_fd = _create_staging_directory(
+                        updates_fd, update_id
+                    )
+                    published = False
+                    try:
+                        # Diagnostic preflight only; all access remains relative to staging_fd.
+                        _validate_update_store_path(
+                            root
+                            / "updates"
+                            / instrument
+                            / staging_name
+                            / "update.json",
+                            root,
+                        )
+                        record_fd = _write_update_record(staging_fd, record)
+                        try:
+                            _require_pinned_entry(
+                                staging_fd,
+                                "update.json",
+                                record_fd,
+                                "staged record",
+                                directory=False,
+                            )
+                        finally:
+                            os.close(record_fd)
+                        os.fchmod(staging_fd, 0o755)
+                        os.fsync(staging_fd)
+                        _require_pinned_entry(
+                            updates_fd,
+                            staging_name,
+                            staging_fd,
+                            "staging directory",
+                            directory=True,
+                        )
+                        try:
+                            os.rename(
+                                staging_name,
+                                update_id,
+                                src_dir_fd=updates_fd,
+                                dst_dir_fd=updates_fd,
+                            )
+                        except OSError as exc:
+                            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                                raise
+                        else:
+                            published = True
+                            published_inode = os.fstat(staging_fd)
+                            os.fsync(updates_fd)
+                    finally:
+                        if not published:
+                            _discard_staging_directory(
+                                updates_fd, staging_name, staging_fd
+                            )
+                        os.close(staging_fd)
+                    target_fd, _ = _open_directory_at(
+                        updates_fd, update_id, "target directory"
+                    )
+                    if target_fd is None:
+                        raise RuntimeError(
+                            "update provenance target disappeared during publication"
+                        )
+                    if published_inode is not None and not _same_inode(
+                        published_inode, os.fstat(target_fd)
+                    ):
+                        raise RuntimeError(
+                            "update provenance target changed during publication"
+                        )
+
+                try:
+                    _require_pinned_entry(
+                        updates_fd,
+                        update_id,
+                        target_fd,
+                        "target directory",
+                        directory=True,
+                    )
+                    record_fd: int | None = None
+                    try:
+                        try:
+                            stored, record_fd = _read_update_record(target_fd)
+                            if not isinstance(stored, dict):
+                                raise ValueError("record must be a JSON object")
+                            expected_fields = set(identity) | {
+                                "update_id",
+                                "created_at",
+                            }
+                            if set(stored) != expected_fields:
+                                raise ValueError("unexpected or missing record fields")
+                            stored_identity = {
+                                key: value
+                                for key, value in stored.items()
+                                if key not in {"update_id", "created_at"}
+                            }
+                            if (
+                                stored.get("update_id") != update_id
+                                or stored_identity != identity
+                            ):
+                                raise ValueError("record identity mismatch")
+                            datetime.fromisoformat(stored["created_at"])
+                        except (KeyError, OSError, TypeError, ValueError) as exc:
+                            raise RuntimeError(
+                                f"corrupt update provenance {target}: {exc}"
+                            ) from exc
+                        if record_fd is None:
+                            raise RuntimeError(
+                                "update provenance record disappeared during verification"
+                            )
+                        _require_pinned_entry(
+                            root_fd,
+                            "updates",
+                            store_fd,
+                            "store root",
+                            directory=True,
+                        )
+                        _require_pinned_entry(
+                            store_fd,
+                            instrument,
+                            updates_fd,
+                            "instrument directory",
+                            directory=True,
+                        )
+                        _require_pinned_entry(
+                            updates_fd,
+                            update_id,
+                            target_fd,
+                            "target directory",
+                            directory=True,
+                        )
+                        _require_pinned_entry(
+                            target_fd,
+                            "update.json",
+                            record_fd,
+                            "record",
+                            directory=False,
+                        )
+                    finally:
+                        if record_fd is not None:
+                            os.close(record_fd)
+                finally:
+                    os.close(target_fd)
+            finally:
+                os.close(updates_fd)
+        finally:
+            os.close(store_fd)
+        verification_root_fd = _open_absolute_directory(root)
+        try:
+            if not _same_inode(os.fstat(root_fd), os.fstat(verification_root_fd)):
+                raise RuntimeError("update provenance configured root changed during use")
+        finally:
+            os.close(verification_root_fd)
+    finally:
+        os.close(root_fd)
     return update_id, record_path
 
 
