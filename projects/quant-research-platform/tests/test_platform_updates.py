@@ -325,6 +325,91 @@ def test_provenance_failure_does_not_move_latest_pointer(tmp_path: Path, monkeyp
     assert snapshot_status(tmp_path, METADATA["instrument"])["snapshot_id"] == first["snapshot_id"]
 
 
+def _seed_update_and_mirror(tmp_path: Path) -> tuple[Path, dict[str, str | int]]:
+    root = tmp_path / "state"
+    mirror = tmp_path / "mirror"
+    for store in (root, mirror):
+        _reconcile(
+            store,
+            _bars(["2026-08-18"]),
+            ["2026-08-18"],
+            "2026-08-18",
+            "2026-08-18",
+        )
+    next_update = _reconcile(
+        mirror,
+        _bars(["2026-08-19"]),
+        ["2026-08-19"],
+        "2026-08-19",
+        "2026-08-19",
+    )
+    return root, next_update
+
+
+@pytest.mark.parametrize(
+    "symlinked_component",
+    ["updates", "instrument", "target", "update.json"],
+)
+def test_update_provenance_rejects_symlinked_store_components_without_moving_latest(
+    tmp_path: Path, symlinked_component: str
+):
+    root, mirrored = _seed_update_and_mirror(tmp_path)
+    instrument = METADATA["instrument"]
+    updates_root = root / "updates"
+    instrument_root = updates_root / instrument
+    target = instrument_root / str(mirrored["update_id"])
+    mirrored_target = Path(str(mirrored["update_path"])).parent
+    latest = root / "datasets" / instrument / "latest.json"
+    before = latest.read_bytes()
+
+    if symlinked_component == "updates":
+        updates_root.rename(root / "updates-original")
+        updates_root.symlink_to(mirrored_target.parent.parent, target_is_directory=True)
+    elif symlinked_component == "instrument":
+        instrument_root.rename(updates_root / f"{instrument}-original")
+        instrument_root.symlink_to(mirrored_target.parent, target_is_directory=True)
+    elif symlinked_component == "target":
+        target.symlink_to(mirrored_target, target_is_directory=True)
+    else:
+        target.mkdir()
+        (target / "update.json").symlink_to(mirrored_target / "update.json")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _reconcile(
+            root,
+            _bars(["2026-08-19"]),
+            ["2026-08-19"],
+            "2026-08-19",
+            "2026-08-19",
+        )
+
+    assert latest.read_bytes() == before
+
+
+@pytest.mark.parametrize("corrupt_record", ["{", "{}", "[]"])
+def test_corrupt_existing_update_record_does_not_move_latest(
+    tmp_path: Path, corrupt_record: str
+):
+    root, mirrored = _seed_update_and_mirror(tmp_path)
+    instrument = METADATA["instrument"]
+    target = root / "updates" / instrument / str(mirrored["update_id"])
+    target.mkdir()
+    (target / "update.json").write_text(corrupt_record, encoding="utf-8")
+    latest = root / "datasets" / instrument / "latest.json"
+    before = latest.read_bytes()
+
+    with pytest.raises(RuntimeError, match="corrupt update provenance"):
+        _reconcile(
+            root,
+            _bars(["2026-08-19"]),
+            ["2026-08-19"],
+            "2026-08-19",
+            "2026-08-19",
+        )
+
+    assert latest.read_bytes() == before
+
+
 def test_concurrent_reconciliations_serialize_without_losing_updates(
     tmp_path: Path, monkeypatch
 ):

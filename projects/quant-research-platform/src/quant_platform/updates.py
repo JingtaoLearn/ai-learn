@@ -75,37 +75,84 @@ def _revision_count(previous: pd.DataFrame, fetched: pd.DataFrame) -> int:
     return int(changed.any(axis=1).sum())
 
 
+def _validate_update_store_path(path: Path, root: Path) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"update provenance path cannot be a symlink: {path}")
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError as exc:
+        raise RuntimeError(f"update provenance path cannot be resolved: {path}: {exc}") from exc
+    if not resolved.is_relative_to(root):
+        raise RuntimeError(f"update provenance path escapes configured root: {path}")
+
+
 def _publish_update_record(
     root: Path, instrument: str, identity: dict[str, Any]
 ) -> tuple[str, Path]:
+    root = root.resolve()
     update_id = _sha256(_canonical_json(identity))
-    updates_root = root / "updates" / instrument
-    updates_root.mkdir(parents=True, exist_ok=True)
-    updates_root.chmod(0o755)
+    store_root = root / "updates"
+    updates_root = store_root / instrument
     target = updates_root / update_id
+    record_path = target / "update.json"
     record = identity | {
         "update_id": update_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    _validate_update_store_path(store_root, root)
+    store_root.mkdir(exist_ok=True)
+    _validate_update_store_path(store_root, root)
+    if not store_root.is_dir():
+        raise RuntimeError(f"update provenance store is not a directory: {store_root}")
+
+    _validate_update_store_path(updates_root, root)
+    updates_root.mkdir(exist_ok=True)
+    _validate_update_store_path(updates_root, root)
+    if not updates_root.is_dir():
+        raise RuntimeError(f"update provenance store is not a directory: {updates_root}")
+    _validate_update_store_path(updates_root, root)
+    updates_root.chmod(0o755)
+
+    _validate_update_store_path(target, root)
     if not target.exists():
+        _validate_update_store_path(updates_root, root)
         temporary = Path(tempfile.mkdtemp(prefix=f".{update_id}.", dir=updates_root))
         try:
+            _validate_update_store_path(temporary, root)
+            _validate_update_store_path(temporary / "update.json", root)
             _atomic_json(temporary / "update.json", record)
+            _validate_update_store_path(temporary, root)
             temporary.chmod(0o755)
+            _validate_update_store_path(temporary, root)
             _fsync_directory(temporary)
+            _validate_update_store_path(temporary, root)
+            _validate_update_store_path(target, root)
             try:
                 os.rename(temporary, target)
             except FileExistsError:
                 pass
             else:
+                _validate_update_store_path(updates_root, root)
                 _fsync_directory(updates_root)
         finally:
+            _validate_update_store_path(temporary, root)
             if temporary.exists():
                 shutil.rmtree(temporary)
 
+    _validate_update_store_path(target, root)
+    _validate_update_store_path(record_path, root)
     try:
-        stored = json.loads((target / "update.json").read_text(encoding="utf-8"))
+        if not target.is_dir():
+            raise ValueError("record target is not a directory")
+        if not record_path.is_file():
+            raise ValueError("update.json is not a regular file")
+        stored = json.loads(record_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict):
+            raise ValueError("record must be a JSON object")
+        expected_fields = set(identity) | {"update_id", "created_at"}
+        if set(stored) != expected_fields:
+            raise ValueError("unexpected or missing record fields")
         stored_identity = {
             key: value for key, value in stored.items() if key not in {"update_id", "created_at"}
         }
@@ -114,7 +161,9 @@ def _publish_update_record(
         datetime.fromisoformat(stored["created_at"])
     except (KeyError, OSError, TypeError, ValueError) as exc:
         raise RuntimeError(f"corrupt update provenance {target}: {exc}") from exc
-    return update_id, target / "update.json"
+    _validate_update_store_path(target, root)
+    _validate_update_store_path(record_path, root)
+    return update_id, record_path
 
 
 def _commit_latest(
