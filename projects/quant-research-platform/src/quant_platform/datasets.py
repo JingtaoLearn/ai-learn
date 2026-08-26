@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -22,6 +23,24 @@ SAFE_INSTRUMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=-]{0,63}$")
 
 class DatasetValidationError(ValueError):
     """Raised when data or metadata cannot form a trustworthy snapshot."""
+
+
+class _InstrumentLock:
+    def __init__(self, root: Path, instrument: str):
+        lock_root = root / ".locks" / "latest"
+        lock_root.mkdir(parents=True, exist_ok=True)
+        self.path = lock_root / f"{instrument}.lock"
+        self.stream = None
+
+    def __enter__(self) -> None:
+        self.stream = self.path.open("a+b")
+        self.path.chmod(0o600)
+        fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        assert self.stream is not None
+        fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+        self.stream.close()
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -193,7 +212,13 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def publish_snapshot(frame: pd.DataFrame, root: Path | str, metadata: dict[str, str]) -> dict[str, str]:
+def publish_snapshot(
+    frame: pd.DataFrame,
+    root: Path | str,
+    metadata: dict[str, str],
+    *,
+    update_latest: bool = True,
+) -> dict[str, str]:
     """Validate and atomically publish one immutable market-data snapshot."""
 
     normalized_metadata = _validate_metadata(metadata)
@@ -254,8 +279,10 @@ def publish_snapshot(frame: pd.DataFrame, root: Path | str, metadata: dict[str, 
                 shutil.rmtree(temporary)
         _verify_snapshot(target, snapshot_id)
 
-    latest = {"snapshot_id": snapshot_id, "path": snapshot_id}
-    _atomic_json(instrument_root / "latest.json", latest)
+    if update_latest:
+        latest = {"snapshot_id": snapshot_id, "path": snapshot_id}
+        with _InstrumentLock(root, normalized_metadata["instrument"]):
+            _atomic_json(instrument_root / "latest.json", latest)
     return {"status": status, "snapshot_id": snapshot_id, "path": str(target)}
 
 
@@ -276,6 +303,6 @@ def snapshot_status(root: Path | str, instrument: str) -> dict[str, str]:
         if value["path"] != snapshot_id:
             raise ValueError("path does not match the content-addressed target")
         _verify_snapshot(target, snapshot_id)
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise RuntimeError(f"latest snapshot pointer is invalid for {instrument}: {exc}") from exc
     return {"snapshot_id": snapshot_id, "path": str(target)}

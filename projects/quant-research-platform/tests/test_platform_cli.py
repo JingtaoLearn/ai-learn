@@ -19,6 +19,39 @@ def _write_market_csv(path: Path) -> None:
     ).to_csv(path, index=False)
 
 
+def _write_sessions_csv(path: Path, dates: list[str]) -> None:
+    pd.DataFrame({"Date": dates}).to_csv(path, index=False)
+
+
+def _update_args(
+    root: Path, market_csv: Path, sessions_csv: Path, start: str, end: str
+) -> list[str]:
+    return [
+        "data",
+        "update",
+        "--input",
+        str(market_csv),
+        "--expected-sessions",
+        str(sessions_csv),
+        "--start",
+        start,
+        "--end",
+        end,
+        "--root",
+        str(root),
+        "--instrument",
+        "601288.SS",
+        "--provider",
+        "synthetic",
+        "--market",
+        "XSHG",
+        "--currency",
+        "CNY",
+        "--adjustment",
+        "unadjusted",
+    ]
+
+
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)
@@ -146,3 +179,148 @@ def test_cli_invalid_input_returns_one_json_error_without_environment(tmp_path: 
     assert code != 0
     assert result["ok"] is False
     assert "must-not-appear" not in json.dumps(result)
+
+
+def test_cli_data_update_backfill_idempotency_and_revision_smoke(tmp_path: Path, capsys):
+    root = tmp_path / "state"
+    market_csv = tmp_path / "bars.csv"
+    sessions_csv = tmp_path / "sessions.csv"
+    _write_market_csv(market_csv)
+    _write_sessions_csv(sessions_csv, ["2026-08-18", "2026-08-19"])
+    args = _update_args(
+        root, market_csv, sessions_csv, "2026-08-18", "2026-08-19"
+    )
+
+    assert main(args) == 0
+    first = _json_output(capsys)
+    assert first["ok"] is True
+    assert first["status"] == "CREATED"
+    assert set(first) == {
+        "ok",
+        "status",
+        "snapshot_id",
+        "path",
+        "update_id",
+        "update_path",
+    }
+
+    assert main(args) == 0
+    unchanged = _json_output(capsys)
+    assert unchanged["status"] == "NO_CHANGE"
+    assert unchanged["snapshot_id"] == first["snapshot_id"]
+
+    revised = pd.read_csv(market_csv)
+    revised.loc[1, "Close"] = 6.21
+    revised.loc[1, "High"] = 6.25
+    revised.to_csv(market_csv, index=False)
+    assert main(args) == 0
+    revision = _json_output(capsys)
+    assert revision["status"] == "CREATED"
+    assert revision["snapshot_id"] != first["snapshot_id"]
+    assert Path(first["path"]).is_dir()
+
+
+def test_cli_incomplete_update_returns_json_and_preserves_latest(tmp_path: Path, capsys):
+    root = tmp_path / "state"
+    market_csv = tmp_path / "bars.csv"
+    sessions_csv = tmp_path / "sessions.csv"
+    _write_market_csv(market_csv)
+    _write_sessions_csv(sessions_csv, ["2026-08-18", "2026-08-19"])
+    args = _update_args(
+        root, market_csv, sessions_csv, "2026-08-18", "2026-08-19"
+    )
+    assert main(args) == 0
+    _json_output(capsys)
+    latest = root / "datasets" / "601288.SS" / "latest.json"
+    before = latest.read_bytes()
+
+    _write_sessions_csv(
+        sessions_csv, ["2026-08-18", "2026-08-19", "2026-08-20"]
+    )
+    failed_args = _update_args(
+        root, market_csv, sessions_csv, "2026-08-18", "2026-08-20"
+    )
+    assert main(failed_args) == 2
+    failure = _json_output(capsys)
+
+    assert failure["ok"] is False
+    assert "missing expected sessions" in failure["error"]
+    assert latest.read_bytes() == before
+
+
+def test_cli_update_requires_exactly_one_expected_session_column(tmp_path: Path, capsys):
+    market_csv = tmp_path / "bars.csv"
+    sessions_csv = tmp_path / "sessions.csv"
+    _write_market_csv(market_csv)
+    pd.DataFrame(
+        {"Date": ["2026-08-18"], "source": ["calendar"]}
+    ).to_csv(sessions_csv, index=False)
+
+    code = main(
+        _update_args(
+            tmp_path / "state",
+            market_csv,
+            sessions_csv,
+            "2026-08-18",
+            "2026-08-19",
+        )
+    )
+    failure = _json_output(capsys)
+
+    assert code == 2
+    assert "exactly one date column" in failure["error"]
+
+
+def test_cli_run_returns_only_sealed_attempt_identity(
+    tmp_path: Path, capsys, monkeypatch
+):
+    captured: dict = {}
+
+    def fake_run(root, submission_id, attempt_id, timeout_seconds):
+        captured.update(
+            {
+                "root": root,
+                "submission_id": submission_id,
+                "attempt_id": attempt_id,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {
+            "schema_version": 1,
+            "attempt_id": attempt_id,
+            "run_id": "a" * 64,
+            "submission_id": submission_id,
+            "dataset_snapshot_id": "b" * 64,
+            "outcome": "FAILED",
+            "path": str(Path(root) / "artifacts" / submission_id / attempt_id),
+            "stdout": "must not be emitted",
+        }
+
+    monkeypatch.setattr("quant_platform.cli.run_submission", fake_run)
+
+    code = main(
+        [
+            "run",
+            "--root",
+            str(tmp_path / "state"),
+            "--submission-id",
+            "c" * 64,
+            "--attempt-id",
+            "attempt-001",
+            "--timeout-seconds",
+            "45.5",
+        ]
+    )
+    result = _json_output(capsys)
+
+    assert code == 0
+    assert result == {
+        "ok": True,
+        "attempt_id": "attempt-001",
+        "run_id": "a" * 64,
+        "outcome": "FAILED",
+        "path": str(
+            tmp_path / "state" / "artifacts" / ("c" * 64) / "attempt-001"
+        ),
+    }
+    assert captured["timeout_seconds"] == 45.5

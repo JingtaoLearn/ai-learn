@@ -58,6 +58,7 @@ def _foundation(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     )
     artifacts = root / "artifacts" / submission["submission_id"] / "attempt-001"
     artifacts.mkdir(parents=True)
+    (artifacts / "payload").mkdir()
     return root, Path(submission["path"]), Path(dataset["path"]), artifacts
 
 
@@ -83,7 +84,9 @@ def test_docker_command_enforces_fixed_research_sandbox(tmp_path: Path):
     assert "--tmpfs /tmp:rw,noexec,nosuid,size=64m" in joined
     assert f"type=bind,src={submission / 'source'},dst=/workspace,readonly" in command
     assert f"type=bind,src={dataset},dst=/data,readonly" in command
-    assert f"type=bind,src={artifacts},dst=/artifacts" in command
+    assert f"type=bind,src={artifacts / 'payload'},dst=/artifacts" in command
+    assert command[command.index("--cidfile") + 1] == str(artifacts / "container.cid")
+    assert command[command.index("--name") + 1].startswith("quant-research-")
     assert "quant-research-runner@sha256:" + "a" * 64 in command
     assert (
         f"type=bind,src={submission / 'submission.json'},dst=/run-contract/submission.json,readonly"
@@ -109,6 +112,24 @@ def test_docker_command_enforces_fixed_research_sandbox(tmp_path: Path):
     assert "--privileged" not in command
     assert "-p" not in command
     assert "/var/run/docker.sock" not in joined
+
+
+def test_docker_command_uses_exact_verified_local_image_id(tmp_path: Path):
+    root, submission, dataset, artifacts = _foundation(tmp_path)
+    manifest_path = submission / "submission.json"
+    manifest = json.loads(manifest_path.read_text())
+    spec = manifest["spec"] | {"runner_image": "sha256:" + "b" * 64}
+    shutil.rmtree(submission)
+    project = tmp_path / "project"
+    published = publish_submission(spec, project, root)
+    shutil.rmtree(artifacts.parent)
+    artifacts = root / "artifacts" / published["submission_id"] / "attempt-001"
+    artifacts.mkdir(parents=True)
+    (artifacts / "payload").mkdir()
+
+    command = build_docker_command(Path(published["path"]), dataset, artifacts)
+
+    assert command[command.index("--workdir") + 2] == "sha256:" + "b" * 64
 
 
 def test_isolation_rejects_protected_paths_and_tampered_runner_image(tmp_path: Path):
@@ -144,13 +165,24 @@ def test_isolation_rejects_arbitrary_or_reused_writable_artifact_directory(tmp_p
             outside,
         )
 
-    (artifacts / "prior-result.json").write_text("{}")
+    (artifacts / "payload" / "prior-result.json").write_text("{}")
     with pytest.raises(IsolationError, match="empty"):
         build_docker_command(
             submission,
             dataset,
             artifacts,
         )
+
+
+@pytest.mark.parametrize("reserved", ["attempt.json", "stdout.log", "stderr.log", "container.cid"])
+def test_isolation_rejects_preexisting_runner_control_files(
+    tmp_path: Path, reserved: str
+):
+    _, submission, dataset, artifacts = _foundation(tmp_path)
+    (artifacts / reserved).write_text("untrusted")
+
+    with pytest.raises(IsolationError, match="runner control"):
+        build_docker_command(submission, dataset, artifacts)
 
 
 def test_isolation_rejects_symlinked_artifact_directory(tmp_path: Path):

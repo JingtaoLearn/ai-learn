@@ -10,12 +10,18 @@ The repository now also provides a market-agnostic `research` CLI for immutable 
 research data snapshot --input daily.csv --root state/platform \
   --instrument 601288.SS --provider vendor-name --market XSHG \
   --currency CNY --adjustment unadjusted
+research data update --input daily.csv --expected-sessions sessions.csv \
+  --start 2026-01-01 --end 2026-08-26 --root state/platform \
+  --instrument 601288.SS --provider vendor-name --market XSHG \
+  --currency CNY --adjustment unadjusted
 research data status --root state/platform --instrument 601288.SS
 research submit --spec experiment.json --project-root . --root state/platform
 research submission show --root state/platform --submission-id SHA256
+research run --root state/platform --submission-id SHA256 \
+  --attempt-id attempt-001 --timeout-seconds 300
 ```
 
-Dataset snapshots and experiment submissions are content-addressed, atomically published, and never overwritten. Experiment submissions freeze the source bundle, dataset identity, digest-pinned runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every prepared attempt also receives a content-addressed run contract and a fresh scoped artifact directory. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
+Dataset snapshots, update provenance, experiment submissions, and execution attempts are content-addressed or uniquely named, atomically published, and never overwritten. Daily updates require an independently supplied one-column expected-session CSV; incomplete requested histories fail without moving the latest pointer. Experiment submissions freeze the source bundle, dataset identity, immutable runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every run receives a content-addressed contract and fresh artifact directory; success, process failure, timeout, and launch failure all leave a checksummed read-only attempt manifest. `quant_platform.reference_job` is a deterministic integrity demonstration that derives JSON and daily CSV evidence only from its supplied snapshot, not a promoted trading strategy. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
 
 ## Decision boundary
 
