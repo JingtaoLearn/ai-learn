@@ -276,6 +276,6 @@ def snapshot_status(root: Path | str, instrument: str) -> dict[str, str]:
         if value["path"] != snapshot_id:
             raise ValueError("path does not match the content-addressed target")
         _verify_snapshot(target, snapshot_id)
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise RuntimeError(f"latest snapshot pointer is invalid for {instrument}: {exc}") from exc
     return {"snapshot_id": snapshot_id, "path": str(target)}
