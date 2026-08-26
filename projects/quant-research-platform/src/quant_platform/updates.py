@@ -15,12 +15,17 @@ from .datasets import (
     _atomic_json,
     _canonical_json,
     _fsync_directory,
+    _InstrumentLock,
     _normalize_frame,
     _sha256,
     _validate_metadata,
     publish_snapshot,
     snapshot_status,
 )
+
+
+class ConcurrentUpdateError(RuntimeError):
+    """Raised when latest changes before a reconciled update can commit."""
 
 
 def _session_date(value: Any, label: str) -> pd.Timestamp:
@@ -112,6 +117,23 @@ def _publish_update_record(
     return update_id, target / "update.json"
 
 
+def _commit_latest(
+    root: Path,
+    instrument: str,
+    snapshot_id: str,
+    expected_prior_snapshot_id: str | None,
+) -> None:
+    pointer = root / "datasets" / instrument / "latest.json"
+    current_snapshot_id = (
+        snapshot_status(root, instrument)["snapshot_id"] if pointer.exists() else None
+    )
+    if current_snapshot_id != expected_prior_snapshot_id:
+        raise ConcurrentUpdateError(
+            "latest snapshot changed while the daily update was being committed"
+        )
+    _atomic_json(pointer, {"snapshot_id": snapshot_id, "path": snapshot_id})
+
+
 def reconcile_daily_history(
     fetched_bars: pd.DataFrame,
     expected_sessions: Iterable[Any],
@@ -138,65 +160,77 @@ def reconcile_daily_history(
         normalized_fetched["Date"].between(request_start, request_end)
     ].reset_index(drop=True)
 
-    prior_snapshot_id: str | None = None
-    previous = pd.DataFrame(columns=normalized_fetched.columns)
-    latest_pointer = root / "datasets" / normalized_metadata["instrument"] / "latest.json"
-    if latest_pointer.exists():
-        prior = snapshot_status(root, normalized_metadata["instrument"])
-        prior_snapshot_id = prior["snapshot_id"]
-        prior_path = Path(prior["path"])
-        prior_manifest = json.loads((prior_path / "manifest.json").read_text(encoding="utf-8"))
-        mismatches = [
-            field
-            for field, value in normalized_metadata.items()
-            if prior_manifest["metadata"].get(field) != value
-        ]
-        if mismatches:
-            raise DatasetValidationError(
-                f"latest snapshot metadata mismatch: {', '.join(sorted(mismatches))}"
+    instrument = normalized_metadata["instrument"]
+    with _InstrumentLock(root, instrument):
+        prior_snapshot_id: str | None = None
+        previous = pd.DataFrame(columns=normalized_fetched.columns)
+        latest_pointer = root / "datasets" / instrument / "latest.json"
+        if latest_pointer.exists():
+            prior = snapshot_status(root, instrument)
+            prior_snapshot_id = prior["snapshot_id"]
+            prior_path = Path(prior["path"])
+            prior_manifest = json.loads(
+                (prior_path / "manifest.json").read_text(encoding="utf-8")
             )
-        previous = _normalize_frame(pd.read_parquet(prior_path / "data.parquet"))
+            mismatches = [
+                field
+                for field, value in normalized_metadata.items()
+                if prior_manifest["metadata"].get(field) != value
+            ]
+            if mismatches:
+                raise DatasetValidationError(
+                    f"latest snapshot metadata mismatch: {', '.join(sorted(mismatches))}"
+                )
+            previous = _normalize_frame(pd.read_parquet(prior_path / "data.parquet"))
 
-    revision_count = _revision_count(previous, requested_fetched)
-    fetched_dates = set(requested_fetched["Date"])
-    preserved = previous[~previous["Date"].isin(fetched_dates)]
-    if preserved.empty:
-        merged_input = requested_fetched
-    elif requested_fetched.empty:
-        merged_input = preserved
-    else:
-        merged_input = pd.concat([preserved, requested_fetched], ignore_index=True)
-    merged_dates = set(merged_input["Date"])
-    missing = [session for session in sessions if session not in merged_dates]
-    if missing:
-        rendered = ", ".join(str(value.date()) for value in missing)
-        raise DatasetValidationError(f"missing expected sessions after merge: {rendered}")
-    merged = _normalize_frame(merged_input)
+        revision_count = _revision_count(previous, requested_fetched)
+        fetched_dates = set(requested_fetched["Date"])
+        preserved = previous[~previous["Date"].isin(fetched_dates)]
+        if preserved.empty:
+            merged_input = requested_fetched
+        elif requested_fetched.empty:
+            merged_input = preserved
+        else:
+            merged_input = pd.concat([preserved, requested_fetched], ignore_index=True)
+        merged_dates = set(merged_input["Date"])
+        missing = [session for session in sessions if session not in merged_dates]
+        if missing:
+            rendered = ", ".join(str(value.date()) for value in missing)
+            raise DatasetValidationError(
+                f"missing expected sessions after merge: {rendered}"
+            )
+        merged = _normalize_frame(merged_input)
 
-    snapshot = publish_snapshot(merged, root, normalized_metadata)
-    identity = {
-        "schema_version": 1,
-        "metadata": normalized_metadata,
-        "request": {
-            "start": str(request_start.date()),
-            "end": str(request_end.date()),
-        },
-        "expected_sessions_sha256": expected_sessions_sha256,
-        "expected_session_count": len(sessions),
-        "fetched": {
-            "start": str(fetched_start.date()),
-            "end": str(fetched_end.date()),
-            "rows": len(normalized_fetched),
-        },
-        "prior_snapshot_id": prior_snapshot_id,
-        "result_snapshot_id": snapshot["snapshot_id"],
-        "revision_count": revision_count,
-    }
-    update_id, update_path = _publish_update_record(
-        root, normalized_metadata["instrument"], identity
-    )
-    return snapshot | {
-        "update_id": update_id,
-        "update_path": str(update_path),
-        "revision_count": revision_count,
-    }
+        snapshot = publish_snapshot(
+            merged, root, normalized_metadata, update_latest=False
+        )
+        identity = {
+            "schema_version": 1,
+            "metadata": normalized_metadata,
+            "request": {
+                "start": str(request_start.date()),
+                "end": str(request_end.date()),
+            },
+            "expected_sessions_sha256": expected_sessions_sha256,
+            "expected_session_count": len(sessions),
+            "fetched": {
+                "start": str(fetched_start.date()),
+                "end": str(fetched_end.date()),
+                "rows": len(normalized_fetched),
+            },
+            "prior_snapshot_id": prior_snapshot_id,
+            "result_snapshot_id": snapshot["snapshot_id"],
+            "revision_count": revision_count,
+        }
+        update_id, update_path = _publish_update_record(root, instrument, identity)
+        _commit_latest(
+            root,
+            instrument,
+            snapshot["snapshot_id"],
+            prior_snapshot_id,
+        )
+        return snapshot | {
+            "update_id": update_id,
+            "update_path": str(update_path),
+            "revision_count": revision_count,
+        }
