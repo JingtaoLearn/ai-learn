@@ -9,6 +9,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,6 +235,52 @@ def _replace_payload_with_empty(payload_dir: Path) -> None:
         ) from exc
 
 
+def _quarantine_untrusted_execution(
+    root: Path,
+    submission_id: str,
+    attempt_id: str,
+    attempt_dir: Path,
+    attempt_manifest: dict[str, Any],
+) -> None:
+    quarantine_root = root / "quarantine"
+    if not quarantine_root.exists():
+        quarantine_root.mkdir(mode=0o700)
+        _fsync_directory(root)
+    elif quarantine_root.is_symlink() or not quarantine_root.is_dir():
+        raise RunnerIntegrityError("termination quarantine root is unsafe")
+    quarantine_root.chmod(0o700)
+    quarantine_parent = quarantine_root / submission_id
+    if not quarantine_parent.exists():
+        quarantine_parent.mkdir(mode=0o700)
+        _fsync_directory(quarantine_root)
+    elif quarantine_parent.is_symlink() or not quarantine_parent.is_dir():
+        raise RunnerIntegrityError("submission termination quarantine is unsafe")
+    quarantine_parent.chmod(0o700)
+    quarantine_target = quarantine_parent / attempt_id
+    if quarantine_target.exists():
+        raise RunnerIntegrityError(
+            f"termination quarantine already exists: {quarantine_target}"
+        )
+    evidence_staging = Path(
+        tempfile.mkdtemp(prefix=f".{attempt_id}.evidence.", dir=attempt_dir.parent)
+    )
+    attempt_manifest["quarantine_path"] = quarantine_target.relative_to(root).as_posix()
+    try:
+        _atomic_json(evidence_staging / "attempt.json", attempt_manifest)
+        _seal_attempt(evidence_staging)
+        _verify_sealed_attempt(evidence_staging, {}, attempt_manifest)
+        os.rename(attempt_dir, quarantine_target)
+        os.rename(evidence_staging, attempt_dir)
+        _fsync_directory(attempt_dir.parent)
+        _fsync_directory(quarantine_parent)
+        _fsync_directory(quarantine_root)
+        _verify_sealed_attempt(attempt_dir, {}, attempt_manifest)
+    except OSError as exc:
+        raise RunnerIntegrityError(
+            "unconfirmed termination evidence could not be finalized safely"
+        ) from exc
+
+
 def _seal_attempt(attempt_dir: Path) -> None:
     for path in sorted(_walk_tree(attempt_dir), key=lambda item: len(item.parts), reverse=True):
         metadata = path.stat(follow_symlinks=False)
@@ -313,6 +360,9 @@ def _verify_sealed_attempt(
 
 
 def _terminate_process_group(process: Any) -> int | None:
+    current_status = process.poll()
+    if current_status is not None:
+        return current_status
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -324,7 +374,17 @@ def _terminate_process_group(process: Any) -> int | None:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        return process.wait()
+        try:
+            return process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerTerminationError(
+                "Docker CLI did not exit after SIGKILL"
+            ) from exc
+
+
+def _flush_stream(stream: Any) -> None:
+    stream.flush()
+    os.fsync(stream.fileno())
 
 
 def _docker_control(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -458,9 +518,18 @@ def run_submission(
     outcome = "LAUNCH_FAILED"
     exit_status: int | None = None
     error_type: str | None = None
+    termination_error: RunnerTerminationError | None = None
+    termination_cause: BaseException | None = None
     stdout_path = attempt_dir / "stdout.log"
     stderr_path = attempt_dir / "stderr.log"
-    with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+    stdout = stdout_path.open("xb")
+    try:
+        stderr = stderr_path.open("xb")
+    except OSError:
+        stdout.close()
+        raise
+    stream_finalization_error: OSError | None = None
+    try:
         try:
             process = process_launcher(
                 command,
@@ -471,31 +540,126 @@ def run_submission(
                 start_new_session=True,
                 close_fds=True,
             )
-            try:
-                exit_status = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                exit_status = container_terminator(
-                    attempt_dir / "container.cid", container_name, process
-                )
-                outcome = "TIMED_OUT"
-            else:
-                outcome = "SUCCESS" if exit_status == 0 else "FAILED"
         except OSError as exc:
             error_type = type(exc).__name__
-        finally:
-            for stream in (stdout, stderr):
-                stream.flush()
-                os.fsync(stream.fileno())
+        else:
+            try:
+                try:
+                    exit_status = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        exit_status = container_terminator(
+                            attempt_dir / "container.cid", container_name, process
+                        )
+                        try:
+                            exit_status = process.wait(timeout=0)
+                        except (OSError, subprocess.TimeoutExpired) as exc:
+                            raise RunnerTerminationError(
+                                "Docker CLI exit could not be confirmed"
+                            ) from exc
+                    except RunnerTerminationError:
+                        raise
+                    else:
+                        outcome = "TIMED_OUT"
+                else:
+                    outcome = "SUCCESS" if exit_status == 0 else "FAILED"
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                termination_error = RunnerTerminationError(
+                    "Docker termination state could not be confirmed"
+                )
+                termination_cause = exc
+            except RunnerTerminationError as exc:
+                termination_error = exc
+            if termination_error is not None:
+                outcome = "TERMINATION_UNCONFIRMED"
+                error_type = type(termination_error).__name__
+                try:
+                    if process.poll() is None:
+                        _terminate_process_group(process)
+                except (
+                    OSError,
+                    RunnerTerminationError,
+                    subprocess.TimeoutExpired,
+                ) as reap_error:
+                    termination_error.add_note(
+                        f"Docker CLI reap also failed: {reap_error}"
+                    )
+    finally:
+        for stream in (stdout, stderr):
+            try:
+                _flush_stream(stream)
+            except OSError as exc:
+                if stream_finalization_error is None:
+                    stream_finalization_error = exc
+        for stream in (stdout, stderr):
+            try:
+                stream.close()
+            except OSError as exc:
+                if stream_finalization_error is None:
+                    stream_finalization_error = exc
 
     finished_at = active_clock.now()
     duration_seconds = active_clock.monotonic() - started_monotonic
+    if termination_error is not None and stream_finalization_error is not None:
+        termination_error.add_note(
+            f"Runner stream finalization also failed: {stream_finalization_error}"
+        )
+        termination_cause = stream_finalization_error
+    if termination_error is not None:
+        attempt_manifest = {
+            "schema_version": 1,
+            "attempt_id": attempt_id,
+            "run_id": run_contract["run_id"],
+            "submission_id": submission_id,
+            "dataset_snapshot_id": manifest["dataset_snapshot_id"],
+            "runner_image": manifest["runner_image"],
+            "execution_envelope": EXECUTION_ENVELOPE,
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_seconds": duration_seconds,
+            "exit_status": exit_status,
+            "outcome": "TERMINATION_UNCONFIRMED",
+            "error_type": type(termination_error).__name__,
+            "files": {},
+            "rejected_entries": [
+                {"path": "payload", "reason": "termination-unconfirmed"}
+            ],
+            "payload_integrity": "UNVERIFIED",
+            "quarantine_path": None,
+        }
+        try:
+            _quarantine_untrusted_execution(
+                root,
+                submission_id,
+                attempt_id,
+                attempt_dir,
+                attempt_manifest,
+            )
+        except (OSError, RunnerIntegrityError) as finalization_error:
+            termination_error.add_note(
+                f"Evidence finalization also failed: {finalization_error}"
+            )
+            raise termination_error from finalization_error
+        if termination_cause is not None:
+            raise termination_error from termination_cause
+        raise termination_error
+
     integrity_error: RunnerIntegrityError | None = None
+    if stream_finalization_error is not None:
+        integrity_error = RunnerIntegrityError(
+            f"runner stream finalization failed: {stream_finalization_error}"
+        )
+        outcome = "ARTIFACT_REJECTED"
+        error_type = type(integrity_error).__name__
     rejected_entries: list[dict[str, str]] = []
+    quarantine_path: str | None = None
+    payload_integrity = "VERIFIED"
     try:
         _prepare_payload_for_validation(payload_dir)
         rejected_entries = _remove_rejected_payload_entries(payload_dir, attempt_dir)
     except RunnerIntegrityError as exc:
         integrity_error = exc
+        payload_integrity = "UNVERIFIED"
         rejected_entries = [{"path": "payload", "reason": "inaccessible"}]
         _replace_payload_with_empty(payload_dir)
     if rejected_entries:
@@ -515,12 +679,14 @@ def run_submission(
             integrity_error = RunnerIntegrityError(
                 "artifact files changed after the process exited"
             )
+            payload_integrity = "UNVERIFIED"
             rejected_entries.append({"path": "payload", "reason": "changed"})
             files = verified_files
             outcome = "ARTIFACT_REJECTED"
             error_type = type(integrity_error).__name__
     except RunnerIntegrityError as exc:
         integrity_error = exc
+        payload_integrity = "UNVERIFIED"
         outcome = "ARTIFACT_REJECTED"
         error_type = type(exc).__name__
         _replace_payload_with_empty(payload_dir)
@@ -543,6 +709,8 @@ def run_submission(
         "error_type": error_type,
         "files": files,
         "rejected_entries": rejected_entries,
+        "payload_integrity": payload_integrity,
+        "quarantine_path": quarantine_path,
     }
     _atomic_json(attempt_dir / "attempt.json", attempt_manifest)
     _seal_attempt(attempt_dir)

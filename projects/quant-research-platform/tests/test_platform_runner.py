@@ -19,6 +19,11 @@ from quant_platform.runner import (
 from quant_platform.submissions import publish_submission
 
 
+@pytest.fixture(autouse=True)
+def _never_signal_real_process_groups(monkeypatch):
+    monkeypatch.setattr(os, "killpg", lambda pid, value: None)
+
+
 class FakeClock:
     def __init__(self):
         self.current = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
@@ -36,17 +41,33 @@ class FakeClock:
 
 
 class FakeProcess:
-    def __init__(self, exit_status: int = 0, *, times_out: bool = False):
+    def __init__(
+        self,
+        exit_status: int = 0,
+        *,
+        times_out: bool = False,
+        remains_running: bool = False,
+        wait_error: OSError | None = None,
+    ):
         self.exit_status = exit_status
         self.times_out = times_out
+        self.remains_running = remains_running
+        self.wait_error = wait_error
+        self.exited = False
         self.pid = 43210
         self.wait_calls = 0
 
     def wait(self, timeout: float | None = None) -> int:
         self.wait_calls += 1
-        if self.times_out and self.wait_calls == 1:
+        if self.wait_error is not None:
+            raise self.wait_error
+        if self.remains_running or (self.times_out and self.wait_calls == 1):
             raise subprocess.TimeoutExpired(["docker"], timeout)
+        self.exited = True
         return self.exit_status
+
+    def poll(self) -> int | None:
+        return self.exit_status if self.exited else None
 
 
 class FakeLauncher:
@@ -57,8 +78,15 @@ class FakeLauncher:
         times_out: bool = False,
         artifact_kind: str = "regular",
         write_cid: bool = True,
+        remains_running: bool = False,
+        wait_error: OSError | None = None,
     ):
-        self.process = FakeProcess(exit_status, times_out=times_out)
+        self.process = FakeProcess(
+            exit_status,
+            times_out=times_out,
+            remains_running=remains_running,
+            wait_error=wait_error,
+        )
         self.artifact_kind = artifact_kind
         self.write_cid = write_cid
         self.calls: list[tuple[list[str], dict]] = []
@@ -151,6 +179,19 @@ def _foundation(tmp_path: Path) -> tuple[Path, dict[str, str], dict[str, str]]:
 
 def _manifest(result: dict) -> dict:
     return json.loads((Path(result["path"]) / "attempt.json").read_text())
+
+
+def _assert_unconfirmed_evidence(attempt: Path) -> dict:
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["outcome"] == "TERMINATION_UNCONFIRMED"
+    assert manifest["payload_integrity"] == "UNVERIFIED"
+    assert manifest["rejected_entries"] == [
+        {"path": "payload", "reason": "termination-unconfirmed"}
+    ]
+    assert not (attempt / "payload").exists()
+    assert (attempt.parents[2] / manifest["quarantine_path"]).is_dir()
+    assert attempt.stat().st_mode & 0o222 == 0
+    return manifest
 
 
 def test_runner_resolves_verified_submission_and_bound_dataset(tmp_path: Path):
@@ -502,7 +543,7 @@ def test_timeout_does_not_treat_docker_daemon_error_as_confirmed_removal(
         )
 
     attempt = root / "artifacts" / submission["submission_id"] / "attempt-daemon-error"
-    assert not (attempt / "attempt.json").exists()
+    _assert_unconfirmed_evidence(attempt)
 
 
 def test_timeout_without_cid_uses_name_and_terminates_docker_process_group(
@@ -536,7 +577,8 @@ def test_timeout_without_cid_uses_name_and_terminates_docker_process_group(
     container_name = launcher.calls[0][0][launcher.calls[0][0].index("--name") + 1]
     assert any(container_name in command for command in commands)
     attempt = root / "artifacts" / submission["submission_id"] / "attempt-no-cid"
-    assert not (attempt / "attempt.json").exists()
+    manifest = _assert_unconfirmed_evidence(attempt)
+    assert manifest["files"] == {}
 
 
 def test_timeout_confirms_container_absence_by_immutable_cid(
@@ -602,7 +644,314 @@ def test_timeout_reaps_docker_process_when_control_command_times_out(
         / submission["submission_id"]
         / "attempt-control-timeout"
     )
-    assert not (attempt / "attempt.json").exists()
+    _assert_unconfirmed_evidence(attempt)
+
+
+def test_unconfirmed_termination_seals_control_only_evidence_and_reraises(
+    tmp_path: Path
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+    original_error = runner_module.RunnerTerminationError(
+        "Docker removal could not be confirmed"
+    )
+
+    def unconfirmed(cidfile: Path, container_name: str, process):
+        raise original_error
+
+    with pytest.raises(runner_module.RunnerTerminationError) as caught:
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-unconfirmed",
+            1,
+            process_launcher=launcher,
+            container_terminator=unconfirmed,
+            clock=FakeClock(),
+        )
+
+    assert caught.value is original_error
+    attempt = (
+        root / "artifacts" / submission["submission_id"] / "attempt-unconfirmed"
+    )
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["outcome"] == "TERMINATION_UNCONFIRMED"
+    assert manifest["error_type"] == "RunnerTerminationError"
+    assert manifest["payload_integrity"] == "UNVERIFIED"
+    assert manifest["rejected_entries"] == [
+        {"path": "payload", "reason": "termination-unconfirmed"}
+    ]
+    assert manifest["files"] == {}
+    assert not (attempt / "payload").exists()
+    quarantine = root / manifest["quarantine_path"]
+    assert quarantine.is_dir()
+    assert (quarantine / "payload" / "result.json").is_file()
+    assert (quarantine / "container.cid").is_file()
+    assert (quarantine / "stdout.log").is_file()
+    assert (quarantine / "stderr.log").is_file()
+    assert attempt.stat().st_mode & 0o222 == 0
+    assert all(path.stat().st_mode & 0o222 == 0 for path in attempt.rglob("*"))
+
+
+def test_terminator_timeoutexpired_uses_control_only_evidence(tmp_path: Path):
+    root, _, submission = _foundation(tmp_path)
+
+    def control_timeout(cidfile: Path, container_name: str, process):
+        raise subprocess.TimeoutExpired(["docker", "inspect"], 10)
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="termination"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-terminator-timeout",
+            1,
+            process_launcher=FakeLauncher(exit_status=-15, times_out=True),
+            container_terminator=control_timeout,
+            clock=FakeClock(),
+        )
+
+    attempt = (
+        root
+        / "artifacts"
+        / submission["submission_id"]
+        / "attempt-terminator-timeout"
+    )
+    _assert_unconfirmed_evidence(attempt)
+
+
+def test_stream_finalization_error_preserves_termination_error_and_evidence(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    original_error = runner_module.RunnerTerminationError("removal unconfirmed")
+    calls = 0
+
+    def fail_first_flush(stream) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("log fsync failed")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+    def unconfirmed(cidfile: Path, container_name: str, process):
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_flush_stream",
+        fail_first_flush,
+        raising=False,
+    )
+
+    with pytest.raises(runner_module.RunnerTerminationError) as caught:
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-stream-error",
+            1,
+            process_launcher=FakeLauncher(exit_status=-15, times_out=True),
+            container_terminator=unconfirmed,
+            clock=FakeClock(),
+        )
+
+    assert caught.value is original_error
+    assert isinstance(caught.value.__cause__, OSError)
+    _assert_unconfirmed_evidence(
+        root / "artifacts" / submission["submission_id"] / "attempt-stream-error"
+    )
+
+
+def test_quarantine_creation_fsyncs_every_new_parent(tmp_path: Path, monkeypatch):
+    root, _, submission = _foundation(tmp_path)
+    original_error = runner_module.RunnerTerminationError("removal unconfirmed")
+    real_fsync_directory = runner_module._fsync_directory
+    fsynced: list[Path] = []
+
+    def capture_fsync(directory: Path) -> None:
+        fsynced.append(directory)
+        real_fsync_directory(directory)
+
+    def unconfirmed(cidfile: Path, container_name: str, process):
+        raise original_error
+
+    monkeypatch.setattr(runner_module, "_fsync_directory", capture_fsync)
+
+    with pytest.raises(runner_module.RunnerTerminationError):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-fsync-hierarchy",
+            1,
+            process_launcher=FakeLauncher(exit_status=-15, times_out=True),
+            container_terminator=unconfirmed,
+            clock=FakeClock(),
+        )
+
+    assert root in fsynced
+    assert root / "quarantine" in fsynced
+    assert root / "quarantine" / submission["submission_id"] in fsynced
+
+
+def test_unconfirmed_termination_quarantines_controls_when_cli_reap_fails(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+    original_error = runner_module.RunnerTerminationError("removal unconfirmed")
+
+    def unconfirmed(cidfile: Path, container_name: str, process):
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_terminate_process_group",
+        lambda process: (_ for _ in ()).throw(OSError("cannot reap Docker CLI")),
+    )
+
+    with pytest.raises(runner_module.RunnerTerminationError) as caught:
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-reap-failed",
+            1,
+            process_launcher=launcher,
+            container_terminator=unconfirmed,
+            clock=FakeClock(),
+        )
+
+    assert caught.value is original_error
+    attempt = (
+        root / "artifacts" / submission["submission_id"] / "attempt-reap-failed"
+    )
+    manifest = json.loads((attempt / "attempt.json").read_text())
+    assert manifest["files"] == {}
+    assert not (attempt / "stdout.log").exists()
+    assert not (attempt / "stderr.log").exists()
+    assert not (attempt / "container.cid").exists()
+    quarantine = root / manifest["quarantine_path"]
+    assert (quarantine / "stdout.log").is_file()
+    assert (quarantine / "stderr.log").is_file()
+    assert (quarantine / "container.cid").is_file()
+
+
+def test_terminator_return_without_cli_exit_uses_control_only_evidence(
+    tmp_path: Path
+):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(
+        exit_status=-15,
+        times_out=True,
+        remains_running=True,
+    )
+
+    def returns_without_reaping(cidfile: Path, container_name: str, process):
+        return -15
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="CLI exit"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-cli-running",
+            1,
+            process_launcher=launcher,
+            container_terminator=returns_without_reaping,
+            clock=FakeClock(),
+        )
+
+    attempt = (
+        root / "artifacts" / submission["submission_id"] / "attempt-cli-running"
+    )
+    manifest = _assert_unconfirmed_evidence(attempt)
+    assert manifest["files"] == {}
+
+
+def test_post_launch_wait_oserror_uses_control_only_evidence(tmp_path: Path):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(wait_error=OSError("wait failed"))
+
+    with pytest.raises(runner_module.RunnerTerminationError, match="state"):
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-wait-oserror",
+            1,
+            process_launcher=launcher,
+            clock=FakeClock(),
+        )
+
+    attempt = (
+        root / "artifacts" / submission["submission_id"] / "attempt-wait-oserror"
+    )
+    manifest = _assert_unconfirmed_evidence(attempt)
+    assert manifest["files"] == {}
+
+
+def test_reaped_docker_cli_is_not_signaled_again(tmp_path: Path, monkeypatch):
+    root, _, submission = _foundation(tmp_path)
+    launcher = FakeLauncher(exit_status=-15, times_out=True)
+    original_error = runner_module.RunnerTerminationError("inspect ambiguous")
+
+    def reaps_then_fails(cidfile: Path, container_name: str, process):
+        process.wait()
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_terminate_process_group",
+        lambda process: (_ for _ in ()).throw(
+            AssertionError("reaped process group must not be signaled")
+        ),
+    )
+
+    with pytest.raises(runner_module.RunnerTerminationError) as caught:
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-already-reaped",
+            1,
+            process_launcher=launcher,
+            container_terminator=reaps_then_fails,
+            clock=FakeClock(),
+        )
+
+    assert caught.value is original_error
+    _assert_unconfirmed_evidence(
+        root / "artifacts" / submission["submission_id"] / "attempt-already-reaped"
+    )
+
+
+def test_evidence_finalization_failure_does_not_mask_termination_error(
+    tmp_path: Path, monkeypatch
+):
+    root, _, submission = _foundation(tmp_path)
+    original_error = runner_module.RunnerTerminationError("removal unconfirmed")
+
+    def unconfirmed(cidfile: Path, container_name: str, process):
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_quarantine_untrusted_execution",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RunnerIntegrityError("quarantine unavailable")
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(runner_module.RunnerTerminationError) as caught:
+        run_submission(
+            root,
+            submission["submission_id"],
+            "attempt-finalization-failed",
+            1,
+            process_launcher=FakeLauncher(exit_status=-15, times_out=True),
+            container_terminator=unconfirmed,
+            clock=FakeClock(),
+        )
+
+    assert caught.value is original_error
+    assert isinstance(caught.value.__cause__, RunnerIntegrityError)
 
 
 def test_inaccessible_payload_failure_is_recorded_and_sealed(
@@ -635,6 +984,7 @@ def test_inaccessible_payload_failure_is_recorded_and_sealed(
     assert manifest["rejected_entries"] == [
         {"path": "payload", "reason": "inaccessible"}
     ]
+    assert manifest["payload_integrity"] == "UNVERIFIED"
     assert set(manifest["files"]) == {"container.cid", "stderr.log", "stdout.log"}
     assert not any((attempt / "payload").iterdir())
     assert all(path.stat().st_mode & 0o222 == 0 for path in attempt.rglob("*"))
