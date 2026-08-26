@@ -269,3 +269,58 @@ def test_cli_update_requires_exactly_one_expected_session_column(tmp_path: Path,
 
     assert code == 2
     assert "exactly one date column" in failure["error"]
+
+
+def test_cli_run_returns_only_sealed_attempt_identity(
+    tmp_path: Path, capsys, monkeypatch
+):
+    captured: dict = {}
+
+    def fake_run(root, submission_id, attempt_id, timeout_seconds):
+        captured.update(
+            {
+                "root": root,
+                "submission_id": submission_id,
+                "attempt_id": attempt_id,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return {
+            "schema_version": 1,
+            "attempt_id": attempt_id,
+            "run_id": "a" * 64,
+            "submission_id": submission_id,
+            "dataset_snapshot_id": "b" * 64,
+            "outcome": "FAILED",
+            "path": str(Path(root) / "artifacts" / submission_id / attempt_id),
+            "stdout": "must not be emitted",
+        }
+
+    monkeypatch.setattr("quant_platform.cli.run_submission", fake_run)
+
+    code = main(
+        [
+            "run",
+            "--root",
+            str(tmp_path / "state"),
+            "--submission-id",
+            "c" * 64,
+            "--attempt-id",
+            "attempt-001",
+            "--timeout-seconds",
+            "45.5",
+        ]
+    )
+    result = _json_output(capsys)
+
+    assert code == 0
+    assert result == {
+        "ok": True,
+        "attempt_id": "attempt-001",
+        "run_id": "a" * 64,
+        "outcome": "FAILED",
+        "path": str(
+            tmp_path / "state" / "artifacts" / ("c" * 64) / "attempt-001"
+        ),
+    }
+    assert captured["timeout_seconds"] == 45.5
