@@ -24,11 +24,29 @@ currency, and adjustment metadata. Retrieval time and filesystem paths do not
 change its identity. Invalid data cannot move the `latest.json` pointer.
 Historical revisions create a new snapshot and preserve the old one.
 
+Daily reconciliation is provider-neutral. An adapter must supply both fetched
+bars and the exact expected sessions for the requested inclusive range. Those
+inputs must come from independently auditable market-data and official/current
+calendar sources. Missing calendar evidence is a hard failure; the platform
+never substitutes weekdays or infers completeness from the bars returned by a
+provider.
+
+First use filters validated fetched bars to the requested range and publishes a
+complete backfill. Later updates merge requested bars with the latest verified
+history, so overlapping corrections become a new immutable snapshot while
+unchanged input remains idempotent. A separate content-addressed update record
+binds the request range, expected-session hash, fetched range, prior and result
+snapshots, and historical revision count. Missing expected sessions, metadata
+mismatches, duplicate bars, or a corrupt latest snapshot fail before
+`latest.json` can move. Reconciliation is serialized per instrument, provenance
+is durably published before the pointer, and the final pointer update uses a
+compare-and-swap check so concurrent changes fail instead of losing history.
+
 Every experiment submission binds:
 
 - an allowlisted source bundle;
 - one immutable dataset snapshot;
-- one digest-pinned runner image;
+- one registry-digest runner image or full local Docker image ID;
 - canonical configuration and random seed;
 - a fixed execution envelope;
 - per-file and aggregate source checksums.
@@ -43,13 +61,33 @@ caller-provided Docker flags. It enforces:
 - `no-new-privileges`;
 - read-only source and dataset mounts;
 - one unique writable artifact mount;
-- a digest-pinned runner image taken only from the verified submission.
+- an immutable image identity taken only from the verified submission.
 
 Preparing an execution also creates an immutable, content-addressed `run.json`
 that binds the submission, dataset, runner image, fixed execution envelope, and
 unique attempt directory. The container receives read-only submission and run
 contracts; the only writable host mount is the empty
-`artifacts/<submission-id>/<attempt-id>` directory.
+`artifacts/<submission-id>/<attempt-id>/payload` directory.
+
+The runner creates that attempt directory and invokes exactly the generated
+command with a scrubbed environment. Standard output and error remain files in
+the runner-owned attempt root, outside the container-writable payload, and are
+never copied into API or CLI responses. Reserved control names cannot enter the
+payload. `SUCCESS`, `FAILED`, `TIMED_OUT`, and `LAUNCH_FAILED` all publish
+`attempt.json` with immutable input identities, the resource envelope, timing,
+exit status, and SHA-256/size for every regular artifact. A timeout explicitly
+kills the identified Docker container and confirms its removal before hashing.
+Unsafe payload entries are recorded and removed before the remaining complete
+record is hashed. The manifest is published and fsynced before the complete
+attempt tree becomes read-only.
+A small terminal JSON record can later feed Prefect or MLflow; callback failure
+cannot alter the already sealed attempt.
+
+`quant_platform.reference_job` is an integrity demonstration rather than a
+promoted strategy. It verifies the source, submission, run, and dataset
+contracts, reads only `/data/data.parquet`, and writes deterministic JSON and
+daily CSV evidence under `/artifacts`. It has no broker, order, credential, or
+network behavior.
 
 ## Feng non-interference boundary
 
@@ -61,9 +99,10 @@ The Agricultural Bank research remains authoritative and untouched in:
 - loopback ports `8888`, `5000`, and `4200`.
 
 The foundation rejects protected Feng paths when constructing a run command.
-Phase-one development and verification happen in the independent Git worktree
-`/home/jingtao/worktrees/quant-platform-foundation`. No Feng service is stopped,
-restarted, rebuilt, or reconfigured.
+Development, verification, and any future deployment use an independent path,
+Compose project, and state root. They do not mount existing quant service state,
+the Docker socket, or the protected directories above. No port is published,
+and no Feng service is stopped, restarted, rebuilt, or reconfigured.
 
 ## Open-source adoption gates
 
