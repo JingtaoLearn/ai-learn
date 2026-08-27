@@ -166,5 +166,8 @@ def test_documentation_uses_the_authoritative_shared_platform_root():
     assert release in plan
     assert "substitute the exact immutable release ID" in readme
     assert "substitute the exact immutable release ID" in plan
-    assert "/home/feng/quant-platform/current" not in readme
-    assert "/home/feng/quant-platform/current" not in plan
+    assert "Do not use the `current` symlink" in readme
+    assert (
+        "`/home/feng/quant-platform/current` is never accepted as the project root"
+        in plan
+    )
