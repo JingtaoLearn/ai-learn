@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterator
 
 from .catalog import Catalog
 from .isolation import build_operator_validation_command
+from .submissions import EXECUTION_ENVELOPE
 from .schemas import (
     canonical_json_bytes,
     parse_semantic_version,
@@ -45,7 +46,8 @@ SUBMISSION_FIELDS = {
     "documentation",
     "tests",
 }
-FIXTURE_FIELDS = {"values", "parameters", "expected"}
+FIXTURE_FIELDS = {"input", "parameters", "expected"}
+SLOTS = {"fit", "smoothing", "statistic", "decision", "sizing", "cost", "report"}
 MAX_SOURCE_BYTES = 64 * 1024
 MAX_DOCUMENTATION_BYTES = 128 * 1024
 MAX_FIXTURES = 50
@@ -72,8 +74,8 @@ def _normalize_submission(value: Any) -> dict[str, Any]:
     operator_id = value["operator_id"]
     if not isinstance(operator_id, str) or OPERATOR_ID.fullmatch(operator_id) is None:
         raise OperatorSubmissionError("operator_id has invalid syntax")
-    if value["slot"] != "fit":
-        raise OperatorSubmissionError("unsupported custom operator slot; only fit is supported")
+    if value["slot"] not in SLOTS:
+        raise OperatorSubmissionError(f"unsupported custom operator slot: {value['slot']}")
     parse_semantic_version(value["version"])
     source = _require_text(value["source"], "source", MAX_SOURCE_BYTES)
     documentation = _require_text(
@@ -92,22 +94,16 @@ def _normalize_submission(value: Any) -> dict[str, Any]:
     for index, case in enumerate(tests):
         if not isinstance(case, dict) or set(case) != FIXTURE_FIELDS:
             raise OperatorSubmissionError(f"tests[{index}] must have exact fixture fields")
-        values = case["values"]
-        if not isinstance(values, list) or not values:
-            raise OperatorSubmissionError(f"tests[{index}].values must be non-empty")
-        expected = case["expected"]
-        if isinstance(expected, bool) or not isinstance(expected, (int, float)):
-            raise OperatorSubmissionError(f"tests[{index}].expected must be numeric")
         normalized_tests.append(
             {
-                "values": values,
+                "input": case["input"],
                 "parameters": validate_parameters(schema, case["parameters"]),
-                "expected": float(expected),
+                "expected": case["expected"],
             }
         )
     normalized = {
         "operator_id": operator_id,
-        "slot": "fit",
+        "slot": value["slot"],
         "version": value["version"],
         "source": source,
         "parameter_schema": schema,
@@ -218,6 +214,9 @@ class OperatorService:
                         "version",
                         "parameter_schema",
                         "defaults",
+                        "title_zh",
+                        "summary_zh",
+                        "documentation",
                     )
                 }
                 (staging / "operator.py").write_text(
@@ -227,15 +226,19 @@ class OperatorService:
                     canonical_json_bytes(submission["tests"]) + b"\n"
                 )
                 (staging / "documentation.md").write_text(
-                    submission["documentation"] + "\n", encoding="utf-8"
+                    submission["documentation"], encoding="utf-8"
                 )
                 (staging / "manifest.json").write_bytes(
                     canonical_json_bytes(worker_manifest | {"content_digest": digest})
                     + b"\n"
                 )
                 evidence = self.validator(staging)
-                if not isinstance(evidence, dict) or evidence.get("passed") is not True:
-                    raise OperatorSubmissionError("operator validation evidence did not pass")
+                self._verify_evidence(
+                    evidence,
+                    digest=digest,
+                    slot=submission["slot"],
+                    tests=submission["tests"],
+                )
                 (staging / "evidence.json").write_bytes(
                     canonical_json_bytes(evidence) + b"\n"
                 )
@@ -282,6 +285,50 @@ class OperatorService:
             "version": version,
             "content_digest": digest,
         }
+
+    def _verify_evidence(
+        self,
+        evidence: Any,
+        *,
+        digest: str,
+        slot: str,
+        tests: list[dict[str, Any]],
+    ) -> None:
+        expected_fields = {
+            "schema_version",
+            "passed",
+            "slot",
+            "candidate_digest",
+            "fixture_digest",
+            "validator_image",
+            "execution_envelope",
+            "started_at",
+            "finished_at",
+            "observations",
+        }
+        if not isinstance(evidence, dict) or set(evidence) != expected_fields:
+            raise OperatorSubmissionError("operator validation evidence has invalid fields")
+        expected_fixture_digest = hashlib.sha256(canonical_json_bytes(tests)).hexdigest()
+        if (
+            evidence["schema_version"] != 1
+            or evidence["passed"] is not True
+            or evidence["slot"] != slot
+            or evidence["candidate_digest"] != digest
+            or evidence["fixture_digest"] != expected_fixture_digest
+            or evidence["validator_image"] != self.runner_image
+            or evidence["execution_envelope"] != EXECUTION_ENVELOPE
+            or not isinstance(evidence["started_at"], str)
+            or not isinstance(evidence["finished_at"], str)
+        ):
+            raise OperatorSubmissionError("operator validation evidence binding mismatch")
+        observations = evidence["observations"]
+        if (
+            not isinstance(observations, dict)
+            or observations.get("compile") is not True
+            or observations.get("contract") is not True
+            or observations.get("fixtures") != len(tests)
+        ):
+            raise OperatorSubmissionError("operator validation evidence did not pass")
 
     def list(self) -> list[dict[str, Any]]:
         return self.catalog.list_operators()

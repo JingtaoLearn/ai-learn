@@ -77,6 +77,8 @@ def build_operator_validation_command(
         f"type=bind,src={candidate},dst=/operator,readonly",
         "--mount",
         f"type=bind,src={evidence},dst=/evidence",
+        "--env",
+        f"QUANT_OPERATOR_VALIDATOR_IMAGE={runner_image}",
         runner_image,
         "python",
         "-m",

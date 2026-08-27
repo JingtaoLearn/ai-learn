@@ -1,4 +1,5 @@
 import json
+import hashlib
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,18 +14,71 @@ from quant_platform.operator_service import (
     OperatorSubmissionError,
 )
 from quant_platform.operator_worker import validate_candidate
+from quant_platform.schemas import canonical_json_bytes
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "operators" / "custom_fit.py"
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "operators"
+FIXTURE = FIXTURE_ROOT / "custom_fit.py"
 IMAGE = "registry.example/research@sha256:" + "a" * 64
 
 
-def _submission(version: str = "1.0.0") -> dict:
+def _submission(version: str = "1.0.0", slot: str = "fit") -> dict:
+    cases = {
+        "fit": {
+            "input": {"values": [1.0, 2.0, 4.0]},
+            "parameters": {"window": 2},
+            "expected": 3.0,
+        },
+        "smoothing": {
+            "input": {"values": [1.0, 2.0, 4.0]},
+            "parameters": {"window": 2},
+            "expected": [1.0, 2.0, 4.0],
+        },
+        "statistic": {
+            "input": {"values": [1.0, 2.0, 4.0]},
+            "parameters": {"window": 2},
+            "expected": [None, 1.0, 2.0],
+        },
+        "decision": {
+            "input": {"statistics": [None, 1.0], "initial_position": 0},
+            "parameters": {"window": 2},
+            "expected": [
+                {"action": "HOLD", "reason": "CUSTOM_FIXTURE"},
+                {"action": "HOLD", "reason": "CUSTOM_FIXTURE"},
+            ],
+        },
+        "sizing": {
+            "input": {
+                "cash": 1000.0,
+                "raw_price": 5.0,
+                "holdings": 0,
+                "side": "BUY",
+            },
+            "parameters": {"window": 2},
+            "expected": 100,
+        },
+        "cost": {
+            "input": {"side": "BUY", "raw_price": 5.0, "quantity": 100},
+            "parameters": {"window": 2},
+            "expected": {
+                "commission_cny": 0.0,
+                "transfer_fee_cny": 0.0,
+                "stamp_tax_cny": 0.0,
+                "slippage_cny": 0.0,
+                "total_cost_cny": 0.0,
+            },
+        },
+        "report": {
+            "input": {"title": "Fixture", "metrics": {"return": 0.0}},
+            "parameters": {"window": 2},
+            "expected": "<!doctype html><html><body><h1>Fixture</h1></body></html>",
+        },
+    }
     return {
-        "operator_id": "fixture_mean_fit",
-        "slot": "fit",
+        "operator_id": f"fixture_{slot}",
+        "slot": slot,
         "version": version,
-        "source": FIXTURE.read_text(encoding="utf-8"),
+        "source": (FIXTURE_ROOT / f"custom_{slot}.py").read_text(encoding="utf-8"),
         "parameter_schema": {
             "type": "object",
             "properties": {"window": {"type": "integer", "minimum": 1, "maximum": 3}},
@@ -35,58 +89,59 @@ def _submission(version: str = "1.0.0") -> dict:
         "title_zh": "测试均值拟合",
         "summary_zh": "在隔离容器中计算尾部窗口均值。",
         "documentation": "# Mean fit\n\nUses only the supplied prior values.",
-        "tests": [
-            {
-                "values": [1.0, 2.0, 4.0],
-                "parameters": {"window": 2},
-                "expected": 3.0,
-            }
-        ],
+        "tests": [cases[slot]],
     }
 
 
 def _passing_validator(candidate: Path) -> dict:
     assert (candidate / "operator.py").is_file()
-    return {
-        "passed": True,
-        "compile": True,
-        "contract": True,
-        "fixtures": 1,
-        "worker": "test",
-    }
+    return validate_candidate(candidate, validator_image=IMAGE)
+
+
+def _write_candidate(candidate: Path, payload: dict) -> str:
+    digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    manifest = {
+        key: payload[key]
+        for key in (
+            "operator_id",
+            "slot",
+            "version",
+            "parameter_schema",
+            "defaults",
+            "title_zh",
+            "summary_zh",
+            "documentation",
+        )
+    } | {"content_digest": digest}
+    (candidate / "operator.py").write_text(payload["source"], encoding="utf-8")
+    (candidate / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (candidate / "tests.json").write_text(
+        json.dumps(payload["tests"]), encoding="utf-8"
+    )
+    (candidate / "documentation.md").write_text(
+        payload["documentation"], encoding="utf-8"
+    )
+    return digest
 
 
 def test_safe_custom_fit_worker_validates_compile_contract_and_fixture(tmp_path: Path):
     candidate = tmp_path / "candidate"
     candidate.mkdir()
     payload = _submission()
-    (candidate / "operator.py").write_text(payload["source"], encoding="utf-8")
-    (candidate / "manifest.json").write_text(
-        json.dumps(
-            {
-                key: payload[key]
-                for key in (
-                    "operator_id",
-                    "slot",
-                    "version",
-                    "parameter_schema",
-                    "defaults",
-                )
-            }
-        ),
-        encoding="utf-8",
-    )
-    (candidate / "tests.json").write_text(json.dumps(payload["tests"]), encoding="utf-8")
+    digest = _write_candidate(candidate, payload)
 
-    evidence = validate_candidate(candidate)
+    evidence = validate_candidate(candidate, validator_image=IMAGE)
 
-    assert evidence == {
+    assert evidence["passed"] is True
+    assert evidence["slot"] == "fit"
+    assert evidence["candidate_digest"] == digest
+    assert evidence["validator_image"] == IMAGE
+    assert evidence["execution_envelope"]["network"] == "none"
+    assert evidence["observations"] == {
         "api_version": 1,
         "compile": True,
         "contract": True,
         "fixtures": 1,
-        "passed": True,
-        "slot": "fit",
     }
 
 
@@ -124,14 +179,14 @@ def test_validation_command_reuses_hardened_docker_boundary(tmp_path: Path):
 
 def test_submission_publishes_immutable_bundle_and_latest(tmp_path: Path):
     catalog = initialize_catalog(tmp_path / "state")
-    service = OperatorService(catalog, validator=_passing_validator)
+    service = OperatorService(catalog, validator=_passing_validator, runner_image=IMAGE)
 
     result = service.submit(_submission())
-    detail = service.detail("fixture_mean_fit", "1.0.0")
+    detail = service.detail("fixture_fit", "1.0.0")
 
     assert result["status"] == "CREATED"
     assert detail["content_digest"] == result["content_digest"]
-    assert service.detail("fixture_mean_fit")["version"] == "1.0.0"
+    assert service.detail("fixture_fit")["version"] == "1.0.0"
     bundle = catalog.state_root / detail["bundle_path"]
     assert stat.S_IMODE(bundle.stat().st_mode) == 0o555
     assert {path.name for path in bundle.iterdir()} == {
@@ -145,7 +200,11 @@ def test_submission_publishes_immutable_bundle_and_latest(tmp_path: Path):
 
 
 def test_same_identity_and_content_is_no_change_but_changed_content_conflicts(tmp_path: Path):
-    service = OperatorService(initialize_catalog(tmp_path / "state"), validator=_passing_validator)
+    service = OperatorService(
+        initialize_catalog(tmp_path / "state"),
+        validator=_passing_validator,
+        runner_image=IMAGE,
+    )
     first = service.submit(_submission())
     second = service.submit(_submission())
 
@@ -159,7 +218,11 @@ def test_same_identity_and_content_is_no_change_but_changed_content_conflicts(tm
 
 
 def test_concurrent_identical_submission_converges(tmp_path: Path):
-    service = OperatorService(initialize_catalog(tmp_path / "state"), validator=_passing_validator)
+    service = OperatorService(
+        initialize_catalog(tmp_path / "state"),
+        validator=_passing_validator,
+        runner_image=IMAGE,
+    )
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         results = list(executor.map(service.submit, [_submission()] * 4))
@@ -170,20 +233,23 @@ def test_concurrent_identical_submission_converges(tmp_path: Path):
 
 
 def test_higher_semantic_version_becomes_latest_and_history_remains_addressable(tmp_path: Path):
-    service = OperatorService(initialize_catalog(tmp_path / "state"), validator=_passing_validator)
+    service = OperatorService(
+        initialize_catalog(tmp_path / "state"),
+        validator=_passing_validator,
+        runner_image=IMAGE,
+    )
     service.submit(_submission("1.9.0"))
     service.submit(_submission("1.10.0"))
 
-    assert service.detail("fixture_mean_fit")["version"] == "1.10.0"
-    assert service.detail("fixture_mean_fit", "1.9.0")["version"] == "1.9.0"
-    versions = service.list_versions("fixture_mean_fit")
+    assert service.detail("fixture_fit")["version"] == "1.10.0"
+    assert service.detail("fixture_fit", "1.9.0")["version"] == "1.9.0"
+    versions = service.list_versions("fixture_fit")
     assert [item["version"] for item in versions] == ["1.10.0", "1.9.0"]
 
 
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value.update(slot="decision"), "unsupported"),
         (lambda value: value.update(operator_id="../escape"), "operator_id"),
         (lambda value: value.update(version="1"), "semantic version"),
         (lambda value: value.update(source=""), "source"),
@@ -201,14 +267,14 @@ def test_invalid_submissions_fail_closed_without_catalog_entry(tmp_path: Path, m
             raise OperatorSubmissionError("validation rejected forbidden import")
         return _passing_validator(candidate)
 
-    service = OperatorService(catalog, validator=worker)
+    service = OperatorService(catalog, validator=worker, runner_image=IMAGE)
     payload = _submission()
     mutation(payload)
 
     with pytest.raises((OperatorSubmissionError, ValueError), match=message):
         service.submit(payload)
     with pytest.raises(ValueError, match="unknown"):
-        service.detail("fixture_mean_fit")
+        service.detail("fixture_fit")
 
 
 def test_worker_rejects_forbidden_import_and_wrong_contract(tmp_path: Path):
@@ -216,23 +282,50 @@ def test_worker_rejects_forbidden_import_and_wrong_contract(tmp_path: Path):
     candidate.mkdir()
     payload = _submission()
     payload["source"] = "import os\nOPERATOR_API_VERSION=1\nSLOT='fit'\ndef apply(v,p): return 1\n"
-    (candidate / "operator.py").write_text(payload["source"], encoding="utf-8")
-    (candidate / "manifest.json").write_text(
-        json.dumps(
-            {
-                key: payload[key]
-                for key in (
-                    "operator_id",
-                    "slot",
-                    "version",
-                    "parameter_schema",
-                    "defaults",
-                )
-            }
-        ),
-        encoding="utf-8",
-    )
-    (candidate / "tests.json").write_text(json.dumps(payload["tests"]), encoding="utf-8")
+    _write_candidate(candidate, payload)
 
     with pytest.raises(ValueError, match="import"):
-        validate_candidate(candidate)
+        validate_candidate(candidate, validator_image=IMAGE)
+
+
+@pytest.mark.parametrize(
+    "slot",
+    ["fit", "smoothing", "statistic", "decision", "sizing", "cost", "report"],
+)
+def test_all_seven_custom_slot_contracts_publish_with_runner_owned_evidence(
+    tmp_path: Path, slot: str
+):
+    catalog = initialize_catalog(tmp_path / slot)
+    service = OperatorService(
+        catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+
+    result = service.submit(_submission(slot=slot))
+    detail = service.detail(f"fixture_{slot}", "1.0.0")
+
+    assert result["status"] == "CREATED"
+    evidence = detail["validation_evidence"]
+    assert evidence["slot"] == slot
+    assert evidence["candidate_digest"] == result["content_digest"]
+    assert evidence["validator_image"] == IMAGE
+    assert evidence["fixture_digest"]
+
+
+def test_submission_rejects_unbound_or_submitter_supplied_evidence(tmp_path: Path):
+    catalog = initialize_catalog(tmp_path / "state")
+    payload = _submission()
+    payload["validation_evidence"] = {"passed": True}
+    service = OperatorService(
+        catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+    with pytest.raises(OperatorSubmissionError, match="unknown"):
+        service.submit(payload)
+
+    def unbound(candidate: Path) -> dict:
+        evidence = _passing_validator(candidate)
+        return evidence | {"candidate_digest": "0" * 64}
+
+    with pytest.raises(OperatorSubmissionError, match="evidence"):
+        OperatorService(
+            catalog, validator=unbound, runner_image=IMAGE
+        ).submit(_submission())
