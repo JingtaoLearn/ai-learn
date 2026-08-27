@@ -93,7 +93,15 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
     assert '${NGINX_PROXY_GATEWAY}:18090:127.0.0.1:8090' in tunnel
     assert "StrictHostKeyChecking=yes" in tunnel
     assert "ExitOnForwardFailure=yes" in tunnel
-    assert "EnvironmentFile=" in unit
+    assert (
+        "EnvironmentFile=/home/jingtao/.config/quant-research-tunnel.env"
+        in unit
+    )
+    assert (
+        "ExecStart=/home/jingtao/ai-learn/vm/host-services/"
+        "quant-research-tunnel/run-tunnel.sh"
+    ) in unit
+    assert "/home/ailearn" not in unit
     assert "ports:" not in compose
     assert "${NGINX_PROXY_GATEWAY:?" in compose
     assert "host-gateway" not in compose
@@ -112,6 +120,13 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
     assert "exec -T quant-research-ui-proxy" in probe
     assert "http://127.0.0.1/health" in probe
     assert '\'{"status":"ok"}\'' in probe
+
+    tunnel_readme = (
+        repository
+        / "vm/host-services/quant-research-tunnel/README.md"
+    ).read_text()
+    assert "/home/jingtao/.config/quant-research-tunnel.env" in tunnel_readme
+    assert "/home/ailearn" not in tunnel_readme
 
 
 def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():

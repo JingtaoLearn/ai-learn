@@ -6,7 +6,7 @@ existing `nginx-proxy` bridge gateway. Traffic between ailearn and Feng is carri
 ## Configuration
 
 1. Copy `quant-research-tunnel.env.example` to
-   `/home/ailearn/.config/quant-research-tunnel.env` and set the Feng SSH host. Do not place keys or
+   `/home/jingtao/.config/quant-research-tunnel.env` and set the Feng SSH host. Do not place keys or
    secrets in the repository.
 2. Install `quant-research-tunnel.service` as an ailearn systemd user unit.
 3. Start the tunnel before the proxy Compose service.
