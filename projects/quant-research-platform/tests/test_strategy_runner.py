@@ -572,96 +572,48 @@ def test_injectable_cjk_font_bytes_change_source_and_run_identity():
     assert first_run != second_run
 
 
-def test_noneditable_wheel_strategy_run_creates_then_returns_no_change(tmp_path: Path):
-    build_source = tmp_path / "build-source"
-    build_source.mkdir()
-    for name in ("pyproject.toml", "README.md"):
-        shutil.copy2(PROJECT_ROOT / name, build_source / name)
-    shutil.copytree(PROJECT_ROOT / "src", build_source / "src")
-    wheel_dir = tmp_path / "wheel"
-    wheel_dir.mkdir()
-    build = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            "--no-deps",
-            "--no-build-isolation",
-            "--wheel-dir",
-            str(wheel_dir),
-            str(build_source),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
+def test_noneditable_site_packages_strategy_run_creates_then_returns_no_change(
+    tmp_path: Path,
+):
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    shutil.copytree(
+        PROJECT_ROOT / "src" / "quant_platform",
+        site_packages / "quant_platform",
     )
-    assert build.returncode == 0, build.stderr
-    wheels = list(wheel_dir.glob("gold_quant_research-*.whl"))
-    assert len(wheels) == 1
-
     environment = {
         "HOME": str(tmp_path / "home"),
         "MPLBACKEND": "Agg",
-        "PATH": os.defpath,
+        "PATH": "",
+        "PYTHONPATH": str(site_packages),
     }
     (tmp_path / "home").mkdir()
-    venv = tmp_path / "venv"
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--system-site-packages", str(venv)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        [
-            str(venv / "bin" / "python"),
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            "--force-reinstall",
-            str(wheels[0]),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    installed_path = subprocess.run(
-        [
-            str(venv / "bin" / "python"),
-            "-c",
-            "import quant_platform.strategy_runner as runner; print(runner.__file__)",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    ).stdout.strip()
-    assert Path(installed_path).is_relative_to(venv)
-    assert not Path(installed_path).is_relative_to(PROJECT_ROOT)
-
     config_path = _foundation(tmp_path / "execution")
     unrelated_cwd = tmp_path / "unrelated-cwd"
     unrelated_cwd.mkdir()
+    invoke_cli = (
+        "import json, quant_platform; "
+        "from quant_platform.cli import main; "
+        "print(json.dumps({'package_file': quant_platform.__file__}, sort_keys=True)); "
+        "raise SystemExit(main())"
+    )
 
     results = []
-    invocations = [
-        (PROJECT_ROOT, []),
-        (unrelated_cwd, ["--project-root", str(PROJECT_ROOT)]),
-    ]
-    for working_directory, extra_arguments in invocations:
+    imported_paths = []
+    for _ in range(2):
         completed = subprocess.run(
             [
-                str(venv / "bin" / "research"),
+                sys.executable,
+                "-c",
+                invoke_cli,
                 "strategy",
                 "run",
                 "--config",
                 str(config_path),
-                *extra_arguments,
+                "--project-root",
+                str(PROJECT_ROOT),
             ],
-            cwd=working_directory,
+            cwd=unrelated_cwd,
             env=environment,
             check=False,
             capture_output=True,
@@ -669,8 +621,14 @@ def test_noneditable_wheel_strategy_run_creates_then_returns_no_change(tmp_path:
         )
         assert completed.returncode == 0, completed.stdout
         assert completed.stderr == ""
-        results.append(json.loads(completed.stdout))
+        lines = completed.stdout.strip().splitlines()
+        assert len(lines) == 2
+        imported_paths.append(Path(json.loads(lines[0])["package_file"]).resolve())
+        results.append(json.loads(lines[1]))
 
+    expected_package = (site_packages / "quant_platform" / "__init__.py").resolve()
+    assert imported_paths == [expected_package, expected_package]
+    assert all(not path.is_relative_to(PROJECT_ROOT) for path in imported_paths)
     assert [result["status"] for result in results] == ["CREATED", "NO_CHANGE"]
     assert results[0]["run_id"] == results[1]["run_id"]
 
