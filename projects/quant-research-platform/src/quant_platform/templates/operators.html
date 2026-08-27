@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Operators · Quant Research{% endblock %}
+{% block page %}operators{% endblock %}
+{% block content %}
+<section class="page-heading split"><div><p class="eyebrow">IMMUTABLE CATALOG</p><h1>Operators</h1><p>Published versions grouped by template slot.</p></div><a class="button" href="/operators/submit">Submit operator</a></section>
+{% for slot, items in grouped.items() %}
+<section class="operator-group" data-slot="{{ slot }}"><div class="section-heading"><h2>{{ slot }}</h2><span class="mono">{{ items|length }} operator</span></div>
+  <div class="rows">{% for operator in items %}<a class="row" href="/operators/{{ operator.operator_id }}/{{ operator.latest_version }}"><span><strong>{{ operator.title_zh }}</strong><small class="mono">{{ operator.operator_id }}</small></span><span class="badge">Latest {{ operator.latest_version }}</span></a>{% endfor %}</div>
+</section>
+{% endfor %}
+{% endblock %}

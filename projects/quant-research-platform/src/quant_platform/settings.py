@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,6 +27,8 @@ class Settings:
     sso_callback_url: str
     password_scrypt_hash: str | None
     secure_cookies: bool
+    runner_image: str | None = None
+    project_root: Path | None = None
 
     def validated(self) -> Settings:
         if self.environment not in {"development", "test", "production"}:
@@ -47,6 +50,15 @@ class Settings:
             raise SettingsError("session_secret must contain at least 32 characters")
         if self.environment == "production" and not self.secure_cookies:
             raise SettingsError("production session cookies must be secure")
+        if self.environment == "production" and (
+            not isinstance(self.runner_image, str)
+            or re.fullmatch(
+                r"(?:sha256:|[A-Za-z0-9][A-Za-z0-9._/:=-]*@sha256:)[0-9a-f]{64}",
+                self.runner_image,
+            )
+            is None
+        ):
+            raise SettingsError("production runner_image must be pinned by SHA-256")
         if self.auth_mode == "sso":
             if (
                 not isinstance(self.auth_shared_secret, str)
@@ -116,4 +128,10 @@ class Settings:
             password_scrypt_hash=os.environ.get("QUANT_PASSWORD_SCRYPT_HASH"),
             secure_cookies=os.environ.get("QUANT_SECURE_COOKIES", "true").lower()
             == "true",
+            runner_image=os.environ.get("QUANT_RUNNER_IMAGE"),
+            project_root=(
+                Path(os.environ["QUANT_PROJECT_ROOT"])
+                if os.environ.get("QUANT_PROJECT_ROOT")
+                else None
+            ),
         ).validated()

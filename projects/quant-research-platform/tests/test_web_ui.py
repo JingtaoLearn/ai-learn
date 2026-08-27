@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
@@ -58,7 +57,7 @@ def test_operator_listing_escapes_user_controlled_text(tmp_path: Path):
     response = client.get("/operators")
 
     assert "&lt;img" in response.text
-    assert "onerror=" not in response.text
+    assert "<img src=x" not in response.text
 
 
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
@@ -95,9 +94,7 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
 def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
-    created = app.state.experiments.submit(
-        _task(snapshot(app)), action_id="create"
-    )
+    app.state.experiments.submit(_task(snapshot(app)), action_id="create")
     attempt = app.state.experiments.claim_next_attempt()
     outside = tmp_path / "outside"
     outside.mkdir()

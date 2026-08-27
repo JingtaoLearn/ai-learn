@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ operator.operator_id }} · Operators{% endblock %}
+{% block page %}operator-detail{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">{{ operator.slot|upper }} OPERATOR</p><h1>{{ operator.title_zh }}</h1><p>{{ operator.summary_zh }}</p><div class="chips"><span class="badge">{{ operator.version }}</span><span class="status">{{ operator.status }}</span></div></section>
+<section class="panel"><h2>Documentation</h2><div class="prose">{{ documentation|safe }}</div></section>
+<section class="panel"><h2>Immutable identity</h2><dl class="technical"><dt>Operator ID</dt><dd>{{ operator.operator_id }}</dd><dt>Digest</dt><dd>{{ operator.content_digest }}</dd><dt>Created</dt><dd>{{ operator.created_at }}</dd></dl></section>
+{% endblock %}

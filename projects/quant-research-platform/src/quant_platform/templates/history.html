@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}History · Quant Research{% endblock %}
+{% block page %}history{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">UNIQUE IDENTITIES</p><h1>Experiment history</h1><p>One row per canonical experiment identity.</p></section>
+{% if experiments %}<div class="table-wrap" data-testid="history-table"><table><thead><tr><th>Experiment</th><th>Attempts</th><th>Drift</th><th>Created</th></tr></thead><tbody>{% for experiment in experiments %}<tr><td><a class="mono" href="/experiments/{{ experiment.experiment_id }}">{{ experiment.experiment_id }}</a></td><td>{{ experiment.attempt_count }} attempt{% if experiment.attempt_count != 1 %}s{% endif %}</td><td>{{ "Drift" if experiment.has_drift else "Current" }}</td><td>{{ experiment.created_at }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No experiments match this history.</div>{% endif %}
+{% endblock %}

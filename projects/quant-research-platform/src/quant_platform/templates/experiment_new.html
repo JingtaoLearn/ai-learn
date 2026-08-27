@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}New experiment · Quant Research{% endblock %}
+{% block page %}experiment-new{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">RESOLVED EXECUTION</p><h1>New experiment</h1><p>Select published versions and set only declared parameters.</p></section>
+<form class="form-grid" method="post" action="/experiments/new" data-testid="experiment-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="action_id" value="">
+  <label class="wide">Dataset snapshot<select name="dataset" required>{% for dataset in datasets %}<option value="{{ dataset.instrument }}|{{ dataset.snapshot_id }}">{{ dataset.label }}</option>{% endfor %}</select></label>
+  {% for name, schema in template.parameter_schema.properties.items() %}
+  <label>{{ name }}<input name="template_{{ name }}" value="{{ template.defaults[name] if template.defaults[name] is not none else '' }}"></label>
+  {% endfor %}
+  {% for slot, items in grouped.items() %}
+  <fieldset class="wide slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
+    <label>Published selector<select name="operator_{{ slot }}_selector">{% for operator in items %}<option value="{{ operator.operator_id }}@latest">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}">{{ operator.operator_id }} · {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
+    <input type="hidden" name="operator_{{ slot }}_version" value="latest">
+    <label>Parameters JSON<textarea class="code" name="operator_{{ slot }}_parameters">{{ items[0].defaults|tojson }}</textarea></label>
+  </fieldset>
+  {% endfor %}
+  <noscript><p class="notice wide">JavaScript is disabled. All primary submission fields remain available; enter parameters as JSON.</p></noscript>
+  <div class="wide actions"><button type="submit">Create experiment</button></div>
+</form>
+{% endblock %}

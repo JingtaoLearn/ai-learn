@@ -62,6 +62,7 @@ def _settings(tmp_path: Path, **changes) -> Settings:
         "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
+        "runner_image": "sha256:" + "a" * 64,
     }
     return Settings(**(values | changes)).validated()
 
@@ -213,6 +214,7 @@ def test_incomplete_production_auth_configuration_prevents_startup(
         "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
+        "runner_image": "sha256:" + "a" * 64,
     }
     with pytest.raises(SettingsError):
         Settings(**(values | changes)).validated()

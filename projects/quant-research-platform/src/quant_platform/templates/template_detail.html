@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Template · Quant Research{% endblock %}
+{% block page %}template-detail{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">IMMUTABLE TEMPLATE</p><h1>{{ template.name }}@{{ template.version }}</h1><p>The template owns experiment parameters and requires each operator slot below.</p></section>
+<section class="panel"><h2>Required slots</h2><div class="chips">{% for slot in template.slots %}<span class="badge">{{ slot }}</span>{% endfor %}</div></section>
+<section class="panel"><h2>Template parameter ownership</h2><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th></tr></thead><tbody>{% for name, schema in template.parameter_schema.properties.items() %}<tr><td class="mono">{{ name }}</td><td>{{ schema.type }}</td><td class="mono">{{ template.defaults[name] }}</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}
