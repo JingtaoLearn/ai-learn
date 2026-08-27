@@ -445,8 +445,11 @@ verify the main app CSP remains strict and separate from the untrusted report CS
 1. Assert Uvicorn binds only `127.0.0.1:8090`, runs as Feng's non-root user, uses
    `/home/feng/quant-platform/state/platform`, validates startup, recovers attempts, and starts one serial
    worker.
-2. Assert environment examples contain placeholders, production mode is SSO, and real env files
-   are ignored.
+2. Assert the user unit and environment example bind
+   `/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID`, production mode is SSO, real env
+   files are ignored, and `/home/feng/quant-platform/current` is never accepted as the project root.
+   Deployment must substitute the exact immutable release ID in both files; symlink-component
+   rejection remains fail-closed.
 3. Assert the ailearn tunnel resolves the nginx-proxy bridge gateway once, rejects
    empty/loopback/wildcard/multiple resolution, and uses that exact same address as both the SSH
    bind address and literal nginx upstream address, with no `host-gateway` alias or independent
@@ -470,7 +473,8 @@ verify the main app CSP remains strict and separate from the untrusted report CS
 
 **GREEN:**
 
-- Add reviewed user-service and placeholder environment templates.
+- Add reviewed user-service and placeholder environment templates that bind the same exact
+  immutable release directory rather than a moving symlink.
 - Add a strict gateway-resolution tunnel script and systemd unit using encrypted SSH forwarding.
 - Add the nginx-proxy sidecar and update service catalogs/documentation.
 

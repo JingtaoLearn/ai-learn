@@ -32,15 +32,19 @@ def test_jupyter_is_loopback_only_authenticated_and_non_root():
 def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
     service = (ROOT / "deploy" / "quant-research-ui.service").read_text()
     environment = (ROOT / "deploy" / "quant-research-ui.env.example").read_text()
+    release = "/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID"
 
     assert "User=root" not in service
-    assert "WorkingDirectory=/home/feng/quant-platform/current" in service
+    assert f"WorkingDirectory={release}" in service
     assert (
-        "ExecStart=/home/feng/quant-platform/current/.venv/bin/python "
-        "-m quant_platform.web"
+        f"ExecStart={release}/.venv/bin/python -m quant_platform.web"
     ) in service
+    assert f"QUANT_PROJECT_ROOT={release}" in environment
+    assert "/home/feng/quant-platform/current" not in service
+    assert "/home/feng/quant-platform/current" not in environment
     assert "/home/feng/quant-platform/.venv/bin/python" not in service
     assert "127.0.0.1:8090" not in service
+    assert "PrivateTmp=true" in service
     assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
     assert (
         "QUANT_STATE_ROOT=/home/feng/quant-platform/state/platform"
@@ -152,8 +156,18 @@ def test_documentation_uses_the_authoritative_shared_platform_root():
         ROOT
         / "docs/plans/2026-08-27-operator-registry-ui.md"
     ).read_text()
+    release = "/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID"
 
     assert "--root state/platform" in readme
     assert "--root state/ui" not in readme
     assert "/home/feng/quant-platform/state/platform" in plan
     assert "/home/feng/quant-platform/state/ui" not in plan
+    assert release in readme
+    assert release in plan
+    assert "substitute the exact immutable release ID" in readme
+    assert "substitute the exact immutable release ID" in plan
+    assert "Do not use the `current` symlink" in readme
+    assert (
+        "`/home/feng/quant-platform/current` is never accepted as the project root"
+        in plan
+    )

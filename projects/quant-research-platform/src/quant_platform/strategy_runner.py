@@ -258,6 +258,15 @@ def _directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
     return (metadata.st_dev, metadata.st_ino, metadata.st_mode)
 
 
+def _directory_open_flags() -> int:
+    return (
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
 def _require_safe_directory(path: Path, label: str) -> None:
     try:
         metadata = os.stat(path, follow_symlinks=False)
@@ -279,12 +288,7 @@ def _require_no_symlink_components(path: Path, label: str) -> None:
 
 @contextmanager
 def _open_anchored_directory(path: Path, label: str) -> Iterator[int]:
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    flags = _directory_open_flags()
     descriptor = -1
     try:
         descriptor = os.open(path.anchor, flags)
@@ -318,12 +322,7 @@ def _open_anchored_directory(path: Path, label: str) -> Iterator[int]:
 
 
 def _validate_project_layout_at(root_fd: int, label: str) -> None:
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    flags = _directory_open_flags()
     src_fd = -1
     package_fd = -1
     try:

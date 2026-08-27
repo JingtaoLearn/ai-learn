@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/feng/quant-platform/current
+WorkingDirectory=/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID
 EnvironmentFile=/home/feng/.config/quant-research-ui.env
 ExecStartPre=/usr/bin/mkdir -p /home/feng/quant-platform/state/platform
-ExecStart=/home/feng/quant-platform/current/.venv/bin/python -m quant_platform.web
+ExecStart=/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID/.venv/bin/python -m quant_platform.web
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

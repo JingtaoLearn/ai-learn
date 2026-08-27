@@ -167,7 +167,10 @@ digest-pinned runner image are configured. The app binds only `127.0.0.1:8090`. 
 only from verified immutable attempt artifacts and embedded without script, same-origin,
 navigation, popup, or download privileges.
 
-Reviewed code-only deployment templates are under [`deploy/`](deploy/). The
+Reviewed code-only deployment templates are under [`deploy/`](deploy/). They use the placeholder
+`/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID`. In both files, deployment must
+substitute the exact immutable release ID. Do not use the `current` symlink: project-root validation
+intentionally rejects every symlink component. The
 [ailearn SSH tunnel](../../vm/host-services/quant-research-tunnel/) resolves one nginx-proxy bridge
 gateway and writes that exact address for both its SSH bind and the
 [no-port nginx sidecar](../../vm/docker-services/quant-research-ui-proxy/). No deployment action is
