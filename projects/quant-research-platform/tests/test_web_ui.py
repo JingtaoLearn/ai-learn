@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
@@ -10,15 +12,33 @@ from test_web_api import authenticate, make_app, snapshot
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _opening_control(html: str, name: str) -> str:
+    match = re.search(
+        rf'<(?:input|select)\b[^>]*name="{re.escape(name)}"[^>]*>',
+        html,
+    )
+    assert match is not None, name
+    return match.group(0)
+
+
 def _experiment_form(app, snapshot_id: str, csrf_token: str) -> dict[str, str]:
     template = app.state.catalog.template_detail("single_stock_daily_causal", "1")
     form = {
         "csrf_token": csrf_token,
         "action_id": "preview-action",
-        "dataset": f"SYNTH.SS|{snapshot_id}",
+        "dataset_id": "SYNTH.SS",
+        "start_date": "2026-01-05",
+        "end_date": "2026-01-12",
     }
     for name, value in template["defaults"].items():
-        form[f"template_{name}"] = "" if value is None else str(value)
+        schema = template["parameter_schema"]["properties"][name]
+        form[f"template_{name}"] = (
+            json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+            if "enum" in schema
+            else ""
+            if value is None
+            else str(value)
+        )
     for slot in template["slots"]:
         operator = next(
             item
@@ -30,10 +50,15 @@ def _experiment_form(app, snapshot_id: str, csrf_token: str) -> dict[str, str]:
         )
         form[f"operator_{slot}_selector"] = f"{operator['operator_id']}@latest"
         for name, value in detail["defaults"].items():
+            schema = detail["parameter_schema"]["properties"][name]
             form[
                 f"operator_{slot}_param__{operator['operator_id']}__"
                 f"{detail['version']}__{name}"
-            ] = str(value)
+            ] = (
+                json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+                if "enum" in schema
+                else str(value)
+            )
     return form
 
 
@@ -66,7 +91,17 @@ def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     response = client.get("/experiments/new")
 
     assert 'data-testid="experiment-form"' in response.text
-    assert 'name="dataset"' in response.text
+    assert re.search(r'<select\b[^>]*name="dataset_id"', response.text)
+    assert 'value="SYNTH.SS"' in response.text
+    assert re.search(
+        r'<input\b[^>]*name="start_date"[^>]*type="date"|'
+        r'<input\b[^>]*type="date"[^>]*name="start_date"',
+        response.text,
+    )
+    assert 'name="end_date"' in response.text
+    assert 'value="2026-01-12"' in response.text
+    assert 'max="2026-01-12"' in response.text
+    assert snapshot(app) not in response.text
     assert 'data-slot="fit"' in response.text
     assert 'value="prior_log_ols@latest"' in response.text
     assert 'value="prior_log_ols@1.0.0"' in response.text
@@ -74,6 +109,183 @@ def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     assert "operator_fit_param__prior_log_ols__1.0.0__window_sessions" in response.text
     assert 'data-testid="preview-experiment"' in response.text
     assert "<noscript" in response.text
+
+
+def test_schema_generated_controls_are_typed_and_enums_are_selects(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    snapshot(app)
+    app.state.catalog.insert_operator_version_for_test(
+        operator_id="typed_fit",
+        slot="fit",
+        version="1.0.0",
+        content_digest="8" * 64,
+        parameter_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "mode": {"type": "integer", "enum": [1, 2]},
+            },
+            "required": ["enabled", "mode"],
+            "additionalProperties": False,
+        },
+        defaults={"enabled": True, "mode": 2},
+    )
+
+    response = client.get("/experiments/new")
+
+    for name in (
+        "template_initial_state",
+        "template_terminal_handling",
+        "operator_fit_param__prior_log_ols__1.0.0__price_column",
+        "operator_fit_param__typed_fit__1.0.0__enabled",
+        "operator_fit_param__typed_fit__1.0.0__mode",
+    ):
+        assert re.search(rf'<select\b[^>]*name="{re.escape(name)}"', response.text)
+    assert re.search(
+        r'<input\b[^>]*name="template_initial_capital_cny"[^>]*type="number"|'
+        r'<input\b[^>]*type="number"[^>]*name="template_initial_capital_cny"',
+        response.text,
+    )
+    assert 'step="any"' in response.text
+    assert re.search(
+        r'<input\b[^>]*name="operator_fit_param__prior_log_ols__1\.0\.0__window_sessions"'
+        r'[^>]*type="number"|'
+        r'<input\b[^>]*type="number"[^>]*name="operator_fit_param__prior_log_ols__1\.0\.0__window_sessions"',
+        response.text,
+    )
+    assert 'value="false"' in response.text
+    assert 'value="2" selected' in response.text
+
+
+def test_nullable_controls_omit_required_and_submit_blank_as_json_null_without_js(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot_id = snapshot(app)
+    nullable_schema = {
+        "type": "object",
+        "properties": {
+            "choice": {
+                "type": "string",
+                "enum": ["strict", "relaxed"],
+                "nullable": True,
+            },
+            "enabled": {"type": "boolean", "nullable": True},
+            "threshold": {"type": "number", "nullable": True},
+            "note": {"type": "string", "nullable": True},
+        },
+        "required": ["choice", "enabled", "note", "threshold"],
+        "additionalProperties": False,
+    }
+    defaults = {name: None for name in nullable_schema["properties"]}
+    app.state.catalog.insert_operator_version_for_test(
+        operator_id="nullable_fit",
+        slot="fit",
+        version="1.0.0",
+        content_digest="7" * 64,
+        parameter_schema=nullable_schema,
+        defaults=defaults,
+    )
+
+    response = client.get("/experiments/new")
+    nullable_names = [
+        f"operator_fit_param__nullable_fit__1.0.0__{name}"
+        for name in nullable_schema["properties"]
+    ]
+
+    for name in nullable_names:
+        assert " required" not in _opening_control(response.text, name)
+    for name in (
+        "template_initial_state",
+        "operator_fit_param__prior_log_ols__1.0.0__window_sessions",
+    ):
+        assert " required" in _opening_control(response.text, name)
+
+    form = _experiment_form(app, snapshot_id, issued.csrf_token)
+    form["operator_fit_selector"] = "nullable_fit@latest"
+    for name, schema in nullable_schema["properties"].items():
+        field_name = f"operator_fit_param__nullable_fit__1.0.0__{name}"
+        form[field_name] = "null" if "enum" in schema else ""
+    task = _task_from_form(form, catalog=app.state.catalog)
+
+    assert task["operators"]["fit"]["parameters"] == defaults
+    preview = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+    assert "nullable_fit" in preview.text
+
+
+def test_enum_controls_round_trip_canonical_json_types_without_collisions_or_xss(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    snapshot_id = snapshot(app)
+    hostile = '</option><script>alert("enum")</script>'
+    parameter_schema = {
+        "type": "object",
+        "properties": {
+            "choice": {
+                "type": "string",
+                "enum": [None, "", "x", hostile],
+                "nullable": True,
+            },
+            "enabled": {"type": "boolean", "enum": [True, False]},
+            "count": {"type": "integer", "enum": [1, 2]},
+            "ratio": {"type": "number", "enum": [1.5, 2.5]},
+        },
+        "required": ["choice", "count", "enabled", "ratio"],
+        "additionalProperties": False,
+    }
+    app.state.catalog.insert_operator_version_for_test(
+        operator_id="enum_fit",
+        slot="fit",
+        version="1.0.0",
+        content_digest="6" * 64,
+        parameter_schema=parameter_schema,
+        defaults={"choice": None, "enabled": True, "count": 1, "ratio": 1.5},
+    )
+
+    response = client.get("/experiments/new")
+    choice_name = "operator_fit_param__enum_fit__1.0.0__choice"
+    choice_markup = response.text.split(f'name="{choice_name}"', 1)[1].split(
+        "</select>", 1
+    )[0]
+
+    assert choice_markup.count('value="null"') == 1
+    assert 'value="&#34;&#34;"' in choice_markup
+    assert 'value="&#34;x&#34;"' in choice_markup
+    assert ">None<" not in choice_markup
+    assert "<script>" not in response.text
+    assert "&lt;/option&gt;&lt;script&gt;" in response.text
+
+    form = _experiment_form(app, snapshot_id, "csrf")
+    form["operator_fit_selector"] = "enum_fit@latest"
+    prefix = "operator_fit_param__enum_fit__1.0.0__"
+    form.update(
+        {
+            f"{prefix}choice": '""',
+            f"{prefix}enabled": "false",
+            f"{prefix}count": "2",
+            f"{prefix}ratio": "2.5",
+        }
+    )
+    task = _task_from_form(form, catalog=app.state.catalog)
+    assert task["operators"]["fit"]["parameters"] == {
+        "choice": "",
+        "enabled": False,
+        "count": 2,
+        "ratio": 2.5,
+    }
+
+    form[f"{prefix}choice"] = "null"
+    null_task = _task_from_form(form, catalog=app.state.catalog)
+    assert null_task["operators"]["fit"]["parameters"]["choice"] is None
 
 
 def test_operator_listing_escapes_user_controlled_text(tmp_path: Path):
@@ -144,6 +356,14 @@ def test_preview_renders_complete_resolved_audit_and_duplicate_link(tmp_path: Pa
     snapshot_id = snapshot(app)
     form = _experiment_form(app, snapshot_id, issued.csrf_token)
     task = _task_from_form(form, catalog=app.state.catalog)
+    assert task["dataset"] == {
+        "dataset_id": "SYNTH.SS",
+        "start": "2026-01-05",
+        "end": "2026-01-12",
+    }
+    assert task["template"]["parameters"]["initial_capital_cny"] == 100000.0
+    assert task["template"]["parameters"]["terminal_handling"] == "mark_to_market"
+    assert task["operators"]["fit"]["parameters"]["window_sessions"] == 20
     created = app.state.experiments.submit(task, action_id="existing")
 
     response = client.post(
@@ -355,8 +575,9 @@ def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: 
 
     css = client.get("/static/app.css").text
     javascript = client.get("/static/app.js").text
+    theme_init = client.get("/static/theme-init.js").text
 
-    for token in ("#08090a", "#0f1011", "#5e6ad2"):
+    for token in ("#08090a", "#0f1011", "#5e6ad2", "#f7f8fa", "#ffffff"):
         assert token in css
     assert "min-height: 44px" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
@@ -367,6 +588,29 @@ def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: 
     assert "quant:preview-settled" in javascript
     assert "new AbortController()" in javascript
     assert "request timed out after 10 seconds" in javascript
+    assert "quant-theme" in theme_init
+    assert "localStorage.getItem" in theme_init
+    assert 'document.documentElement.dataset.theme = theme' in theme_init
+    assert "matchMedia" in javascript
+    assert "localStorage.setItem" in javascript
+    assert "field.dataset.parameterEnum" in javascript
+    assert "JSON.parse(field.value)" in javascript
+
+
+def test_theme_bootstrap_precedes_css_and_selector_is_global(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    login = client.get("/login")
+    authenticate(app, client)
+
+    for response in (login, client.get("/"), client.get("/experiments/new")):
+        assert response.text.index('/static/theme-init.js') < response.text.index(
+            '/static/app.css'
+        )
+        assert 'data-theme-selector' in response.text
+        assert '<option value="light">Light</option>' in response.text
+        assert '<option value="dark">Dark</option>' in response.text
+        assert '<option value="system">System</option>' in response.text
+        assert '<script src="/static/app.js" defer></script>' in response.text
 
 
 def test_rendered_pages_have_no_inline_executable_content(tmp_path: Path):

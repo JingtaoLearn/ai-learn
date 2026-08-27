@@ -28,7 +28,7 @@
   <thead><tr><th>Experiment</th><th>Dataset</th><th>Template</th><th>Status</th><th>Attempts</th><th>Current latest drift</th><th>Created</th></tr></thead>
   <tbody>{% for experiment in experiments %}<tr>
     <td><a class="mono" href="/experiments/{{ experiment.experiment_id }}">{{ experiment.experiment_id }}</a></td>
-    <td>{{ experiment.dataset.instrument }}<small class="mono">{{ experiment.dataset.snapshot_id[:12] }}</small></td>
+    <td>{{ experiment.dataset.name if experiment.dataset.dataset_id else experiment.dataset.instrument }}<small class="mono">{{ experiment.dataset.dataset_id if experiment.dataset.dataset_id else experiment.dataset.snapshot_id[:12] }}</small></td>
     <td>{{ experiment.template.name }}@{{ experiment.template.version }}</td>
     <td><span class="status">{{ experiment.current_status }}</span></td>
     <td>{{ experiment.attempt_count }}</td>

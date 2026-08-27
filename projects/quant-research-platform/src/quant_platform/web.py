@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
+from .dataset_service import DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
@@ -37,7 +38,14 @@ from .strategy_runner import (
 SESSION_COOKIE = "quant_session"
 MAX_BODY_BYTES = 1_048_576
 PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
+def _canonical_json_text(value: Any) -> str:
+    return canonical_json_bytes(value).decode("utf-8")
+
+
 TEMPLATES = Jinja2Templates(directory=PACKAGE_ROOT / "templates")
+TEMPLATES.env.filters["canonical_json"] = _canonical_json_text
 MARKDOWN_TAGS = {
     "a",
     "blockquote",
@@ -212,6 +220,11 @@ def _operator_groups(operators: OperatorService) -> dict[str, list[dict[str, Any
 
 
 def _form_parameter_value(raw: str, schema: dict[str, Any]) -> Any:
+    if "enum" in schema:
+        value = _json_text(raw, "enum parameter")
+        if canonical_json_bytes(value).decode("utf-8") != raw:
+            raise ValueError("enum parameter must use canonical JSON")
+        return value
     if raw == "" and schema.get("nullable"):
         return None
     if schema["type"] == "number":
@@ -219,8 +232,18 @@ def _form_parameter_value(raw: str, schema: dict[str, Any]) -> Any:
     if schema["type"] == "integer":
         return int(raw)
     if schema["type"] == "boolean":
+        if raw.lower() not in {"true", "false"}:
+            raise ValueError("boolean parameter must be true or false")
         return raw.lower() == "true"
     return raw
+
+
+def _form_parameter_default(value: Any, schema: dict[str, Any]) -> str:
+    if "enum" in schema:
+        return canonical_json_bytes(value).decode("utf-8")
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _task_from_form(
@@ -228,14 +251,19 @@ def _task_from_form(
     *,
     catalog: Any,
 ) -> dict[str, Any]:
-    dataset_value = form.get("dataset", "")
-    if "|" not in dataset_value:
+    dataset_id = form.get("dataset_id", "")
+    start_date = form.get("start_date", "")
+    end_date = form.get("end_date", "")
+    if not dataset_id or not start_date or not end_date:
         raise TaskValidationError("dataset selection is required")
-    instrument, snapshot_id = dataset_value.split("|", 1)
     template = catalog.template_detail("single_stock_daily_causal", "1")
     template_parameters = {
-        name: _form_parameter_value(
-            form.get(f"template_{name}", ""), schema
+        name: (
+            start_date
+            if name == "evaluation_start"
+            else end_date
+            if name == "evaluation_end"
+            else _form_parameter_value(form.get(f"template_{name}", ""), schema)
         )
         for name, schema in template["parameter_schema"]["properties"].items()
     }
@@ -256,7 +284,7 @@ def _task_from_form(
                         f"operator_{slot}_param__{operator_id}__"
                         f"{selected['version']}__{name}"
                     ),
-                    str(selected["defaults"][name]),
+                    _form_parameter_default(selected["defaults"][name], schema),
                 ),
                 schema,
             )
@@ -269,7 +297,11 @@ def _task_from_form(
         }
     return {
         "schema_version": 1,
-        "dataset": {"instrument": instrument, "snapshot_id": snapshot_id},
+        "dataset": {
+            "dataset_id": dataset_id,
+            "start": start_date,
+            "end": end_date,
+        },
         "template": {
             "name": template["name"],
             "version": template["version"],
@@ -364,11 +396,13 @@ def create_app(
 ) -> FastAPI:
     settings = settings.validated()
     catalog = initialize_catalog(settings.state_root)
+    datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
         execution_identity=effective_execution_identity(
             settings.project_root, settings.runner_image
         ),
+        datasets=datasets,
     )
     experiments.recover_abandoned_attempts()
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
@@ -376,6 +410,7 @@ def create_app(
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.catalog = catalog
+    app.state.datasets = datasets
     app.state.experiments = experiments
     app.state.operators = operators
     app.state.auth = auth
@@ -590,6 +625,13 @@ def create_app(
     async def api_operators(request: Request):
         _session(request)
         return {"operators": operators.list()}
+
+    @app.get("/api/datasets")
+    async def api_datasets(request: Request):
+        _session(request)
+        return {
+            "datasets": await run_in_threadpool(datasets.list_available)
+        }
 
     @app.get("/api/operators/{operator_id}")
     async def api_operator(request: Request, operator_id: str, version: str | None = None):
@@ -838,11 +880,12 @@ def create_app(
     async def experiment_new(request: Request):
         session = _session(request)
         grouped = _operator_groups(operators)
+        dataset_options = await run_in_threadpool(datasets.list_available)
         return _render(
             request,
             "experiment_new.html",
             session=session,
-            datasets=_datasets(settings.state_root),
+            datasets=dataset_options,
             grouped=grouped,
             template=catalog.template_detail("single_stock_daily_causal", "1"),
             action_id=secrets.token_hex(16),

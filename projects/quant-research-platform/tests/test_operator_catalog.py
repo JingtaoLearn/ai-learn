@@ -24,6 +24,7 @@ def test_initialization_enables_wal_constraints_and_idempotent_migrations(tmp_pa
             (1,),
             (2,),
             (3,),
+            (4,),
         ]
         assert connection.execute(
             "SELECT COUNT(*) FROM templates WHERE name = ? AND version = ?",

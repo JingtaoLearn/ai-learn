@@ -28,7 +28,7 @@ const browser = spawn(
 
 let stderr = "";
 const webSocketUrl = await new Promise((resolve, reject) => {
-  const timeout = setTimeout(() => reject(new Error(`Chromium startup timed out: ${stderr}`)), 30000);
+  const timeout = setTimeout(() => reject(new Error(`Chromium startup timed out: ${stderr}`)), 60000);
   browser.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
     const match = stderr.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -209,10 +209,16 @@ try {
               hasPrimaryAction: ${route === "/experiments/new"
                 ? 'Boolean(document.querySelector(\'form[data-testid="experiment-form"] button[type="submit"]\'))'
                 : "true"},
+              hasThemeSelector: Boolean(document.querySelector("[data-theme-selector]")),
               documentWidth: document.documentElement.scrollWidth,
               viewportWidth: window.innerWidth
             })`);
-        if (value.page !== expectedPage || !value.hasMain || !value.hasPrimaryAction) {
+        if (
+          value.page !== expectedPage ||
+          !value.hasMain ||
+          !value.hasPrimaryAction ||
+          !value.hasThemeSelector
+        ) {
           throw new Error(`Browser selector failure for ${route}: ${JSON.stringify(value)}`);
         }
         if (value.documentWidth > value.viewportWidth) {
@@ -253,6 +259,11 @@ try {
         '[{"input":{"values":[1.0,2.0]},"parameters":{},"expected":2.0}]',
       documentation: "# Browser fit\n\nDeterministic browser acceptance fixture.",
     };
+    operatorValues.parameter_schema =
+      '{"type":"object","properties":{"choice":{"type":"string","enum":[null,"","strict"],"nullable":true},"count":{"type":"integer","enum":[1,2]},"enabled":{"type":"boolean","enum":[true,false]},"ratio":{"type":"number","enum":[1.5,2.5]}},"required":["choice","count","enabled","ratio"],"additionalProperties":false}';
+    operatorValues.defaults = '{"choice":"","count":1,"enabled":true,"ratio":1.5}';
+    operatorValues.tests =
+      '[{"input":{"values":[1.0,2.0]},"parameters":{"choice":"","count":1,"enabled":true,"ratio":1.5},"expected":2.0}]';
     await evaluate(`(() => {
       const values = ${JSON.stringify(operatorValues)};
       for (const [name, value] of Object.entries(values)) {
@@ -286,6 +297,51 @@ try {
       "document.querySelectorAll('[data-testid^=\"generated-params-\"]').length >= 7",
     );
     if (!generated) throw new Error("Schema-generated parameter controls are missing");
+    const adaptiveControls = await evaluate(`[
+      "template_initial_state",
+      "template_terminal_handling",
+      "operator_fit_param__prior_log_ols__1.0.0__price_column",
+      "operator_fit_param__browser_fit__1.0.0__choice",
+      "operator_fit_param__browser_fit__1.0.0__count",
+      "operator_fit_param__browser_fit__1.0.0__enabled",
+      "operator_fit_param__browser_fit__1.0.0__ratio"
+    ].every((name) => document.querySelector('[name="' + name + '"]')?.tagName === "SELECT")`);
+    if (!adaptiveControls) throw new Error("Enum or boolean controls are not accessible selects");
+    if (!scriptsDisabled) {
+      const typedEnums = await evaluate(`(() => {
+        const parameters = window.experimentTask().operators.fit.parameters;
+        return parameters.choice === "" &&
+          parameters.count === 1 &&
+          parameters.enabled === true &&
+          parameters.ratio === 1.5;
+      })()`);
+      if (!typedEnums) throw new Error("Live preview did not preserve typed enum values");
+    }
+    const datasetControls = await evaluate(`(() => {
+      const dataset = document.querySelector('[name="dataset_id"]');
+      const start = document.querySelector('[name="start_date"]');
+      const end = document.querySelector('[name="end_date"]');
+      return {
+        dataset: dataset?.value,
+        startType: start?.type,
+        endType: end?.type,
+        endValue: end?.value,
+        endMax: end?.max,
+        exposesSnapshot: Array.from(dataset?.options || []).some(
+          (option) => /[0-9a-f]{64}/.test(option.value),
+        ),
+      };
+    })()`);
+    if (
+      datasetControls.dataset !== "SYNTH.SS" ||
+      datasetControls.startType !== "date" ||
+      datasetControls.endType !== "date" ||
+      !datasetControls.endValue ||
+      datasetControls.endValue !== datasetControls.endMax ||
+      datasetControls.exposesSnapshot
+    ) {
+      throw new Error(`Dataset/date controls are invalid: ${JSON.stringify(datasetControls)}`);
+    }
     const summaryVisible = await evaluate(
       'Boolean(document.querySelector(\'[data-testid="resolved-summary"]\')) && Boolean(document.querySelector(\'[data-testid="live-duplicate-preview"]\'))',
     );
@@ -387,6 +443,71 @@ try {
       throw new Error(`Report sandbox is invalid: ${sandbox}`);
     }
     console.error("stage report-sandbox");
+
+    if (!scriptsDisabled) {
+      await navigate("/");
+      const keyboardTheme = await evaluate(`(() => {
+        const selector = document.querySelector("[data-theme-selector]");
+        selector.focus();
+        return {
+          focused: document.activeElement === selector,
+          labelled: Boolean(selector.closest("label")),
+        };
+      })()`);
+      if (!keyboardTheme.focused || !keyboardTheme.labelled) {
+        throw new Error(`Theme selector is not keyboard accessible: ${JSON.stringify(keyboardTheme)}`);
+      }
+      const dark = await evaluate(`(() => {
+        const selector = document.querySelector("[data-theme-selector]");
+        selector.value = "dark";
+        selector.dispatchEvent(new Event("change", { bubbles: true }));
+        return {
+          selected: document.documentElement.dataset.theme,
+          stored: localStorage.getItem("quant-theme"),
+          background: getComputedStyle(document.documentElement).backgroundColor,
+        };
+      })()`);
+      if (dark.selected !== "dark" || dark.stored !== "dark") {
+        throw new Error(`Dark theme did not persist: ${JSON.stringify(dark)}`);
+      }
+      await navigate("/history");
+      const persisted = await evaluate(
+        'document.documentElement.dataset.theme === "dark" && document.querySelector("[data-theme-selector]").value === "dark"',
+      );
+      if (!persisted) throw new Error("Theme did not persist across navigation");
+
+      await evaluate(`(() => {
+        const selector = document.querySelector("[data-theme-selector]");
+        selector.value = "system";
+        selector.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-color-scheme", value: "light" }] },
+        sessionId,
+      );
+      const systemLight = await evaluate(
+        '({theme: document.documentElement.dataset.theme, stored: localStorage.getItem("quant-theme"), canvas: getComputedStyle(document.documentElement).getPropertyValue("--canvas").trim()})',
+      );
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-color-scheme", value: "dark" }] },
+        sessionId,
+      );
+      const systemDark = await evaluate(
+        'getComputedStyle(document.documentElement).getPropertyValue("--canvas").trim()',
+      );
+      if (
+        systemLight.theme !== "system" ||
+        systemLight.stored !== "system" ||
+        systemLight.canvas === systemDark
+      ) {
+        throw new Error(
+          `System theme did not follow OS preference: ${JSON.stringify({ systemLight, systemDark })}`,
+        );
+      }
+      console.error("stage theme-persistence");
+    }
   }
 } finally {
   socket.close();

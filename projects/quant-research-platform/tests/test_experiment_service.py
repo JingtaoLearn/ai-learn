@@ -96,6 +96,7 @@ def test_latest_and_explicit_resolution_records_complete_audit(tmp_path: Path):
 
     resolved = service.resolve_task(_task(snapshot_id))
 
+    assert resolved["dataset"]["lineage"] == {"kind": "legacy_snapshot"}
     fit = resolved["operators"]["fit"]
     smoothing = resolved["operators"]["smoothing"]
     assert fit["selector_mode"] == "latest"

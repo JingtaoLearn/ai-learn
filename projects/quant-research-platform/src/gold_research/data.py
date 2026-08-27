@@ -4,24 +4,16 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 import pandas as pd
 import requests
+
+from quant_platform.yahoo import yahoo_chart_url
 
 
 class DataDownloadError(RuntimeError):
     def __init__(self, symbol: str, detail: str):
         super().__init__(f"Yahoo chart download failed for {symbol}: {detail}")
-
-
-def yahoo_chart_url(symbol: str, start: str, end: str) -> str:
-    period1 = int(pd.Timestamp(start, tz="UTC").timestamp())
-    period2 = int((pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)).timestamp())
-    return (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
-        f"?period1={period1}&period2={period2}&interval=1d&events=history"
-    )
 
 
 def fetch_yahoo(symbol: str, start: str, end: str, timeout: int = 30) -> tuple[pd.DataFrame, str]:

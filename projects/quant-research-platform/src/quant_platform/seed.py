@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
+from .datasets import _verify_snapshot, snapshot_status
 from .schemas import canonical_json_bytes, validate_defaults, validate_parameter_schema
 
 
@@ -159,6 +160,44 @@ BUILTINS = (
     },
 )
 BUILTIN_OPERATOR_IDS = tuple(item["operator_id"] for item in BUILTINS)
+DATASET_CREATED_AT = "2026-08-27T00:00:00Z"
+PRODUCTION_DATASET_NAMES = {
+    "601328.SS": "Bank of Communications (601328.SS)",
+}
+
+
+def _seed_existing_dataset_catalog(catalog: Catalog) -> None:
+    for instrument, name in PRODUCTION_DATASET_NAMES.items():
+        pointer = catalog.state_root / "datasets" / instrument / "latest.json"
+        if not pointer.exists():
+            continue
+        status = snapshot_status(catalog.state_root, instrument)
+        manifest = _verify_snapshot(Path(status["path"]), status["snapshot_id"])
+        metadata = manifest["metadata"]
+        if metadata["provider"] != "yahoo-chart-api" or metadata["market"] != "XSHG":
+            continue
+        record = {
+            "dataset_id": instrument,
+            "name": name,
+            "instrument": metadata["instrument"],
+            "provider": metadata["provider"],
+            "market": metadata["market"],
+            "currency": metadata["currency"],
+            "adjustment": metadata["adjustment"],
+            "calendar": "XSHG",
+            "default_start": manifest["data_start"],
+            "created_at": DATASET_CREATED_AT,
+        }
+        try:
+            existing = catalog.dataset_detail(instrument)
+        except ValueError:
+            catalog.register_dataset(record)
+        else:
+            stable_fields = set(record) - {"default_start"}
+            if any(existing[field] != record[field] for field in stable_fields):
+                raise RuntimeError(
+                    f"existing dataset catalog metadata conflict: {instrument}"
+                )
 
 
 def _write_builtin_bundle(
@@ -205,6 +244,7 @@ def _write_builtin_bundle(
 
 
 def seed_catalog(catalog: Catalog) -> None:
+    _seed_existing_dataset_catalog(catalog)
     validate_parameter_schema(TEMPLATE_SCHEMA)
     validate_defaults(TEMPLATE_SCHEMA, TEMPLATE_DEFAULTS)
     template_identity = {

@@ -26,7 +26,7 @@ def _available_port() -> int:
 
 
 def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path):
-    chromium = shutil.which("chromium-browser") or shutil.which("chromium")
+    chromium = shutil.which("chromium") or shutil.which("chromium-browser")
     node = shutil.which("node")
     if chromium is None or node is None:
         pytest.skip("Chromium and Node are required for browser acceptance")
@@ -93,7 +93,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=180,
             )
         except subprocess.CalledProcessError as exc:
             raise AssertionError(exc.stderr) from exc

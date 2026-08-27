@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_parameter_control.html" import parameter_control %}
 {% block title %}New experiment · Quant Research{% endblock %}
 {% block page %}experiment-new{% endblock %}
 {% block content %}
@@ -8,10 +9,14 @@
   <input type="hidden" name="action_id" value="{{ action_id }}">
   <input type="hidden" name="template_name" value="{{ template.name }}">
   <input type="hidden" name="template_version" value="{{ template.version }}">
-  <label class="wide">Dataset snapshot<select name="dataset" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.instrument }}|{{ dataset.snapshot_id }}">{{ dataset.label }} · {{ dataset.snapshot_id[:12] }}</option>{% endfor %}</select></label>
-  {% if not datasets %}<div class="empty wide" data-testid="dataset-empty">No immutable dataset snapshots are available. Publish or update the authoritative platform dataset before creating an experiment.</div>{% endif %}
+  <label class="wide">Dataset<select name="dataset_id" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.dataset_id }}" data-default-start="{{ dataset.default_start }}" data-latest-close="{{ dataset.latest_available_close }}">{{ dataset.name }} · {{ dataset.dataset_id }}</option>{% endfor %}</select></label>
+  {% if not datasets %}<div class="empty wide" data-testid="dataset-empty">No verified dataset catalog items are available.</div>{% endif %}
+  <label>Start date<input name="start_date" type="date" required value="{{ datasets[0].default_start if datasets else '' }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-start-date></label>
+  <label>End date<input name="end_date" type="date" required value="{{ datasets[0].latest_available_close if datasets else '' }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-end-date></label>
   {% for name, schema in template.parameter_schema.properties.items() %}
-  <label>{{ name }}<input name="template_{{ name }}" value="{{ template.defaults[name] if template.defaults[name] is not none else '' }}" data-template-parameter="{{ name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"></label>
+  {% if name not in ("evaluation_start", "evaluation_end") %}
+  <label>{{ name }}{{ parameter_control("template_" ~ name, template.defaults[name], schema, "template-parameter", name) }}</label>
+  {% endif %}
   {% endfor %}
   {% for slot, items in grouped.items() %}
   <fieldset class="wide slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
@@ -21,7 +26,7 @@
       <p class="mono">{{ operator.operator_id }}@{{ version.version }} parameters</p>
       {% if version.parameter_schema.properties %}
       {% for name, schema in version.parameter_schema.properties.items() %}
-      <label>{{ name }}<input name="operator_{{ slot }}_param__{{ operator.operator_id }}__{{ version.version }}__{{ name }}" value="{{ version.defaults[name] if version.defaults[name] is not none else '' }}" data-parameter-name="{{ name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"></label>
+      <label>{{ name }}{{ parameter_control("operator_" ~ slot ~ "_param__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name, version.defaults[name], schema, "parameter-name", name) }}</label>
       {% endfor %}
       {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
     </div>
@@ -31,11 +36,11 @@
   <section class="panel wide" data-testid="resolved-summary" aria-live="polite">
     <h2>Live resolved-version summary</h2>
     <p>Template <strong>{{ template.name }}@{{ template.version }}</strong></p>
-    <p data-summary-dataset>{{ datasets[0].label if datasets else "Dataset required" }}</p>
+    <p data-summary-dataset>{% if datasets %}{{ datasets[0].name }} · {{ datasets[0].dataset_id }} · {{ datasets[0].default_start }} to {{ datasets[0].latest_available_close }}{% else %}Dataset required{% endif %}</p>
     <div data-summary-operators>{% for slot, items in grouped.items() %}<p><span class="mono">{{ slot }}</span> · {{ items[0].operator_id }} · latest resolves to {{ items[0].latest_version }} · {{ items[0].content_digest[:12] }}</p>{% endfor %}</div>
   </section>
   <section class="notice wide" data-testid="live-duplicate-preview" aria-live="polite" data-state="idle">
-    Duplicate preview is waiting for a complete dataset and parameter selection.
+    Duplicate preview is waiting for a complete dataset, date range, and parameter selection.
   </section>
   <noscript><p class="notice wide">JavaScript is disabled. All selectors and generated parameter controls remain available for primary submission.</p></noscript>
   <div class="wide actions"><button type="submit" formaction="/experiments/preview" data-testid="preview-experiment" {% if not datasets %}disabled{% endif %}>Preview duplicate</button><button type="submit" {% if not datasets %}disabled{% endif %}>Create experiment</button></div>

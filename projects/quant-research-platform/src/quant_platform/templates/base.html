@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Quant Research{% endblock %}</title>
+  <script src="/static/theme-init.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
@@ -17,6 +18,7 @@
       <a href="/experiments/new">New experiment</a>
       <a href="/history">History</a>
     </nav>
+    {% include "_theme_selector.html" %}
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="quiet" type="submit">Log out</button>

@@ -164,6 +164,43 @@ DROP TABLE attempts_v2;
 CREATE INDEX idx_attempts_status_created ON attempts(status, created_at);
 """
 
+MIGRATION_4 = """
+CREATE TABLE dataset_catalog (
+    dataset_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    instrument TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    market TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    calendar TEXT NOT NULL,
+    default_start TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER immutable_dataset_catalog_update
+BEFORE UPDATE ON dataset_catalog BEGIN
+    SELECT RAISE(ABORT, 'dataset catalog items are immutable');
+END;
+CREATE TRIGGER immutable_dataset_catalog_delete
+BEFORE DELETE ON dataset_catalog BEGIN
+    SELECT RAISE(ABORT, 'dataset catalog items are immutable');
+END;
+"""
+
+DATASET_FIELDS = (
+    "dataset_id",
+    "name",
+    "instrument",
+    "provider",
+    "market",
+    "currency",
+    "adjustment",
+    "calendar",
+    "default_start",
+    "created_at",
+)
+
 
 class Catalog:
     def __init__(self, state_root: Path | str):
@@ -257,12 +294,75 @@ class Catalog:
                         VALUES (3, '2026-08-27T00:00:00Z')
                         """
                     )
+                migrated = connection.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = 4"
+                ).fetchone()
+                if migrated is None:
+                    connection.executescript(MIGRATION_4)
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations(version, applied_at)
+                        VALUES (4, '2026-08-27T00:00:00Z')
+                        """
+                    )
             finally:
                 connection.close()
             from .seed import seed_catalog
 
             seed_catalog(self)
         return self
+
+    def register_dataset(self, value: dict[str, str]) -> dict[str, str]:
+        if set(value) != set(DATASET_FIELDS):
+            raise ValueError("dataset catalog fields are invalid")
+        with self.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT * FROM dataset_catalog WHERE dataset_id = ? OR instrument = ?",
+                (value["dataset_id"], value["instrument"]),
+            ).fetchone()
+            if existing is not None:
+                current = {field: existing[field] for field in DATASET_FIELDS}
+                if current != value:
+                    raise ValueError(
+                        f"immutable dataset catalog conflict: {value['dataset_id']}"
+                    )
+                return current
+            connection.execute(
+                """
+                INSERT INTO dataset_catalog(
+                    dataset_id, name, instrument, provider, market, currency,
+                    adjustment, calendar, default_start, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(value[field] for field in DATASET_FIELDS),
+            )
+        return dict(value)
+
+    def dataset_detail(self, dataset_id: str) -> dict[str, str]:
+        connection = self.connect()
+        try:
+            row = connection.execute(
+                "SELECT * FROM dataset_catalog WHERE dataset_id = ?",
+                (dataset_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ValueError(f"unknown dataset catalog item: {dataset_id}")
+        return {field: row[field] for field in DATASET_FIELDS}
+
+    def list_datasets(self) -> list[dict[str, str]]:
+        connection = self.connect()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM dataset_catalog ORDER BY name, dataset_id"
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            {field: row[field] for field in DATASET_FIELDS}
+            for row in rows
+        ]
 
     def template_detail(self, name: str, version: str) -> dict[str, Any]:
         connection = self.connect()
@@ -464,6 +564,7 @@ class Catalog:
         content_digest: str,
         parameter_schema: dict[str, Any],
         status: str = "PUBLISHED",
+        defaults: dict[str, Any] | None = None,
     ) -> None:
         parse_semantic_version(version)
         with self.transaction(immediate=True) as connection:
@@ -488,7 +589,7 @@ class Catalog:
                     version,
                     content_digest,
                     json.dumps(parameter_schema, sort_keys=True),
-                    "{}",
+                    json.dumps(defaults or {}, sort_keys=True),
                     "Test descriptor",
                     f"operators/{operator_id}/{version}",
                     '{"kind":"test"}',

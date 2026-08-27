@@ -4,13 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · Quant Research</title>
+  <script src="/static/theme-init.js"></script>
   <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
 </head>
 <body class="login-page" data-page="login">
   <main class="login-panel" data-testid="login-panel">
     <p class="eyebrow">RESEARCH ACCESS</p>
     <h1>Quant Research Platform</h1>
     <p>Authenticate with the approved Microsoft account to access immutable experiments.</p>
+    {% include "_theme_selector.html" %}
     {% if auth_mode == "password" %}
     <form method="post" action="/auth/password">
       <input type="hidden" name="login_csrf" value="{{ login_csrf }}">

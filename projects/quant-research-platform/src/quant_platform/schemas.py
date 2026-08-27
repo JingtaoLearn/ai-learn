@@ -15,6 +15,7 @@ PROPERTY_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 SCALAR_TYPES = {"string", "integer", "number", "boolean"}
 SCHEMA_FIELDS = {"type", "properties", "required", "additionalProperties"}
 PROPERTY_FIELDS = {"type", "enum", "minimum", "maximum", "nullable"}
+MAX_WEB_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -84,6 +85,14 @@ def _validate_property_schema(value: Any, path: str) -> dict[str, Any]:
                 raise SchemaValidationError(f"{path}.{bound} must be numeric")
             if not math.isfinite(bound_value):
                 raise SchemaValidationError(f"{path}.{bound} must be finite")
+            if isinstance(bound_value, float) and bound_value == 0 and math.copysign(
+                1.0, bound_value
+            ) < 0:
+                raise SchemaValidationError(f"{path}.{bound} cannot be negative zero")
+            if kind == "integer" and abs(bound_value) > MAX_WEB_SAFE_INTEGER:
+                raise SchemaValidationError(
+                    f"{path}.{bound} must be within the web-safe integer range"
+                )
     if (
         "minimum" in value
         and "maximum" in value
@@ -138,11 +147,17 @@ def _validate_scalar(
     elif kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             raise SchemaValidationError(f"{path} must be an integer")
+        if abs(value) > MAX_WEB_SAFE_INTEGER:
+            raise SchemaValidationError(
+                f"{path} must be within the web-safe integer range"
+            )
     elif kind == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise SchemaValidationError(f"{path} must be a number")
         if not math.isfinite(value):
             raise SchemaValidationError(f"{path} must be finite")
+        if isinstance(value, float) and value == 0 and math.copysign(1.0, value) < 0:
+            raise SchemaValidationError(f"{path} cannot be negative zero")
         value = float(value)
     else:
         raise SchemaValidationError(f"{path} has unsupported type")

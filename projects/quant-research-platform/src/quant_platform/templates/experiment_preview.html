@@ -15,6 +15,13 @@
     <dt>Experiment ID</dt><dd>{{ preview.experiment_id }}</dd>
     <dt>Template</dt><dd>{{ preview.resolved.template.name }}@{{ preview.resolved.template.version }}</dd>
     <dt>Template digest</dt><dd>{{ preview.resolved.template.content_digest }}</dd>
+    {% if preview.resolved.dataset.dataset_id %}
+    <dt>Dataset</dt><dd>{{ preview.resolved.dataset.name }} · {{ preview.resolved.dataset.dataset_id }}</dd>
+    <dt>Requested range</dt><dd>{{ preview.resolved.dataset.requested_start }} to {{ preview.resolved.dataset.requested_end }}</dd>
+    {% if preview.resolved.dataset.requested_start != preview.resolved.dataset.effective_start or preview.resolved.dataset.requested_end != preview.resolved.dataset.effective_end %}
+    <dt>Effective sessions</dt><dd>{{ preview.resolved.dataset.effective_start }} to {{ preview.resolved.dataset.effective_end }}</dd>
+    {% endif %}
+    {% endif %}
     <dt>Dataset instrument</dt><dd>{{ preview.resolved.dataset.instrument }}</dd>
     <dt>Dataset snapshot</dt><dd>{{ preview.resolved.dataset.snapshot_id }}</dd>
     <dt>Dataset digest</dt><dd>{{ preview.resolved.dataset.canonical_sha256 }}</dd>

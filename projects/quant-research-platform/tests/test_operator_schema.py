@@ -108,3 +108,42 @@ def test_canonical_json_rejects_non_finite_values():
     assert canonical_json_bytes({"b": 1, "a": "x"}) == b'{"a":"x","b":1}'
     with pytest.raises(SchemaValidationError, match="finite"):
         canonical_json_bytes({"value": math.nan})
+
+
+@pytest.mark.parametrize(
+    "property_schema",
+    [
+        {"type": "integer", "enum": [9_007_199_254_740_992]},
+        {"type": "integer", "minimum": -9_007_199_254_740_992},
+        {"type": "integer", "maximum": 9_007_199_254_740_992},
+        {"type": "number", "enum": [-0.0]},
+        {"type": "number", "minimum": -0.0},
+    ],
+)
+def test_numeric_schema_rejects_values_that_cannot_round_trip_through_web_json(
+    property_schema,
+):
+    schema = {
+        "type": "object",
+        "properties": {"value": property_schema},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(SchemaValidationError, match="web-safe|negative zero"):
+        validate_parameter_schema(schema)
+
+
+def test_integer_parameters_are_bounded_to_javascript_safe_precision():
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+    assert validate_parameters(schema, {"value": 9_007_199_254_740_991}) == {
+        "value": 9_007_199_254_740_991
+    }
+    with pytest.raises(SchemaValidationError, match="web-safe"):
+        validate_parameters(schema, {"value": 9_007_199_254_740_992})
