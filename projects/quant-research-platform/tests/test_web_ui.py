@@ -1,12 +1,40 @@
 from pathlib import Path
 
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
+from quant_platform.web import _task_from_form
 
 from test_experiment_service import _task
 from test_web_api import authenticate, make_app, snapshot
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _experiment_form(app, snapshot_id: str, csrf_token: str) -> dict[str, str]:
+    template = app.state.catalog.template_detail("single_stock_daily_causal", "1")
+    form = {
+        "csrf_token": csrf_token,
+        "action_id": "preview-action",
+        "dataset": f"SYNTH.SS|{snapshot_id}",
+    }
+    for name, value in template["defaults"].items():
+        form[f"template_{name}"] = "" if value is None else str(value)
+    for slot in template["slots"]:
+        operator = next(
+            item
+            for item in app.state.operators.list()
+            if item["slot"] == slot
+        )
+        detail = app.state.operators.detail(
+            operator["operator_id"], operator["latest_version"]
+        )
+        form[f"operator_{slot}_selector"] = f"{operator['operator_id']}@latest"
+        for name, value in detail["defaults"].items():
+            form[
+                f"operator_{slot}_param__{operator['operator_id']}__"
+                f"{detail['version']}__{name}"
+            ] = str(value)
+    return form
 
 
 def test_primary_pages_have_semantic_browser_selectors(tmp_path: Path):
@@ -63,6 +91,85 @@ def test_operator_listing_escapes_user_controlled_text(tmp_path: Path):
     assert "<img src=x" not in response.text
 
 
+def test_operator_detail_renders_schema_defaults_latest_and_linked_history(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+
+    response = client.get("/operators/prior_log_ols/1.0.0")
+
+    assert 'data-testid="operator-parameter-schema"' in response.text
+    assert 'data-testid="operator-defaults"' in response.text
+    assert 'data-testid="operator-version-history"' in response.text
+    assert "Latest version" in response.text
+    assert "Selected version" in response.text
+    assert "window_sessions" in response.text
+    assert "AdjustedClose" in response.text
+    assert 'href="/operators/prior_log_ols/1.0.0"' in response.text
+
+
+def test_template_and_dashboard_show_slot_defaults_and_linked_recent_attempts(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="dashboard-create"
+    )
+
+    template = client.get("/templates/single_stock_daily_causal/1")
+    dashboard = client.get("/")
+
+    assert 'data-testid="template-slot-defaults"' in template.text
+    for operator_id in (
+        "prior_log_ols",
+        "recursive_log_ema",
+        "adjacent_curve_pct_slope",
+        "post_start_threshold_crossing_hysteresis",
+        "all_in_all_out_a_share_lots",
+        "cms_china_a_share",
+        "concise_chinese_causal_trade",
+    ):
+        assert operator_id in template.text
+    assert 'data-testid="recent-attempts"' in dashboard.text
+    assert f'href="/experiments/{created["experiment_id"]}"' in dashboard.text
+
+
+def test_preview_renders_complete_resolved_audit_and_duplicate_link(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot_id = snapshot(app)
+    form = _experiment_form(app, snapshot_id, issued.csrf_token)
+    task = _task_from_form(form, catalog=app.state.catalog)
+    created = app.state.experiments.submit(task, action_id="existing")
+
+    response = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 200
+    assert 'data-testid="preview-identity"' in response.text
+    assert "single_stock_daily_causal@1" in response.text
+    assert snapshot_id in response.text
+    for slot in app.state.catalog.template_detail(
+        "single_stock_daily_causal", "1"
+    )["slots"]:
+        assert f'data-preview-slot="{slot}"' in response.text
+    for label in (
+        "Requested selector",
+        "Latest at submission",
+        "Resolved version",
+        "Resolved digest",
+        "Parameters",
+    ):
+        assert label in response.text
+    assert "Existing experiment" in response.text
+    assert f'href="/experiments/{created["experiment_id"]}"' in response.text
+
+
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
@@ -104,6 +211,45 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert "img-src data:" in report_csp
     assert "allow-same-origin" not in detail.text
     assert "connect-src 'none'" not in detail.headers["content-security-policy"]
+    assert 'data-testid="experiment-dataset"' in detail.text
+    assert 'data-testid="template-parameters"' in detail.text
+    assert 'data-testid="operator-resolution"' in detail.text
+    assert 'data-testid="canonical-metrics"' in detail.text
+    assert result["result_digest"] in detail.text
+    assert "SYNTH.SS" in detail.text
+    assert "window_sessions" in detail.text
+    assert "latest" in detail.text
+    assert "1.0.0" in detail.text
+    assert "final_equity_cny" in detail.text
+
+
+def test_history_filters_status_search_and_drift_functionally(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    snapshot_id = snapshot(app)
+    succeeded = app.state.experiments.submit(
+        _task(snapshot_id), action_id="succeeded"
+    )
+    attempt = app.state.experiments.claim_next_attempt()
+    app.state.experiments.finish_failure(attempt["attempt_id"], "failure")
+    pending_task = _task(snapshot_id)
+    pending_task["template"]["parameters"]["initial_capital_cny"] = 200000.0
+    pending = app.state.experiments.submit(pending_task, action_id="pending")
+
+    response = client.get(
+        f"/history?status=FAILED&search={succeeded['experiment_id'][:12]}&drift=current"
+    )
+
+    assert 'data-testid="history-filters"' in response.text
+    assert "<th>Status</th>" in response.text
+    assert "<th>Attempts</th>" in response.text
+    assert "<th>Current latest drift</th>" in response.text
+    assert succeeded["experiment_id"] in response.text
+    assert pending["experiment_id"] not in response.text
+    assert "FAILED" in response.text
+
+    empty = client.get("/history?status=SUCCEEDED&search=not-found")
+    assert 'data-testid="history-empty"' in empty.text
 
 
 def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):
@@ -211,6 +357,20 @@ def test_rendered_pages_have_no_inline_executable_content(tmp_path: Path):
     for handler in ("onclick=", "onchange=", "onsubmit=", "onerror="):
         assert handler not in response.text
     assert '<script src="/static/app.js" defer></script>' in response.text
+
+
+def test_new_experiment_has_empty_and_live_resolution_states(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+
+    empty = client.get("/experiments/new")
+    assert 'data-testid="dataset-empty"' in empty.text
+
+    snapshot(app)
+    populated = client.get("/experiments/new")
+    assert 'data-testid="resolved-summary"' in populated.text
+    assert 'data-testid="live-duplicate-preview"' in populated.text
+    assert "single_stock_daily_causal@1" in populated.text
 
 
 def test_no_js_rerun_has_server_generated_id_and_rejects_extra_fields(tmp_path: Path):
