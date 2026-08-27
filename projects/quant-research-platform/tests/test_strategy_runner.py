@@ -251,6 +251,7 @@ def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, mon
         / "SYNTH.SS"
         / config["dataset"]["snapshot_id"]
     )
+    (snapshot / "data.parquet").chmod(0o644)
     (snapshot / "data.parquet").write_bytes(b"tampered")
 
     with pytest.raises(StrategyRunError, match="dataset"):
@@ -277,6 +278,34 @@ def test_configured_instrument_must_match_snapshot_metadata(tmp_path: Path):
 
     with pytest.raises(StrategyRunError, match="instrument"):
         run_strategy_config(config_path)
+
+
+def test_runner_uses_verified_frame_and_detects_post_verify_mutation(
+    tmp_path: Path, monkeypatch
+):
+    config_path = _foundation(tmp_path)
+    original_bound_snapshot = runner_module._bound_snapshot
+    original_replay = runner_module.replay_strategy
+    replay_called = False
+
+    def mutate_after_verify(config):
+        path, manifest, frame = original_bound_snapshot(config)
+        parquet = path / "data.parquet"
+        parquet.chmod(0o644)
+        parquet.write_bytes(b"mutated after verification")
+        return path, manifest, frame
+
+    def record_replay(frame, config):
+        nonlocal replay_called
+        replay_called = True
+        return original_replay(frame, config)
+
+    monkeypatch.setattr(runner_module, "_bound_snapshot", mutate_after_verify)
+    monkeypatch.setattr(runner_module, "replay_strategy", record_replay)
+
+    with pytest.raises(StrategyRunError, match="dataset|snapshot"):
+        run_strategy_config(config_path)
+    assert replay_called is True
 
 
 def test_persisted_json_is_strict_finite_and_canonical_config_is_bound(tmp_path: Path):

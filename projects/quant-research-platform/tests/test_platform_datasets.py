@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -52,9 +53,13 @@ def test_publish_snapshot_is_content_addressed_atomic_and_idempotent(tmp_path: P
     assert manifest["rows"] == 3
     assert manifest["data_start"] == "2026-08-17"
     assert manifest["data_end"] == "2026-08-19"
-    assert (snapshot_dir.stat().st_mode & 0o777) == 0o755
-    assert ((snapshot_dir / "manifest.json").stat().st_mode & 0o777) == 0o644
-    assert ((snapshot_dir / "data.parquet").stat().st_mode & 0o777) == 0o644
+    assert (snapshot_dir.stat().st_mode & 0o777) == 0o555
+    assert ((snapshot_dir / "manifest.json").stat().st_mode & 0o777) == 0o444
+    assert ((snapshot_dir / "data.parquet").stat().st_mode & 0o777) == 0o444
+    assert (snapshot_dir.parent.stat().st_mode & 0o777) == 0o755
+    assert (
+        (snapshot_dir.parent / "latest.json").stat().st_mode & 0o777
+    ) == 0o644
 
     status = snapshot_status(tmp_path, "601288.SS")
     assert status["snapshot_id"] == first["snapshot_id"]
@@ -104,7 +109,9 @@ def test_snapshot_rejects_unsafe_instrument_and_unknown_metadata(tmp_path: Path)
 
 def test_existing_snapshot_corruption_fails_closed(tmp_path: Path):
     published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
-    (Path(published["path"]) / "data.parquet").write_bytes(b"corrupted")
+    parquet = Path(published["path"]) / "data.parquet"
+    parquet.chmod(0o644)
+    parquet.write_bytes(b"corrupted")
 
     with pytest.raises(RuntimeError, match="corrupt snapshot"):
         publish_snapshot(_daily_frame(), tmp_path, _metadata())
@@ -224,14 +231,86 @@ def test_adjusted_close_snapshot_tampering_fails_closed(tmp_path: Path, tamper: 
         _metadata(),
     )
     target = Path(published["path"])
+    target.chmod(0o755)
     if tamper == "manifest":
         manifest = json.loads((target / "manifest.json").read_text())
         manifest["columns"] = manifest["columns"][:-1]
+        (target / "manifest.json").chmod(0o644)
         (target / "manifest.json").write_text(json.dumps(manifest))
     else:
         frame = pd.read_parquet(target / "data.parquet")
         frame = frame.drop(columns=["AdjustedClose"])
+        (target / "data.parquet").chmod(0o644)
         frame.to_parquet(target / "data.parquet", index=False)
 
     with pytest.raises(RuntimeError, match="corrupt snapshot"):
         _verify_snapshot(target, published["snapshot_id"])
+
+
+@pytest.mark.parametrize("component", ["directory", "manifest", "parquet"])
+def test_snapshot_verification_rejects_writable_components(
+    tmp_path: Path, component: str
+):
+    published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
+    target = Path(published["path"])
+    path = target if component == "directory" else target / (
+        "manifest.json" if component == "manifest" else "data.parquet"
+    )
+    path.chmod(0o755 if component == "directory" else 0o644)
+
+    with pytest.raises(RuntimeError, match="writable"):
+        _verify_snapshot(target, published["snapshot_id"])
+
+
+@pytest.mark.parametrize("topology", ["extra", "missing", "symlink", "hardlink", "fifo"])
+def test_snapshot_verification_rejects_unsafe_file_topology(
+    tmp_path: Path, topology: str
+):
+    published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
+    target = Path(published["path"])
+    parquet = target / "data.parquet"
+    target.chmod(0o755)
+    if topology == "extra":
+        (target / "extra.txt").write_text("unexpected", encoding="utf-8")
+    elif topology == "missing":
+        parquet.unlink()
+    elif topology == "symlink":
+        payload = tmp_path / "outside.parquet"
+        payload.write_bytes(parquet.read_bytes())
+        parquet.unlink()
+        parquet.symlink_to(payload)
+    elif topology == "hardlink":
+        os.link(parquet, tmp_path / "linked.parquet")
+    else:
+        parquet.unlink()
+        os.mkfifo(parquet)
+    target.chmod(0o555)
+
+    with pytest.raises(RuntimeError, match="topology|regular|link|file set"):
+        _verify_snapshot(target, published["snapshot_id"])
+
+
+def test_snapshot_verification_rejects_symlinked_instrument_parent(tmp_path: Path):
+    published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
+    real_instrument = Path(published["path"]).parent
+    alias = tmp_path / "alias" / "601288.SS"
+    alias.parent.mkdir()
+    alias.symlink_to(real_instrument, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="topology|symlink"):
+        _verify_snapshot(alias / published["snapshot_id"], published["snapshot_id"])
+
+
+def test_snapshot_verification_returns_frame_from_the_hashed_parquet_payload(
+    tmp_path: Path
+):
+    published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
+
+    manifest, frame = _verify_snapshot(
+        Path(published["path"]),
+        published["snapshot_id"],
+        include_frame=True,
+    )
+
+    assert manifest["snapshot_id"] == published["snapshot_id"]
+    pd.testing.assert_frame_equal(frame, _daily_frame().astype({"Volume": "float64"}))

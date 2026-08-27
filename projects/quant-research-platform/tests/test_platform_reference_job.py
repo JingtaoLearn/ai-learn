@@ -119,6 +119,7 @@ def test_reference_job_writes_deterministic_snapshot_derived_outputs(tmp_path: P
 
 def test_reference_job_rejects_tampered_dataset(tmp_path: Path):
     dataset, submission, run_contract, artifacts, workspace = _foundation(tmp_path)
+    (dataset / "data.parquet").chmod(0o644)
     (dataset / "data.parquet").write_bytes(b"tampered")
 
     with pytest.raises(ReferenceJobError, match="dataset.*checksum"):

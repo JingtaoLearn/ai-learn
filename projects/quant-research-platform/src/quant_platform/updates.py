@@ -19,6 +19,7 @@ from .datasets import (
     _normalize_frame,
     _sha256,
     _validate_metadata,
+    _verify_snapshot,
     publish_snapshot,
     snapshot_status,
 )
@@ -481,9 +482,12 @@ def reconcile_daily_history(
             prior = snapshot_status(root, instrument)
             prior_snapshot_id = prior["snapshot_id"]
             prior_path = Path(prior["path"])
-            prior_manifest = json.loads(
-                (prior_path / "manifest.json").read_text(encoding="utf-8")
+            verified = _verify_snapshot(
+                prior_path, prior_snapshot_id, include_frame=True
             )
+            if not isinstance(verified, tuple):
+                raise RuntimeError("snapshot verifier did not return the prior frame")
+            prior_manifest, previous = verified
             mismatches = [
                 field
                 for field, value in normalized_metadata.items()
@@ -493,7 +497,6 @@ def reconcile_daily_history(
                 raise DatasetValidationError(
                     f"latest snapshot metadata mismatch: {', '.join(sorted(mismatches))}"
                 )
-            previous = _normalize_frame(pd.read_parquet(prior_path / "data.parquet"))
             if list(previous.columns) != list(normalized_fetched.columns):
                 raise DatasetValidationError(
                     "fetched column schema must match the latest snapshot schema"

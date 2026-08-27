@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
+import stat
 import struct
 import tempfile
 from datetime import datetime, timezone
@@ -154,16 +156,124 @@ def _canonical_data_bytes(frame: pd.DataFrame) -> bytes:
     )
 
 
-def _chmod_tree(directory: Path) -> None:
+def _seal_snapshot(directory: Path) -> None:
+    for name in ("manifest.json", "data.parquet"):
+        path = directory / name
+        if path.is_symlink() or not path.is_file():
+            raise DatasetValidationError(f"snapshot file is unsafe: {name}")
+        path.chmod(0o444)
+    directory.chmod(0o555)
+
+
+def _make_snapshot_removable(directory: Path) -> None:
+    if not directory.exists() or directory.is_symlink():
+        return
     directory.chmod(0o755)
-    for path in directory.rglob("*"):
-        path.chmod(0o755 if path.is_dir() else 0o644)
+    for path in directory.iterdir():
+        if path.is_file() and not path.is_symlink():
+            path.chmod(0o644)
 
 
-def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_snapshot_file(path: Path, label: str) -> bytes:
+    before = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"snapshot {label} is not a regular file")
+    if before.st_mode & 0o222:
+        raise ValueError(f"snapshot {label} is writable")
+    if before.st_nlink != 1:
+        raise ValueError(f"snapshot {label} has an unsafe hard link count")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
     try:
-        manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+        opened = os.fstat(descriptor)
+        if _file_identity(opened) != _file_identity(before):
+            raise ValueError(f"snapshot {label} changed while opening")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if _file_identity(after) != _file_identity(opened):
+            raise ValueError(f"snapshot {label} changed while reading")
+        payload = b"".join(chunks)
+        if len(payload) != after.st_size:
+            raise ValueError(f"snapshot {label} read was incomplete")
+    finally:
+        os.close(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if _file_identity(current) != _file_identity(after):
+        raise ValueError(f"snapshot {label} path changed while reading")
+    return payload
+
+
+def _load_manifest(payload: bytes) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate manifest key: {key}")
+            value[key] = item
+        return value
+
+    value = json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=lambda constant: (_ for _ in ()).throw(ValueError(constant)),
+    )
+    if not isinstance(value, dict):
+        raise ValueError("snapshot manifest must be a JSON object")
+    return value
+
+
+def _verify_snapshot(
+    target: Path,
+    expected_snapshot_id: str,
+    *,
+    include_frame: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], pd.DataFrame]:
+    try:
+        target = Path(target)
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_id):
+            raise ValueError("expected snapshot ID is invalid")
+        for path, label in (
+            (target.parent.parent, "dataset store"),
+            (target.parent, "instrument directory"),
+            (target, "snapshot directory"),
+        ):
+            metadata = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"unsafe snapshot topology: {label} is not a directory")
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError(f"unsafe snapshot topology: {label} is a symlink")
+        if not SAFE_INSTRUMENT.fullmatch(target.parent.name):
+            raise ValueError("unsafe snapshot instrument directory")
+        target_metadata = os.stat(target, follow_symlinks=False)
+        if target_metadata.st_mode & 0o222:
+            raise ValueError("snapshot directory is writable")
+        entries = {entry.name for entry in os.scandir(target)}
+        if entries != {"manifest.json", "data.parquet"}:
+            raise ValueError(
+                "snapshot file set is invalid: "
+                f"expected=['data.parquet', 'manifest.json'], actual={sorted(entries)}"
+            )
+        manifest = _load_manifest(
+            _read_snapshot_file(target / "manifest.json", "manifest")
+        )
         parquet_path = target / "data.parquet"
+        parquet_payload = _read_snapshot_file(parquet_path, "Parquet data")
         common_manifest_fields = {
             "schema_version",
             "metadata",
@@ -184,13 +294,33 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
             raise ValueError("unexpected or missing manifest fields")
         if manifest.get("snapshot_id") != expected_snapshot_id or target.name != expected_snapshot_id:
             raise ValueError("snapshot identity mismatch")
-        if schema_version not in {1, 2}:
+        if type(schema_version) is not int or schema_version not in {1, 2}:
             raise ValueError("unsupported snapshot schema")
-        if manifest["metadata"].get("instrument") != target.parent.name:
+        metadata = manifest["metadata"]
+        if not isinstance(metadata, dict):
+            raise ValueError("snapshot metadata must be an object")
+        if metadata != _validate_metadata(metadata):
+            raise ValueError("snapshot metadata is not canonical")
+        if metadata["instrument"] != target.parent.name:
             raise ValueError("instrument directory does not match snapshot metadata")
+        if not isinstance(manifest["files"], dict):
+            raise ValueError("snapshot file map must be an object")
         if manifest["files"] != {"data": "data.parquet"}:
             raise ValueError("snapshot file map is invalid")
+        if not isinstance(manifest["created_at"], str):
+            raise ValueError("created_at must be a string")
         datetime.fromisoformat(manifest["created_at"])
+        for field in ("canonical_sha256", "parquet_sha256"):
+            if not isinstance(manifest[field], str) or not re.fullmatch(
+                r"[0-9a-f]{64}", manifest[field]
+            ):
+                raise ValueError(f"{field} must be a SHA-256 value")
+        if type(manifest["rows"]) is not int or manifest["rows"] < 1:
+            raise ValueError("rows must be a positive integer")
+        if not isinstance(manifest["data_start"], str) or not isinstance(
+            manifest["data_end"], str
+        ):
+            raise ValueError("data range fields must be strings")
         identity = {
             "schema_version": manifest["schema_version"],
             "metadata": manifest["metadata"],
@@ -198,13 +328,18 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
         }
         if _sha256(_canonical_json(identity)) != expected_snapshot_id:
             raise ValueError("snapshot ID does not match its identity inputs")
-        if _sha256(parquet_path.read_bytes()) != manifest["parquet_sha256"]:
+        if _sha256(parquet_payload) != manifest["parquet_sha256"]:
             raise ValueError("Parquet checksum mismatch")
-        normalized = _normalize_frame(pd.read_parquet(parquet_path))
+        normalized = _normalize_frame(pd.read_parquet(io.BytesIO(parquet_payload)))
         if schema_version == 1 and tuple(normalized.columns) != REQUIRED_COLUMNS:
             raise ValueError("v1 snapshot must contain exactly the legacy OHLCV schema")
-        if schema_version == 2 and manifest["columns"] != list(normalized.columns):
-            raise ValueError("snapshot column schema mismatch")
+        if schema_version == 2:
+            if not isinstance(manifest["columns"], list) or not all(
+                isinstance(column, str) for column in manifest["columns"]
+            ):
+                raise ValueError("snapshot columns must be a string array")
+            if manifest["columns"] != list(normalized.columns):
+                raise ValueError("snapshot column schema mismatch")
         if _sha256(_canonical_data_bytes(normalized)) != manifest["canonical_sha256"]:
             raise ValueError("canonical data checksum mismatch")
         if manifest["rows"] != len(normalized):
@@ -213,8 +348,10 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
             raise ValueError("data_start mismatch")
         if manifest["data_end"] != str(normalized["Date"].max().date()):
             raise ValueError("data_end mismatch")
+        if include_frame:
+            return manifest, normalized
         return manifest
-    except (KeyError, OSError, TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
         raise RuntimeError(f"corrupt snapshot {target}: {exc}") from exc
 
 
@@ -299,7 +436,7 @@ def publish_snapshot(
                 )
                 stream.flush()
                 os.fsync(stream.fileno())
-            _chmod_tree(temporary)
+            _seal_snapshot(temporary)
             _fsync_directory(temporary)
             try:
                 os.rename(temporary, target)
@@ -311,6 +448,7 @@ def publish_snapshot(
                 _fsync_directory(instrument_root)
         finally:
             if temporary.exists():
+                _make_snapshot_removable(temporary)
                 shutil.rmtree(temporary)
         _verify_snapshot(target, snapshot_id)
 

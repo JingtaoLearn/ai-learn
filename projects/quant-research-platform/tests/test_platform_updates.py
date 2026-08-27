@@ -276,7 +276,9 @@ def test_update_cannot_use_corrupt_latest_snapshot(tmp_path: Path):
         "2026-08-18",
         "2026-08-18",
     )
-    (Path(str(first["path"])) / "data.parquet").write_bytes(b"corrupt")
+    parquet = Path(str(first["path"])) / "data.parquet"
+    parquet.chmod(0o644)
+    parquet.write_bytes(b"corrupt")
 
     with pytest.raises(RuntimeError, match="latest snapshot pointer is invalid"):
         _reconcile(

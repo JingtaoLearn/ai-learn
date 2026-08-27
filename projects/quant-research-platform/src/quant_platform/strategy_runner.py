@@ -79,7 +79,9 @@ def _effective_source_identity() -> tuple[str, dict[str, str]]:
     return digest.hexdigest(), files
 
 
-def _bound_snapshot(config: ValidatedStrategyConfig) -> tuple[Path, dict[str, Any]]:
+def _bound_snapshot(
+    config: ValidatedStrategyConfig,
+) -> tuple[Path, dict[str, Any], pd.DataFrame]:
     dataset = config.canonical["dataset"]
     root = Path(dataset["root"]).resolve()
     instrument = dataset["instrument"]
@@ -90,14 +92,17 @@ def _bound_snapshot(config: ValidatedStrategyConfig) -> tuple[Path, dict[str, An
             f"dataset snapshot is not available for instrument {instrument}: {snapshot_id}"
         )
     try:
-        manifest = _verify_snapshot(target, snapshot_id)
+        verified = _verify_snapshot(target, snapshot_id, include_frame=True)
     except RuntimeError as exc:
         raise StrategyRunError(f"dataset snapshot verification failed: {exc}") from exc
+    if not isinstance(verified, tuple):
+        raise StrategyRunError("dataset snapshot verifier did not return its frame")
+    manifest, frame = verified
     if manifest["metadata"]["instrument"] != instrument:
         raise StrategyRunError(
             "configured dataset instrument does not match snapshot metadata"
         )
-    return target, manifest
+    return target, manifest, frame
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -278,15 +283,15 @@ def _verify_run(
                 raise ValueError(f"artifact checksum or size mismatch: {name}")
         _verify_snapshot(dataset_path, dataset_manifest["snapshot_id"])
         return manifest
-    except (KeyError, OSError, TypeError, ValueError) as exc:
-        if isinstance(exc, StrategyRunError):
-            raise
+    except StrategyRunError:
+        raise
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise StrategyRunError(f"corrupt immutable strategy run {target}: {exc}") from exc
 
 
 def run_strategy_config(config_path: Path | str) -> dict[str, str]:
     config = load_strategy_config(config_path)
-    dataset_path, dataset_manifest = _bound_snapshot(config)
+    dataset_path, dataset_manifest, frame = _bound_snapshot(config)
     source_sha256, source_files = _effective_source_identity()
     identity = {
         "schema_version": 1,
@@ -315,7 +320,6 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             "dataset_snapshot_id": dataset_manifest["snapshot_id"],
         }
 
-    frame = pd.read_parquet(dataset_path / "data.parquet")
     replay = replay_strategy(frame, config)
     report = render_report(
         replay,
