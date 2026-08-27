@@ -23,6 +23,7 @@ from .catalog import initialize_catalog
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
 from .settings import Settings
+from .strategy_runner import _effective_source_identity
 
 
 SESSION_COOKIE = "quant_session"
@@ -208,9 +209,17 @@ def create_app(
 ) -> FastAPI:
     settings = settings.validated()
     catalog = initialize_catalog(settings.state_root)
+    source_sha256, _, runtime, _ = _effective_source_identity(
+        project_root=settings.project_root
+    )
     experiments = ExperimentService(
         catalog,
-        execution_identity={"domain_schema": 1, "runner": "quant_platform"},
+        execution_identity={
+            "domain_schema": 1,
+            "runner": "quant_platform",
+            "source_sha256": source_sha256,
+            "runtime": runtime,
+        },
     )
     experiments.recover_abandoned_attempts()
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))

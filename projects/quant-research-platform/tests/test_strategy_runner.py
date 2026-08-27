@@ -21,14 +21,22 @@ from quant_platform.strategy_runner import StrategyRunError, run_strategy_config
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SOURCE_LABELS = {
+    "src/quant_platform/catalog.py": "catalog.py",
+    "src/quant_platform/composition_worker.py": "composition_worker.py",
     "src/quant_platform/datasets.py": "datasets.py",
+    "src/quant_platform/experiment_service.py": "experiment_service.py",
     "src/quant_platform/__init__.py": "__init__.py",
     "src/quant_platform/cli.py": "cli.py",
+    "src/quant_platform/operator_worker.py": "operator_worker.py",
+    "src/quant_platform/resolved_runner.py": "resolved_runner.py",
+    "src/quant_platform/schemas.py": "schemas.py",
+    "src/quant_platform/seed.py": "seed.py",
     "src/quant_platform/strategy_config.py": "strategy_config.py",
     "src/quant_platform/strategy_operators.py": "strategy_operators.py",
     "src/quant_platform/strategy_replay.py": "strategy_replay.py",
     "src/quant_platform/strategy_report.py": "strategy_report.py",
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
+    "src/quant_platform/worker.py": "worker.py",
 }
 REQUIRED_ARTIFACTS = {
     "config.json",
