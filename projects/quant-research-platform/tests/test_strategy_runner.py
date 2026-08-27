@@ -430,7 +430,37 @@ def test_project_root_discovery_rejects_symlinked_root(tmp_path: Path):
         )
 
 
-def test_wheel_layout_without_checkout_uses_only_loaded_package_and_null_git(
+def test_project_root_discovery_rejects_recognizable_incomplete_cwd(
+    tmp_path: Path,
+):
+    incomplete = _synthetic_project_root(tmp_path / "incomplete")
+    (incomplete / "requirements.lock").unlink()
+    cwd = incomplete / "tests"
+    cwd.mkdir()
+
+    with pytest.raises(StrategyRunError, match="requirements.lock"):
+        runner_module._discover_project_root(
+            cwd=cwd,
+            package_root=tmp_path / "wheel" / "site-packages" / "quant_platform",
+        )
+
+
+def test_project_root_discovery_rejects_recognizable_incomplete_editable_root(
+    tmp_path: Path,
+):
+    incomplete = _synthetic_project_root(tmp_path / "incomplete")
+    (incomplete / "requirements.lock").unlink()
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+
+    with pytest.raises(StrategyRunError, match="requirements.lock"):
+        runner_module._discover_project_root(
+            cwd=cwd,
+            package_root=incomplete / "src" / "quant_platform",
+        )
+
+
+def test_wheel_layout_without_checkout_requires_validated_project_root(
     tmp_path: Path, monkeypatch
 ):
     package_root = _synthetic_package(
@@ -443,17 +473,18 @@ def test_wheel_layout_without_checkout_uses_only_loaded_package_and_null_git(
         runner_module, "__file__", str(package_root / "strategy_runner.py")
     )
 
-    _, files, _, git = runner_module._effective_source_identity(
-        cwd=cwd,
-        font_identity={
-            "path": "/verified/font.ttc",
-            "family": "Verified CJK",
-            "sha256": "a" * 64,
-        },
-    )
-
-    assert set(files) == set(PACKAGE_SOURCE_LABELS)
-    assert git == {"available": False, "commit": None, "dirty": None}
+    with pytest.raises(
+        StrategyRunError,
+        match="run from.*source checkout|--project-root",
+    ):
+        runner_module._effective_source_identity(
+            cwd=cwd,
+            font_identity={
+                "path": "/verified/font.ttc",
+                "family": "Verified CJK",
+                "sha256": "a" * 64,
+            },
+        )
 
 
 def test_effective_source_identity_detects_project_root_swap_while_hashing(

@@ -91,14 +91,15 @@ verified dataset, and effective source identities:
 
 The effective source identity hashes `datasets.py` and every strategy module from the
 package directory that Python actually loaded, while retaining stable
-`src/quant_platform/...` manifest labels. When a source root with the exact expected
-layout is available, it also hashes `pyproject.toml` and `requirements.lock`. Source-root
+`src/quant_platform/...` manifest labels. A complete validated source root is also
+required so `pyproject.toml` and `requirements.lock` are always hashed. Source-root
 discovery checks a validated explicit argument or environment override first, then the
 working directory and its ancestors, and finally an editable `src` layout. Symlinked,
-unsafe, incomplete, or ambiguous roots fail closed. The identity also binds the exact
-Python, pandas, NumPy, Matplotlib, and PyArrow runtime versions. The manifest records Git
-state only for a discovered checkout; source archives use explicit null/unavailable
-values. File and dependency hashes remain authoritative.
+unsafe, incomplete, missing, or ambiguous roots fail closed. The identity also binds the
+exact Python, pandas, NumPy, Matplotlib, and PyArrow runtime versions. The manifest
+records Git state only for a discovered checkout; complete source archives without Git
+metadata use explicit null/unavailable values. File and dependency hashes remain
+authoritative.
 
 The Chinese mobile-first report is self-contained, uses a verified CJK font, and plots
 raw prices, causal fitted/smoothed trend, actual raw-Open BUY/SELL events, holding spans,

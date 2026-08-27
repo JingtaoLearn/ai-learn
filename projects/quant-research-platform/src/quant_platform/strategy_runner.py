@@ -317,21 +317,38 @@ def _validate_project_layout_at(root_fd: int, label: str) -> None:
     src_fd = -1
     package_fd = -1
     try:
-        src_fd = os.open("src", flags, dir_fd=root_fd)
-        package_fd = os.open("quant_platform", flags, dir_fd=src_fd)
-        for source_label, filename in PACKAGE_SOURCE_PATHS:
-            metadata = os.stat(
-                filename, dir_fd=package_fd, follow_symlinks=False
-            )
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise StrategyRunError(
-                    f"{label} has an unsafe expected source file: {source_label}"
-                )
         for relative in PROJECT_SOURCE_PATHS:
-            metadata = os.stat(relative, dir_fd=root_fd, follow_symlinks=False)
+            try:
+                metadata = os.stat(
+                    relative, dir_fd=root_fd, follow_symlinks=False
+                )
+            except FileNotFoundError as exc:
+                raise StrategyRunError(
+                    f"{label} is missing required source input: {relative}"
+                ) from exc
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
                 raise StrategyRunError(
-                    f"{label} has an unsafe expected metadata file: {relative}"
+                    f"{label} has an unsafe required source input: {relative}"
+                )
+        try:
+            src_fd = os.open("src", flags, dir_fd=root_fd)
+            package_fd = os.open("quant_platform", flags, dir_fd=src_fd)
+        except FileNotFoundError as exc:
+            raise StrategyRunError(
+                f"{label} is missing required source input: src/quant_platform"
+            ) from exc
+        for source_label, filename in PACKAGE_SOURCE_PATHS:
+            try:
+                metadata = os.stat(
+                    filename, dir_fd=package_fd, follow_symlinks=False
+                )
+            except FileNotFoundError as exc:
+                raise StrategyRunError(
+                    f"{label} is missing required source input: {source_label}"
+                ) from exc
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise StrategyRunError(
+                    f"{label} has an unsafe required source input: {source_label}"
                 )
     except StrategyRunError:
         raise
@@ -356,10 +373,10 @@ def _validate_project_root(path: Path | str, label: str) -> Path:
     return root
 
 
-def _has_project_layout_signature(path: Path) -> bool:
+def _is_recognizable_project_root(path: Path) -> bool:
     return all(
         os.path.lexists(path / relative)
-        for relative in ("pyproject.toml", "requirements.lock", "src/quant_platform")
+        for relative in ("pyproject.toml", "src/quant_platform")
     )
 
 
@@ -368,7 +385,7 @@ def _discover_project_root(
     *,
     cwd: Path | None = None,
     package_root: Path | None = None,
-) -> Path | None:
+) -> Path:
     if explicit_root is not None:
         return _validate_project_root(explicit_root, "explicit project root")
 
@@ -383,7 +400,7 @@ def _discover_project_root(
     candidates = [
         ancestor
         for ancestor in (current, *current.parents)
-        if _has_project_layout_signature(ancestor)
+        if _is_recognizable_project_root(ancestor)
     ]
     validated = [
         _validate_project_root(candidate, "current-directory project root")
@@ -405,11 +422,13 @@ def _discover_project_root(
         and loaded_package.parent.name == "src"
     ):
         editable_root = loaded_package.parent.parent
-        if _has_project_layout_signature(editable_root):
-            return _validate_project_root(
-                editable_root, "editable-layout project root"
-            )
-    return None
+        return _validate_project_root(
+            editable_root, "editable-layout project root"
+        )
+    raise StrategyRunError(
+        "complete project source root is required; run from the project source "
+        "checkout or pass --project-root (or set QUANT_PLATFORM_PROJECT_ROOT)"
+    )
 
 
 def _effective_source_identity(
@@ -444,13 +463,12 @@ def _effective_source_identity(
     ) as package_fd:
         for label, filename in PACKAGE_SOURCE_PATHS:
             bind_input(label, package_root / filename, package_fd)
-    if discovered_root is not None:
-        with _open_anchored_directory(
-            discovered_root, "discovered project root"
-        ) as project_fd:
-            _validate_project_layout_at(project_fd, "discovered project root")
-            for relative in PROJECT_SOURCE_PATHS:
-                bind_input(relative, discovered_root / relative, project_fd)
+    with _open_anchored_directory(
+        discovered_root, "discovered project root"
+    ) as project_fd:
+        _validate_project_layout_at(project_fd, "discovered project root")
+        for relative in PROJECT_SOURCE_PATHS:
+            bind_input(relative, discovered_root / relative, project_fd)
     runtime = (
         _runtime_identity(font_identity)
         if font_identity is not None
