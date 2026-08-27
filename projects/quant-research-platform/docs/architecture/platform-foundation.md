@@ -31,6 +31,20 @@ calendar sources. Missing calendar evidence is a hard failure; the platform
 never substitutes weekdays or infers completeness from the bars returned by a
 provider.
 
+The experiment application adds a stable catalog above these immutable
+snapshots. A catalog selection binds a human-facing ID and name separately from
+an inclusive date range. Raw calendar bounds remain request audit; canonical
+identity and template execution use the first and last independently verified
+exchange sessions, so weekend-equivalent requests converge. Existing production
+metadata for `601328.SS`, `yahoo-chart-api`, and `XSHG` seeds the Bank of
+Communications catalog item without rewriting its snapshot. The production
+adapter reuses the canonical Yahoo chart URL, validates one full response
+generation and aligned OHLCV arrays, and records the response SHA-256. Expected
+sessions come independently from pinned `exchange-calendars==4.13.2`, whose
+XSHG data cites the published 2026 SSE schedule and fails outside its bounded
+coverage. Provider omissions, including possible instrument suspensions,
+require explicit evidence and fail closed rather than becoming synthetic bars.
+
 First use filters validated fetched bars to the requested range and publishes a
 complete backfill. Later updates merge requested bars with the latest verified
 history, so overlapping corrections become a new immutable snapshot while
@@ -39,13 +53,20 @@ binds the request range, expected-session hash, fetched range, prior and result
 snapshots, and historical revision count. Missing expected sessions, metadata
 mismatches, duplicate bars, or a corrupt latest snapshot fail before
 `latest.json` can move. Reconciliation is serialized per instrument, provenance
-is durably published before the pointer, and the final pointer update uses a
-compare-and-swap check so concurrent changes fail instead of losing history.
+is durably published as a `0444` record in a `0555` directory before the
+pointer, and existing records must pass mode, topology, hard-link, identity-hash,
+source, and calendar checks. The final pointer update uses a compare-and-swap
+check so concurrent changes fail instead of losing history.
+The first lineage resolution publishes a separate sealed per-snapshot claim.
+That claim is append-stable across later reversions to identical content;
+absence of verified update evidence permanently claims explicit legacy status.
 
 Every experiment submission binds:
 
 - an allowlisted source bundle;
-- one immutable dataset snapshot;
+- one stable dataset catalog item and requested date range;
+- one concrete immutable dataset snapshot resolved after completeness repair;
+- copied canonical update/source/calendar lineage, or an explicit legacy label;
 - one registry-digest runner image or full local Docker image ID;
 - canonical configuration and random seed;
 - a fixed execution envelope;

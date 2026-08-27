@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
+from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import SAFE_INSTRUMENT, _verify_snapshot
 from .schemas import (
     SchemaValidationError,
@@ -29,7 +30,29 @@ class InvalidAttemptTransition(RuntimeError):
 
 
 TASK_FIELDS = {"schema_version", "dataset", "template", "operators"}
-DATASET_FIELDS = {"instrument", "snapshot_id"}
+LEGACY_DATASET_FIELDS = {"instrument", "snapshot_id"}
+CATALOG_DATASET_FIELDS = {"dataset_id", "start", "end"}
+CATALOG_RESOLVED_DATASET_FIELDS = (
+    "dataset_id",
+    "name",
+    "instrument",
+    "provider",
+    "market",
+    "currency",
+    "adjustment",
+    "requested_start",
+    "requested_end",
+    "effective_start",
+    "effective_end",
+    "snapshot_id",
+    "canonical_sha256",
+    "lineage",
+)
+CATALOG_IDENTITY_DATASET_FIELDS = tuple(
+    field
+    for field in CATALOG_RESOLVED_DATASET_FIELDS
+    if field not in {"requested_start", "requested_end"}
+)
 TEMPLATE_FIELDS = {"name", "version", "parameters"}
 OPERATOR_REQUIRED_FIELDS = {"operator_id", "parameters"}
 OPERATOR_OPTIONAL_FIELDS = {"version"}
@@ -81,25 +104,69 @@ def _validate_action_id(action_id: str) -> str:
 
 
 class ExperimentService:
-    def __init__(self, catalog: Catalog, *, execution_identity: dict[str, Any]):
+    def __init__(
+        self,
+        catalog: Catalog,
+        *,
+        execution_identity: dict[str, Any],
+        datasets: DatasetService | None = None,
+    ):
         self.catalog = catalog
         if not isinstance(execution_identity, dict) or not execution_identity:
             raise ValueError("execution_identity must be a non-empty object")
         canonical_json_bytes(execution_identity)
         self.execution_identity = execution_identity
+        self.datasets = datasets
 
     def resolve_task(self, value: Any) -> dict[str, Any]:
         task = _exact_fields(value, TASK_FIELDS, "task")
         if type(task["schema_version"]) is not int or task["schema_version"] != 1:
             raise TaskValidationError("task.schema_version must be integer 1")
 
-        dataset = _exact_fields(task["dataset"], DATASET_FIELDS, "task.dataset")
-        instrument = dataset["instrument"]
-        snapshot_id = dataset["snapshot_id"]
-        if not isinstance(instrument, str) or SAFE_INSTRUMENT.fullmatch(instrument) is None:
-            raise TaskValidationError("task.dataset.instrument has invalid syntax")
-        if not isinstance(snapshot_id, str) or SHA256.fullmatch(snapshot_id) is None:
-            raise TaskValidationError("task.dataset.snapshot_id must be a SHA-256 value")
+        dataset_value = task["dataset"]
+        if not isinstance(dataset_value, dict):
+            raise TaskValidationError("task.dataset must be an object")
+        if set(dataset_value) == CATALOG_DATASET_FIELDS:
+            if self.datasets is None:
+                raise TaskValidationError("dataset catalog resolution is unavailable")
+            dataset = _exact_fields(
+                dataset_value, CATALOG_DATASET_FIELDS, "task.dataset"
+            )
+            if any(not isinstance(dataset[field], str) for field in CATALOG_DATASET_FIELDS):
+                raise TaskValidationError("task.dataset catalog fields must be strings")
+            try:
+                catalog_dataset = self.datasets.resolve(
+                    dataset["dataset_id"], dataset["start"], dataset["end"]
+                )
+            except DatasetResolutionError as exc:
+                raise TaskValidationError(f"task.dataset is invalid: {exc}") from exc
+            resolved_dataset = {
+                field: catalog_dataset[field]
+                for field in CATALOG_RESOLVED_DATASET_FIELDS
+            }
+            requested_dataset = dict(dataset)
+            instrument = resolved_dataset["instrument"]
+            snapshot_id = resolved_dataset["snapshot_id"]
+        else:
+            dataset = _exact_fields(
+                dataset_value, LEGACY_DATASET_FIELDS, "task.dataset"
+            )
+            instrument = dataset["instrument"]
+            snapshot_id = dataset["snapshot_id"]
+            if (
+                not isinstance(instrument, str)
+                or SAFE_INSTRUMENT.fullmatch(instrument) is None
+            ):
+                raise TaskValidationError("task.dataset.instrument has invalid syntax")
+            if not isinstance(snapshot_id, str) or SHA256.fullmatch(snapshot_id) is None:
+                raise TaskValidationError(
+                    "task.dataset.snapshot_id must be a SHA-256 value"
+                )
+            resolved_dataset = None
+            requested_dataset = {
+                "instrument": instrument,
+                "snapshot_id": snapshot_id,
+            }
         snapshot_path = (
             self.catalog.state_root / "datasets" / instrument / snapshot_id
         )
@@ -113,6 +180,15 @@ class ExperimentService:
             raise TaskValidationError(f"dataset snapshot failed verification: {exc}") from exc
         if snapshot_manifest["metadata"]["instrument"] != instrument:
             raise TaskValidationError("dataset snapshot instrument does not match")
+        if resolved_dataset is None:
+            resolved_dataset = {
+                "instrument": instrument,
+                "snapshot_id": snapshot_id,
+                "canonical_sha256": snapshot_manifest["canonical_sha256"],
+                "lineage": {"kind": "legacy_snapshot"},
+            }
+        elif resolved_dataset["canonical_sha256"] != snapshot_manifest["canonical_sha256"]:
+            raise TaskValidationError("dataset catalog resolution digest does not match snapshot")
 
         template_selector = _exact_fields(
             task["template"], TEMPLATE_FIELDS, "task.template"
@@ -141,6 +217,20 @@ class ExperimentService:
             < template_parameters["evaluation_start"]
         ):
             raise TaskValidationError("evaluation_end cannot precede evaluation_start")
+        if set(dataset_value) == CATALOG_DATASET_FIELDS and (
+            template_parameters["evaluation_start"]
+            != resolved_dataset["requested_start"]
+            or template_parameters["evaluation_end"]
+            != resolved_dataset["requested_end"]
+        ):
+            raise TaskValidationError(
+                "template evaluation dates must exactly match the selected dataset range"
+            )
+        if set(dataset_value) == CATALOG_DATASET_FIELDS:
+            template_parameters = template_parameters | {
+                "evaluation_start": resolved_dataset["effective_start"],
+                "evaluation_end": resolved_dataset["effective_end"],
+            }
 
         operators = _exact_fields(
             task["operators"], set(template["slots"]), "task.operators"
@@ -198,11 +288,7 @@ class ExperimentService:
 
         return {
             "schema_version": 1,
-            "dataset": {
-                "instrument": instrument,
-                "snapshot_id": snapshot_id,
-                "canonical_sha256": snapshot_manifest["canonical_sha256"],
-            },
+            "dataset": resolved_dataset,
             "template": {
                 "name": template["name"],
                 "version": template["version"],
@@ -213,7 +299,7 @@ class ExperimentService:
             "execution_identity": self.execution_identity,
             "requested": {
                 "schema_version": 1,
-                "dataset": {"instrument": instrument, "snapshot_id": snapshot_id},
+                "dataset": requested_dataset,
                 "template": {
                     "name": name,
                     "version": version,
@@ -228,11 +314,19 @@ class ExperimentService:
             key: resolved[key]
             for key in (
                 "schema_version",
-                "dataset",
                 "template",
                 "execution_identity",
             )
         }
+        dataset = resolved["dataset"]
+        identity["dataset"] = (
+            {
+                field: dataset[field]
+                for field in CATALOG_IDENTITY_DATASET_FIELDS
+            }
+            if "effective_start" in dataset
+            else dataset
+        )
         identity["operators"] = {
             slot: {
                 key: operator[key]
@@ -479,6 +573,13 @@ class ExperimentService:
             raise TaskValidationError(f"unknown experiment: {experiment_id}")
         identity = json.loads(row["identity_json"])
         attempts = self.list_attempts(experiment_id)
+        dataset = identity["dataset"]
+        if attempts and "effective_start" in dataset:
+            action_dataset = attempts[0]["resolved"]["dataset"]
+            dataset = dataset | {
+                field: action_dataset[field]
+                for field in ("requested_start", "requested_end")
+            }
         action_operators = (
             attempts[0]["resolved"]["operators"]
             if attempts
@@ -491,6 +592,7 @@ class ExperimentService:
             for slot in identity["operators"]
         }
         return dict(row) | identity | {
+            "dataset": dataset,
             "operators": operators,
             "attempt_count": len(attempts),
             "attempts": attempts,

@@ -1,5 +1,37 @@
 "use strict";
 
+const allowedThemes = new Set(["light", "dark", "system"]);
+const systemTheme = matchMedia("(prefers-color-scheme: dark)");
+
+function applyThemePreference(theme, persist) {
+  const selected = allowedThemes.has(theme) ? theme : "system";
+  document.documentElement.dataset.theme = selected;
+  document.documentElement.dataset.resolvedTheme =
+    selected === "system" ? (systemTheme.matches ? "dark" : "light") : selected;
+  for (const selector of document.querySelectorAll("[data-theme-selector]")) {
+    selector.value = selected;
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("quant-theme", selected);
+    } catch (error) {
+      console.warn("Theme preference could not be persisted.", error.name);
+    }
+  }
+}
+
+for (const selector of document.querySelectorAll("[data-theme-selector]")) {
+  selector.addEventListener("change", () => {
+    applyThemePreference(selector.value, true);
+  });
+}
+systemTheme.addEventListener("change", () => {
+  if (document.documentElement.dataset.theme === "system") {
+    applyThemePreference("system", false);
+  }
+});
+applyThemePreference(document.documentElement.dataset.theme, false);
+
 for (const field of document.querySelectorAll('input[name="action_id"]')) {
   if (!field.value) {
     field.value = self.crypto.randomUUID();
@@ -19,6 +51,7 @@ const experimentForm = document.querySelector(
 );
 
 function typedValue(field) {
+  if (field.dataset.parameterEnum === "true") return JSON.parse(field.value);
   if (field.value === "" && field.dataset.nullable === "true") return null;
   if (field.dataset.parameterType === "integer") return Number.parseInt(field.value, 10);
   if (field.dataset.parameterType === "number") return Number.parseFloat(field.value);
@@ -52,13 +85,16 @@ function selectedParameters(selection) {
 }
 
 function experimentTask() {
-  const dataset = experimentForm.querySelector("[data-dataset-selector]").value;
-  if (!dataset.includes("|")) return null;
-  const [instrument, snapshotId] = dataset.split("|", 2);
+  const datasetId = experimentForm.querySelector("[data-dataset-selector]").value;
+  const start = experimentForm.querySelector("[data-start-date]").value;
+  const end = experimentForm.querySelector("[data-end-date]").value;
+  if (!datasetId || !start || !end) return null;
   const templateParameters = {};
   for (const field of experimentForm.querySelectorAll("[data-template-parameter]")) {
     templateParameters[field.dataset.templateParameter] = typedValue(field);
   }
+  templateParameters.evaluation_start = start;
+  templateParameters.evaluation_end = end;
   const operators = {};
   for (const selector of experimentForm.querySelectorAll("[data-operator-selector]")) {
     const selection = selectedOperator(selector);
@@ -70,7 +106,7 @@ function experimentTask() {
   }
   return {
     schema_version: 1,
-    dataset: { instrument, snapshot_id: snapshotId },
+    dataset: { dataset_id: datasetId, start, end },
     template: {
       name: experimentForm.querySelector('[name="template_name"]').value,
       version: experimentForm.querySelector('[name="template_version"]').value,
@@ -83,8 +119,12 @@ function experimentTask() {
 function updateResolvedSummary() {
   if (!experimentForm) return;
   const dataset = experimentForm.querySelector("[data-dataset-selector]");
+  const start = experimentForm.querySelector("[data-start-date]");
+  const end = experimentForm.querySelector("[data-end-date]");
   experimentForm.querySelector("[data-summary-dataset]").textContent =
-    dataset.selectedOptions[0]?.textContent || "Dataset required";
+    dataset.selectedOptions[0]
+      ? `${dataset.selectedOptions[0].textContent} · ${start.value} to ${end.value}`
+      : "Dataset required";
   const container = experimentForm.querySelector("[data-summary-operators]");
   const rows = [];
   for (const selector of experimentForm.querySelectorAll("[data-operator-selector]")) {
@@ -132,7 +172,7 @@ async function updateDuplicatePreview() {
     settlePreviewText(
       status,
       "idle",
-      "Duplicate preview requires an immutable dataset.",
+      "Duplicate preview requires a dataset and complete date range.",
     );
     return;
   }
@@ -228,6 +268,18 @@ for (const selector of document.querySelectorAll("[data-operator-selector]")) {
 }
 
 if (experimentForm) {
+  const datasetSelector = experimentForm.querySelector("[data-dataset-selector]");
+  const updateDatasetDates = () => {
+    const option = datasetSelector.selectedOptions[0];
+    if (!option) return;
+    const start = experimentForm.querySelector("[data-start-date]");
+    const end = experimentForm.querySelector("[data-end-date]");
+    start.max = option.dataset.latestClose;
+    end.max = option.dataset.latestClose;
+    start.value = option.dataset.defaultStart;
+    end.value = option.dataset.latestClose;
+  };
+  datasetSelector.addEventListener("change", updateDatasetDates);
   experimentForm.addEventListener("input", schedulePreview);
   experimentForm.addEventListener("change", schedulePreview);
   schedulePreview();

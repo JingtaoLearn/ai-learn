@@ -3,9 +3,9 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from quant_platform.datasets import publish_snapshot
+from quant_platform.datasets import publish_snapshot, snapshot_status
 from quant_platform.settings import Settings
-from quant_platform.web import create_app
+from quant_platform.web import MAX_BODY_BYTES, create_app
 
 from test_auth import AUDIENCE, NOW, SESSION, SHARED, _claims, _token
 from test_experiment_service import FIXTURE, _task
@@ -117,6 +117,10 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
             ("list", "detail", "list_versions", "submit"),
         ),
         (
+            app.state.datasets,
+            ("list_available", "resolve"),
+        ),
+        (
             app.state.catalog,
             ("connect", "template_detail", "operator_detail"),
         ),
@@ -154,6 +158,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
     )
     api_gets = (
         "/api/operators",
+        "/api/datasets",
         "/api/operators/prior_log_ols",
         "/api/templates/single_stock_daily_causal/1",
         "/api/experiments",
@@ -266,6 +271,259 @@ def test_json_catalog_submit_duplicate_rerun_and_history_flow(tmp_path: Path):
         len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"])
         == 2
     )
+
+
+def test_api_accepts_catalog_dataset_and_date_range_and_freezes_snapshot(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot(app)
+    task = _task("0" * 64)
+    task["dataset"] = {
+        "dataset_id": "SYNTH.SS",
+        "start": "2026-01-05",
+        "end": "2026-01-12",
+    }
+    task["template"]["parameters"]["evaluation_start"] = "2026-01-05"
+    task["template"]["parameters"]["evaluation_end"] = "2026-01-12"
+    headers = {
+        "origin": "https://quant.ai.jingtao.fun",
+        "x-csrf-token": issued.csrf_token,
+    }
+
+    response = client.post(
+        "/api/experiments",
+        json={"task": task, "action_id": "catalog-create"},
+        headers=headers,
+    )
+    detail = client.get(
+        f"/api/experiments/{response.json()['experiment_id']}"
+    ).json()["experiment"]
+    datasets = client.get("/api/datasets").json()["datasets"]
+
+    assert response.status_code == 201
+    assert detail["dataset"]["dataset_id"] == "SYNTH.SS"
+    assert detail["dataset"]["name"] == "SYNTH.SS"
+    assert detail["dataset"]["requested_start"] == "2026-01-05"
+    assert detail["dataset"]["requested_end"] == "2026-01-12"
+    assert detail["dataset"]["effective_start"] == "2026-01-05"
+    assert detail["dataset"]["effective_end"] == "2026-01-12"
+    assert detail["dataset"]["lineage"] == {"kind": "legacy_snapshot"}
+    assert len(detail["dataset"]["snapshot_id"]) == 64
+    assert datasets == [
+        {
+            "dataset_id": "SYNTH.SS",
+            "name": "SYNTH.SS",
+            "instrument": "SYNTH.SS",
+            "default_start": "2026-01-01",
+            "latest_available_close": "2026-01-12",
+            "latest_snapshot_id": detail["dataset"]["snapshot_id"],
+        }
+    ]
+
+
+def test_api_weekend_bounds_canonicalize_to_sessions_and_suppress_duplicates(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot(app)
+    headers = {
+        "origin": "https://quant.ai.jingtao.fun",
+        "x-csrf-token": issued.csrf_token,
+    }
+
+    def task(start: str) -> dict:
+        value = _task("0" * 64)
+        value["dataset"] = {
+            "dataset_id": "SYNTH.SS",
+            "start": start,
+            "end": "2026-01-12",
+        }
+        value["template"]["parameters"]["evaluation_start"] = start
+        value["template"]["parameters"]["evaluation_end"] = "2026-01-12"
+        return value
+
+    weekend_task = task("2026-01-04")
+    session_task = task("2026-01-05")
+    weekend_preview = client.post(
+        "/api/experiments/preview",
+        json={"task": weekend_task},
+        headers=headers,
+    )
+    session_preview = client.post(
+        "/api/experiments/preview",
+        json={"task": session_task},
+        headers=headers,
+    )
+
+    assert weekend_preview.status_code == 200
+    assert session_preview.status_code == 200
+    assert (
+        weekend_preview.json()["preview"]["experiment_id"]
+        == session_preview.json()["preview"]["experiment_id"]
+    )
+    resolved = weekend_preview.json()["preview"]["resolved"]
+    assert resolved["dataset"]["requested_start"] == "2026-01-04"
+    assert resolved["dataset"]["effective_start"] == "2026-01-05"
+    assert resolved["template"]["parameters"]["evaluation_start"] == "2026-01-05"
+    assert resolved["requested"]["dataset"]["start"] == "2026-01-04"
+
+    created = client.post(
+        "/api/experiments",
+        json={"task": weekend_task, "action_id": "weekend-create"},
+        headers=headers,
+    )
+    duplicate = client.post(
+        "/api/experiments",
+        json={"task": session_task, "action_id": "session-create"},
+        headers=headers,
+    )
+    experiment_id = created.json()["experiment_id"]
+    detail = client.get(f"/api/experiments/{experiment_id}").json()["experiment"]
+
+    assert created.status_code == 201
+    assert duplicate.status_code == 200
+    assert duplicate.json()["status"] == "DUPLICATE"
+    assert duplicate.json()["experiment_id"] == experiment_id
+    assert detail["dataset"]["requested_start"] == "2026-01-04"
+    assert detail["dataset"]["effective_start"] == "2026-01-05"
+    assert detail["template"]["parameters"]["evaluation_start"] == "2026-01-05"
+    assert (
+        len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"])
+        == 1
+    )
+
+
+def test_api_repairs_incomplete_catalog_range_after_security_checks(tmp_path: Path):
+    from quant_platform.dataset_service import FetchedDailyBars
+
+    def bars(dates):
+        closes = [6.1 + index / 10 for index in range(len(dates))]
+        return pd.DataFrame(
+            {
+                "Date": pd.to_datetime(dates),
+                "Open": [value - 0.02 for value in closes],
+                "High": [value + 0.04 for value in closes],
+                "Low": [value - 0.05 for value in closes],
+                "Close": closes,
+                "Volume": [1000.0 + index for index in range(len(dates))],
+            }
+        )
+
+    source_identity = {
+        "provider": "synthetic",
+        "instrument": "REPAIR.SS",
+        "request": "fixed-test-generation",
+    }
+
+    class Source:
+        provider = "synthetic"
+
+        def __init__(self):
+            self.fetch_calls = []
+
+        def latest_available_close(self, instrument):
+            return "2026-08-20"
+
+        def fetch(self, instrument, start, end):
+            self.fetch_calls.append((instrument, start, end))
+            return FetchedDailyBars(
+                bars=bars(["2026-08-18", "2026-08-19", "2026-08-20"]),
+                source_identity=source_identity
+                | {"instrument": instrument},
+            )
+
+    class Calendar:
+        source_identity = {
+            "calendar": "XSHG",
+            "library": "test",
+            "version": "2026",
+        }
+
+        @staticmethod
+        def sessions(start, end):
+            return ["2026-08-18", "2026-08-19", "2026-08-20"]
+
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    publish_snapshot(
+        bars(["2026-08-18"]),
+        app.state.catalog.state_root,
+        {
+            "instrument": "REPAIR.SS",
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "unadjusted",
+        },
+    )
+    source = Source()
+    app.state.datasets.sources["synthetic"] = source
+    app.state.datasets.calendars["XSHG"] = Calendar()
+    task = _task("0" * 64)
+    task["dataset"] = {
+        "dataset_id": "REPAIR.SS",
+        "start": "2026-08-18",
+        "end": "2026-08-20",
+    }
+    task["template"]["parameters"]["evaluation_start"] = "2026-08-18"
+    task["template"]["parameters"]["evaluation_end"] = "2026-08-20"
+
+    response = client.post(
+        "/api/experiments",
+        json={"task": task, "action_id": "repair-create"},
+        headers={
+            "origin": "https://quant.ai.jingtao.fun",
+            "x-csrf-token": issued.csrf_token,
+        },
+    )
+
+    assert response.status_code == 201
+    assert source.fetch_calls == [
+        ("REPAIR.SS", "2026-08-18", "2026-08-20")
+    ]
+    detail = app.state.experiments.experiment_detail(
+        response.json()["experiment_id"]
+    )
+    assert detail["dataset"]["requested_end"] == "2026-08-20"
+    assert detail["dataset"]["lineage"]["kind"] == "verified_update"
+    assert detail["dataset"]["lineage"]["source"] == source_identity
+    assert detail["dataset"]["lineage"]["expected_sessions_source"] == (
+        app.state.datasets.calendars["XSHG"].source_identity
+    )
+    assert snapshot_status(
+        app.state.catalog.state_root, "REPAIR.SS"
+    )["snapshot_id"] == detail["dataset"]["snapshot_id"]
+
+
+def test_oversized_authenticated_body_cannot_reach_dataset_updater(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("dataset updater ran before body limit")
+
+    monkeypatch.setattr(app.state.datasets, "resolve", forbidden)
+
+    response = client.post(
+        "/api/experiments",
+        content=b"{" + b"x" * MAX_BODY_BYTES + b"}",
+        headers={
+            "content-type": "application/json",
+            "origin": "https://quant.ai.jingtao.fun",
+            "x-csrf-token": issued.csrf_token,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_JSON"
+    assert calls == []
 
 
 def test_mutations_require_exact_origin_and_csrf(tmp_path: Path):

@@ -12,6 +12,13 @@
 <section class="panel" data-testid="experiment-dataset">
   <h2>Dataset identity</h2>
   <dl class="technical">
+    {% if experiment.dataset.dataset_id %}
+    <dt>Catalog item</dt><dd>{{ experiment.dataset.name }} · {{ experiment.dataset.dataset_id }}</dd>
+    <dt>Requested range</dt><dd>{{ experiment.dataset.requested_start }} to {{ experiment.dataset.requested_end }}</dd>
+    {% if experiment.dataset.requested_start != experiment.dataset.effective_start or experiment.dataset.requested_end != experiment.dataset.effective_end %}
+    <dt>Effective sessions</dt><dd>{{ experiment.dataset.effective_start }} to {{ experiment.dataset.effective_end }}</dd>
+    {% endif %}
+    {% endif %}
     <dt>Instrument</dt><dd>{{ experiment.dataset.instrument }}</dd>
     <dt>Snapshot</dt><dd>{{ experiment.dataset.snapshot_id }}</dd>
     <dt>Canonical digest</dt><dd>{{ experiment.dataset.canonical_sha256 }}</dd>

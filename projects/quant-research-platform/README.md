@@ -21,7 +21,7 @@ research run --root state/platform --submission-id SHA256 \
   --attempt-id attempt-001 --timeout-seconds 300
 ```
 
-Dataset snapshots, update provenance, experiment submissions, and execution attempts are content-addressed or uniquely named, atomically published, and never overwritten. Daily updates require an independently supplied expected-session CSV whose schema is exactly one column named `Date` (case-sensitive); incomplete requested histories fail without moving the latest pointer. Experiment submissions freeze the source bundle, dataset identity, immutable runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every run receives a content-addressed contract and fresh artifact directory; success, process failure, timeout, and launch failure all leave a checksummed read-only attempt manifest. `quant_platform.reference_job` is a deterministic integrity demonstration that derives JSON and daily CSV evidence only from its supplied snapshot, not a promoted trading strategy. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
+Dataset snapshots, update provenance, experiment submissions, and execution attempts are content-addressed or uniquely named, atomically published, and never overwritten. Daily updates require an independently supplied expected-session CSV whose schema is exactly one column named `Date` (case-sensitive); incomplete requested histories fail without moving the latest pointer. The authenticated experiment UI additionally resolves stable dataset catalog IDs and date ranges. If a selected range is incomplete, it fetches one complete provider generation, verifies every expected exchange session, publishes provenance, and only then freezes the resulting snapshot. Experiment submissions freeze the source bundle, dataset catalog item and range, concrete snapshot identity, immutable runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every run receives a content-addressed contract and fresh artifact directory; success, process failure, timeout, and launch failure all leave a checksummed read-only attempt manifest. `quant_platform.reference_job` is a deterministic integrity demonstration that derives JSON and daily CSV evidence only from its supplied snapshot, not a promoted trading strategy. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
 
 ## Config-driven single-stock strategy runs
 
@@ -148,12 +148,44 @@ operator bundles, experiments, controls, and results coexist there with authorit
 `datasets/` snapshots and future daily updates. Initialization does not copy, move, or symlink
 snapshot data.
 
+Catalog migration recognizes the existing `601328.SS` snapshot only when its verified metadata
+identifies `provider=yahoo-chart-api` and `market=XSHG`. It registers stable ID `601328.SS` with
+display name `Bank of Communications (601328.SS)` while retaining the snapshot's exact provider,
+currency, adjustment, hashes, files, and identity. The UI obtains the latest available close from
+the canonical Yahoo chart endpoint and defaults the separate end-date control to that value.
+Automatic repair validates one aligned daily Yahoo response, binds its URL and response SHA-256,
+and requires the complete requested session set from pinned `exchange-calendars==4.13.2`.
+That XSHG calendar embeds the published 2026 SSE holiday schedule and is deliberately bounded;
+requests beyond its authoritative coverage fail. A missing exchange session remains an explicit
+suspension/provider-gap error requiring independent evidence. The platform never substitutes a
+weekday calendar or fabricates a bar. Update records are sealed as `0444` files in `0555`
+content-addressed directories and fully verified before reuse. The experiment copies the canonical
+producer update ID, provider response identity, calendar identity, and expected-session evidence
+into its own immutable identity. The first resolution also seals a permanent per-snapshot lineage
+claim, so later byte-identical reversions cannot replace it. Snapshots with no verified lineage
+receive a permanent `legacy_snapshot` claim; lineage is never invented.
+
 Task documents contain no source. They select `latest` or an explicit published version and set
 only declared parameters. Submission freezes the dataset snapshot, template, resolved operator
 versions/digests/parameters, and execution identity. An exact duplicate returns the existing
 experiment without an attempt. Rerun accepts only the experiment ID and creates an idempotent new
 attempt with the frozen resolution. Each attempt can be launched once; restart recovery marks an
 abandoned running attempt failed and requires an explicit new rerun.
+
+UI/API catalog tasks use
+`{"dataset":{"dataset_id":"601328.SS","start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}`.
+The submitted template dates must match that selected interval. Calendar-day boundaries are
+retained in request audit, while the first and last verified exchange sessions become the frozen
+dataset/template range and canonical experiment identity. Equivalent weekend/session boundaries
+therefore suppress duplicates. JSON-Schema enums render
+as native selects for template and every operator version. Enum option values use canonical JSON,
+so `null`, `""`, strings, booleans, integers, and numbers remain unambiguous in browser previews
+and no-JavaScript forms. Non-enum booleans use true/false selects, numeric properties use bounded
+number inputs, and ordinary strings remain text inputs. Integers are restricted to JavaScript's
+exact safe-integer range and negative floating-point zero is rejected, preventing browser JSON
+normalization from changing identity. Every page also exposes a keyboard-accessible light/dark/system
+selector. Its choice is stored in `localStorage`; a small same-origin initializer runs before CSS,
+and system mode follows `prefers-color-scheme`.
 
 The FastAPI/Jinja2 application is started with:
 

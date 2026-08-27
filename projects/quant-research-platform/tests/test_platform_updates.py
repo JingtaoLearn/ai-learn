@@ -1,5 +1,6 @@
 import hashlib
 import json
+import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,9 +11,14 @@ import pytest
 import quant_platform.updates as updates_module
 from quant_platform.datasets import (
     DatasetValidationError,
+    publish_snapshot,
     snapshot_status,
 )
-from quant_platform.updates import reconcile_daily_history
+from quant_platform.updates import (
+    load_update_record,
+    reconcile_daily_history,
+    snapshot_update_lineage,
+)
 
 
 METADATA = {
@@ -324,6 +330,212 @@ def test_update_provenance_is_content_addressed_and_complete(tmp_path: Path):
     assert record["result_snapshot_id"] == second["snapshot_id"]
     assert record["revision_count"] == 1
     assert record["update_id"] == second["update_id"]
+    assert stat.S_IMODE(Path(str(second["update_path"])).stat().st_mode) == 0o444
+    assert (
+        stat.S_IMODE(Path(str(second["update_path"])).parent.stat().st_mode)
+        == 0o555
+    )
+    assert load_update_record(
+        tmp_path, METADATA["instrument"], str(second["update_id"])
+    ) == record
+
+
+@pytest.mark.parametrize("writable_target", ["record", "directory"])
+def test_existing_update_provenance_must_be_non_writable(
+    tmp_path: Path, writable_target: str
+):
+    result = _reconcile(
+        tmp_path,
+        _bars(["2026-08-18", "2026-08-19"]),
+        ["2026-08-18", "2026-08-19"],
+        "2026-08-18",
+        "2026-08-19",
+    )
+    record = Path(str(result["update_path"]))
+    if writable_target == "record":
+        record.chmod(0o644)
+    else:
+        record.parent.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match="writable"):
+        load_update_record(
+            tmp_path, METADATA["instrument"], str(result["update_id"])
+        )
+
+
+def _ordered_source_identity(
+    *,
+    result_snapshot_id: str,
+    prior_snapshot_id: str | None,
+    revision_count: int,
+    predicate,
+) -> tuple[dict[str, str], str]:
+    expected_hash = hashlib.sha256(
+        b"quant-platform-expected-sessions-v1\0" b"2026-08-18\n"
+    ).hexdigest()
+    for nonce in range(10_000):
+        source = {
+            "provider": METADATA["provider"],
+            "instrument": METADATA["instrument"],
+            "nonce": str(nonce),
+        }
+        identity = {
+            "schema_version": 1,
+            "metadata": dict(sorted(METADATA.items())),
+            "request": {"start": "2026-08-18", "end": "2026-08-18"},
+            "expected_sessions_sha256": expected_hash,
+            "expected_session_count": 1,
+            "fetched": {
+                "start": "2026-08-18",
+                "end": "2026-08-18",
+                "rows": 1,
+            },
+            "prior_snapshot_id": prior_snapshot_id,
+            "result_snapshot_id": result_snapshot_id,
+            "revision_count": revision_count,
+            "source": source,
+            "expected_sessions_source": {
+                "calendar": "XSHG",
+                "library": "test",
+                "version": "2026",
+            },
+        }
+        update_id = hashlib.sha256(
+            json.dumps(
+                identity,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+        if predicate(update_id):
+            return source, update_id
+    raise AssertionError("could not construct adversarial update identity")
+
+
+def test_snapshot_lineage_first_claim_survives_smaller_reversion_update_id(
+    tmp_path: Path,
+):
+    root = tmp_path / "state"
+    calendar = {"calendar": "XSHG", "library": "test", "version": "2026"}
+    snapshot_a = publish_snapshot(
+        _bars(["2026-08-18"], [6.10]),
+        root,
+        METADATA,
+        update_latest=False,
+    )
+    first_source, first_id = _ordered_source_identity(
+        result_snapshot_id=snapshot_a["snapshot_id"],
+        prior_snapshot_id=None,
+        revision_count=0,
+        predicate=lambda value: value.startswith(("d", "e", "f")),
+    )
+    first = reconcile_daily_history(
+        _bars(["2026-08-18"], [6.10]),
+        ["2026-08-18"],
+        root,
+        METADATA,
+        "2026-08-18",
+        "2026-08-18",
+        source_identity=first_source,
+        expected_sessions_source=calendar,
+    )
+    claimed = snapshot_update_lineage(
+        root, METADATA["instrument"], snapshot_a["snapshot_id"]
+    )
+
+    snapshot_b = publish_snapshot(
+        _bars(["2026-08-18"], [6.20]),
+        root,
+        METADATA,
+        update_latest=False,
+    )
+    middle_source, _ = _ordered_source_identity(
+        result_snapshot_id=snapshot_b["snapshot_id"],
+        prior_snapshot_id=snapshot_a["snapshot_id"],
+        revision_count=1,
+        predicate=lambda value: True,
+    )
+    reconcile_daily_history(
+        _bars(["2026-08-18"], [6.20]),
+        ["2026-08-18"],
+        root,
+        METADATA,
+        "2026-08-18",
+        "2026-08-18",
+        source_identity=middle_source,
+        expected_sessions_source=calendar,
+    )
+    reverted_source, reverted_id = _ordered_source_identity(
+        result_snapshot_id=snapshot_a["snapshot_id"],
+        prior_snapshot_id=snapshot_b["snapshot_id"],
+        revision_count=1,
+        predicate=lambda value: value < first_id,
+    )
+    reverted = reconcile_daily_history(
+        _bars(["2026-08-18"], [6.10]),
+        ["2026-08-18"],
+        root,
+        METADATA,
+        "2026-08-18",
+        "2026-08-18",
+        source_identity=reverted_source,
+        expected_sessions_source=calendar,
+    )
+
+    assert first["update_id"] == first_id
+    assert reverted["update_id"] == reverted_id
+    assert reverted_id < first_id
+    assert snapshot_update_lineage(
+        root, METADATA["instrument"], snapshot_a["snapshot_id"]
+    ) == claimed
+    assert claimed["update_id"] == first_id
+    claim = (
+        root
+        / "snapshot-lineage"
+        / METADATA["instrument"]
+        / snapshot_a["snapshot_id"]
+    )
+    assert stat.S_IMODE(claim.stat().st_mode) == 0o555
+    assert stat.S_IMODE((claim / "lineage.json").stat().st_mode) == 0o444
+
+
+def test_legacy_snapshot_lineage_claim_is_permanent_after_reversion(tmp_path: Path):
+    root = tmp_path / "state"
+    snapshot_a = publish_snapshot(
+        _bars(["2026-08-18"], [6.10]), root, METADATA
+    )
+    assert snapshot_update_lineage(
+        root, METADATA["instrument"], snapshot_a["snapshot_id"]
+    ) == {"kind": "legacy_snapshot"}
+
+    snapshot_b = publish_snapshot(
+        _bars(["2026-08-18"], [6.20]), root, METADATA
+    )
+    source, _ = _ordered_source_identity(
+        result_snapshot_id=snapshot_a["snapshot_id"],
+        prior_snapshot_id=snapshot_b["snapshot_id"],
+        revision_count=1,
+        predicate=lambda value: True,
+    )
+    reconcile_daily_history(
+        _bars(["2026-08-18"], [6.10]),
+        ["2026-08-18"],
+        root,
+        METADATA,
+        "2026-08-18",
+        "2026-08-18",
+        source_identity=source,
+        expected_sessions_source={
+            "calendar": "XSHG",
+            "library": "test",
+            "version": "2026",
+        },
+    )
+
+    assert snapshot_update_lineage(
+        root, METADATA["instrument"], snapshot_a["snapshot_id"]
+    ) == {"kind": "legacy_snapshot"}
 
 
 def test_provenance_failure_does_not_move_latest_pointer(tmp_path: Path, monkeypatch):
