@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
+const http = require("node:http");
 const { test } = require("node:test");
 
+const session = require("express-session");
 const jwt = require("jsonwebtoken");
 
 const { createApp } = require("../app");
@@ -27,10 +29,16 @@ function createTestApp({
     mail: "person@example.com",
     displayName: "Example Person",
   }),
+  tokenExchange = async () => ({
+    accessToken: "graph-access-token",
+  }),
   calls = createCallTracker(),
   logger = { error() {} },
+  maxOAuthStates,
+  maxOAuthStatesPerSession,
   nodeEnv = "test",
   now,
+  sessionStore,
 } = {}) {
   const msalClient = {
     async getAuthCodeUrl(parameters) {
@@ -42,7 +50,7 @@ function createTestApp({
     },
     async acquireTokenByCode(parameters) {
       calls.tokenRequests.push(parameters);
-      return { accessToken: "graph-access-token" };
+      return tokenExchange(parameters);
     },
   };
 
@@ -62,7 +70,10 @@ function createTestApp({
       return graphRequest(accessToken);
     },
     logger,
+    maxOAuthStates,
+    maxOAuthStatesPerSession,
     now,
+    sessionStore,
   });
 }
 
@@ -122,12 +133,67 @@ async function completeLogin(
   });
 }
 
+function startCallbackRequest(baseUrl, cookie, state, code) {
+  const query = new URLSearchParams({ code, state });
+  let request;
+  const promise = new Promise((resolve, reject) => {
+    request = http.get(
+      `${baseUrl}/auth/callback?${query}`,
+      {
+        agent: false,
+        headers: { Cookie: cookie },
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let body = "";
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode,
+            async text() {
+              return body;
+            },
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+  });
+
+  return {
+    abort() {
+      request.destroy();
+    },
+    promise,
+  };
+}
+
 function extractAutoPost(body) {
   const action = body.match(/<form id="f" method="POST" action="([^"]+)">/);
   const token = body.match(/<input type="hidden" name="token" value="([^"]+)" \/>/);
   assert.ok(action, "auto-POST form action is present");
   assert.ok(token, "auto-POST token is present");
   return { action: action[1], token: token[1] };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for overlapping callbacks");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 test("binds an exactly allowed quant callback to its configured audience", async () => {
@@ -384,6 +450,129 @@ test("keeps concurrent login states bound to their own callbacks", async () => {
   });
 });
 
+test("atomically consumes overlapping callbacks completed in reverse order", async () => {
+  const calls = createCallTracker();
+  const exchanges = new Map();
+
+  await withServer(
+    createTestApp({
+      calls,
+      tokenExchange: async ({ code }) => ({
+        accessToken: `${code}-access-token`,
+      }),
+      graphRequest: (accessToken) => {
+        if (accessToken === "test-code-access-token") {
+          return {
+            mail: "replay@example.com",
+            displayName: "Replay User",
+          };
+        }
+        const exchange = deferred();
+        exchanges.set(accessToken, exchange);
+        return exchange.promise;
+      },
+    }),
+    async (baseUrl) => {
+      const callbackRequests = [];
+      const quantLogin = await beginLogin(baseUrl, QUANT_CALLBACK);
+      const noteLogin = await beginLogin(
+        baseUrl,
+        undefined,
+        {},
+        quantLogin.cookie
+      );
+
+      try {
+        const quantRequest = startCallbackRequest(
+          baseUrl,
+          quantLogin.cookie,
+          quantLogin.state,
+          "quant-code"
+        );
+        callbackRequests.push(quantRequest);
+        await waitFor(() => calls.graphRequests.length === 1);
+        const noteRequest = startCallbackRequest(
+          baseUrl,
+          noteLogin.cookie,
+          noteLogin.state,
+          "note-code"
+        );
+        callbackRequests.push(noteRequest);
+        await waitFor(() => calls.graphRequests.length === 2);
+
+        exchanges.get("note-code-access-token").resolve({
+          mail: "note@example.com",
+          displayName: "Note User",
+        });
+        const noteResponse = await noteRequest.promise;
+        assert.equal(
+          extractAutoPost(await noteResponse.text()).action,
+          DEFAULT_CALLBACK
+        );
+
+        exchanges.get("quant-code-access-token").resolve({
+          mail: "quant@example.com",
+          displayName: "Quant User",
+        });
+        const quantResponse = await quantRequest.promise;
+        assert.equal(
+          extractAutoPost(await quantResponse.text()).action,
+          QUANT_CALLBACK
+        );
+
+        for (const login of [quantLogin, noteLogin]) {
+          const replay = await completeLogin(
+            baseUrl,
+            login.cookie,
+            login.state
+          );
+          assert.equal(replay.status, 400);
+        }
+        assert.equal(calls.tokenRequests.length, 2);
+        assert.equal(calls.graphRequests.length, 2);
+      } finally {
+        for (const exchange of exchanges.values()) {
+          exchange.resolve({
+            mail: "cleanup@example.com",
+            displayName: "Cleanup User",
+          });
+        }
+        for (const request of callbackRequests) request.abort();
+        await Promise.allSettled(
+          callbackRequests.map(({ promise }) => promise)
+        );
+      }
+    }
+  );
+});
+
+test("rejects OAuth state presented by a different session", async () => {
+  const calls = createCallTracker();
+
+  await withServer(createTestApp({ calls }), async (baseUrl) => {
+    const ownerLogin = await beginLogin(baseUrl, QUANT_CALLBACK);
+    const otherLogin = await beginLogin(baseUrl, undefined);
+
+    const theft = await completeLogin(
+      baseUrl,
+      otherLogin.cookie,
+      ownerLogin.state
+    );
+    assert.equal(theft.status, 400);
+    assert.equal(calls.tokenRequests.length, 0);
+    assert.equal(calls.graphRequests.length, 0);
+
+    const ownerResponse = await completeLogin(
+      baseUrl,
+      ownerLogin.cookie,
+      ownerLogin.state
+    );
+    assert.equal(ownerResponse.status, 200);
+    assert.equal(calls.tokenRequests.length, 1);
+    assert.equal(calls.graphRequests.length, 1);
+  });
+});
+
 test("bounds each session to five outstanding OAuth states", async () => {
   const calls = createCallTracker();
 
@@ -412,6 +601,67 @@ test("bounds each session to five outstanding OAuth states", async () => {
     assert.equal(newest.status, 200);
     assert.equal(calls.tokenRequests.length, 1);
   });
+});
+
+test("enforces a bounded global OAuth state registry", async () => {
+  const calls = createCallTracker();
+
+  await withServer(
+    createTestApp({
+      calls,
+      maxOAuthStates: 3,
+      maxOAuthStatesPerSession: 5,
+    }),
+    async (baseUrl) => {
+      const logins = [];
+      for (let index = 0; index < 4; index += 1) {
+        logins.push(await beginLogin(baseUrl, QUANT_CALLBACK));
+      }
+
+      const evicted = await completeLogin(
+        baseUrl,
+        logins[0].cookie,
+        logins[0].state
+      );
+      assert.equal(evicted.status, 400);
+      assert.equal(calls.tokenRequests.length, 0);
+
+      const newest = await completeLogin(
+        baseUrl,
+        logins[3].cookie,
+        logins[3].state
+      );
+      assert.equal(newest.status, 200);
+      assert.equal(calls.tokenRequests.length, 1);
+    }
+  );
+});
+
+test("loses outstanding OAuth states when the application restarts", async () => {
+  const calls = createCallTracker();
+  const sessionStore = new session.MemoryStore();
+  let login;
+
+  await withServer(
+    createTestApp({ calls, sessionStore }),
+    async (baseUrl) => {
+      login = await beginLogin(baseUrl, QUANT_CALLBACK);
+    }
+  );
+
+  await withServer(
+    createTestApp({ calls, sessionStore }),
+    async (baseUrl) => {
+      const response = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
+      assert.equal(response.status, 400);
+      assert.equal(calls.tokenRequests.length, 0);
+      assert.equal(calls.graphRequests.length, 0);
+    }
+  );
 });
 
 test("does not expose or log access tokens and secrets on callback errors", async () => {
