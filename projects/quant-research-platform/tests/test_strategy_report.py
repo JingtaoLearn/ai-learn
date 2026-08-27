@@ -193,3 +193,65 @@ def test_execution_markers_are_actual_event_open_dates_and_prices():
     assert buys["price"].tolist() == [10.0, 9.0]
     assert sells["Date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-08"]
     assert sells["price"].tolist() == [11.0]
+
+
+def test_report_prevents_root_overflow_and_cues_each_wide_table():
+    html = render_report(
+        _result(),
+        _config(),
+        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+    )
+
+    assert "html,body{max-width:100%;overflow-x:hidden}" in html
+    assert ".scroll{position:relative;max-width:100%;min-width:0;overflow-x:auto" in html
+    assert "scrollbar-width:thin" in html
+    assert ".scroll::-webkit-scrollbar" in html
+    assert "border-right:4px solid" in html
+    assert html.count('class="scroll-hint"') == 3
+    assert html.count("左右滑动查看完整表格") == 3
+
+
+def test_report_translates_machine_event_trade_and_reason_values():
+    html = render_report(
+        _result(),
+        _config(),
+        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+    )
+
+    for translated in (
+        ">买入<",
+        ">卖出<",
+        ">已平仓<",
+        ">未平仓<",
+        ">向上穿越买入阈值<",
+        ">向下穿越卖出阈值<",
+    ):
+        assert translated in html
+    for machine_value in (
+        ">BUY<",
+        ">SELL<",
+        ">CLOSED<",
+        ">OPEN<",
+        "BUY_THRESHOLD_CROSSING",
+        "SELL_THRESHOLD_CROSSING",
+        "BUY/SELL 标记",
+    ):
+        assert machine_value not in html
+
+
+def test_report_has_accessible_self_contained_chart_lightbox():
+    html = render_report(
+        _result(),
+        _config(),
+        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+    )
+
+    assert 'id="chart-open"' in html
+    assert 'aria-label="放大图表"' in html
+    assert 'id="chart-lightbox"' in html
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'aria-label="关闭放大图表"' in html
+    assert "event.target===lightbox" in html
+    assert "event.key==='Escape'" in html
+    assert "https://" not in html

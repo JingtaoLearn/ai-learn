@@ -20,6 +20,29 @@ from .strategy_replay import ReplayResult
 
 
 CJK_FONT_PATH = Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc")
+EVENT_DISPLAY_TRANSLATIONS = {
+    "side": {
+        "BUY": "买入",
+        "SELL": "卖出",
+    },
+    "reason": {
+        "BUY_THRESHOLD_CROSSING": "向上穿越买入阈值",
+        "SELL_THRESHOLD_CROSSING": "向下穿越卖出阈值",
+        "INITIALIZE_ZONE": "初始化阈值区域",
+        "NO_THRESHOLD_CROSSING": "未穿越阈值",
+        "SELL_CROSSING_IGNORED_WHILE_FLAT": "空仓时忽略卖出穿越",
+        "STATISTIC_UNAVAILABLE": "斜率暂不可用",
+        "INSUFFICIENT_CASH": "现金不足",
+        "SELL_SIGNAL_WHILE_NO_HOLDINGS": "无持仓可卖",
+        "TERMINAL_FORCED_LIQUIDATION": "期末强制平仓",
+    },
+}
+TRADE_DISPLAY_TRANSLATIONS = {
+    "status": {
+        "CLOSED": "已平仓",
+        "OPEN": "未平仓",
+    }
+}
 
 
 class ReportError(RuntimeError):
@@ -232,12 +255,22 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
-def _table(frame: pd.DataFrame, columns: list[tuple[str, str]]) -> str:
+def _table(
+    frame: pd.DataFrame,
+    columns: list[tuple[str, str]],
+    translations: Mapping[str, Mapping[Any, str]] | None = None,
+) -> str:
+    translations = translations or {}
     headings = "".join(f"<th>{html.escape(label)}</th>" for _, label in columns)
     rows = []
     for record in frame.to_dict("records"):
         cells = "".join(
-            f"<td>{html.escape(_format_value(record[name]), quote=True)}</td>"
+            "<td>"
+            + html.escape(
+                _format_value(translations.get(name, {}).get(record[name], record[name])),
+                quote=True,
+            )
+            + "</td>"
             for name, _ in columns
         )
         rows.append(f"<tr>{cells}</tr>")
@@ -277,18 +310,20 @@ def render_report(
             ("total_cost_cny", "总成本"),
             ("reason", "原因"),
         ],
+        EVENT_DISPLAY_TRANSLATIONS,
     )
     trade_table = _table(
         result.trades,
         [
             ("entry_date", "买入日"),
+            ("status", "状态"),
             ("entry_price", "买入开盘价"),
             ("exit_date", "卖出日"),
             ("exit_price", "卖出开盘价"),
-            ("status", "状态"),
             ("net_pnl_cny", "净损益"),
             ("return", "收益率"),
         ],
+        TRADE_DISPLAY_TRANSLATIONS,
     )
     provenance_rows = "".join(
         "<tr>"
@@ -303,15 +338,20 @@ def render_report(
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{instrument} 因果交易研究</title>
 <style>
-:root{{--paper:#f4f0e7;--card:#fffdf8;--ink:#202822;--muted:#667069;--line:#ddd3c4;--green:#2f7356;--red:#a9473e}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:15px/1.65 sans-serif}}
-main{{width:min(1080px,calc(100% - 24px));margin:auto;padding:18px 0 48px}}header,section{{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;margin:12px 0}}
+:root{{--paper:#f4f0e7;--card:#fffdf8;--ink:#202822;--muted:#667069;--line:#ddd3c4;--green:#2f7356;--red:#a9473e;--scroll-cue:#c67b36}}
+*{{box-sizing:border-box}}html,body{{max-width:100%;overflow-x:hidden}}body{{width:100%;margin:0;background:var(--paper);color:var(--ink);font:15px/1.65 sans-serif}}
+main{{width:min(1080px,calc(100% - 24px));max-width:100%;margin:auto;padding:18px 0 48px}}header,section{{min-width:0;max-width:100%;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;margin:12px 0}}
 h1{{font-size:clamp(29px,6vw,50px);line-height:1.12;margin:.2em 0}}h2{{margin-top:0}}.lead,.muted{{color:var(--muted)}}
-.kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}}.kpi{{border:1px solid var(--line);border-radius:12px;padding:12px;background:white}}
-.kpi span{{display:block;color:var(--muted);font-size:12px}}.kpi b{{font-size:21px}}img{{display:block;width:100%;height:auto}}
-.scroll{{overflow:auto}}table{{border-collapse:collapse;width:100%;min-width:680px}}th,td{{padding:8px;border-bottom:1px solid #e8e0d5;text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}
-code{{overflow-wrap:anywhere;white-space:normal}}.warning{{border-left:4px solid #c67b36;background:#fff3e5;padding:12px}}
-@media(max-width:700px){{main{{width:calc(100% - 12px);padding-top:4px}}header,section{{padding:15px;border-radius:13px}}.kpis{{grid-template-columns:1fr 1fr}}h1{{font-size:32px}}}}
+.kpis{{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;min-width:0}}.kpi{{min-width:0;border:1px solid var(--line);border-radius:12px;padding:12px;background:white}}
+.kpi span{{display:block;color:var(--muted);font-size:12px}}.kpi b{{display:block;font-size:21px;overflow-wrap:anywhere}}img{{display:block;width:100%;height:auto}}
+.table-shell{{max-width:100%;min-width:0;border-right:4px solid var(--scroll-cue);border-radius:8px}}.scroll{{position:relative;max-width:100%;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--green) #efe7dc}}
+.scroll::-webkit-scrollbar{{height:8px}}.scroll::-webkit-scrollbar-track{{background:#efe7dc}}.scroll::-webkit-scrollbar-thumb{{background:var(--green);border-radius:999px}}
+.scroll-hint{{display:none;margin:0 0 6px;padding:6px 9px;border-radius:7px;background:#fff0df;color:#75421f;text-align:center;font-size:12px;font-weight:700}}
+table{{border-collapse:collapse;width:100%;min-width:680px}}th,td{{padding:8px;border-bottom:1px solid #e8e0d5;text-align:right;white-space:nowrap}}th:first-child,td:first-child{{text-align:left}}
+code{{overflow-wrap:anywhere;white-space:normal}}pre{{max-width:100%;overflow-x:auto}}.warning{{border-left:4px solid #c67b36;background:#fff3e5;padding:12px}}
+.chart-zoom{{position:relative;display:block;width:100%;max-width:100%;padding:0;border:0;background:transparent;cursor:zoom-in;color:var(--ink)}}.chart-zoom:focus-visible{{outline:3px solid var(--green);outline-offset:3px}}.zoom-hint{{position:absolute;right:9px;bottom:9px;padding:6px 9px;border-radius:999px;background:#202822dd;color:white;font-size:12px}}
+[hidden]{{display:none!important}}.lightbox{{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-start;overflow:auto;padding:64px 16px 24px;background:#111b;overscroll-behavior:contain}}.lightbox img{{width:max(1200px,95vw);max-width:none;height:auto;margin:auto}}.lightbox-close{{position:fixed;top:12px;right:12px;z-index:1001;width:44px;height:44px;border:0;border-radius:50%;background:white;color:#202822;font-size:28px;line-height:1;cursor:pointer}}body.zoom-open{{overflow:hidden}}
+@media(max-width:700px){{main{{width:calc(100% - 12px);padding-top:4px}}header,section{{padding:15px;border-radius:13px}}.kpis{{grid-template-columns:1fr 1fr}}h1{{font-size:32px}}.scroll-hint{{display:block}}}}
 @media(max-width:390px){{.kpis{{grid-template-columns:1fr}}}}
 </style></head><body><main>
 <header><p class="muted">单股日线 · 严格因果 · 研究用途</p><h1>{instrument}</h1>
@@ -327,17 +367,27 @@ code{{overflow-wrap:anywhere;white-space:normal}}.warning{{border-left:4px solid
 <div class="kpi"><span>当前仓位</span><b>{current}</b></div>
 </div></section>
 <section><h2>配置规则</h2><ul>{rules}</ul><p>成本标签：{assumption}</p></section>
-<section><h2>原始价格、因果趋势与实际成交</h2><p class="muted">图内另含“斜率与配置阈值”和“累计权益”两个独立面板。BUY/SELL 标记来自事件账本的真实开盘成交日和原始开盘价；阴影是实际持仓区间。</p>
-<img src="data:image/png;base64,{chart}" alt="价格趋势、斜率阈值和累计权益三面板图"></section>
+<section><h2>原始价格、因果趋势与实际成交</h2><p class="muted">图内另含“斜率与配置阈值”和“累计权益”两个独立面板。买入和卖出标记来自事件账本的真实开盘成交日和原始开盘价；阴影是实际持仓区间。</p>
+<button type="button" class="chart-zoom" id="chart-open" aria-label="放大图表"><img id="chart-image" src="data:image/png;base64,{chart}" alt="价格趋势、斜率阈值和累计权益三面板图"><span class="zoom-hint">点击放大图表</span></button></section>
 <section><h2>成本拆分</h2><div class="kpis">
 <div class="kpi"><span>佣金</span><b>¥{costs["commission_cny"]:,.2f}</b></div>
 <div class="kpi"><span>过户费</span><b>¥{costs["transfer_fee_cny"]:,.2f}</b></div>
 <div class="kpi"><span>印花税</span><b>¥{costs["stamp_tax_cny"]:,.2f}</b></div>
 <div class="kpi"><span>滑点</span><b>¥{costs["slippage_cny"]:,.2f}</b></div>
 </div><p>总成本 ¥{costs["total_cost_cny"]:,.2f}。成本只在实际事件发生时计提。</p></section>
-<section><h2>事件明细</h2><div class="scroll">{event_table}</div></section>
-<section><h2>交易明细</h2><div class="scroll">{trade_table}</div><p class="muted">未平交易只含买入成本，不计虚构卖出成本，也不纳入完整交易胜率。</p></section>
-<section><h2>可复现来源</h2><div class="scroll"><table>{provenance_rows}</table></div></section>
+<section><h2>事件明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{event_table}</div></div></section>
+<section><h2>交易明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{trade_table}</div></div><p class="muted">未平交易只含买入成本，不计虚构卖出成本，也不纳入完整交易胜率。</p></section>
+<section><h2>可复现来源</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll"><table>{provenance_rows}</table></div></div></section>
 <section><h2>口径限制</h2><p class="warning">这是价格收益账户。除非数据和账本另行提供分红及公司行动现金流，否则不代表包含分红现金流的股东总回报，也不构成投资建议。</p>
 <pre>{html.escape(json.dumps(result.reconciliation, sort_keys=True, ensure_ascii=False))}</pre></section>
-</main></body></html>"""
+</main>
+<div class="lightbox" id="chart-lightbox" role="dialog" aria-modal="true" aria-label="放大的三面板策略图" hidden><button type="button" class="lightbox-close" id="chart-close" aria-label="关闭放大图表">×</button><img id="chart-enlarged" alt="放大的价格趋势、斜率阈值和累计权益三面板图"></div>
+<script>
+const opener=document.getElementById('chart-open'),source=document.getElementById('chart-image'),lightbox=document.getElementById('chart-lightbox'),enlarged=document.getElementById('chart-enlarged'),closer=document.getElementById('chart-close');
+let previousFocus;
+function openChart(){{previousFocus=document.activeElement;enlarged.src=source.src;lightbox.hidden=false;document.body.classList.add('zoom-open');closer.focus()}}
+function closeChart(){{lightbox.hidden=true;enlarged.removeAttribute('src');document.body.classList.remove('zoom-open');if(previousFocus)previousFocus.focus()}}
+opener.addEventListener('click',openChart);closer.addEventListener('click',closeChart);
+lightbox.addEventListener('click',event=>{{if(event.target===lightbox)closeChart()}});
+document.addEventListener('keydown',event=>{{if(event.key==='Escape'&&!lightbox.hidden)closeChart()}});
+</script></body></html>"""
