@@ -2,6 +2,39 @@
 {% block title %}History · Quant Research{% endblock %}
 {% block page %}history{% endblock %}
 {% block content %}
-<section class="page-heading"><p class="eyebrow">UNIQUE IDENTITIES</p><h1>Experiment history</h1><p>One row per canonical experiment identity.</p></section>
-{% if experiments %}<div class="table-wrap" data-testid="history-table"><table><thead><tr><th>Experiment</th><th>Attempts</th><th>Drift</th><th>Created</th></tr></thead><tbody>{% for experiment in experiments %}<tr><td><a class="mono" href="/experiments/{{ experiment.experiment_id }}">{{ experiment.experiment_id }}</a></td><td>{{ experiment.attempt_count }} attempt{% if experiment.attempt_count != 1 %}s{% endif %}</td><td>{{ "Drift" if experiment.has_drift else "Current" }}</td><td>{{ experiment.created_at }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty">No experiments match this history.</div>{% endif %}
+<section class="page-heading">
+  <p class="eyebrow">UNIQUE IDENTITIES</p>
+  <h1>Experiment history</h1>
+  <p>One row per canonical experiment identity. Attempts remain nested beneath their experiment.</p>
+</section>
+
+<form class="filter-bar" method="get" action="/history" data-testid="history-filters">
+  <label>Search<input type="search" name="search" value="{{ filters.search }}" placeholder="Experiment, dataset, template, operator"></label>
+  <label>Status<select name="status">
+    {% for value in ["all","PENDING","RUNNING","SUCCEEDED","FAILED","INTERRUPTED","TERMINATION_UNCONFIRMED"] %}
+    <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ "All statuses" if value == "all" else value }}</option>
+    {% endfor %}
+  </select></label>
+  <label>Drift<select name="drift">
+    <option value="all" {% if filters.drift == "all" %}selected{% endif %}>All versions</option>
+    <option value="current" {% if filters.drift == "current" %}selected{% endif %}>Current only</option>
+    <option value="drifted" {% if filters.drift == "drifted" %}selected{% endif %}>Drifted only</option>
+  </select></label>
+  <button type="submit">Apply filters</button>
+</form>
+
+{% if experiments %}
+<div class="table-wrap" data-testid="history-table"><table>
+  <thead><tr><th>Experiment</th><th>Dataset</th><th>Template</th><th>Status</th><th>Attempts</th><th>Current latest drift</th><th>Created</th></tr></thead>
+  <tbody>{% for experiment in experiments %}<tr>
+    <td><a class="mono" href="/experiments/{{ experiment.experiment_id }}">{{ experiment.experiment_id }}</a></td>
+    <td>{{ experiment.dataset.instrument }}<small class="mono">{{ experiment.dataset.snapshot_id[:12] }}</small></td>
+    <td>{{ experiment.template.name }}@{{ experiment.template.version }}</td>
+    <td><span class="status">{{ experiment.current_status }}</span></td>
+    <td>{{ experiment.attempt_count }}</td>
+    <td><span class="badge">{{ "Drifted" if experiment.has_drift else "Current" }}</span></td>
+    <td>{{ experiment.created_at }}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<div class="empty" data-testid="history-empty">No experiments match the selected filters. <a href="/history">Clear filters</a></div>{% endif %}
 {% endblock %}

@@ -102,10 +102,12 @@ def test_operator_detail_renders_schema_defaults_latest_and_linked_history(
     assert 'data-testid="operator-parameter-schema"' in response.text
     assert 'data-testid="operator-defaults"' in response.text
     assert 'data-testid="operator-version-history"' in response.text
+    assert 'data-testid="operator-validation-evidence"' in response.text
     assert "Latest version" in response.text
     assert "Selected version" in response.text
     assert "window_sessions" in response.text
     assert "AdjustedClose" in response.text
+    assert "trusted_builtin" in response.text
     assert 'href="/operators/prior_log_ols/1.0.0"' in response.text
 
 
@@ -250,6 +252,24 @@ def test_history_filters_status_search_and_drift_functionally(tmp_path: Path):
 
     empty = client.get("/history?status=SUCCEEDED&search=not-found")
     assert 'data-testid="history-empty"' in empty.text
+
+    app.state.catalog.insert_operator_version_for_test(
+        operator_id="prior_log_ols",
+        slot="fit",
+        version="1.1.0",
+        content_digest="9" * 64,
+        parameter_schema=app.state.catalog.operator_detail(
+            "prior_log_ols", "1.0.0"
+        )["parameter_schema"],
+    )
+    drifted = client.get(
+        f"/history?status=all&search={succeeded['experiment_id'][:12]}&drift=drifted"
+    )
+    current = client.get(
+        f"/history?status=all&search={succeeded['experiment_id'][:12]}&drift=current"
+    )
+    assert succeeded["experiment_id"] in drifted.text
+    assert 'data-testid="history-empty"' in current.text
 
 
 def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):

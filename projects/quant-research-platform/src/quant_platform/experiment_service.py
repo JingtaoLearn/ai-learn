@@ -448,11 +448,14 @@ class ExperimentService:
                 or latest["content_digest"] != operator["content_digest"]
             )
             latest_version = latest["version"]
+            latest_digest = latest["content_digest"]
         except ValueError:
             drifted = True
             latest_version = None
+            latest_digest = None
         return operator | {
             "current_latest_version": latest_version,
+            "current_latest_digest": latest_digest,
             "drifted": drifted,
         }
 
@@ -475,15 +478,23 @@ class ExperimentService:
         if row is None:
             raise TaskValidationError(f"unknown experiment: {experiment_id}")
         identity = json.loads(row["identity_json"])
-        operators = {
-            slot: self._operator_drift(operator)
-            for slot, operator in identity["operators"].items()
-        }
         attempts = self.list_attempts(experiment_id)
+        action_operators = (
+            attempts[0]["resolved"]["operators"]
+            if attempts
+            else identity["operators"]
+        )
+        operators = {
+            slot: self._operator_drift(
+                identity["operators"][slot] | action_operators[slot]
+            )
+            for slot in identity["operators"]
+        }
         return dict(row) | identity | {
             "operators": operators,
             "attempt_count": len(attempts),
             "attempts": attempts,
+            "current_status": attempts[-1]["status"] if attempts else "PENDING",
             "has_drift": any(item["drifted"] for item in operators.values()),
             "has_divergent_attempt": bool(divergent),
         }
@@ -503,9 +514,13 @@ class ExperimentService:
                     "experiment_id",
                     "created_at",
                     "attempt_count",
+                    "current_status",
                     "has_drift",
                     "canonical_attempt_id",
                     "has_divergent_attempt",
+                    "dataset",
+                    "template",
+                    "operators",
                 )
             }
             for detail in (

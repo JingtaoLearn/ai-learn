@@ -232,18 +232,39 @@ try {
     })()`);
     await keyboardActivate('form[data-testid="operator-form"] button[type="submit"]');
     await expectPage("operator-detail");
+    const operatorDetailComplete = await evaluate(`[
+      "operator-version-context",
+      "operator-parameter-schema",
+      "operator-defaults",
+      "operator-validation-evidence",
+      "operator-version-history"
+    ].every((id) => document.querySelector('[data-testid="' + id + '"]'))`);
+    if (!operatorDetailComplete) throw new Error("Operator detail contract is incomplete");
     console.error("stage operator-published");
 
     await navigate("/experiments/new");
     console.error("stage experiment-new");
+    if (!scriptsDisabled) {
+      await evaluate(`(() => {
+        const selector = document.querySelector('[data-operator-selector="fit"]');
+        selector.value = "browser_fit@latest";
+        selector.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+    }
     const generated = await evaluate(
       "document.querySelectorAll('[data-testid^=\"generated-params-\"]').length >= 7",
     );
     if (!generated) throw new Error("Schema-generated parameter controls are missing");
+    const summaryVisible = await evaluate(
+      'Boolean(document.querySelector(\'[data-testid="resolved-summary"]\')) && Boolean(document.querySelector(\'[data-testid="live-duplicate-preview"]\'))',
+    );
+    if (!summaryVisible) throw new Error("Live resolution and duplicate states are missing");
     if (scriptsDisabled) {
       await evaluate(`(() => {
         for (const selector of document.querySelectorAll("[data-operator-selector]")) {
-          const explicit = Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
+          const explicit = selector.dataset.operatorSelector === "fit"
+            ? Array.from(selector.options).find((option) => option.value === "browser_fit@1.0.0")
+            : Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
           selector.value = explicit.value;
         }
       })()`);
@@ -254,16 +275,40 @@ try {
     await expectPage("experiment-detail");
     console.error("stage experiment-created");
     const experimentPath = await evaluate("location.pathname");
+    const detailComplete = await evaluate(`[
+      "experiment-dataset",
+      "template-parameters",
+      "operator-resolution",
+      "canonical-metrics",
+      "attempt-timeline"
+    ].every((id) => document.querySelector('[data-testid="' + id + '"]'))`);
+    if (!detailComplete) throw new Error("Experiment detail contract is incomplete");
     const hasPending = await evaluate(
       'document.querySelector(\'[data-testid="attempt-timeline"]\').textContent.includes("PENDING")',
     );
     if (!hasPending) throw new Error("Experiment progress state is missing");
 
     await navigate("/experiments/new");
+    if (!scriptsDisabled) {
+      await evaluate(`(() => {
+        const selector = document.querySelector('[data-operator-selector="fit"]');
+        selector.value = "browser_fit@latest";
+        selector.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const liveDuplicate = await evaluate(
+        'document.querySelector(\'[data-testid="live-duplicate-preview"]\').dataset.state',
+      );
+      if (liveDuplicate !== "duplicate") {
+        throw new Error(`Live duplicate preview did not resolve: ${liveDuplicate}`);
+      }
+    }
     if (scriptsDisabled) {
       await evaluate(`(() => {
         for (const selector of document.querySelectorAll("[data-operator-selector]")) {
-          const explicit = Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
+          const explicit = selector.dataset.operatorSelector === "fit"
+            ? Array.from(selector.options).find((option) => option.value === "browser_fit@1.0.0")
+            : Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
           selector.value = explicit.value;
         }
       })()`);
@@ -275,6 +320,10 @@ try {
       'document.querySelector(\'[data-testid="duplicate-preview"] h1\').textContent.includes("Existing")',
     );
     if (!duplicate) throw new Error("Duplicate preview did not detect the existing identity");
+    const previewComplete = await evaluate(
+      'document.querySelectorAll("[data-preview-slot]").length === 7 && document.querySelector(\'[data-testid="preview-identity"]\').textContent.includes("Dataset snapshot")',
+    );
+    if (!previewComplete) throw new Error("Resolved preview audit is incomplete");
 
     await navigate(experimentPath);
     await keyboardActivate('[data-testid="rerun-form"] button');
@@ -285,14 +334,24 @@ try {
     );
     if (!rerunVisible) throw new Error("Rerun attempt is missing from the timeline");
 
-    await navigate("/history");
+    await navigate(
+      `/history?status=PENDING&search=${experimentPath.slice(-64)}&drift=current`,
+    );
     const historyHasExperiment = await evaluate(
       `document.body.textContent.includes(${JSON.stringify(experimentPath.slice(-64))})`,
     );
     if (!historyHasExperiment) throw new Error("Experiment history is missing the submitted identity");
+    const filtersVisible = await evaluate(
+      'Boolean(document.querySelector(\'[data-testid="history-filters"]\')) && document.querySelector("table").textContent.includes("Status")',
+    );
+    if (!filtersVisible) throw new Error("History filters or status column are missing");
     console.error("stage history");
 
     await navigate(`/experiments/${reportExperimentId}`);
+    const canonicalMetrics = await evaluate(
+      'document.querySelector(\'[data-testid="canonical-metrics"]\').textContent.includes("final_equity_cny")',
+    );
+    if (!canonicalMetrics) throw new Error("Canonical metrics are missing");
     const sandbox = await evaluate(
       'document.querySelector("iframe").getAttribute("sandbox")',
     );

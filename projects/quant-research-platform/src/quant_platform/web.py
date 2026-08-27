@@ -24,6 +24,7 @@ from .catalog import initialize_catalog
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
 from .schemas import canonical_json_bytes
+from .seed import BUILTINS
 from .settings import Settings
 from .datasets import _verify_snapshot
 from .strategy_runner import (
@@ -51,6 +52,9 @@ MARKDOWN_TAGS = {
     "pre",
     "strong",
     "ul",
+}
+DEFAULT_OPERATOR_IDS = {
+    descriptor["slot"]: descriptor["operator_id"] for descriptor in BUILTINS
 }
 
 
@@ -197,6 +201,13 @@ def _operator_groups(operators: OperatorService) -> dict[str, list[dict[str, Any
                 "versions": operators.list_versions(operator["operator_id"]),
             }
         )
+    for slot, items in grouped.items():
+        items.sort(
+            key=lambda item: (
+                item["operator_id"] != DEFAULT_OPERATOR_IDS[slot],
+                item["operator_id"],
+            )
+        )
     return grouped
 
 
@@ -268,7 +279,9 @@ def _task_from_form(
     }
 
 
-def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
+def _verified_run_payloads(
+    settings: Settings, attempt: dict[str, Any]
+) -> dict[str, bytes]:
     if attempt["status"] != "SUCCEEDED" or not attempt["result_path"]:
         raise FileNotFoundError("attempt has no successful report")
     allowed_root = settings.state_root.absolute() / "experiment-runs"
@@ -337,7 +350,11 @@ def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
         != resolved_dataset["canonical_sha256"]
     ):
         raise FileNotFoundError("report dataset canonical binding is invalid")
-    return payloads["report.html"]
+    return payloads
+
+
+def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
+    return _verified_run_payloads(settings, attempt)["report.html"]
 
 
 def create_app(
@@ -731,7 +748,12 @@ def create_app(
                 "SELECT * FROM attempts ORDER BY created_at DESC LIMIT 8"
             ).fetchall()
             failures = connection.execute(
-                "SELECT COUNT(*) FROM attempts WHERE status = 'FAILED'"
+                """
+                SELECT COUNT(*) FROM attempts
+                WHERE status IN (
+                    'FAILED', 'INTERRUPTED', 'TERMINATION_UNCONFIRMED'
+                )
+                """
             ).fetchone()[0]
         finally:
             connection.close()
@@ -789,22 +811,31 @@ def create_app(
     async def operator_detail(request: Request, operator_id: str, version: str):
         session = _session(request)
         detail = operators.detail(operator_id, version)
+        versions = operators.list_versions(operator_id)
+        latest = operators.detail(operator_id)
         return _render(
             request,
             "operator_detail.html",
             session=session,
             operator=detail,
             documentation=_safe_markdown(detail["documentation"]),
-            versions=operators.list_versions(operator_id),
+            versions=versions,
+            latest=latest,
+            is_latest=detail["version"] == latest["version"],
         )
 
     @app.get("/templates/{name}/{version}")
     async def template_detail(request: Request, name: str, version: str):
+        template = catalog.template_detail(name, version)
+        grouped = _operator_groups(operators)
         return _render(
             request,
             "template_detail.html",
             session=_session(request),
-            template=catalog.template_detail(name, version),
+            template=template,
+            slot_defaults={
+                slot: grouped[slot][0] for slot in template["slots"]
+            },
         )
 
     @app.get("/experiments/new")
@@ -851,16 +882,85 @@ def create_app(
 
     @app.get("/history")
     async def history(request: Request):
+        status_filter = request.query_params.get("status", "all")
+        drift_filter = request.query_params.get("drift", "all")
+        search = request.query_params.get("search", "").strip()
+        allowed_statuses = {
+            "all",
+            "PENDING",
+            "RUNNING",
+            "SUCCEEDED",
+            "FAILED",
+            "INTERRUPTED",
+            "TERMINATION_UNCONFIRMED",
+        }
+        if status_filter not in allowed_statuses:
+            raise ValueError("history status filter is invalid")
+        if drift_filter not in {"all", "current", "drifted"}:
+            raise ValueError("history drift filter is invalid")
+        history_rows = experiments.list_experiments()
+        if status_filter != "all":
+            history_rows = [
+                item
+                for item in history_rows
+                if item["current_status"] == status_filter
+            ]
+        if drift_filter != "all":
+            expected_drift = drift_filter == "drifted"
+            history_rows = [
+                item for item in history_rows if item["has_drift"] is expected_drift
+            ]
+        if search:
+            needle = search.casefold()
+            history_rows = [
+                item
+                for item in history_rows
+                if needle
+                in " ".join(
+                    (
+                        item["experiment_id"],
+                        item["dataset"]["instrument"],
+                        item["dataset"]["snapshot_id"],
+                        item["template"]["name"],
+                        *(
+                            operator["operator_id"]
+                            for operator in item["operators"].values()
+                        ),
+                    )
+                ).casefold()
+            ]
         return _render(
             request,
             "history.html",
             session=_session(request),
-            experiments=experiments.list_experiments(),
+            experiments=history_rows,
+            filters={
+                "status": status_filter,
+                "drift": drift_filter,
+                "search": search,
+            },
         )
 
     @app.get("/experiments/{experiment_id}")
     async def experiment_detail(request: Request, experiment_id: str):
         detail = experiments.experiment_detail(experiment_id)
+        canonical_attempt = next(
+            (
+                attempt
+                for attempt in detail["attempts"]
+                if attempt["attempt_id"] == detail["canonical_attempt_id"]
+            ),
+            None,
+        )
+        canonical_metrics = None
+        if canonical_attempt is not None:
+            try:
+                payloads = await run_in_threadpool(
+                    _verified_run_payloads, settings, canonical_attempt
+                )
+                canonical_metrics = json.loads(payloads["metrics.json"])
+            except (KeyError, OSError, RuntimeError, ValueError):
+                canonical_metrics = None
         return _render(
             request,
             "experiment_detail.html",
@@ -874,6 +974,8 @@ def create_app(
                 ),
                 None,
             ),
+            canonical_attempt=canonical_attempt,
+            canonical_metrics=canonical_metrics,
             rerun_action_id=secrets.token_hex(16),
         )
 
