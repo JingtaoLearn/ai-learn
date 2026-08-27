@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         if len(arguments) != 2:
             raise ValueError("usage: composition_worker COMPOSITION CONFIG")
         result = execute_composition(
-            arguments[0], arguments[1], project_root=Path("/tmp/project")
+            arguments[0], arguments[1], project_root=Path("/opt/project")
         )
         print(json.dumps({"ok": True, **result}, sort_keys=True))
         return 0

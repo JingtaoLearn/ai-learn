@@ -12,13 +12,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash research
 
-COPY requirements.lock /tmp/project/requirements.lock
+COPY requirements.lock /opt/project/requirements.lock
 RUN pip install --upgrade pip==25.2 \
-    && pip install --no-cache-dir --require-hashes -r /tmp/project/requirements.lock
+    && pip install --no-cache-dir --require-hashes -r /opt/project/requirements.lock
 
-COPY pyproject.toml README.md /tmp/project/
-COPY src /tmp/project/src
-RUN pip install --no-cache-dir --no-deps --no-build-isolation /tmp/project
+COPY pyproject.toml README.md /opt/project/
+COPY src /opt/project/src
+RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/project
 
 WORKDIR /workspace
 EXPOSE 4200 5000 8888

@@ -83,6 +83,10 @@ def build_operator_validation_command(
         "1000:1000",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=64m",
+        "--env",
+        "MPLCONFIGDIR=/tmp/matplotlib",
+        "--env",
+        "XDG_CACHE_HOME=/tmp/cache",
         "--mount",
         f"type=bind,src={candidate},dst=/operator,readonly",
         runner_image,
@@ -158,6 +162,10 @@ def build_composed_execution_command(
         "1000:1000",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=64m",
+        "--env",
+        "MPLCONFIGDIR=/tmp/matplotlib",
+        "--env",
+        "XDG_CACHE_HOME=/tmp/cache",
         "--mount",
         (
             f"type=bind,src={paths[0]},"
