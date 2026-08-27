@@ -16,6 +16,7 @@ from quant_platform.operator_service import (
 )
 from quant_platform.operator_worker import load_published_operator, validate_candidate
 from quant_platform.schemas import canonical_json_bytes
+from quant_platform.submissions import EXECUTION_ENVELOPE
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "operators"
@@ -96,7 +97,26 @@ def _submission(version: str = "1.0.0", slot: str = "fit") -> dict:
 
 def _passing_validator(candidate: Path) -> dict:
     assert (candidate / "operator.py").is_file()
-    return validate_candidate(candidate, validator_image=IMAGE)
+    result = validate_candidate(candidate)
+    return {
+        "schema_version": 1,
+        "passed": True,
+        "slot": result["slot"],
+        "candidate_digest": result["candidate_digest"],
+        "fixture_digest": result["fixture_digest"],
+        "validator_image": IMAGE,
+        "execution_envelope": EXECUTION_ENVELOPE,
+        "started_at": "2026-08-27T00:00:00Z",
+        "finished_at": "2026-08-27T00:00:01Z",
+        "exit_status": 0,
+        "outcome": "SUCCEEDED",
+        "container_id": "a" * 64,
+        "termination_confirmed": True,
+        "stdout_sha256": "b" * 64,
+        "stderr_sha256": "c" * 64,
+        "control_path": "validation-evidence/test",
+        "observations": result["observations"],
+    }
 
 
 def _write_candidate(candidate: Path, payload: dict) -> str:
@@ -131,13 +151,10 @@ def test_safe_custom_fit_worker_validates_compile_contract_and_fixture(tmp_path:
     payload = _submission()
     digest = _write_candidate(candidate, payload)
 
-    evidence = validate_candidate(candidate, validator_image=IMAGE)
+    evidence = validate_candidate(candidate)
 
-    assert evidence["passed"] is True
     assert evidence["slot"] == "fit"
     assert evidence["candidate_digest"] == digest
-    assert evidence["validator_image"] == IMAGE
-    assert evidence["execution_envelope"]["network"] == "none"
     assert evidence["observations"] == {
         "api_version": 1,
         "compile": True,
@@ -152,7 +169,8 @@ def test_validation_command_reuses_hardened_docker_boundary(tmp_path: Path):
     candidate.mkdir()
     evidence.mkdir()
 
-    command = build_operator_validation_command(candidate, evidence, IMAGE)
+    cidfile = evidence / "container.cid"
+    command = build_operator_validation_command(candidate, cidfile, IMAGE)
 
     assert command[:3] == ["docker", "run", "--rm"]
     for pair in (
@@ -169,7 +187,16 @@ def test_validation_command_reuses_hardened_docker_boundary(tmp_path: Path):
         assert command[index + 1] == pair[1]
     assert "--read-only" in command
     assert f"type=bind,src={candidate.resolve()},dst=/operator,readonly" in command
-    assert f"type=bind,src={evidence.resolve()},dst=/evidence" in command
+    assert str(cidfile.resolve()) in command
+    assert not any("/evidence" in argument for argument in command)
+    mounts = [
+        command[index + 1]
+        for index, argument in enumerate(command)
+        if argument == "--mount"
+    ]
+    assert mounts == [
+        f"type=bind,src={candidate.resolve()},dst=/operator,readonly"
+    ]
     assert command[-4:] == [
         "-m",
         "quant_platform.operator_worker",
@@ -333,7 +360,7 @@ def test_worker_rejects_forbidden_import_and_wrong_contract(tmp_path: Path):
     _write_candidate(candidate, payload)
 
     with pytest.raises(ValueError, match="import"):
-        validate_candidate(candidate, validator_image=IMAGE)
+        validate_candidate(candidate)
 
 
 @pytest.mark.parametrize(
@@ -357,6 +384,8 @@ def test_all_seven_custom_slot_contracts_publish_with_runner_owned_evidence(
     assert evidence["candidate_digest"] == result["content_digest"]
     assert evidence["validator_image"] == IMAGE
     assert evidence["fixture_digest"]
+    assert evidence["termination_confirmed"] is True
+    assert evidence["outcome"] == "SUCCEEDED"
 
 
 def test_submission_rejects_unbound_or_submitter_supplied_evidence(tmp_path: Path):
