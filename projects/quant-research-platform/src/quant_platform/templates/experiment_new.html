@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}New experiment · Quant Research{% endblock %}
+{% block page %}experiment-new{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">RESOLVED EXECUTION</p><h1>New experiment</h1><p>Select published versions and set only declared parameters.</p></section>
+<form class="form-grid" method="post" action="/experiments/new" data-testid="experiment-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="action_id" value="{{ action_id }}">
+  <input type="hidden" name="template_name" value="{{ template.name }}">
+  <input type="hidden" name="template_version" value="{{ template.version }}">
+  <label class="wide">Dataset snapshot<select name="dataset" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.instrument }}|{{ dataset.snapshot_id }}">{{ dataset.label }} · {{ dataset.snapshot_id[:12] }}</option>{% endfor %}</select></label>
+  {% if not datasets %}<div class="empty wide" data-testid="dataset-empty">No immutable dataset snapshots are available. Publish or update the authoritative platform dataset before creating an experiment.</div>{% endif %}
+  {% for name, schema in template.parameter_schema.properties.items() %}
+  <label>{{ name }}<input name="template_{{ name }}" value="{{ template.defaults[name] if template.defaults[name] is not none else '' }}" data-template-parameter="{{ name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"></label>
+  {% endfor %}
+  {% for slot, items in grouped.items() %}
+  <fieldset class="wide slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
+    <label>Published selector<select name="operator_{{ slot }}_selector" data-operator-selector="{{ slot }}">{% for operator in items %}<option value="{{ operator.operator_id }}@latest" data-resolved-version="{{ operator.latest_version }}" data-resolved-digest="{{ operator.content_digest }}">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}" data-resolved-version="{{ version.version }}" data-resolved-digest="{{ version.content_digest }}">{{ operator.operator_id }} · Explicit {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
+    {% for operator in items %}{% for version in operator.versions %}
+    <div class="parameter-set" data-parameter-set="{{ slot }}" data-selector="{{ operator.operator_id }}@{{ version.version }}" data-testid="generated-params-{{ slot }}-{{ operator.operator_id }}-{{ version.version }}">
+      <p class="mono">{{ operator.operator_id }}@{{ version.version }} parameters</p>
+      {% if version.parameter_schema.properties %}
+      {% for name, schema in version.parameter_schema.properties.items() %}
+      <label>{{ name }}<input name="operator_{{ slot }}_param__{{ operator.operator_id }}__{{ version.version }}__{{ name }}" value="{{ version.defaults[name] if version.defaults[name] is not none else '' }}" data-parameter-name="{{ name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"></label>
+      {% endfor %}
+      {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
+    </div>
+    {% endfor %}{% endfor %}
+  </fieldset>
+  {% endfor %}
+  <section class="panel wide" data-testid="resolved-summary" aria-live="polite">
+    <h2>Live resolved-version summary</h2>
+    <p>Template <strong>{{ template.name }}@{{ template.version }}</strong></p>
+    <p data-summary-dataset>{{ datasets[0].label if datasets else "Dataset required" }}</p>
+    <div data-summary-operators>{% for slot, items in grouped.items() %}<p><span class="mono">{{ slot }}</span> · {{ items[0].operator_id }} · latest resolves to {{ items[0].latest_version }} · {{ items[0].content_digest[:12] }}</p>{% endfor %}</div>
+  </section>
+  <section class="notice wide" data-testid="live-duplicate-preview" aria-live="polite" data-state="idle">
+    Duplicate preview is waiting for a complete dataset and parameter selection.
+  </section>
+  <noscript><p class="notice wide">JavaScript is disabled. All selectors and generated parameter controls remain available for primary submission.</p></noscript>
+  <div class="wide actions"><button type="submit" formaction="/experiments/preview" data-testid="preview-experiment" {% if not datasets %}disabled{% endif %}>Preview duplicate</button><button type="submit" {% if not datasets %}disabled{% endif %}>Create experiment</button></div>
+</form>
+{% endblock %}

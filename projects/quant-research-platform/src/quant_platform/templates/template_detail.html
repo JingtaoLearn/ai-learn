@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Template · Quant Research{% endblock %}
+{% block page %}template-detail{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <p class="eyebrow">IMMUTABLE TEMPLATE</p>
+  <h1>{{ template.name }}@{{ template.version }}</h1>
+  <p>The template owns experiment-level parameters and requires one published operator for every slot.</p>
+</section>
+<section class="panel">
+  <h2>Required slots</h2>
+  <div class="chips">{% for slot in template.slots %}<span class="badge">{{ slot }}</span>{% endfor %}</div>
+</section>
+<section class="panel" data-testid="template-slot-defaults">
+  <h2>Initial slot defaults</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Slot</th><th>Default operator</th><th>Version</th><th>Parameters</th></tr></thead>
+    <tbody>{% for slot in template.slots %}{% set operator = slot_defaults[slot] %}
+      <tr>
+        <td>{{ slot }}</td>
+        <td><a class="mono" href="/operators/{{ operator.operator_id }}/{{ operator.version }}">{{ operator.operator_id }}</a></td>
+        <td><span class="badge">{{ operator.version }} · Latest</span></td>
+        <td class="mono">{% if operator.defaults %}{% for name, value in operator.defaults.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+<section class="panel">
+  <h2>Template parameter ownership</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th>Type</th><th>Default</th></tr></thead>
+    <tbody>{% for name, schema in template.parameter_schema.properties.items() %}
+      <tr><td class="mono">{{ name }}</td><td>{{ schema.type }}</td><td class="mono">{{ template.defaults[name] }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

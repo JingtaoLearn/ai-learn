@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Experiment preview · Quant Research{% endblock %}
+{% block page %}experiment-preview{% endblock %}
+{% block content %}
+<section class="page-heading" data-testid="duplicate-preview">
+  <p class="eyebrow">DUPLICATE PREVIEW</p>
+  <h1>{{ "Existing experiment" if preview.duplicate else "New experiment identity" }}</h1>
+  <p>{{ "Submitting these exact resolved inputs returns the existing experiment without another attempt." if preview.duplicate else "These resolved inputs do not yet exist." }}</p>
+  <div class="chips"><span class="status">{{ "DUPLICATE" if preview.duplicate else "NEW" }}</span></div>
+</section>
+
+<section class="panel" data-testid="preview-identity">
+  <h2>Canonical identity</h2>
+  <dl class="technical">
+    <dt>Experiment ID</dt><dd>{{ preview.experiment_id }}</dd>
+    <dt>Template</dt><dd>{{ preview.resolved.template.name }}@{{ preview.resolved.template.version }}</dd>
+    <dt>Template digest</dt><dd>{{ preview.resolved.template.content_digest }}</dd>
+    <dt>Dataset instrument</dt><dd>{{ preview.resolved.dataset.instrument }}</dd>
+    <dt>Dataset snapshot</dt><dd>{{ preview.resolved.dataset.snapshot_id }}</dd>
+    <dt>Dataset digest</dt><dd>{{ preview.resolved.dataset.canonical_sha256 }}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Template parameters</h2>
+  <dl class="technical">{% for name, value in preview.resolved.template.parameters.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+</section>
+
+<section class="panel">
+  <h2>Resolved operator graph</h2>
+  <div class="resolution-list">{% for slot, operator in preview.resolved.operators.items() %}
+    <article class="resolution-card" data-preview-slot="{{ slot }}">
+      <div class="section-heading"><h3>{{ slot }}</h3><a href="/operators/{{ operator.operator_id }}/{{ operator.resolved_version }}">{{ operator.operator_id }}</a></div>
+      <dl class="technical">
+        <dt>Requested selector</dt><dd>{{ operator.selector_mode }} · {{ operator.requested_version }}</dd>
+        <dt>Latest at submission</dt><dd>{{ operator.latest_version_at_submission }} · {{ operator.latest_content_digest_at_submission }}</dd>
+        <dt>Resolved version</dt><dd>{{ operator.resolved_version }}</dd>
+        <dt>Resolved digest</dt><dd>{{ operator.content_digest }}</dd>
+        <dt>Parameters</dt><dd>{% if operator.parameters %}{% for name, value in operator.parameters.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</dd>
+      </dl>
+    </article>
+  {% endfor %}</div>
+</section>
+
+<div class="actions">
+  <a class="button quiet" href="/experiments/new">Return to experiment form</a>
+  {% if preview.duplicate %}<a class="button" href="/experiments/{{ preview.experiment_id }}">Open existing experiment</a>{% endif %}
+</div>
+{% endblock %}

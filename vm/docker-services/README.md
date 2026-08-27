@@ -10,6 +10,7 @@ Docker Compose services deployed using **pre-built images from public registries
 | --- | --- | --- | --- |
 | `https-proxy-services` | [nginx-proxy](https-proxy-services/nginx-proxy/) | Reverse proxy with automatic HTTPS via Let's Encrypt | [README](https-proxy-services/nginx-proxy/README.md) |
 | `paste-services` | [pastebin](paste-services/pastebin/) | Lightweight pastebin service | [README](paste-services/pastebin/README.md) |
+| `proxy` | [quant-research-ui-proxy](quant-research-ui-proxy/) | No-port proxy for the encrypted Feng quant UI tunnel | [README](quant-research-ui-proxy/README.md) |
 
 ## Directory Structure
 

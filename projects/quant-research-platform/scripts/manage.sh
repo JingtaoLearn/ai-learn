@@ -15,7 +15,12 @@ case "${1:-}" in
     docker compose down
     ;;
   test)
-    docker compose run --rm --no-deps -e PYTHONPATH=/workspace/src jupyter pytest -q -p no:cacheprovider
+    repository_root="$(cd ../.. && pwd)"
+    docker compose run --rm --no-deps \
+      -e PYTHONPATH=/workspace/src \
+      -e AI_LEARN_REPOSITORY_ROOT=/repository \
+      -v "${repository_root}:/repository:ro" \
+      jupyter pytest -q -p no:cacheprovider
     ;;
   lint)
     docker compose run --rm --no-deps jupyter ruff check --no-cache src tests

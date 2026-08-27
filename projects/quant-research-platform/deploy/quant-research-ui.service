@@ -1,0 +1,21 @@
+[Unit]
+Description=Quant Research Platform UI and serial worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/feng/quant-platform/current
+EnvironmentFile=/home/feng/.config/quant-research-ui.env
+ExecStartPre=/usr/bin/mkdir -p /home/feng/quant-platform/state/platform
+ExecStart=/home/feng/quant-platform/current/.venv/bin/python -m quant_platform.web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

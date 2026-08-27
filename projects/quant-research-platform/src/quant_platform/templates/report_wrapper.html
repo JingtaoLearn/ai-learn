@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Experiment report · Quant Research{% endblock %}
+{% block page %}report-wrapper{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <p class="eyebrow">UNTRUSTED REPORT</p>
+  <h1>Sandboxed experiment report</h1>
+  <p>Report scripts run in an opaque origin with no network, forms, or navigation privileges.</p>
+</section>
+<iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ attempt_id }}/content" data-testid="report-frame"></iframe>
+{% endblock %}

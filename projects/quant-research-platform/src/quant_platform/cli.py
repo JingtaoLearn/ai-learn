@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import NoReturn, Sequence
 
 import pandas as pd
 
 from .datasets import publish_snapshot, snapshot_status
+from .catalog import initialize_catalog
+from .experiment_service import ExperimentService
+from .operator_service import OperatorService
+from .resolved_runner import effective_execution_identity
 from .runner import run_submission
 from .strategy_runner import run_strategy_config
 from .submissions import publish_submission, submission_status
@@ -82,6 +87,70 @@ def _parser() -> argparse.ArgumentParser:
     strategy_run = strategy_commands.add_parser("run")
     strategy_run.add_argument("--config", required=True)
     strategy_run.add_argument("--project-root")
+
+    operator = commands.add_parser("operator")
+    operator_commands = operator.add_subparsers(
+        dest="operator_command", required=True, parser_class=JSONArgumentParser
+    )
+    operator_list = operator_commands.add_parser("list")
+    operator_list.add_argument("--root", required=True)
+    operator_detail = operator_commands.add_parser("detail")
+    operator_detail.add_argument("--root", required=True)
+    operator_detail.add_argument("--operator-id", required=True)
+    operator_detail.add_argument("--version")
+    operator_submit = operator_commands.add_parser("submit")
+    operator_submit.add_argument("--root", required=True)
+    operator_submit.add_argument("--spec", required=True)
+    operator_submit.add_argument("--runner-image", required=True)
+
+    template = commands.add_parser("template")
+    template_commands = template.add_subparsers(
+        dest="template_command", required=True, parser_class=JSONArgumentParser
+    )
+    template_detail = template_commands.add_parser("detail")
+    template_detail.add_argument("--root", required=True)
+    template_detail.add_argument("--name", required=True)
+    template_detail.add_argument("--version", required=True)
+
+    task = commands.add_parser("task")
+    task_commands = task.add_subparsers(
+        dest="task_command", required=True, parser_class=JSONArgumentParser
+    )
+    for name in ("resolve", "submit"):
+        task_parser = task_commands.add_parser(name)
+        task_parser.add_argument("--root", required=True)
+        task_parser.add_argument("--spec", required=True)
+        if name == "submit":
+            task_parser.add_argument("--action-id", required=True)
+    task_rerun = task_commands.add_parser("rerun")
+    task_rerun.add_argument("--root", required=True)
+    task_rerun.add_argument("--experiment-id", required=True)
+    task_rerun.add_argument("--action-id", required=True)
+
+    experiment = commands.add_parser("experiment")
+    experiment_commands = experiment.add_subparsers(
+        dest="experiment_command", required=True, parser_class=JSONArgumentParser
+    )
+    experiment_list = experiment_commands.add_parser("list")
+    experiment_list.add_argument("--root", required=True)
+    experiment_detail = experiment_commands.add_parser("detail")
+    experiment_detail.add_argument("--root", required=True)
+    experiment_detail.add_argument("--experiment-id", required=True)
+
+    attempt = commands.add_parser("attempt")
+    attempt_commands = attempt.add_subparsers(
+        dest="attempt_command", required=True, parser_class=JSONArgumentParser
+    )
+    attempt_list = attempt_commands.add_parser("list")
+    attempt_list.add_argument("--root", required=True)
+    attempt_list.add_argument("--experiment-id", required=True)
+    attempt_detail = attempt_commands.add_parser("detail")
+    attempt_detail.add_argument("--root", required=True)
+    attempt_detail.add_argument("--attempt-id", required=True)
+    attempt_recover = attempt_commands.add_parser("recover")
+    attempt_recover.add_argument("--root", required=True)
+    attempt_recover.add_argument("--attempt-id", required=True)
+    attempt_recover.add_argument("--action-id", required=True)
     return parser
 
 
@@ -95,7 +164,37 @@ def _metadata(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
-def _execute(args: argparse.Namespace) -> dict[str, str | int]:
+def _strict_json_file(path: str) -> object:
+    return json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        object_pairs_hook=lambda pairs: _unique_pairs(pairs),
+        parse_constant=lambda constant: (_ for _ in ()).throw(
+            CLIUsageError(f"non-finite JSON number: {constant}")
+        ),
+    )
+
+
+def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise CLIUsageError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
+def _domain_services(root: str) -> tuple:
+    catalog = initialize_catalog(Path(root))
+    experiments = ExperimentService(
+        catalog,
+        execution_identity=effective_execution_identity(
+            None, os.environ.get("QUANT_RUNNER_IMAGE")
+        ),
+    )
+    return catalog, experiments
+
+
+def _execute(args: argparse.Namespace) -> dict:
     if args.command == "data" and args.data_command in {"snapshot", "update"}:
         frame = pd.read_csv(Path(args.input))
         metadata = _metadata(args)
@@ -154,6 +253,52 @@ def _execute(args: argparse.Namespace) -> dict[str, str | int]:
                 "dataset_snapshot_id",
             )
         }
+    if args.command == "operator":
+        catalog, _ = _domain_services(args.root)
+        operators = OperatorService(
+            catalog,
+            runner_image=getattr(args, "runner_image", None),
+        )
+        if args.operator_command == "list":
+            return {"operators": operators.list()}
+        if args.operator_command == "detail":
+            return {
+                "operator": operators.detail(args.operator_id, args.version),
+                "versions": operators.list_versions(args.operator_id),
+            }
+        if args.operator_command == "submit":
+            return operators.submit(_strict_json_file(args.spec))
+    if args.command == "template" and args.template_command == "detail":
+        catalog, _ = _domain_services(args.root)
+        return {"template": catalog.template_detail(args.name, args.version)}
+    if args.command == "task":
+        _, experiments = _domain_services(args.root)
+        if args.task_command == "resolve":
+            return {"resolved": experiments.resolve_task(_strict_json_file(args.spec))}
+        if args.task_command == "submit":
+            return experiments.submit(
+                _strict_json_file(args.spec), action_id=args.action_id
+            )
+        if args.task_command == "rerun":
+            return experiments.rerun(
+                args.experiment_id, action_id=args.action_id
+            )
+    if args.command == "experiment":
+        _, experiments = _domain_services(args.root)
+        if args.experiment_command == "list":
+            return {"experiments": experiments.list_experiments()}
+        if args.experiment_command == "detail":
+            return {"experiment": experiments.experiment_detail(args.experiment_id)}
+    if args.command == "attempt":
+        _, experiments = _domain_services(args.root)
+        if args.attempt_command == "list":
+            return {"attempts": experiments.list_attempts(args.experiment_id)}
+        if args.attempt_command == "detail":
+            return {"attempt": experiments.attempt_detail(args.attempt_id)}
+        if args.attempt_command == "recover":
+            return experiments.create_replacement_attempt(
+                args.attempt_id, action_id=args.action_id
+            )
     raise CLIUsageError("unsupported command")
 
 

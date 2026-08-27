@@ -7,6 +7,7 @@ Services deployed directly on the VM host, outside of Docker containers. These s
 | Service | Description | Documentation |
 | --- | --- | --- |
 | [open-claw](open-claw/) | Self-hosted AI agent framework with multi-model support and maximum permissions | [README](open-claw/README.md) |
+| [quant-research-tunnel](quant-research-tunnel/) | Encrypted ailearn-to-Feng loopback UI tunnel | [README](quant-research-tunnel/README.md) |
 
 ## When to Use Host Services
 

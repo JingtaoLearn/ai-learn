@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Mapping
 
 import numpy as np
@@ -9,6 +10,7 @@ import pandas as pd
 from .datasets import DatasetValidationError, _normalize_frame
 from .strategy_config import ValidatedStrategyConfig
 from .strategy_operators import (
+    DecisionResult,
     HysteresisDecision,
     adjacent_curve_pct_slope,
     all_in_quantity,
@@ -77,24 +79,61 @@ class _Account:
         capital: float,
         sizing: Mapping[str, Any],
         costs: Mapping[str, float],
+        implementations: Mapping[str, Callable[[dict[str, Any], dict[str, Any]], Any]]
+        | None = None,
+        implementation_parameters: Mapping[str, Mapping[str, Any]] | None = None,
     ):
         self.cash = float(capital)
         self.holdings = 0
         self.sizing = sizing
         self.costs = costs
+        self.implementations = implementations or {}
+        self.implementation_parameters = implementation_parameters or {}
 
     def buy(
         self, date: pd.Timestamp, raw_price: float, reason: str
     ) -> dict[str, Any] | None:
         if self.holdings:
             return None
-        quantity = all_in_quantity(
-            cash=self.cash,
-            raw_price=raw_price,
-            lot_size=self.sizing["lot_size"],
-            target_fraction=self.sizing["target_fraction"],
-            cost_parameters=self.costs,
-        )
+        if "sizing" in self.implementations:
+            quantity = self.implementations["sizing"](
+                {
+                    "cash": self.cash,
+                    "raw_price": raw_price,
+                    "holdings": self.holdings,
+                    "side": "BUY",
+                },
+                dict(self.implementation_parameters["sizing"]),
+            )
+        else:
+            if "cost" in self.implementations:
+                budget = self.cash * self.sizing["target_fraction"]
+                lot_size = self.sizing["lot_size"]
+                quantity = int(budget // (raw_price * lot_size)) * lot_size
+                while quantity > 0:
+                    custom_costs = self.implementations["cost"](
+                        {
+                            "side": "BUY",
+                            "raw_price": raw_price,
+                            "quantity": quantity,
+                        },
+                        dict(self.implementation_parameters["cost"]),
+                    )
+                    if (
+                        raw_price * quantity
+                        + custom_costs["total_cost_cny"]
+                        <= budget
+                    ):
+                        break
+                    quantity -= lot_size
+            else:
+                quantity = all_in_quantity(
+                    cash=self.cash,
+                    raw_price=raw_price,
+                    lot_size=self.sizing["lot_size"],
+                    target_fraction=self.sizing["target_fraction"],
+                    cost_parameters=self.costs,
+                )
         if quantity == 0:
             return None
         return self._event(date, "BUY", raw_price, quantity, reason)
@@ -104,7 +143,20 @@ class _Account:
     ) -> dict[str, Any] | None:
         if not self.holdings:
             return None
-        return self._event(date, "SELL", raw_price, self.holdings, reason)
+        quantity = self.holdings
+        if "sizing" in self.implementations:
+            quantity = self.implementations["sizing"](
+                {
+                    "cash": self.cash,
+                    "raw_price": raw_price,
+                    "holdings": self.holdings,
+                    "side": "SELL",
+                },
+                dict(self.implementation_parameters["sizing"]),
+            )
+            if quantity != self.holdings:
+                raise ReplayError("custom sizing must sell all held shares")
+        return self._event(date, "SELL", raw_price, quantity, reason)
 
     def _event(
         self,
@@ -117,12 +169,18 @@ class _Account:
         cash_before = self.cash
         holdings_before = self.holdings
         notional = raw_price * quantity
-        costs = cms_cost_breakdown(
-            side=side,
-            raw_price=raw_price,
-            quantity=quantity,
-            **self.costs,
-        )
+        if "cost" in self.implementations:
+            costs = self.implementations["cost"](
+                {"side": side, "raw_price": raw_price, "quantity": quantity},
+                dict(self.implementation_parameters["cost"]),
+            )
+        else:
+            costs = cms_cost_breakdown(
+                side=side,
+                raw_price=raw_price,
+                quantity=quantity,
+                **self.costs,
+            )
         if side == "BUY":
             self.cash -= notional + costs["total_cost_cny"]
             self.holdings += quantity
@@ -284,7 +342,14 @@ def _reconcile(
 
 
 def replay_strategy(
-    frame: pd.DataFrame, config: ValidatedStrategyConfig
+    frame: pd.DataFrame,
+    config: ValidatedStrategyConfig,
+    *,
+    implementations: Mapping[
+        str, Callable[[dict[str, Any], dict[str, Any]], Any]
+    ]
+    | None = None,
+    implementation_parameters: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ReplayResult:
     try:
         normalized = _normalize_frame(frame)
@@ -296,6 +361,8 @@ def replay_strategy(
         slot: value["parameters"]
         for slot, value in canonical["operators"].items()
     }
+    implementations = implementations or {}
+    implementation_parameters = implementation_parameters or {}
     signal_column = operator_parameters["fit"]["price_column"]
     if signal_column not in normalized.columns:
         raise ReplayError(
@@ -303,15 +370,65 @@ def replay_strategy(
         )
 
     indexed = normalized.set_index("Date")
-    fit = prior_log_ols(
-        indexed[signal_column],
-        window_sessions=operator_parameters["fit"]["window_sessions"],
-    )
-    smoothed = recursive_log_ema(
-        fit["curve"],
-        span_sessions=operator_parameters["smoothing"]["span_sessions"],
-    )
-    statistic = adjacent_curve_pct_slope(smoothed)
+    if "fit" in implementations:
+        fit = pd.DataFrame(
+            {
+                "history_start": pd.Series(
+                    pd.NaT, index=indexed.index, dtype="datetime64[ns]"
+                ),
+                "history_end": pd.Series(
+                    pd.NaT, index=indexed.index, dtype="datetime64[ns]"
+                ),
+                "curve": np.nan,
+            },
+            index=indexed.index,
+        )
+        for position in range(1, len(indexed)):
+            history = indexed[signal_column].iloc[:position]
+            fit.iloc[position, fit.columns.get_loc("history_start")] = history.index[0]
+            fit.iloc[position, fit.columns.get_loc("history_end")] = history.index[-1]
+            fit.iloc[position, fit.columns.get_loc("curve")] = implementations["fit"](
+                {"values": history.astype(float).tolist()},
+                dict(implementation_parameters["fit"]),
+            )
+    else:
+        fit = prior_log_ols(
+            indexed[signal_column],
+            window_sessions=operator_parameters["fit"]["window_sessions"],
+        )
+    if "smoothing" in implementations:
+        finite_fit = fit["curve"].dropna()
+        custom_smoothed = []
+        for position in range(1, len(finite_fit) + 1):
+            prefix = finite_fit.iloc[:position].astype(float).tolist()
+            output = implementations["smoothing"](
+                {"values": prefix},
+                dict(implementation_parameters["smoothing"]),
+            )
+            custom_smoothed.append(output[-1])
+        smoothed = pd.Series(custom_smoothed, index=finite_fit.index, dtype=float).reindex(
+            indexed.index
+        )
+    else:
+        smoothed = recursive_log_ema(
+            fit["curve"],
+            span_sessions=operator_parameters["smoothing"]["span_sessions"],
+        )
+    if "statistic" in implementations:
+        finite_smoothed = smoothed.dropna()
+        custom_statistic = []
+        for position in range(1, len(finite_smoothed) + 1):
+            prefix = finite_smoothed.iloc[:position].astype(float).tolist()
+            output = implementations["statistic"](
+                {"values": prefix},
+                dict(implementation_parameters["statistic"]),
+            )
+            custom_statistic.append(output[-1])
+        statistic = pd.Series(
+            custom_statistic, index=finite_smoothed.index, dtype=float
+        ).reindex(indexed.index)
+    else:
+        statistic = adjacent_curve_pct_slope(smoothed)
     start = pd.Timestamp(template["evaluation_start"])
     end = (
         pd.Timestamp(template["evaluation_end"])
@@ -329,9 +446,22 @@ def replay_strategy(
     capital = float(template["initial_capital_cny"])
     sizing = operator_parameters["sizing"]
     costs = operator_parameters["cost"]
-    account = _Account(capital, sizing, costs)
-    zero_account = _Account(capital, sizing, _zero_cost_parameters(costs))
-    buy_hold_account = _Account(capital, sizing, costs)
+    account = _Account(
+        capital, sizing, costs, implementations, implementation_parameters
+    )
+    zero_implementations = {
+        key: value for key, value in implementations.items() if key != "cost"
+    }
+    zero_account = _Account(
+        capital,
+        sizing,
+        _zero_cost_parameters(costs),
+        zero_implementations,
+        implementation_parameters,
+    )
+    buy_hold_account = _Account(
+        capital, sizing, costs, implementations, implementation_parameters
+    )
     buy_hold_entry = buy_hold_account.buy(
         evaluation.index[0],
         float(evaluation.iloc[0]["Open"]),
@@ -351,7 +481,31 @@ def replay_strategy(
         raw_open = float(bar["Open"])
         raw_close = float(bar["Close"])
         position_before = int(account.holdings > 0)
-        decision_result = decision.step(float(statistic.loc[session]))
+        if "decision" not in implementations:
+            decision_result = decision.step(float(statistic.loc[session]))
+        else:
+            statistic_prefix = [
+                None if pd.isna(value) else float(value)
+                for value in statistic.loc[evaluation.index[: position + 1]]
+            ]
+            custom_decision = implementations["decision"](
+                {
+                    "statistics": statistic_prefix,
+                    "initial_position": int(account.holdings > 0),
+                },
+                dict(implementation_parameters["decision"]),
+            )[-1]
+            previous_statistic = (
+                None
+                if position == 0
+                else float(statistic.loc[evaluation.index[position - 1]])
+            )
+            decision_result = DecisionResult(
+                custom_decision["action"],
+                custom_decision["reason"],
+                int(account.holdings > 0),
+                previous_statistic,
+            )
         action = decision_result.action
         reason = decision_result.reason
         day_events: list[dict[str, Any]] = []

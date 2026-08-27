@@ -1,0 +1,16 @@
+[Unit]
+Description=Encrypted ailearn to Feng quant research tunnel
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/jingtao/.config/quant-research-tunnel.env
+ExecStart=/home/jingtao/ai-learn/vm/host-services/quant-research-tunnel/run-tunnel.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

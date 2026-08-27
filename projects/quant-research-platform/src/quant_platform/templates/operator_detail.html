@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ operator.operator_id }} · Operators{% endblock %}
+{% block page %}operator-detail{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <p class="eyebrow">{{ operator.slot|upper }} OPERATOR</p>
+  <h1>{{ operator.title_zh }}</h1>
+  <p>{{ operator.summary_zh }}</p>
+  <div class="chips">
+    <span class="badge">Selected version {{ operator.version }}</span>
+    <span class="status">{{ operator.status }}</span>
+    {% if is_latest %}<span class="badge">Latest</span>{% else %}<span class="badge">Older version</span>{% endif %}
+  </div>
+</section>
+
+<section class="panel" data-testid="operator-version-context">
+  <h2>Current version context</h2>
+  <dl class="technical">
+    <dt>Selected version</dt><dd>{{ operator.version }}</dd>
+    <dt>Selected digest</dt><dd>{{ operator.content_digest }}</dd>
+    <dt>Latest version</dt><dd><a href="/operators/{{ operator.operator_id }}/{{ latest.version }}">{{ latest.version }}</a></dd>
+    <dt>Latest digest</dt><dd>{{ latest.content_digest }}</dd>
+  </dl>
+</section>
+
+<section class="panel" data-testid="operator-parameter-schema">
+  <h2>Parameter schema</h2>
+  {% if operator.parameter_schema.properties %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th>Type</th><th>Constraints</th></tr></thead>
+    <tbody>{% for name, schema in operator.parameter_schema.properties.items() %}
+      <tr>
+        <td class="mono">{{ name }}</td>
+        <td>{{ schema.type }}</td>
+        <td class="mono">{% if schema.enum %}enum={{ schema.enum|join(", ") }}{% endif %}{% if schema.minimum is defined %} min={{ schema.minimum }}{% endif %}{% if schema.maximum is defined %} max={{ schema.maximum }}{% endif %}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="empty">This version declares no parameters.</div>{% endif %}
+</section>
+
+<section class="panel" data-testid="operator-defaults">
+  <h2>Default parameters</h2>
+  {% if operator.defaults %}
+  <dl class="technical">{% for name, value in operator.defaults.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+  {% else %}<div class="empty">No default parameters are required.</div>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Documentation</h2>
+  <div class="prose">{{ documentation|safe }}</div>
+</section>
+
+<section class="panel" data-testid="operator-validation-evidence">
+  <h2>Publication validation</h2>
+  <dl class="technical">
+    {% for name, value in operator.validation_evidence.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
+  </dl>
+</section>
+
+<section class="panel" data-testid="operator-version-history">
+  <h2>Linked version history</h2>
+  <div class="rows">{% for version in versions %}
+    <a class="row" href="/operators/{{ operator.operator_id }}/{{ version.version }}">
+      <span><strong>{{ version.version }}</strong><small class="mono">{{ version.created_at }}</small></span>
+      <span class="chips">{% if version.version == latest.version %}<span class="badge">Latest</span>{% endif %}{% if version.version == operator.version %}<span class="badge">Selected</span>{% endif %}</span>
+    </a>
+  {% endfor %}</div>
+</section>
+
+<section class="panel">
+  <h2>Immutable identity</h2>
+  <dl class="technical">
+    <dt>Operator ID</dt><dd>{{ operator.operator_id }}</dd>
+    <dt>Slot</dt><dd>{{ operator.slot }}</dd>
+    <dt>Digest</dt><dd>{{ operator.content_digest }}</dd>
+    <dt>Created</dt><dd>{{ operator.created_at }}</dd>
+  </dl>
+</section>
+{% endblock %}
