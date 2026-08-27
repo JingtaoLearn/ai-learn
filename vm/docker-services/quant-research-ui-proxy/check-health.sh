@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "$0")/../../../scripts/lib/common.sh"
+source "$(dirname "$0")/../../scripts/lib/common.sh"
 
 gateway_env="${1:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/quant-research-gateway.env}"
 if [ ! -f "${gateway_env}" ]; then

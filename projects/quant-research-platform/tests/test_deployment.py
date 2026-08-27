@@ -1,7 +1,13 @@
+import os
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = (
+    Path(os.environ["AI_LEARN_REPOSITORY_ROOT"])
+    if "AI_LEARN_REPOSITORY_ROOT" in os.environ
+    else ROOT.parents[1]
+)
 
 
 def test_docker_context_is_allowlisted_and_build_uses_hash_locked_dependencies():
@@ -47,7 +53,7 @@ def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
 
 
 def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
-    repository = ROOT.parents[1]
+    repository = REPOSITORY_ROOT
     tunnel = (
         repository
         / "vm/host-services/quant-research-tunnel/run-tunnel.sh"
@@ -96,7 +102,7 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
 
 
 def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
-    repository = ROOT.parents[1]
+    repository = REPOSITORY_ROOT
     ignored = (ROOT / ".gitignore").read_text()
     ms_login = (repository / "projects/ms-login/README.md").read_text()
     ms_login_app = (repository / "projects/ms-login/app.js").read_text()

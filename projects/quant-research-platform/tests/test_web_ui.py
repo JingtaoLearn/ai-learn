@@ -83,11 +83,17 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
 
     history = client.get("/history")
     detail = client.get(f"/experiments/{created['experiment_id']}")
-    report = client.get(f"/reports/{attempt['attempt_id']}")
+    wrapper = client.get(f"/reports/{attempt['attempt_id']}")
+    report = client.get(
+        f"/reports/{attempt['attempt_id']}/content",
+        headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
+    )
 
     assert created["experiment_id"] in history.text
     assert 'data-testid="attempt-timeline"' in detail.text
     assert '<iframe sandbox="allow-scripts"' in detail.text
+    assert wrapper.status_code == 200
+    assert 'data-page="report-wrapper"' in wrapper.text
     assert report.status_code == 200
     report_csp = report.headers["content-security-policy"]
     assert report_csp.startswith("sandbox allow-scripts")
@@ -117,7 +123,10 @@ def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):
         result_digest="a" * 64,
     )
 
-    response = client.get(f"/reports/{attempt['attempt_id']}")
+    response = client.get(
+        f"/reports/{attempt['attempt_id']}/content",
+        headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
+    )
 
     assert response.status_code == 404
     assert "unsafe" not in response.text
@@ -146,9 +155,33 @@ def test_report_route_rejects_any_tampered_run_artifact(tmp_path: Path):
     metrics.chmod(0o444)
     run_dir.chmod(0o555)
 
-    response = client.get(f"/reports/{attempt['attempt_id']}")
+    response = client.get(
+        f"/reports/{attempt['attempt_id']}/content",
+        headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
+    )
 
     assert response.status_code == 404
+
+
+def test_report_content_rejects_top_level_navigation(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    app.state.experiments.submit(_task(snapshot(app)), action_id="create")
+    attempt = app.state.experiments.claim_next_attempt()
+    result = ResolvedAttemptExecutor(
+        app.state.catalog,
+        output_root=app.state.catalog.state_root / "experiment-runs",
+        project_root=PROJECT_ROOT,
+    )(attempt)
+    app.state.experiments.finish_success(
+        attempt["attempt_id"],
+        result_path=result["result_path"],
+        result_digest=result["result_digest"],
+    )
+
+    response = client.get(f"/reports/{attempt['attempt_id']}/content")
+
+    assert response.status_code == 403
 
 
 def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: Path):

@@ -893,7 +893,21 @@ def create_app(
 
     @app.get("/reports/{attempt_id}")
     async def report(request: Request, attempt_id: str):
+        return _render(
+            request,
+            "report_wrapper.html",
+            session=_session(request),
+            attempt_id=attempt_id,
+        )
+
+    @app.get("/reports/{attempt_id}/content")
+    async def report_content(request: Request, attempt_id: str):
         _session(request)
+        if (
+            request.headers.get("sec-fetch-dest") != "iframe"
+            or request.headers.get("sec-fetch-site") not in {"same-origin", "same-site"}
+        ):
+            return HTMLResponse("Report content requires a same-site sandbox frame.", status_code=403)
         try:
             payload = _report_payload(
                 settings, experiments.attempt_detail(attempt_id)
@@ -907,7 +921,9 @@ def create_app(
                 "Content-Security-Policy": (
                     "sandbox allow-scripts; default-src 'none'; "
                     "connect-src 'none'; img-src data:; "
-                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "form-action 'none'; base-uri 'none'; frame-ancestors 'self'; "
+                    "navigate-to 'none'"
                 ),
                 "Content-Disposition": "inline",
             },

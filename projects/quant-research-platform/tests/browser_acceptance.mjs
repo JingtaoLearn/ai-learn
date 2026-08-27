@@ -112,9 +112,31 @@ try {
     await loaded;
   }
 
-  async function submit(expression) {
+  async function keyboardActivate(selector) {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
     const loaded = once("Page.loadEventFired", sessionId);
-    await evaluate(expression);
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      {
+        type: "char",
+        key: "Enter",
+        code: "Enter",
+        text: "\r",
+        unmodifiedText: "\r",
+        windowsVirtualKeyCode: 13,
+      },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+      sessionId,
+    );
     await loaded;
   }
 
@@ -202,13 +224,13 @@ try {
         '[{"input":{"values":[1.0,2.0]},"parameters":{},"expected":2.0}]',
       documentation: "# Browser fit\n\nDeterministic browser acceptance fixture.",
     };
-    await submit(`(() => {
+    await evaluate(`(() => {
       const values = ${JSON.stringify(operatorValues)};
       for (const [name, value] of Object.entries(values)) {
         document.querySelector('[name="' + name + '"]').value = value;
       }
-      document.querySelector('form[data-testid="operator-form"]').submit();
     })()`);
+    await keyboardActivate('form[data-testid="operator-form"] button[type="submit"]');
     await expectPage("operator-detail");
     console.error("stage operator-published");
 
@@ -226,8 +248,8 @@ try {
         }
       })()`);
     }
-    await submit(
-      'document.querySelector(\'form[data-testid="experiment-form"]\').submit()',
+    await keyboardActivate(
+      'form[data-testid="experiment-form"] button[type="submit"]:not([formaction])',
     );
     await expectPage("experiment-detail");
     console.error("stage experiment-created");
@@ -246,11 +268,7 @@ try {
         }
       })()`);
     }
-    await submit(`(() => {
-      const form = document.querySelector('form[data-testid="experiment-form"]');
-      form.action = "/experiments/preview";
-      form.submit();
-    })()`);
+    await keyboardActivate('[data-testid="preview-experiment"]');
     await expectPage("experiment-preview");
     console.error("stage duplicate-preview");
     const duplicate = await evaluate(
@@ -259,7 +277,7 @@ try {
     if (!duplicate) throw new Error("Duplicate preview did not detect the existing identity");
 
     await navigate(experimentPath);
-    await submit('document.querySelector(\'[data-testid="rerun-form"]\').submit()');
+    await keyboardActivate('[data-testid="rerun-form"] button');
     await expectPage("experiment-detail");
     console.error("stage experiment-rerun");
     const rerunVisible = await evaluate(
