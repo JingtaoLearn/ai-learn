@@ -142,6 +142,34 @@ def test_historical_revision_creates_snapshot_and_preserves_old(tmp_path: Path):
     assert second["revision_count"] == 1
 
 
+def test_update_preserves_and_detects_adjusted_close_revisions(tmp_path: Path):
+    initial = _bars(["2026-08-18", "2026-08-19"]).assign(
+        AdjustedClose=[3.01, 3.02]
+    )
+    first = _reconcile(
+        tmp_path,
+        initial,
+        ["2026-08-18", "2026-08-19"],
+        "2026-08-18",
+        "2026-08-19",
+    )
+    revised = _bars(["2026-08-19", "2026-08-20"]).assign(
+        AdjustedClose=[3.03, 3.04]
+    )
+    second = _reconcile(
+        tmp_path,
+        revised,
+        ["2026-08-19", "2026-08-20"],
+        "2026-08-19",
+        "2026-08-20",
+    )
+
+    persisted = _snapshot_frame(second)
+    assert persisted["AdjustedClose"].tolist() == [3.01, 3.03, 3.04]
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert second["revision_count"] == 1
+
+
 def test_duplicate_or_conflicting_fetched_rows_fail_closed(tmp_path: Path):
     fetched = _bars(["2026-08-18", "2026-08-18"], [6.10, 6.20])
 
@@ -248,7 +276,9 @@ def test_update_cannot_use_corrupt_latest_snapshot(tmp_path: Path):
         "2026-08-18",
         "2026-08-18",
     )
-    (Path(str(first["path"])) / "data.parquet").write_bytes(b"corrupt")
+    parquet = Path(str(first["path"])) / "data.parquet"
+    parquet.chmod(0o644)
+    parquet.write_bytes(b"corrupt")
 
     with pytest.raises(RuntimeError, match="latest snapshot pointer is invalid"):
         _reconcile(

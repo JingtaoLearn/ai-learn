@@ -11,19 +11,24 @@ from quant_platform.reference_job import ReferenceJobError, run_reference_job
 from quant_platform.submissions import publish_submission
 
 
-def _foundation(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
+def _foundation(
+    tmp_path: Path, *, adjusted_close: bool = False
+) -> tuple[Path, Path, Path, Path, Path]:
     root = tmp_path / "state"
+    frame = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-18", "2026-08-19", "2026-08-20"]),
+            "Open": [6.12, 6.18, 6.20],
+            "High": [6.20, 6.24, 6.28],
+            "Low": [6.08, 6.14, 6.18],
+            "Close": [6.18, 6.20, 6.25],
+            "Volume": [1200, 1100, 1300],
+        }
+    )
+    if adjusted_close:
+        frame["AdjustedClose"] = [3.10, 3.11, 3.13]
     dataset = publish_snapshot(
-        pd.DataFrame(
-            {
-                "Date": pd.to_datetime(["2026-08-18", "2026-08-19", "2026-08-20"]),
-                "Open": [6.12, 6.18, 6.20],
-                "High": [6.20, 6.24, 6.28],
-                "Low": [6.08, 6.14, 6.18],
-                "Close": [6.18, 6.20, 6.25],
-                "Volume": [1200, 1100, 1300],
-            }
-        ),
+        frame,
         root,
         {
             "instrument": "601288.SS",
@@ -114,6 +119,7 @@ def test_reference_job_writes_deterministic_snapshot_derived_outputs(tmp_path: P
 
 def test_reference_job_rejects_tampered_dataset(tmp_path: Path):
     dataset, submission, run_contract, artifacts, workspace = _foundation(tmp_path)
+    (dataset / "data.parquet").chmod(0o644)
     (dataset / "data.parquet").write_bytes(b"tampered")
 
     with pytest.raises(ReferenceJobError, match="dataset.*checksum"):
@@ -135,3 +141,16 @@ def test_reference_job_rejects_contract_identity_mismatch(tmp_path: Path):
         run_reference_job(
             dataset, submission, run_contract, artifacts, workspace=workspace
         )
+
+
+def test_reference_job_accepts_verified_v2_snapshot_with_adjusted_close(tmp_path: Path):
+    dataset, submission, run_contract, artifacts, workspace = _foundation(
+        tmp_path, adjusted_close=True
+    )
+
+    run_reference_job(
+        dataset, submission, run_contract, artifacts, workspace=workspace
+    )
+
+    daily = pd.read_csv(artifacts / "daily.csv")
+    assert daily.columns.tolist() == ["Date", "Close", "DailyReturn", "NormalizedClose"]

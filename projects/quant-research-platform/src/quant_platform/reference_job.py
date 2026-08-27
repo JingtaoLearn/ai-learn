@@ -13,6 +13,7 @@ import pandas as pd
 
 
 REQUIRED_COLUMNS = ("Date", "Open", "High", "Low", "Close", "Volume")
+OPTIONAL_COLUMNS = ("AdjustedClose",)
 EXECUTION_ENVELOPE = {
     "cap_drop": ["ALL"],
     "cpus": 1.0,
@@ -140,9 +141,13 @@ def _verify_run(
 
 
 def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    if tuple(frame.columns) != REQUIRED_COLUMNS:
+    supported_schemas = {
+        REQUIRED_COLUMNS,
+        (*REQUIRED_COLUMNS, *OPTIONAL_COLUMNS),
+    }
+    if tuple(frame.columns) not in supported_schemas:
         raise ReferenceJobError(
-            f"dataset columns must be exactly {list(REQUIRED_COLUMNS)}"
+            "dataset columns are not a supported canonical daily schema"
         )
     clean = frame.copy()
     if clean.empty:
@@ -157,19 +162,19 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
                 raise ValueError("daily date is not midnight")
             dates.append(timestamp)
         clean["Date"] = pd.DatetimeIndex(dates)
-        clean[list(REQUIRED_COLUMNS[1:])] = clean[list(REQUIRED_COLUMNS[1:])].apply(
+        numeric_columns = list(clean.columns[1:])
+        clean[numeric_columns] = clean[numeric_columns].apply(
             pd.to_numeric, errors="raise"
         )
     except (TypeError, ValueError) as exc:
         raise ReferenceJobError(f"dataset values are invalid: {exc}") from exc
     if clean["Date"].duplicated().any():
         raise ReferenceJobError("dataset contains duplicate dates")
-    values = clean[list(REQUIRED_COLUMNS[1:])].to_numpy(dtype=float)
+    numeric_columns = list(clean.columns[1:])
+    values = clean[numeric_columns].to_numpy(dtype=float)
     if not np.isfinite(values).all():
         raise ReferenceJobError("dataset contains non-finite values")
-    clean[list(REQUIRED_COLUMNS[1:])] = clean[list(REQUIRED_COLUMNS[1:])].astype(
-        "float64"
-    )
+    clean[numeric_columns] = clean[numeric_columns].astype("float64")
     normalized = clean.sort_values("Date").reset_index(drop=True)
     if not normalized["Date"].equals(clean["Date"].reset_index(drop=True)):
         raise ReferenceJobError("dataset dates are not sorted")
@@ -178,9 +183,18 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _canonical_data_bytes(frame: pd.DataFrame) -> bytes:
     dates = frame["Date"].astype("int64").to_numpy(dtype=">i8")
-    numeric = frame[list(REQUIRED_COLUMNS[1:])].to_numpy(dtype=">f8")
+    numeric = frame[list(frame.columns[1:])].to_numpy(dtype=">f8")
+    if tuple(frame.columns) == REQUIRED_COLUMNS:
+        prefix = b"quant-platform-ohlcv-v1\0"
+    else:
+        column_schema = _canonical_json(list(frame.columns))
+        prefix = (
+            b"quant-platform-daily-v2\0"
+            + struct.pack(">Q", len(column_schema))
+            + column_schema
+        )
     return (
-        b"quant-platform-ohlcv-v1\0"
+        prefix
         + struct.pack(">Q", len(frame))
         + dates.tobytes(order="C")
         + numeric.tobytes(order="C")
@@ -198,6 +212,12 @@ def _verify_dataset(
         if _sha256(parquet_path.read_bytes()) != manifest["parquet_sha256"]:
             raise ReferenceJobError("dataset Parquet checksum mismatch")
         frame = _normalize_frame(pd.read_parquet(parquet_path))
+        if manifest["schema_version"] == 1 and tuple(frame.columns) != REQUIRED_COLUMNS:
+            raise ReferenceJobError("v1 dataset schema mismatch")
+        if manifest["schema_version"] == 2 and manifest.get("columns") != list(
+            frame.columns
+        ):
+            raise ReferenceJobError("v2 dataset column schema mismatch")
         if _sha256(_canonical_data_bytes(frame)) != manifest["canonical_sha256"]:
             raise ReferenceJobError("dataset canonical checksum mismatch")
         identity = {

@@ -9,6 +9,7 @@ import pandas as pd
 
 from .datasets import publish_snapshot, snapshot_status
 from .runner import run_submission
+from .strategy_runner import run_strategy_config
 from .submissions import publish_submission, submission_status
 from .updates import reconcile_daily_history
 
@@ -73,6 +74,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--submission-id", required=True)
     run.add_argument("--attempt-id", required=True)
     run.add_argument("--timeout-seconds", required=True, type=float)
+
+    strategy = commands.add_parser("strategy")
+    strategy_commands = strategy.add_subparsers(
+        dest="strategy_command", required=True, parser_class=JSONArgumentParser
+    )
+    strategy_run = strategy_commands.add_parser("run")
+    strategy_run.add_argument("--config", required=True)
     return parser
 
 
@@ -126,6 +134,18 @@ def _execute(args: argparse.Namespace) -> dict[str, str | int]:
         return {
             key: result[key] for key in ("attempt_id", "run_id", "outcome", "path")
         }
+    if args.command == "strategy" and args.strategy_command == "run":
+        result = run_strategy_config(Path(args.config))
+        return {
+            key: result[key]
+            for key in (
+                "status",
+                "run_id",
+                "path",
+                "config_sha256",
+                "dataset_snapshot_id",
+            )
+        }
     raise CLIUsageError("unsupported command")
 
 
@@ -138,10 +158,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         except argparse.ArgumentError as exc:
             raise CLIUsageError(str(exc)) from exc
         result = _execute(args)
-        print(json.dumps({"ok": True, **result}, sort_keys=True))
+        print(json.dumps({"ok": True, **result}, sort_keys=True, allow_nan=False))
         return 0
     except (CLIUsageError, OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, sort_keys=True))
+        print(
+            json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                sort_keys=True,
+                allow_nan=False,
+            )
+        )
         return 2
 
 

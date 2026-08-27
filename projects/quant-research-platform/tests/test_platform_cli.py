@@ -377,3 +377,43 @@ def test_cli_run_returns_only_sealed_attempt_identity(
         ),
     }
     assert captured["timeout_seconds"] == 45.5
+
+
+def test_strategy_run_cli_emits_only_json_identity(tmp_path: Path, capsys, monkeypatch):
+    config_path = tmp_path / "strategy.json"
+    config_path.write_text("{}")
+    monkeypatch.setattr(
+        "quant_platform.cli.run_strategy_config",
+        lambda path: {
+            "status": "CREATED",
+            "run_id": "a" * 64,
+            "path": str(tmp_path / "runs" / ("a" * 64)),
+            "config_sha256": "b" * 64,
+            "dataset_snapshot_id": "c" * 64,
+            "internal": "must not be emitted",
+        },
+    )
+
+    code = main(["strategy", "run", "--config", str(config_path)])
+    result = _json_output(capsys)
+
+    assert code == 0
+    assert result == {
+        "ok": True,
+        "status": "CREATED",
+        "run_id": "a" * 64,
+        "path": str(tmp_path / "runs" / ("a" * 64)),
+        "config_sha256": "b" * 64,
+        "dataset_snapshot_id": "c" * 64,
+    }
+
+
+def test_strategy_run_cli_failure_is_one_strict_json_object(tmp_path: Path, capsys):
+    code = main(
+        ["strategy", "run", "--config", str(tmp_path / "missing.json")]
+    )
+    result = _json_output(capsys)
+
+    assert code == 2
+    assert result["ok"] is False
+    assert "missing.json" in result["error"]
