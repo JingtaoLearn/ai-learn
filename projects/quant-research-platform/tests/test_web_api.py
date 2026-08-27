@@ -87,6 +87,123 @@ def test_api_auth_and_errors_are_always_json(tmp_path: Path):
     assert bad_host.json()["error"]["code"] == "BAD_HOST"
 
 
+def test_every_protected_route_authenticates_before_any_meaningful_work(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("protected work ran before authentication")
+
+    for target, names in (
+        (
+            app.state.experiments,
+            (
+                "resolve_task",
+                "preview_task",
+                "submit",
+                "rerun",
+                "list_experiments",
+                "experiment_detail",
+                "list_attempts",
+                "attempt_detail",
+                "create_replacement_attempt",
+            ),
+        ),
+        (
+            app.state.operators,
+            ("list", "detail", "list_versions", "submit"),
+        ),
+        (
+            app.state.catalog,
+            ("connect", "template_detail", "operator_detail"),
+        ),
+    ):
+        for name in names:
+            monkeypatch.setattr(target, name, forbidden)
+    for name in (
+        "_datasets",
+        "_verified_run_payloads",
+        "_report_payload",
+        "_form_body",
+        "_json_body",
+        "_task_from_form",
+    ):
+        monkeypatch.setattr(f"quant_platform.web.{name}", forbidden)
+
+    html_gets = (
+        "/",
+        "/operators",
+        "/operators/submit",
+        "/operators/prior_log_ols/1.0.0",
+        "/templates/single_stock_daily_causal/1",
+        "/experiments/new",
+        "/history?status=FAILED&search=x&drift=drifted",
+        "/experiments/not-found",
+        "/reports/not-found",
+        "/reports/not-found/content",
+    )
+    html_posts = (
+        "/logout",
+        "/operators/submit",
+        "/experiments/preview",
+        "/experiments/new",
+        "/experiments/not-found/rerun",
+    )
+    api_gets = (
+        "/api/operators",
+        "/api/operators/prior_log_ols",
+        "/api/templates/single_stock_daily_causal/1",
+        "/api/experiments",
+        "/api/experiments/not-found",
+        "/api/experiments/not-found/attempts",
+        "/api/attempts/not-found",
+    )
+    api_posts = (
+        "/api/operators",
+        "/api/tasks/resolve",
+        "/api/experiments/preview",
+        "/api/experiments",
+        "/api/experiments/not-found/rerun",
+        "/api/attempts/not-found/recover",
+    )
+
+    for path in html_gets:
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/login"
+    for path in html_posts:
+        response = client.post(
+            path,
+            content=b"not=a-valid-body",
+            headers={
+                "origin": "https://quant.ai.jingtao.fun",
+                "content-type": "application/octet-stream",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/login"
+    for path in api_gets:
+        response = client.get(path)
+        assert response.status_code == 401, path
+        assert response.json()["error"]["code"] == "AUTH_REQUIRED"
+    for path in api_posts:
+        response = client.post(
+            path,
+            content=b"{broken",
+            headers={
+                "origin": "https://quant.ai.jingtao.fun",
+                "content-type": "application/json",
+            },
+        )
+        assert response.status_code == 401, path
+        assert response.json()["error"]["code"] == "AUTH_REQUIRED"
+    assert calls == []
+
+
 def test_sso_callback_sets_secure_cookie_and_rejects_replay(tmp_path: Path):
     _, client = make_app(tmp_path)
     token = _token(_claims())
