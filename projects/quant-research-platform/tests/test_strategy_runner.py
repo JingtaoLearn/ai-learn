@@ -552,6 +552,8 @@ def test_systemd_user_private_tmp_allows_anchored_source_identity():
     if manager.returncode != 0:
         pytest.skip("systemd user manager is unavailable")
     probe = (
+        "import sys;"
+        f"sys.path.insert(0, {str(PROJECT_ROOT / 'src')!r});"
         "from pathlib import Path;"
         "from quant_platform.strategy_runner import _effective_source_identity;"
         f"_effective_source_identity(project_root=Path({str(PROJECT_ROOT)!r}))"
@@ -574,7 +576,6 @@ def test_systemd_user_private_tmp_allows_anchored_source_identity():
         capture_output=True,
         text=True,
         timeout=30,
-        env=os.environ | {"PYTHONPATH": str(PROJECT_ROOT / "src")},
     )
 
     assert completed.returncode == 0, completed.stderr
