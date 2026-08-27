@@ -34,7 +34,7 @@ joins canonical configuration and dataset identity in the run ID.
 The top-level object has exactly:
 
 - `schema_version`: integer `1`;
-- `dataset`: exactly `root` and `snapshot_id`;
+- `dataset`: exactly `root`, `instrument`, and `snapshot_id`;
 - `output_root`: immutable run parent directory;
 - `template`: `{name, version, parameters}`;
 - `operators`: exactly the required slots `fit`, `smoothing`, `statistic`, `decision`,

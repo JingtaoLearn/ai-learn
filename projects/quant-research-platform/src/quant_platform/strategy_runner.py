@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-import hashlib
 import errno
+import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from .datasets import _verify_snapshot
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
@@ -33,13 +40,34 @@ ARTIFACT_NAMES = {
     "report.html",
 }
 HASHED_ARTIFACT_NAMES = ARTIFACT_NAMES - {"run_manifest.json"}
-SOURCE_MODULES = (
-    "strategy_config.py",
-    "strategy_operators.py",
-    "strategy_replay.py",
-    "strategy_report.py",
-    "strategy_runner.py",
+SOURCE_PATHS = (
+    "src/quant_platform/datasets.py",
+    "src/quant_platform/strategy_config.py",
+    "src/quant_platform/strategy_operators.py",
+    "src/quant_platform/strategy_replay.py",
+    "src/quant_platform/strategy_report.py",
+    "src/quant_platform/strategy_runner.py",
+    "pyproject.toml",
+    "requirements.lock",
 )
+RUNTIME_FIELDS = {
+    "python",
+    "python_implementation",
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "pyarrow",
+}
+GIT_FIELDS = {"available", "commit", "dirty"}
+RECONCILIATION_FIELDS = {
+    "daily_equity",
+    "event_cash",
+    "event_positions",
+    "event_costs",
+    "trade_events",
+    "profit_identity",
+    "trade_net_pnl",
+}
 SEMANTICS = {
     "account_return_scope": "price_return_only_without_dividend_or_corporate_action_cash_flows",
     "decision_information": "signal_history_ends_before_execution_session",
@@ -62,21 +90,92 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _effective_source_identity() -> tuple[str, dict[str, str]]:
-    source_root = Path(__file__).resolve().parent
+def _runtime_identity() -> dict[str, str]:
+    return {
+        "python": sys.version,
+        "python_implementation": platform.python_implementation(),
+        "pandas": pd.__version__,
+        "numpy": np.__version__,
+        "matplotlib": matplotlib.__version__,
+        "pyarrow": pa.__version__,
+    }
+
+
+def _git_identity(project_root: Path) -> dict[str, Any]:
+    repository = project_root.parents[1]
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dirty_output = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        if not commit:
+            raise ValueError("empty Git commit")
+        return {"available": True, "commit": commit, "dirty": bool(dirty_output)}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"available": False, "commit": None, "dirty": None}
+
+
+def _read_source_payload(path: Path, project_root: Path) -> bytes:
+    try:
+        relative = path.relative_to(project_root)
+        before = path.stat(follow_symlinks=False)
+        if path.is_symlink() or not path.is_file():
+            raise StrategyRunError(
+                f"effective source input is unsafe: {relative.as_posix()}"
+            )
+        payload = path.read_bytes()
+        after = path.stat(follow_symlinks=False)
+    except (OSError, ValueError) as exc:
+        raise StrategyRunError(f"effective source input is unavailable: {path}") from exc
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if identity_before != identity_after or len(payload) != after.st_size:
+        raise StrategyRunError(f"effective source input changed while hashing: {path}")
+    return payload
+
+
+def _effective_source_identity(
+) -> tuple[str, dict[str, str], dict[str, str], dict[str, Any]]:
+    project_root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
     files: dict[str, str] = {}
-    for name in SOURCE_MODULES:
-        path = source_root / name
-        if not path.is_file() or path.is_symlink():
-            raise StrategyRunError(f"effective source module is unavailable: {name}")
-        payload = path.read_bytes()
-        files[name] = _sha256(payload)
-        digest.update(name.encode("utf-8"))
+    for relative in SOURCE_PATHS:
+        path = project_root / relative
+        payload = _read_source_payload(path, project_root)
+        files[relative] = _sha256(payload)
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(payload)
         digest.update(b"\0")
-    return digest.hexdigest(), files
+    runtime = _runtime_identity()
+    digest.update(b"runtime\0")
+    digest.update(_canonical_json(runtime))
+    return digest.hexdigest(), files, runtime, _git_identity(project_root)
 
 
 def _bound_snapshot(
@@ -130,7 +229,7 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
     payload = frame.to_csv(
         index=False,
         date_format="%Y-%m-%d",
-        float_format="%.12g",
+        float_format="%.17g",
         lineterminator="\n",
     ).encode("utf-8")
     _write_bytes(path, payload)
@@ -190,6 +289,49 @@ def _load_strict_json(path: Path, label: str) -> Any:
         raise StrategyRunError(f"corrupt {label} JSON: {exc}") from exc
 
 
+def _require_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    if not all(isinstance(key, str) for key in value):
+        raise ValueError(f"{label} keys must be strings")
+    return value
+
+
+def _validate_sha_map(value: Any, label: str) -> dict[str, str]:
+    mapping = _require_object(value, label)
+    if not all(
+        isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+        for digest in mapping.values()
+    ):
+        raise ValueError(f"{label} values must be SHA-256 strings")
+    return mapping
+
+
+def _validate_runtime(value: Any) -> dict[str, str]:
+    runtime = _require_object(value, "runtime")
+    if set(runtime) != RUNTIME_FIELDS or not all(
+        isinstance(item, str) and item for item in runtime.values()
+    ):
+        raise ValueError("runtime identity is invalid")
+    return runtime
+
+
+def _validate_git(value: Any) -> dict[str, Any]:
+    git = _require_object(value, "git")
+    if set(git) != GIT_FIELDS or type(git["available"]) is not bool:
+        raise ValueError("Git provenance is invalid")
+    if git["available"]:
+        if (
+            not isinstance(git["commit"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", git["commit"])
+            or type(git["dirty"]) is not bool
+        ):
+            raise ValueError("available Git provenance is invalid")
+    elif git["commit"] is not None or git["dirty"] is not None:
+        raise ValueError("unavailable Git provenance must use null values")
+    return git
+
+
 def _verify_run(
     target: Path,
     run_id: str,
@@ -198,6 +340,7 @@ def _verify_run(
     dataset_manifest: dict[str, Any],
     source_sha256: str,
     source_files: dict[str, str],
+    runtime: dict[str, str],
     *,
     require_name: bool = True,
 ) -> dict[str, Any]:
@@ -220,7 +363,10 @@ def _verify_run(
             if stat.S_IMODE(path.stat().st_mode) & 0o222:
                 raise ValueError(f"artifact is not immutable: {path.name}")
 
-        manifest = _load_strict_json(target / "run_manifest.json", "run manifest")
+        manifest = _require_object(
+            _load_strict_json(target / "run_manifest.json", "run manifest"),
+            "run manifest",
+        )
         expected_fields = {
             "schema_version",
             "run_id",
@@ -230,21 +376,25 @@ def _verify_run(
             "dataset_canonical_sha256",
             "source_sha256",
             "source_files",
+            "runtime",
+            "git",
             "semantics",
             "reconciliation",
             "files",
         }
         if set(manifest) != expected_fields:
             raise ValueError("run manifest fields are invalid")
-        if manifest["schema_version"] != 1:
+        if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
             raise ValueError("run manifest schema_version must be 1")
         identity = {
             "schema_version": 1,
             "config_sha256": config.config_sha256,
             "dataset_snapshot_id": dataset_manifest["snapshot_id"],
             "source_sha256": source_sha256,
+            "runtime": runtime,
         }
-        if manifest["identity"] != identity:
+        manifest_identity = _require_object(manifest["identity"], "run identity")
+        if set(manifest_identity) != set(identity) or manifest_identity != identity:
             raise ValueError("run identity inputs do not match")
         if _sha256(_canonical_json(identity)) != run_id:
             raise ValueError("run ID does not match identity inputs")
@@ -261,11 +411,26 @@ def _verify_run(
             raise ValueError("dataset canonical checksum binding mismatch")
         if manifest["source_sha256"] != source_sha256:
             raise ValueError("effective source checksum binding mismatch")
-        if manifest["source_files"] != source_files:
+        manifest_source_files = _validate_sha_map(
+            manifest["source_files"], "source files"
+        )
+        if manifest_source_files != source_files:
             raise ValueError("effective source file checksums mismatch")
-        if manifest["semantics"] != SEMANTICS:
+        manifest_runtime = _validate_runtime(manifest["runtime"])
+        if manifest_runtime != runtime:
+            raise ValueError("runtime identity mismatch")
+        _validate_git(manifest["git"])
+        semantics = _require_object(manifest["semantics"], "semantics")
+        if semantics != SEMANTICS:
             raise ValueError("financial semantics mismatch")
-        if not all(manifest["reconciliation"].values()):
+        reconciliation = _require_object(
+            manifest["reconciliation"], "reconciliation"
+        )
+        if set(reconciliation) != RECONCILIATION_FIELDS or not all(
+            type(passed) is bool for passed in reconciliation.values()
+        ):
+            raise ValueError("stored reconciliation gates are invalid")
+        if not all(reconciliation.values()):
             raise ValueError("stored reconciliation gates are not all true")
 
         stored_config = _load_strict_json(target / "config.json", "canonical config")
@@ -273,10 +438,21 @@ def _verify_run(
             raise ValueError("canonical config artifact mismatch")
         if _sha256(_canonical_json(stored_config)) != config.config_sha256:
             raise ValueError("canonical config artifact checksum mismatch")
-        files = manifest["files"]
+        files = _require_object(manifest["files"], "artifact checksum map")
         if set(files) != HASHED_ARTIFACT_NAMES:
             raise ValueError("artifact checksum map is incomplete")
         for name, expected in files.items():
+            expected = _require_object(
+                expected, f"artifact checksum entry {name}"
+            )
+            if (
+                set(expected) != {"sha256", "size"}
+                or not isinstance(expected["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected["sha256"])
+                or type(expected["size"]) is not int
+                or expected["size"] < 0
+            ):
+                raise ValueError(f"artifact checksum entry is invalid: {name}")
             path = target / name
             payload = path.read_bytes()
             if expected != {"sha256": _sha256(payload), "size": len(payload)}:
@@ -292,12 +468,13 @@ def _verify_run(
 def run_strategy_config(config_path: Path | str) -> dict[str, str]:
     config = load_strategy_config(config_path)
     dataset_path, dataset_manifest, frame = _bound_snapshot(config)
-    source_sha256, source_files = _effective_source_identity()
+    source_sha256, source_files, runtime, git = _effective_source_identity()
     identity = {
         "schema_version": 1,
         "config_sha256": config.config_sha256,
         "dataset_snapshot_id": dataset_manifest["snapshot_id"],
         "source_sha256": source_sha256,
+        "runtime": runtime,
     }
     run_id = _sha256(_canonical_json(identity))
     output_root = Path(config.canonical["output_root"]).resolve()
@@ -311,6 +488,7 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             dataset_manifest,
             source_sha256,
             source_files,
+            runtime,
         )
         return {
             "status": "NO_CHANGE",
@@ -330,6 +508,9 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             "dataset_instrument": dataset_manifest["metadata"]["instrument"],
             "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
             "source_sha256": source_sha256,
+            "runtime": runtime,
+            "git_commit": git["commit"],
+            "git_dirty": git["dirty"],
         },
     )
     output_root.mkdir(parents=True, exist_ok=True)
@@ -352,6 +533,8 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
             "source_sha256": source_sha256,
             "source_files": source_files,
+            "runtime": runtime,
+            "git": git,
             "semantics": SEMANTICS,
             "reconciliation": replay.reconciliation,
             "files": _file_manifest(staging),
@@ -367,6 +550,7 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             dataset_manifest,
             source_sha256,
             source_files,
+            runtime,
             require_name=False,
         )
         try:
@@ -382,6 +566,7 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
                 dataset_manifest,
                 source_sha256,
                 source_files,
+                runtime,
             )
             status = "NO_CHANGE"
         else:
@@ -396,6 +581,7 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             dataset_manifest,
             source_sha256,
             source_files,
+            runtime,
         )
         return {
             "status": status,

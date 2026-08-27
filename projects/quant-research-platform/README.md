@@ -34,7 +34,8 @@ research strategy run --config examples/bocom-causal-slope.json
 
 The command writes exactly one JSON success or failure object. Before using the BOCOM
 example, replace its all-zero `dataset.snapshot_id` with the ID returned by
-`research data snapshot` or `research data update`. Relative dataset and output roots are
+`research data snapshot` or `research data update`, and keep `dataset.instrument`
+equal to that snapshot's instrument metadata. Relative dataset and output roots are
 resolved from the command's working directory.
 
 Daily snapshot ingestion preserves canonical optional `AdjustedClose`; the legacy input
@@ -42,12 +43,14 @@ header `Adj Close` is accepted only as an ingestion alias and stored as
 `AdjustedClose`. Snapshots containing optional research columns use a column-bound v2
 identity, while required-only OHLCV snapshots retain their existing v1 identity. Raw
 `Open` and `Close` always remain available for executable accounting and valuation.
+Published snapshot directories are sealed `0555` with `0444` files; the writable
+instrument parent and `latest.json` pointer remain outside that immutable boundary.
 
 Configuration ownership is closed and exact:
 
 | Owner | Fields |
 |---|---|
-| Top level | schema version, dataset root/snapshot ID, output root |
+| Top level | integer schema version, dataset root/instrument/snapshot ID, output root |
 | Template | display name, evaluation dates, initial capital/state, terminal handling, explicit cost-assumption label |
 | Fit | prior-only log OLS window and explicit `AdjustedClose` or raw `Close` signal selection |
 | Smoothing | recursive log-EMA span |
@@ -81,6 +84,12 @@ verified dataset, and effective source identities:
 - `metrics.json`
 - `cost_breakdown.json`
 - `report.html`
+
+The effective source identity hashes `datasets.py`, every strategy module,
+`pyproject.toml`, and `requirements.lock`. It also binds the exact Python, pandas,
+NumPy, Matplotlib, and PyArrow runtime versions. The manifest records the Git commit
+and dirty state when Git metadata is available, or explicit null/unavailable values
+for a source archive. File and dependency hashes remain authoritative.
 
 The Chinese mobile-first report is self-contained, uses a verified CJK font, and plots
 raw prices, causal fitted/smoothed trend, actual raw-Open BUY/SELL events, holding spans,

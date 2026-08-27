@@ -1,12 +1,14 @@
 import json
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import quant_platform.strategy_runner as runner_module
+from quant_platform.cli import main
 from quant_platform.datasets import publish_snapshot
 from quant_platform.strategy_runner import StrategyRunError, run_strategy_config
 
@@ -129,6 +131,18 @@ def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
     assert manifest["run_id"] == published["run_id"]
     assert manifest["config_sha256"] == published["config_sha256"]
     assert manifest["dataset_snapshot_id"] == published["dataset_snapshot_id"]
+    assert set(manifest["runtime"]) == {
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pyarrow",
+        "python",
+        "python_implementation",
+    }
+    assert set(manifest["git"]) == {"available", "commit", "dirty"}
+    assert "src/quant_platform/datasets.py" in manifest["source_files"]
+    assert "pyproject.toml" in manifest["source_files"]
+    assert "requirements.lock" in manifest["source_files"]
     assert manifest["reconciliation"] == {
         "daily_equity": True,
         "event_cash": True,
@@ -233,7 +247,19 @@ def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         runner_module,
         "_effective_source_identity",
-        lambda: ("f" * 64, {"synthetic.py": "e" * 64}),
+        lambda: (
+            "f" * 64,
+            {"synthetic.py": "e" * 64},
+            {
+                "python": "changed",
+                "python_implementation": "CPython",
+                "pandas": "1",
+                "numpy": "1",
+                "matplotlib": "1",
+                "pyarrow": "1",
+            },
+            {"available": False, "commit": None, "dirty": None},
+        ),
     )
 
     second = run_strategy_config(config_path)
@@ -241,6 +267,49 @@ def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):
     assert second["run_id"] != first["run_id"]
     assert Path(first["path"]).is_dir()
     assert Path(second["path"]).is_dir()
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["src/quant_platform/datasets.py", "requirements.lock"],
+)
+def test_effective_source_hash_binds_dataset_and_lock_bytes(
+    tmp_path: Path, monkeypatch, relative_path: str
+):
+    config_path = _foundation(tmp_path)
+    first = run_strategy_config(config_path)
+    original = runner_module._read_source_payload
+    baseline, _, _, _ = runner_module._effective_source_identity()
+
+    def changed(path, project_root):
+        payload = original(path, project_root)
+        if path.relative_to(project_root).as_posix() == relative_path:
+            return payload + b"\naudit-mutation"
+        return payload
+
+    monkeypatch.setattr(runner_module, "_read_source_payload", changed)
+    mutated, _, _, _ = runner_module._effective_source_identity()
+    second = run_strategy_config(config_path)
+
+    assert mutated != baseline
+    assert second["run_id"] != first["run_id"]
+
+
+def test_effective_source_hash_binds_runtime_versions(tmp_path: Path, monkeypatch):
+    config_path = _foundation(tmp_path)
+    first = run_strategy_config(config_path)
+    baseline, _, runtime, _ = runner_module._effective_source_identity()
+    changed_runtime = runtime | {"numpy": runtime["numpy"] + "-changed"}
+    monkeypatch.setattr(
+        runner_module, "_runtime_identity", lambda: changed_runtime
+    )
+
+    mutated, _, recorded_runtime, _ = runner_module._effective_source_identity()
+    second = run_strategy_config(config_path)
+
+    assert mutated != baseline
+    assert recorded_runtime == changed_runtime
+    assert second["run_id"] != first["run_id"]
 
 
 def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, monkeypatch):
@@ -324,3 +393,55 @@ def test_persisted_json_is_strict_finite_and_canonical_config_is_bound(tmp_path:
         )
     canonical = json.loads((target / "config.json").read_text())
     assert canonical["dataset"]["snapshot_id"] == published["dataset_snapshot_id"]
+
+
+def test_csv_float_serialization_round_trips_binary64(tmp_path: Path):
+    frame = pd.DataFrame(
+        {"value": [0.12345678901234566, 6.200000000000001]}
+    )
+    path = tmp_path / "precise.csv"
+
+    runner_module._write_csv(path, frame)
+    restored = pd.read_csv(StringIO(path.read_text()), float_precision="round_trip")
+
+    assert restored["value"].tolist() == frame["value"].tolist()
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    [
+        ("reconciliation", []),
+        ("files", []),
+        ("source_files", []),
+        ("identity", []),
+        ("runtime", []),
+        ("git", []),
+    ],
+)
+def test_malformed_nested_manifest_containers_fail_api_and_cli_json(
+    tmp_path: Path, capsys, field: str, malformed
+):
+    config_path = _foundation(tmp_path)
+    published = run_strategy_config(config_path)
+    target = Path(published["path"])
+    manifest_path = target / "run_manifest.json"
+    target.chmod(0o755)
+    manifest_path.chmod(0o644)
+    manifest = json.loads(manifest_path.read_text())
+    manifest[field] = malformed
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o444)
+    target.chmod(0o555)
+
+    with pytest.raises(StrategyRunError, match="corrupt"):
+        run_strategy_config(config_path)
+
+    code = main(["strategy", "run", "--config", str(config_path)])
+    output = capsys.readouterr()
+    assert code == 2
+    assert output.err == ""
+    lines = output.out.strip().splitlines()
+    assert len(lines) == 1
+    failure = json.loads(lines[0])
+    assert failure["ok"] is False
+    assert "StrategyRunError" in failure["error"]
