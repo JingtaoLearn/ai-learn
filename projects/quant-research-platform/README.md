@@ -117,6 +117,57 @@ flows they are not total shareholder return. The committed BOCOM cost values are
 as a conservative research assumption, not Jingtao's or any other account's commission.
 There is no broker, live-order, paper-order, network, or parameter-search path.
 
+## Operator registry and experiment UI
+
+The authenticated registry UI separates immutable operator publication from experiment
+submission. Initialize or inspect the same domain layer without HTTP:
+
+```bash
+research operator list --root state/ui
+research operator detail --root state/ui --operator-id prior_log_ols --version 1.0.0
+research template detail --root state/ui --name single_stock_daily_causal --version 1
+research task resolve --root state/ui --spec task.json
+research task submit --root state/ui --spec task.json --action-id request-001
+research task rerun --root state/ui --experiment-id EXPERIMENT_SHA256 --action-id rerun-001
+research experiment list --root state/ui
+research attempt list --root state/ui --experiment-id EXPERIMENT_SHA256
+```
+
+The initial migration seeds template `single_stock_daily_causal@1` and the seven built-in
+operators as published `1.0.0` versions. Every custom operator supplies one `operator.py`, an exact
+parameter schema and defaults, Markdown documentation, and deterministic JSON fixtures. All seven
+slots have narrow JSON contracts. Submitted source is opaque to the CLI and web process: a
+digest-pinned Docker runner compiles and tests it with no network, a read-only root/source, one CPU,
+512 MiB memory, a PID limit, no capabilities, no-new-privileges, and a non-root UID. Evidence is
+created by that runner and binds the candidate, fixtures, image, and execution envelope.
+At experiment time, every resolved custom slot is assembled into one composition and the complete
+causal daily replay runs in one isolated container launch for that attempt.
+
+Task documents contain no source. They select `latest` or an explicit published version and set
+only declared parameters. Submission freezes the dataset snapshot, template, resolved operator
+versions/digests/parameters, and execution identity. An exact duplicate returns the existing
+experiment without an attempt. Rerun accepts only the experiment ID and creates an idempotent new
+attempt with the frozen resolution. Each attempt can be launched once; restart recovery marks an
+abandoned running attempt failed and requires an explicit new rerun.
+
+The FastAPI/Jinja2 application is started with:
+
+```bash
+python -m quant_platform.web
+```
+
+Production settings fail closed unless Microsoft SSO, session signing, allowed emails, the exact
+`https://quant.ai.jingtao.fun/auth/callback`, audience `quant-research-ui`, secure cookies, and a
+digest-pinned runner image are configured. The app binds only `127.0.0.1:8090`. Reports are served
+only from verified immutable attempt artifacts and embedded without script, same-origin,
+navigation, popup, or download privileges.
+
+Reviewed code-only deployment templates are under [`deploy/`](deploy/). The
+[ailearn SSH tunnel](../../vm/host-services/quant-research-tunnel/) resolves one nginx-proxy bridge
+gateway and writes that exact address for both its SSH bind and the
+[no-port nginx sidecar](../../vm/docker-services/quant-research-ui-proxy/). No deployment action is
+performed by this repository phase.
+
 ## Decision boundary
 
 - `GC=F` is Yahoo's continuous gold-futures **research proxy**. It is not an executable futures contract and hides roll construction.
