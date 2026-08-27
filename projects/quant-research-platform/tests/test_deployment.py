@@ -21,3 +21,69 @@ def test_jupyter_is_loopback_only_authenticated_and_non_root():
     assert "JUPYTER_TOKEN" in compose
     assert "ServerApp.token=" not in compose
     assert 'user: "1000:1000"' in compose
+
+
+def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
+    service = (ROOT / "deploy" / "quant-research-ui.service").read_text()
+    environment = (ROOT / "deploy" / "quant-research-ui.env.example").read_text()
+
+    assert "User=root" not in service
+    assert "WorkingDirectory=/home/feng/quant-platform/current" in service
+    assert "python -m quant_platform.web" in service
+    assert "127.0.0.1:8090" not in service
+    assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
+    assert "QUANT_STATE_ROOT=/home/feng/quant-platform/state/ui" in environment
+    assert "QUANT_AUTH_MODE=sso" in environment
+    assert "QUANT_SSO_AUDIENCE=quant-research-ui" in environment
+    assert (
+        "QUANT_SSO_CALLBACK_URL=https://quant.ai.jingtao.fun/auth/callback"
+        in environment
+    )
+    assert "AUTH_SHARED_SECRET=<" in environment
+    assert "QUANT_SESSION_SECRET=<" in environment
+
+
+def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
+    repository = ROOT.parents[1]
+    tunnel = (
+        repository
+        / "vm/host-services/quant-research-tunnel/run-tunnel.sh"
+    ).read_text()
+    unit = (
+        repository
+        / "vm/host-services/quant-research-tunnel/quant-research-tunnel.service"
+    ).read_text()
+    compose = (
+        repository
+        / "vm/docker-services/quant-research-ui-proxy/docker-compose.yml"
+    ).read_text()
+    nginx = (
+        repository
+        / "vm/docker-services/quant-research-ui-proxy/nginx.conf"
+    ).read_text()
+
+    assert "docker network inspect nginx-proxy" in tunnel
+    assert "NGINX_PROXY_GATEWAY" in tunnel
+    assert '${NGINX_PROXY_GATEWAY}:18090:127.0.0.1:8090' in tunnel
+    assert "StrictHostKeyChecking=yes" in tunnel
+    assert "ExitOnForwardFailure=yes" in tunnel
+    assert "EnvironmentFile=" in unit
+    assert "ports:" not in compose
+    assert "${NGINX_PROXY_GATEWAY:?" in compose
+    assert "name: nginx-proxy" in compose
+    assert "proxy_pass http://quant-research-tunnel:18090" in nginx
+    assert "proxy_set_header X-Forwarded-Proto https" in nginx
+    assert "proxy_set_header X-Forwarded-For $remote_addr" in nginx
+    assert "client_max_body_size 2m" in nginx
+
+
+def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
+    repository = ROOT.parents[1]
+    ignored = (ROOT / ".gitignore").read_text()
+    ms_login = (repository / "projects/ms-login/README.md").read_text()
+    ms_login_app = (repository / "projects/ms-login/app.js").read_text()
+
+    assert "deploy/quant-research-ui.env" in ignored
+    assert "quant.ai.jingtao.fun/auth/callback" in ms_login
+    assert "quant-research-ui" in ms_login
+    assert "audience" in ms_login_app
