@@ -88,6 +88,93 @@ def build_operator_validation_command(
     ]
 
 
+def build_composed_execution_command(
+    *,
+    dataset_dir: Path | str,
+    output_root: Path | str,
+    composition_file: Path | str,
+    config_file: Path | str,
+    operator_bundles: dict[str, Path],
+    runner_image: str,
+) -> list[str]:
+    raw_paths = [
+        Path(dataset_dir),
+        Path(output_root),
+        Path(composition_file),
+        Path(config_file),
+        *operator_bundles.values(),
+    ]
+    for path in raw_paths:
+        if path.is_symlink():
+            raise IsolationError(f"composed execution path cannot be a symlink: {path}")
+    paths = [_resolved(path) for path in raw_paths]
+    for path in paths:
+        _reject_protected(path)
+        _reject_unsafe_mount_syntax(path)
+    if not paths[0].is_dir() or not paths[1].is_dir():
+        raise IsolationError("composed dataset and output paths must be directories")
+    if not paths[2].is_file() or not paths[3].is_file():
+        raise IsolationError("composed execution contracts must be regular files")
+    if not is_immutable_runner_image(runner_image):
+        raise IsolationError("composed runner image must be pinned by SHA-256")
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--cpus",
+        str(EXECUTION_ENVELOPE["cpus"]),
+        "--memory",
+        f"{EXECUTION_ENVELOPE['memory_mib']}m",
+        "--pids-limit",
+        str(EXECUTION_ENVELOPE["pids_limit"]),
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--user",
+        "1000:1000",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--mount",
+        (
+            f"type=bind,src={paths[0]},"
+            f"dst=/platform/datasets/{paths[0].parent.name}/{paths[0].name},readonly"
+        ),
+        "--mount",
+        f"type=bind,src={paths[1]},dst=/artifacts",
+        "--mount",
+        f"type=bind,src={paths[2]},dst=/run-contract/composition.json,readonly",
+        "--mount",
+        f"type=bind,src={paths[3]},dst=/run-contract/config.json,readonly",
+    ]
+    for slot in sorted(operator_bundles):
+        bundle = _resolved(operator_bundles[slot])
+        if not bundle.is_dir():
+            raise IsolationError(f"operator bundle does not exist for slot {slot}")
+        command.extend(
+            [
+                "--mount",
+                f"type=bind,src={bundle},dst=/operators/{slot},readonly",
+            ]
+        )
+    command.extend(
+        [
+            runner_image,
+            "python",
+            "-m",
+            "quant_platform.composition_worker",
+            "/run-contract/composition.json",
+            "/run-contract/config.json",
+        ]
+    )
+    return command
+
+
 class IsolationError(ValueError):
     """Raised when a run would escape the fixed research sandbox."""
 

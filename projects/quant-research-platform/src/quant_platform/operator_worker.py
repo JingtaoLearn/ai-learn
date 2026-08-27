@@ -273,6 +273,70 @@ def validate_candidate(
     }
 
 
+def load_published_operator(
+    bundle_dir: Path | str,
+) -> tuple[str, Callable[[dict[str, Any], dict[str, Any]], Any]]:
+    bundle = Path(bundle_dir)
+    manifest = _load_json(bundle / "manifest.json")
+    tests = _load_json(bundle / "tests.json")
+    evidence = _load_json(bundle / "evidence.json")
+    source = (bundle / "operator.py").read_text(encoding="utf-8")
+    documentation = (bundle / "documentation.md").read_text(encoding="utf-8")
+    required_manifest = {
+        "operator_id",
+        "slot",
+        "version",
+        "parameter_schema",
+        "defaults",
+        "title_zh",
+        "summary_zh",
+        "documentation",
+        "content_digest",
+    }
+    _exact(manifest, required_manifest, "published manifest")
+    if documentation != manifest["documentation"]:
+        raise ValueError("published documentation binding mismatch")
+    reconstructed = {
+        key: manifest[key] for key in required_manifest - {"content_digest"}
+    } | {"source": source, "tests": tests}
+    digest = hashlib.sha256(canonical_json_bytes(reconstructed)).hexdigest()
+    fixture_digest = hashlib.sha256(canonical_json_bytes(tests)).hexdigest()
+    if digest != manifest["content_digest"]:
+        raise ValueError("published operator content digest mismatch")
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("passed") is not True
+        or evidence.get("candidate_digest") != digest
+        or evidence.get("fixture_digest") != fixture_digest
+        or evidence.get("slot") != manifest["slot"]
+        or evidence.get("execution_envelope") != EXECUTION_ENVELOPE
+    ):
+        raise ValueError("published operator evidence binding mismatch")
+    code = _validate_source(source)
+    namespace: dict[str, Any] = {"__builtins__": ALLOWED_BUILTINS}
+    exec(code, namespace)
+    if (
+        namespace.get("OPERATOR_API_VERSION") != 1
+        or namespace.get("SLOT") != manifest["slot"]
+        or not callable(namespace.get("apply"))
+    ):
+        raise ValueError("published operator runtime contract mismatch")
+    apply = namespace["apply"]
+    schema = manifest["parameter_schema"]
+    slot = manifest["slot"]
+
+    def invoke(payload: dict[str, Any], parameters: dict[str, Any]) -> Any:
+        validated_payload = _validate_input(slot, payload)
+        validated_parameters = validate_parameters(schema, parameters)
+        return _validate_output(
+            slot,
+            apply(validated_payload, validated_parameters),
+            validated_payload,
+        )
+
+    return slot, invoke
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:

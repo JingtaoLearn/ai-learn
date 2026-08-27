@@ -14,6 +14,7 @@ import tempfile
 from contextlib import contextmanager
 from collections.abc import Iterator
 from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import matplotlib
@@ -687,6 +688,7 @@ def _verify_run(
     source_sha256: str,
     source_files: dict[str, str],
     runtime: dict[str, str],
+    composition_digest: str | None = None,
     *,
     require_name: bool = True,
 ) -> dict[str, Any]:
@@ -740,6 +742,8 @@ def _verify_run(
             "source_sha256": source_sha256,
             "runtime": runtime,
         }
+        if composition_digest is not None:
+            identity["composition_digest"] = composition_digest
         manifest_identity = _require_object(manifest["identity"], "run identity")
         if set(manifest_identity) != set(identity) or manifest_identity != identity:
             raise ValueError("run identity inputs do not match")
@@ -817,6 +821,12 @@ def run_strategy_config(
     config_path: Path | str,
     *,
     project_root: Path | str | None = None,
+    implementations: Mapping[
+        str, Callable[[dict[str, Any], dict[str, Any]], Any]
+    ]
+    | None = None,
+    implementation_parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    composition_digest: str | None = None,
 ) -> dict[str, str]:
     config = load_strategy_config(config_path)
     dataset_path, dataset_manifest, frame = _bound_snapshot(config)
@@ -833,6 +843,10 @@ def run_strategy_config(
         "source_sha256": source_sha256,
         "runtime": runtime,
     }
+    if composition_digest is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", composition_digest):
+            raise StrategyRunError("composition digest must be a lowercase SHA-256 value")
+        identity["composition_digest"] = composition_digest
     run_id = _sha256(_canonical_json(identity))
     output_root = Path(config.canonical["output_root"]).resolve()
     target = output_root / run_id
@@ -846,6 +860,7 @@ def run_strategy_config(
             source_sha256,
             source_files,
             runtime,
+            composition_digest,
         )
         return {
             "status": "NO_CHANGE",
@@ -855,26 +870,40 @@ def run_strategy_config(
             "dataset_snapshot_id": dataset_manifest["snapshot_id"],
         }
 
-    replay = replay_strategy(frame, config)
-    report = render_report(
-        replay,
-        config,
-        {
-            "config_sha256": config.config_sha256,
-            "dataset_snapshot_id": dataset_manifest["snapshot_id"],
-            "dataset_instrument": dataset_manifest["metadata"]["instrument"],
-            "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
-            "source_sha256": source_sha256,
-            "runtime": runtime,
-            "cjk_font_identity": {
-                "path": runtime["cjk_font_path"],
-                "family": runtime["cjk_font_family"],
-                "sha256": runtime["cjk_font_sha256"],
-            },
-            "git_commit": git["commit"],
-            "git_dirty": git["dirty"],
+    if implementations:
+        replay = replay_strategy(
+            frame,
+            config,
+            implementations=implementations,
+            implementation_parameters=implementation_parameters,
+        )
+    else:
+        replay = replay_strategy(frame, config)
+    provenance = {
+        "config_sha256": config.config_sha256,
+        "dataset_snapshot_id": dataset_manifest["snapshot_id"],
+        "dataset_instrument": dataset_manifest["metadata"]["instrument"],
+        "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
+        "source_sha256": source_sha256,
+        "runtime": runtime,
+        "cjk_font_identity": {
+            "path": runtime["cjk_font_path"],
+            "family": runtime["cjk_font_family"],
+            "sha256": runtime["cjk_font_sha256"],
         },
-    )
+        "git_commit": git["commit"],
+        "git_dirty": git["dirty"],
+        }
+    if implementations is not None and "report" in implementations:
+        report = implementations["report"](
+            {
+                "title": config.template_parameters["instrument_display_name"],
+                "metrics": replay.metrics,
+            },
+            dict((implementation_parameters or {})["report"]),
+        )
+    else:
+        report = render_report(replay, config, provenance)
     output_root.mkdir(parents=True, exist_ok=True)
     output_root.chmod(0o755)
     staging = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=output_root))
@@ -913,6 +942,7 @@ def run_strategy_config(
             source_sha256,
             source_files,
             runtime,
+            composition_digest,
             require_name=False,
         )
         try:
@@ -929,6 +959,7 @@ def run_strategy_config(
                 source_sha256,
                 source_files,
                 runtime,
+                composition_digest,
             )
             status = "NO_CHANGE"
         else:
@@ -944,6 +975,7 @@ def run_strategy_config(
             source_sha256,
             source_files,
             runtime,
+            composition_digest,
         )
         return {
             "status": status,

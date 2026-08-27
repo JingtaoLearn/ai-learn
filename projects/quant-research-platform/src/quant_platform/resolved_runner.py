@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
+from .isolation import build_composed_execution_command
 from .schemas import canonical_json_bytes
+from .seed import BUILTINS
 from .strategy_runner import run_strategy_config
 
 
@@ -25,6 +28,7 @@ BUILTIN_OPERATORS = {
     "cost": "cms_china_a_share",
     "report": "concise_chinese_causal_trade",
 }
+BUILTIN_DEFAULTS = {item["slot"]: item["defaults"] for item in BUILTINS}
 RESULT_FILES = (
     "daily_replay.csv",
     "events.csv",
@@ -43,18 +47,16 @@ def build_legacy_config(
     operators: dict[str, Any] = {}
     for slot, builtin_id in BUILTIN_OPERATORS.items():
         operator = resolved["operators"][slot]
-        if (
-            operator["operator_id"] != builtin_id
-            or operator["resolved_version"] != "1.0.0"
-        ):
-            raise ResolvedExecutionError(
-                f"isolated custom {slot} execution is required for "
-                f"{operator['operator_id']}@{operator['resolved_version']}"
-            )
+        is_builtin = (
+            operator["operator_id"] == builtin_id
+            and operator["resolved_version"] == "1.0.0"
+        )
         operators[slot] = {
             "name": builtin_id,
             "version": "1",
-            "parameters": operator["parameters"],
+            "parameters": (
+                operator["parameters"] if is_builtin else BUILTIN_DEFAULTS[slot]
+            ),
         }
     return {
         "schema_version": 1,
@@ -94,10 +96,12 @@ class ResolvedAttemptExecutor:
         *,
         output_root: Path,
         project_root: Path | None = None,
+        runner_image: str | None = None,
     ):
         self.catalog = catalog
         self.output_root = Path(output_root)
         self.project_root = project_root
+        self.runner_image = runner_image
 
     def _verify_resolution(self, resolved: dict[str, Any]) -> None:
         for slot, operator in resolved["operators"].items():
@@ -169,6 +173,16 @@ class ResolvedAttemptExecutor:
     def __call__(self, attempt: dict[str, Any]) -> dict[str, str]:
         resolved = attempt["resolved"]
         self._verify_resolution(resolved)
+        custom_slots = {
+            slot
+            for slot, operator in resolved["operators"].items()
+            if (
+                operator["operator_id"] != BUILTIN_OPERATORS[slot]
+                or operator["resolved_version"] != "1.0.0"
+            )
+        }
+        if custom_slots:
+            return self._run_composed(attempt, custom_slots)
         legacy = build_legacy_config(
             resolved,
             state_root=self.catalog.state_root,
@@ -195,4 +209,126 @@ class ResolvedAttemptExecutor:
             "result_path": str(run_path),
             "result_digest": result_digest,
             "logs": f"Resolved strategy run status: {run['status']}",
+        }
+
+    def _run_composed(
+        self, attempt: dict[str, Any], custom_slots: set[str]
+    ) -> dict[str, str]:
+        if self.runner_image is None:
+            raise ResolvedExecutionError(
+                "a pinned runner image is required for custom composition"
+            )
+        resolved = attempt["resolved"]
+        composition_digest = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "experiment_id": attempt["experiment_id"],
+                    "operators": resolved["operators"],
+                    "execution_identity": resolved["execution_identity"],
+                }
+            )
+        ).hexdigest()
+        legacy = build_legacy_config(
+            resolved,
+            state_root=Path("/platform"),
+            output_root=Path("/artifacts"),
+        )
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        work_root = self.catalog.state_root / "work"
+        work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        operator_bundles: dict[str, Path] = {}
+        composition_operators: dict[str, Any] = {}
+        for slot in sorted(custom_slots):
+            operator = resolved["operators"][slot]
+            detail = self.catalog.operator_detail(
+                operator["operator_id"], operator["resolved_version"]
+            )
+            operator_bundles[slot] = self.catalog.state_root / detail["bundle_path"]
+            composition_operators[slot] = {
+                "bundle_path": f"/operators/{slot}",
+                "parameters": operator["parameters"],
+            }
+        composition = {
+            "schema_version": 1,
+            "composition_digest": composition_digest,
+            "operators": composition_operators,
+        }
+        config_descriptor, config_name = tempfile.mkstemp(
+            prefix=".composition-config-", suffix=".json", dir=work_root
+        )
+        composition_descriptor, composition_name = tempfile.mkstemp(
+            prefix=".composition-", suffix=".json", dir=work_root
+        )
+        config_path = Path(config_name)
+        composition_path = Path(composition_name)
+        try:
+            with os.fdopen(config_descriptor, "wb") as stream:
+                stream.write(canonical_json_bytes(legacy))
+            with os.fdopen(composition_descriptor, "wb") as stream:
+                stream.write(canonical_json_bytes(composition))
+            dataset = resolved["dataset"]
+            dataset_dir = (
+                self.catalog.state_root
+                / "datasets"
+                / dataset["instrument"]
+                / dataset["snapshot_id"]
+            )
+            command = build_composed_execution_command(
+                dataset_dir=dataset_dir,
+                output_root=self.output_root,
+                composition_file=composition_path,
+                config_file=config_path,
+                operator_bundles=operator_bundles,
+                runner_image=self.runner_image,
+            )
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ResolvedExecutionError("custom composition timed out") from exc
+        finally:
+            config_path.unlink(missing_ok=True)
+            composition_path.unlink(missing_ok=True)
+        lines = completed.stdout.splitlines()
+        if completed.returncode != 0 or len(lines) != 1:
+            raise ResolvedExecutionError("custom composition launch failed")
+        try:
+            result = json.loads(lines[0])
+        except json.JSONDecodeError as exc:
+            raise ResolvedExecutionError(
+                "custom composition returned invalid JSON"
+            ) from exc
+        if result.get("ok") is not True or not isinstance(result.get("run_id"), str):
+            raise ResolvedExecutionError(
+                f"custom composition failed: {result.get('error', 'unknown error')}"
+            )
+        run_path = self.output_root / result["run_id"]
+        try:
+            manifest = json.loads(
+                (run_path / "run_manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            raise ResolvedExecutionError(
+                "custom composition result manifest is invalid"
+            ) from exc
+        if (
+            manifest.get("run_id") != result["run_id"]
+            or manifest.get("identity", {}).get("composition_digest")
+            != composition_digest
+        ):
+            raise ResolvedExecutionError(
+                "custom composition result identity does not match its launch"
+            )
+        result_digest = _result_digest(run_path)
+        run = result | {"path": str(run_path)}
+        self._publish_audit(attempt, run, result_digest)
+        return {
+            "result_path": str(run_path),
+            "result_digest": result_digest,
+            "logs": f"Resolved custom composition status: {result['status']}",
         }

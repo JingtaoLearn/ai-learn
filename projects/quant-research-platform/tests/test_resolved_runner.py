@@ -1,21 +1,21 @@
 import json
+import hashlib
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
-import pytest
-
 from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
-from quant_platform.resolved_runner import (
-    ResolvedExecutionError,
-    ResolvedAttemptExecutor,
-    build_legacy_config,
-)
+from quant_platform.operator_service import OperatorService
+from quant_platform.operator_worker import load_published_operator
+from quant_platform.resolved_runner import ResolvedAttemptExecutor, build_legacy_config
+from quant_platform.schemas import canonical_json_bytes
 from quant_platform.strategy_runner import run_strategy_config
 
 from test_experiment_service import FIXTURE, _task
+from test_operator_submission import IMAGE, _passing_validator, _submission
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -114,14 +114,110 @@ def test_exact_resolved_rerun_verifies_and_reuses_immutable_artifacts(tmp_path: 
     assert second["logs"] == "Resolved strategy run status: NO_CHANGE"
 
 
-def test_custom_operator_never_falls_back_to_builtin_execution(tmp_path: Path):
+def test_custom_operator_uses_a_validated_builtin_placeholder_config(tmp_path: Path):
     catalog, attempt = _attempt(tmp_path)
     attempt["resolved"]["operators"]["fit"]["operator_id"] = "custom_fit"
     attempt["resolved"]["operators"]["fit"]["content_digest"] = "f" * 64
 
-    with pytest.raises(ResolvedExecutionError, match="isolated custom fit"):
-        build_legacy_config(
-            attempt["resolved"],
-            state_root=catalog.state_root,
-            output_root=tmp_path / "runs",
+    legacy = build_legacy_config(
+        attempt["resolved"],
+        state_root=catalog.state_root,
+        output_root=tmp_path / "runs",
+    )
+
+    assert legacy["operators"]["fit"]["name"] == "prior_log_ols"
+    assert legacy["operators"]["fit"]["parameters"]["window_sessions"] == 20
+
+
+def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
+    tmp_path: Path, monkeypatch
+):
+    catalog, original_attempt = _attempt(tmp_path)
+    operator_service = OperatorService(
+        catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+    task = original_attempt["requested"]
+    implementations = {}
+    implementation_parameters = {}
+    for slot in task["operators"]:
+        operator_service.submit(_submission(slot=slot))
+        task["operators"][slot] = {
+            "operator_id": f"fixture_{slot}",
+            "version": "1.0.0",
+            "parameters": {"window": 2},
+        }
+        detail = operator_service.detail(f"fixture_{slot}", "1.0.0")
+        loaded_slot, implementation = load_published_operator(
+            catalog.state_root / detail["bundle_path"]
         )
+        assert loaded_slot == slot
+        implementations[slot] = implementation
+        implementation_parameters[slot] = {"window": 2}
+    service = ExperimentService(catalog, execution_identity={"runner": "test"})
+    created = service.submit(task, action_id="custom-create")
+    attempt = service.attempt_detail(created["attempt_id"])
+    legacy = build_legacy_config(
+        attempt["resolved"],
+        state_root=catalog.state_root,
+        output_root=tmp_path / "custom-runs",
+    )
+    config_path = tmp_path / "custom.json"
+    config_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    composition_digest = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "experiment_id": attempt["experiment_id"],
+                "operators": attempt["resolved"]["operators"],
+                "execution_identity": attempt["resolved"]["execution_identity"],
+            }
+        )
+    ).hexdigest()
+    result = run_strategy_config(
+        config_path,
+        project_root=PROJECT_ROOT,
+        implementations=implementations,
+        implementation_parameters=implementation_parameters,
+        composition_digest=composition_digest,
+    )
+
+    report = (Path(result["path"]) / "report.html").read_text(encoding="utf-8")
+    assert "<h1>Synthetic Bank</h1>" in report
+    manifest = json.loads((Path(result["path"]) / "run_manifest.json").read_text())
+    assert manifest["identity"]["composition_digest"] == composition_digest
+
+    launches = []
+
+    def launch(command, **kwargs):
+        launches.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "status": "CREATED",
+                    "run_id": result["run_id"],
+                    "path": f"/artifacts/{result['run_id']}",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("quant_platform.resolved_runner.subprocess.run", launch)
+    executor = ResolvedAttemptExecutor(
+        catalog,
+        output_root=tmp_path / "custom-runs",
+        project_root=PROJECT_ROOT,
+        runner_image=IMAGE,
+    )
+    executed = executor(attempt)
+
+    assert executed["result_path"] == result["path"]
+    assert len(launches) == 1
+    assert launches[0].count("docker") == 1
+    assert sum(
+        f"dst=/operators/{slot},readonly" in argument
+        for argument in launches[0]
+        for slot in task["operators"]
+    ) == 7
