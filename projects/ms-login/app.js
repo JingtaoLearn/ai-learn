@@ -1,4 +1,5 @@
 const {
+  createHash,
   randomBytes,
   timingSafeEqual,
 } = require("node:crypto");
@@ -17,6 +18,7 @@ const DEFAULT_CALLBACK_URL =
   "https://note.ai.jingtao.fun/auth/callback";
 const OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
 const MAX_OUTSTANDING_OAUTH_STATES = 5;
+const MAX_GLOBAL_OAUTH_STATES = 1000;
 
 function parseDownstreamClients(value) {
   const clients = JSON.parse(value || "{}");
@@ -83,39 +85,12 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
-function statesEqual(providedState, expectedState) {
-  const provided = Buffer.from(providedState);
-  const expected = Buffer.from(expectedState);
-  return (
-    provided.length === expected.length &&
-    timingSafeEqual(provided, expected)
-  );
+function digestState(state) {
+  return createHash("sha256").update(state).digest();
 }
 
-function activeOAuthFlows(flows, currentTime) {
-  if (!flows || Array.isArray(flows) || typeof flows !== "object") {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(flows).filter(([, flow]) => {
-      const age = currentTime - flow?.issuedAt;
-      return (
-        Number.isFinite(flow?.issuedAt) &&
-        age >= 0 &&
-        age <= OAUTH_STATE_TTL_MS
-      );
-    })
-  );
-}
-
-function saveSession(req) {
-  return new Promise((resolve, reject) => {
-    req.session.save((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
+function resolveLimit(value, fallback) {
+  return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 async function requestGraphProfile(accessToken) {
@@ -133,13 +108,26 @@ function createApp({
   msalClient,
   graphRequest = requestGraphProfile,
   logger = console,
+  maxOAuthStates = MAX_GLOBAL_OAUTH_STATES,
+  maxOAuthStatesPerSession = MAX_OUTSTANDING_OAUTH_STATES,
   now = Date.now,
+  sessionStore,
 } = {}) {
   const config = readConfig(env);
+  const globalStateLimit = resolveLimit(
+    maxOAuthStates,
+    MAX_GLOBAL_OAUTH_STATES
+  );
+  const perSessionStateLimit = resolveLimit(
+    maxOAuthStatesPerSession,
+    MAX_OUTSTANDING_OAUTH_STATES
+  );
   const client =
     msalClient ||
     new msal.ConfidentialClientApplication(config.msalConfig);
   const app = express();
+  // Session snapshots must never be able to restore consumed states.
+  const oauthStateRegistry = new Map();
 
   app.set("view engine", "ejs");
   app.set("views", path.join(__dirname, "views"));
@@ -159,6 +147,7 @@ function createApp({
   app.use(
     session({
       secret: config.sessionSecret,
+      ...(sessionStore ? { store: sessionStore } : {}),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -196,40 +185,80 @@ function createApp({
     };
   }
 
-  function consumeOAuthFlow(req, providedState) {
+  function purgeExpiredOAuthStates(currentTime) {
+    for (const [key, flow] of oauthStateRegistry) {
+      if (
+        !Number.isFinite(flow.issuedAt) ||
+        !Number.isFinite(flow.expiresAt) ||
+        currentTime < flow.issuedAt ||
+        currentTime >= flow.expiresAt
+      ) {
+        oauthStateRegistry.delete(key);
+      }
+    }
+  }
+
+  function registerOAuthFlow(sessionID, callbackUrl, audience) {
+    const issuedAt = now();
+    purgeExpiredOAuthStates(issuedAt);
+
+    const sessionEntries = [...oauthStateRegistry].filter(
+      ([, flow]) => flow.sessionID === sessionID
+    );
+    while (sessionEntries.length >= perSessionStateLimit) {
+      const [key] = sessionEntries.shift();
+      oauthStateRegistry.delete(key);
+    }
+    while (oauthStateRegistry.size >= globalStateLimit) {
+      const oldestKey = oauthStateRegistry.keys().next().value;
+      oauthStateRegistry.delete(oldestKey);
+    }
+
+    let state;
+    let stateDigest;
+    let key;
+    do {
+      state = randomBytes(32).toString("base64url");
+      stateDigest = digestState(state);
+      key = stateDigest.toString("hex");
+    } while (oauthStateRegistry.has(key));
+
+    const flow = {
+      stateDigest,
+      sessionID,
+      callbackUrl,
+      audience,
+      issuedAt,
+      expiresAt: issuedAt + OAUTH_STATE_TTL_MS,
+    };
+    oauthStateRegistry.set(key, flow);
+    return { flow, key, state };
+  }
+
+  function consumeOAuthFlow(sessionID, providedState) {
+    const currentTime = now();
+    purgeExpiredOAuthStates(currentTime);
+
     if (
       typeof providedState !== "string" ||
       providedState.length === 0
     ) {
-      return { consumed: false, flow: null };
+      return null;
     }
 
-    const flows = req.session.oauthFlows;
-    if (!flows || Array.isArray(flows) || typeof flows !== "object") {
-      return { consumed: false, flow: null };
-    }
-
-    const storedState = Object.keys(flows).find((candidate) =>
-      statesEqual(providedState, candidate)
-    );
-    if (!storedState) {
-      return { consumed: false, flow: null };
-    }
-
-    const flow = flows[storedState];
-    delete flows[storedState];
-    req.session.oauthFlows = flows;
-
-    const age = now() - flow?.issuedAt;
+    const providedDigest = digestState(providedState);
+    const key = providedDigest.toString("hex");
+    const flow = oauthStateRegistry.get(key);
     if (
-      !Number.isFinite(flow?.issuedAt) ||
-      age < 0 ||
-      age > OAUTH_STATE_TTL_MS
+      !flow ||
+      !timingSafeEqual(providedDigest, flow.stateDigest) ||
+      flow.sessionID !== sessionID
     ) {
-      return { consumed: true, flow: null };
+      return null;
     }
 
-    return { consumed: true, flow };
+    oauthStateRegistry.delete(key);
+    return flow;
   }
 
   app.get("/", (req, res) => {
@@ -247,30 +276,28 @@ function createApp({
         throw new Error("Downstream audience is not configured");
       }
 
-      const issuedAt = now();
-      const flows = activeOAuthFlows(
-        req.session.oauthFlows,
-        issuedAt
+      const registeredState = registerOAuthFlow(
+        req.sessionID,
+        binding.callbackUrl,
+        binding.audience
       );
-      while (
-        Object.keys(flows).length >=
-        MAX_OUTSTANDING_OAUTH_STATES
-      ) {
-        delete flows[Object.keys(flows)[0]];
+      let authUrl;
+      try {
+        authUrl = await client.getAuthCodeUrl({
+          scopes: SCOPES,
+          redirectUri: config.redirectUri,
+          state: registeredState.state,
+        });
+      } catch (error) {
+        if (
+          oauthStateRegistry.get(registeredState.key) ===
+          registeredState.flow
+        ) {
+          oauthStateRegistry.delete(registeredState.key);
+        }
+        throw error;
       }
-      const state = randomBytes(32).toString("base64url");
-
-      const authUrl = await client.getAuthCodeUrl({
-        scopes: SCOPES,
-        redirectUri: config.redirectUri,
-        state,
-      });
-      flows[state] = {
-        issuedAt,
-        callbackUrl: binding.callbackUrl,
-        audience: binding.audience,
-      };
-      req.session.oauthFlows = flows;
+      req.session.oauthSession = true;
       res.redirect(authUrl);
     } catch {
       logger.error("Login request failed");
@@ -279,16 +306,8 @@ function createApp({
   });
 
   app.get("/auth/callback", async (req, res) => {
-    const stateResult = consumeOAuthFlow(req, req.query.state);
-    if (stateResult.consumed) {
-      try {
-        await saveSession(req);
-      } catch {
-        logger.error("OAuth state consumption failed");
-        return renderError(res, 500, "Authentication failed");
-      }
-    }
-    if (!stateResult.flow) {
+    const flow = consumeOAuthFlow(req.sessionID, req.query.state);
+    if (!flow) {
       logger.error("OAuth callback rejected");
       return renderError(res, 400, "Authentication failed");
     }
@@ -297,7 +316,7 @@ function createApp({
     }
 
     try {
-      const { callbackUrl, audience } = stateResult.flow;
+      const { callbackUrl, audience } = flow;
       if (
         !callbackUrl ||
         !audience ||

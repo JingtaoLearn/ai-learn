@@ -373,7 +373,7 @@ test("expires and consumes old state before token exchange", async () => {
     createTestApp({ calls, now: () => currentTime }),
     async (baseUrl) => {
       const login = await beginLogin(baseUrl, QUANT_CALLBACK);
-      currentTime += 5 * 60 * 1000 + 1;
+      currentTime += 5 * 60 * 1000;
 
       const expired = await completeLogin(
         baseUrl,

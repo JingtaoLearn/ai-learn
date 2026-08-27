@@ -91,7 +91,8 @@ Your downstream service needs:
 - **Callback whitelist**: Only exact URLs present in `ALLOWED_CALLBACKS` are accepted as redirect targets
 - **Audience binding**: Every allowed callback must have an exact `DOWNSTREAM_CLIENTS` audience mapping
 - **Login CSRF protection**: One-use OAuth state values expire after five minutes and bind each login flow to its callback and audience
-- **Concurrent login support**: Each session retains at most five outstanding login flows so separate browser tabs do not overwrite each other
+- **Concurrent login support**: The broker retains at most five outstanding login flows per session so separate browser tabs do not overwrite each other
+- **Bounded state registry**: At most 1,000 state digests are held in application memory; restarting the broker invalidates every outstanding flow
 - **Short-lived JWT**: 30-second expiry — tokens are one-time-use for the POST redirect
 - **Server-side secrets**: Client secret and shared secret never reach the browser
 - **Hardened auth responses**: Production requires explicit signing/session secrets, secure cookies, and no-store headers
