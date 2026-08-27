@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "root": "state/platform",
+    "snapshot_id": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "output_root": "runs/strategy",
+  "template": {
+    "name": "single_stock_daily_causal",
+    "version": "1",
+    "parameters": {
+      "instrument_display_name": "Bank of Communications (601328.SS)",
+      "evaluation_start": "2025-01-02",
+      "evaluation_end": null,
+      "initial_capital_cny": 100000.0,
+      "initial_state": "flat",
+      "terminal_handling": "mark_to_market",
+      "cost_assumption_label": "Explicit conservative research assumption: 3 bps commission each side with CNY 5 minimum, 0.1 bp transfer fee, 5 bps sell stamp tax, and 5 bps slippage each side; this is not an account-specific rate."
+    }
+  },
+  "operators": {
+    "fit": {
+      "name": "prior_log_ols",
+      "version": "1",
+      "parameters": {
+        "window_sessions": 20,
+        "price_column": "AdjustedClose"
+      }
+    },
+    "smoothing": {
+      "name": "recursive_log_ema",
+      "version": "1",
+      "parameters": {
+        "span_sessions": 5
+      }
+    },
+    "statistic": {
+      "name": "adjacent_curve_pct_slope",
+      "version": "1",
+      "parameters": {}
+    },
+    "decision": {
+      "name": "post_start_threshold_crossing_hysteresis",
+      "version": "1",
+      "parameters": {
+        "buy_threshold_pct_per_day": 0.2,
+        "sell_threshold_abs_pct_per_day": 0.2
+      }
+    },
+    "sizing": {
+      "name": "all_in_all_out_a_share_lots",
+      "version": "1",
+      "parameters": {
+        "lot_size": 100,
+        "target_fraction": 1.0
+      }
+    },
+    "cost": {
+      "name": "cms_china_a_share",
+      "version": "1",
+      "parameters": {
+        "commission_rate": 0.0003,
+        "minimum_commission_cny": 5.0,
+        "transfer_fee_rate": 0.00001,
+        "sell_stamp_tax_rate": 0.0005,
+        "buy_slippage_bps": 5.0,
+        "sell_slippage_bps": 5.0
+      }
+    },
+    "report": {
+      "name": "concise_chinese_causal_trade",
+      "version": "1",
+      "parameters": {}
+    }
+  }
+}

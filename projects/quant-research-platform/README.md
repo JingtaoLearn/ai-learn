@@ -23,6 +23,78 @@ research run --root state/platform --submission-id SHA256 \
 
 Dataset snapshots, update provenance, experiment submissions, and execution attempts are content-addressed or uniquely named, atomically published, and never overwritten. Daily updates require an independently supplied expected-session CSV whose schema is exactly one column named `Date` (case-sensitive); incomplete requested histories fail without moving the latest pointer. Experiment submissions freeze the source bundle, dataset identity, immutable runner image, configuration, seed, checksums, and a fixed `1 CPU / 512 MiB / no-network` execution envelope. Every run receives a content-addressed contract and fresh artifact directory; success, process failure, timeout, and launch failure all leave a checksummed read-only attempt manifest. `quant_platform.reference_job` is a deterministic integrity demonstration that derives JSON and daily CSV evidence only from its supplied snapshot, not a promoted trading strategy. See [`docs/architecture/platform-foundation.md`](docs/architecture/platform-foundation.md) for the open-source adoption gates and the Feng Agricultural Bank non-interference boundary.
 
+## Config-driven single-stock strategy runs
+
+One strict JSON configuration can now bind an immutable daily snapshot, the complete
+versioned operator graph, account assumptions, and the output root:
+
+```bash
+research strategy run --config examples/bocom-causal-slope.json
+```
+
+The command writes exactly one JSON success or failure object. Before using the BOCOM
+example, replace its all-zero `dataset.snapshot_id` with the ID returned by
+`research data snapshot` or `research data update`. Relative dataset and output roots are
+resolved from the command's working directory.
+
+Daily snapshot ingestion preserves canonical optional `AdjustedClose`; the legacy input
+header `Adj Close` is accepted only as an ingestion alias and stored as
+`AdjustedClose`. Snapshots containing optional research columns use a column-bound v2
+identity, while required-only OHLCV snapshots retain their existing v1 identity. Raw
+`Open` and `Close` always remain available for executable accounting and valuation.
+
+Configuration ownership is closed and exact:
+
+| Owner | Fields |
+|---|---|
+| Top level | schema version, dataset root/snapshot ID, output root |
+| Template | display name, evaluation dates, initial capital/state, terminal handling, explicit cost-assumption label |
+| Fit | prior-only log OLS window and explicit `AdjustedClose` or raw `Close` signal selection |
+| Smoothing | recursive log-EMA span |
+| Statistic | adjacent smoothed-curve percent slope |
+| Decision | post-start buy/sell crossing thresholds |
+| Sizing | target fraction and A-share board-lot size |
+| Cost | commission, minimum commission, transfer fee, sell stamp tax, and side-specific slippage |
+| Report | no parameters or hidden defaults |
+
+Unknown fields, missing fields, duplicate JSON keys, wrong types, booleans used as
+numbers, non-finite values, unknown operator versions, slot mismatches, parameter
+collisions, and undeclared parameters fail before publication. Operators are selected
+only from the built-in registry; configuration cannot provide Python import paths.
+
+For each evaluation session, the OLS history ends strictly before that session. The
+hysteresis state starts flat, the first finite slope only initializes its zone, and an
+upward threshold crossing executes at that session's raw Open. A sell crossing while
+flat is ignored. Buys use the largest affordable board lot after itemized costs; sells
+dispose of all held shares. The default terminal policy marks an open position at the
+last raw Close without inventing a sale or exit cost. `force_liquidate` instead records
+an actual final-session raw-Open sell.
+
+Every successful run publishes a read-only directory keyed by canonical config,
+verified dataset, and effective source identities:
+
+- `config.json`
+- `run_manifest.json`
+- `daily_replay.csv`
+- `events.csv`
+- `trades.csv`
+- `metrics.json`
+- `cost_breakdown.json`
+- `report.html`
+
+The Chinese mobile-first report is self-contained, uses a verified CJK font, and plots
+raw prices, causal fitted/smoothed trend, actual raw-Open BUY/SELL events, holding spans,
+slope thresholds, and cumulative strategy/zero-cost/buy-and-hold equity. It derives its
+literal rules from the frozen configuration and escapes user-controlled text. Exact
+reruns verify every artifact and return the same run with `NO_CHANGE`; missing, changed,
+writable, or conflicting artifacts fail closed and are never repaired in place.
+
+The strategy, zero-cost comparison, and same-period buy-and-hold account are
+research-only price-return accounts. Without explicit dividend or corporate-action cash
+flows they are not total shareholder return. The committed BOCOM cost values are labeled
+as a conservative research assumption, not Jingtao's or any other account's commission.
+There is no broker, live-order, paper-order, network, or parameter-search path.
+
 ## Decision boundary
 
 - `GC=F` is Yahoo's continuous gold-futures **research proxy**. It is not an executable futures contract and hides roll construction.
