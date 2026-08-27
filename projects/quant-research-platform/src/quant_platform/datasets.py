@@ -17,6 +17,8 @@ import pandas as pd
 
 
 REQUIRED_COLUMNS = ("Date", "Open", "High", "Low", "Close", "Volume")
+OPTIONAL_COLUMNS = ("AdjustedClose",)
+LEGACY_COLUMN_ALIASES = {"Adj Close": "AdjustedClose"}
 METADATA_FIELDS = {"instrument", "provider", "market", "currency", "adjustment"}
 SAFE_INSTRUMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=-]{0,63}$")
 
@@ -70,11 +72,18 @@ def _validate_metadata(metadata: dict[str, str]) -> dict[str, str]:
 
 
 def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if "AdjustedClose" in frame.columns and "Adj Close" in frame.columns:
+        raise DatasetValidationError(
+            "market data cannot contain both AdjustedClose and Adj Close"
+        )
+    frame = frame.rename(columns=LEGACY_COLUMN_ALIASES)
     missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
     if missing:
         raise DatasetValidationError(f"missing required columns: {missing}")
 
-    clean = frame.loc[:, REQUIRED_COLUMNS].copy()
+    columns = [*REQUIRED_COLUMNS]
+    columns.extend(column for column in OPTIONAL_COLUMNS if column in frame.columns)
+    clean = frame.loc[:, columns].copy()
     if clean.empty:
         raise DatasetValidationError("daily market data must contain at least one row")
     dates = []
@@ -94,7 +103,7 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if clean["Date"].duplicated().any():
         raise DatasetValidationError("duplicate dates are not allowed")
 
-    numeric_columns = list(REQUIRED_COLUMNS[1:])
+    numeric_columns = columns[1:]
     boolean_columns = [
         column for column in numeric_columns if pd.api.types.is_bool_dtype(clean[column])
     ]
@@ -113,6 +122,8 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
         raise DatasetValidationError("OHLC values must be strictly positive")
     if (clean["Volume"] < 0).any():
         raise DatasetValidationError("Volume must be non-negative")
+    if "AdjustedClose" in clean and (clean["AdjustedClose"] <= 0).any():
+        raise DatasetValidationError("AdjustedClose values must be strictly positive")
     if (clean["High"] < clean[["Open", "Low", "Close"]].max(axis=1)).any():
         raise DatasetValidationError("High must be at least Open, Low, and Close")
     if (clean["Low"] > clean[["Open", "High", "Close"]].min(axis=1)).any():
@@ -124,10 +135,23 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _canonical_data_bytes(frame: pd.DataFrame) -> bytes:
     dates = frame["Date"].astype("int64").to_numpy(dtype=">i8")
-    numeric = frame[list(REQUIRED_COLUMNS[1:])].to_numpy(dtype=">f8")
-    return b"quant-platform-ohlcv-v1\0" + struct.pack(
-        ">Q", len(frame)
-    ) + dates.tobytes(order="C") + numeric.tobytes(order="C")
+    numeric_columns = list(frame.columns[1:])
+    numeric = frame[numeric_columns].to_numpy(dtype=">f8")
+    if tuple(frame.columns) == REQUIRED_COLUMNS:
+        prefix = b"quant-platform-ohlcv-v1\0"
+    else:
+        column_schema = _canonical_json(list(frame.columns))
+        prefix = (
+            b"quant-platform-daily-v2\0"
+            + struct.pack(">Q", len(column_schema))
+            + column_schema
+        )
+    return (
+        prefix
+        + struct.pack(">Q", len(frame))
+        + dates.tobytes(order="C")
+        + numeric.tobytes(order="C")
+    )
 
 
 def _chmod_tree(directory: Path) -> None:
@@ -140,7 +164,7 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
     try:
         manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
         parquet_path = target / "data.parquet"
-        expected_manifest_fields = {
+        common_manifest_fields = {
             "schema_version",
             "metadata",
             "canonical_sha256",
@@ -152,11 +176,15 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
             "parquet_sha256",
             "files",
         }
+        schema_version = manifest.get("schema_version")
+        expected_manifest_fields = common_manifest_fields | (
+            {"columns"} if schema_version == 2 else set()
+        )
         if set(manifest) != expected_manifest_fields:
             raise ValueError("unexpected or missing manifest fields")
         if manifest.get("snapshot_id") != expected_snapshot_id or target.name != expected_snapshot_id:
             raise ValueError("snapshot identity mismatch")
-        if manifest["schema_version"] != 1:
+        if schema_version not in {1, 2}:
             raise ValueError("unsupported snapshot schema")
         if manifest["metadata"].get("instrument") != target.parent.name:
             raise ValueError("instrument directory does not match snapshot metadata")
@@ -173,6 +201,10 @@ def _verify_snapshot(target: Path, expected_snapshot_id: str) -> dict[str, Any]:
         if _sha256(parquet_path.read_bytes()) != manifest["parquet_sha256"]:
             raise ValueError("Parquet checksum mismatch")
         normalized = _normalize_frame(pd.read_parquet(parquet_path))
+        if schema_version == 1 and tuple(normalized.columns) != REQUIRED_COLUMNS:
+            raise ValueError("v1 snapshot must contain exactly the legacy OHLCV schema")
+        if schema_version == 2 and manifest["columns"] != list(normalized.columns):
+            raise ValueError("snapshot column schema mismatch")
         if _sha256(_canonical_data_bytes(normalized)) != manifest["canonical_sha256"]:
             raise ValueError("canonical data checksum mismatch")
         if manifest["rows"] != len(normalized):
@@ -225,8 +257,9 @@ def publish_snapshot(
     normalized = _normalize_frame(frame)
     canonical_bytes = _canonical_data_bytes(normalized)
     canonical_sha256 = _sha256(canonical_bytes)
+    schema_version = 1 if tuple(normalized.columns) == REQUIRED_COLUMNS else 2
     identity = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "metadata": normalized_metadata,
         "canonical_sha256": canonical_sha256,
     }
@@ -258,6 +291,8 @@ def publish_snapshot(
                 "parquet_sha256": parquet_sha256,
                 "files": {"data": "data.parquet"},
             }
+            if schema_version == 2:
+                manifest["columns"] = list(normalized.columns)
             with (temporary / "manifest.json").open("x", encoding="utf-8") as stream:
                 stream.write(
                     json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"

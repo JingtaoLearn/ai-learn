@@ -68,7 +68,7 @@ def _revision_count(previous: pd.DataFrame, fetched: pd.DataFrame) -> int:
     overlap = previous_by_date.index.intersection(fetched_by_date.index)
     if overlap.empty:
         return 0
-    columns = ["Open", "High", "Low", "Close", "Volume"]
+    columns = [column for column in previous.columns if column != "Date"]
     changed = previous_by_date.loc[overlap, columns].ne(
         fetched_by_date.loc[overlap, columns]
     )
@@ -494,6 +494,10 @@ def reconcile_daily_history(
                     f"latest snapshot metadata mismatch: {', '.join(sorted(mismatches))}"
                 )
             previous = _normalize_frame(pd.read_parquet(prior_path / "data.parquet"))
+            if list(previous.columns) != list(normalized_fetched.columns):
+                raise DatasetValidationError(
+                    "fetched column schema must match the latest snapshot schema"
+                )
 
         revision_count = _revision_count(previous, requested_fetched)
         fetched_dates = set(requested_fetched["Date"])

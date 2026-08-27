@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant_platform.datasets import DatasetValidationError, publish_snapshot, snapshot_status
+from quant_platform.datasets import (
+    DatasetValidationError,
+    _verify_snapshot,
+    publish_snapshot,
+    snapshot_status,
+)
 
 
 def _daily_frame() -> pd.DataFrame:
@@ -161,3 +166,72 @@ def test_daily_snapshot_rejects_timezone_aware_or_intraday_dates(tmp_path: Path)
 def test_daily_snapshot_rejects_empty_data(tmp_path: Path):
     with pytest.raises(DatasetValidationError, match="at least one row"):
         publish_snapshot(_daily_frame().iloc[0:0], tmp_path, _metadata())
+
+
+def test_adjusted_close_is_normalized_preserved_and_bound_to_v2_identity(tmp_path: Path):
+    legacy = _daily_frame().assign(**{"Adj Close": [3.01, 3.04, 3.07]})
+    first = publish_snapshot(legacy, tmp_path, _metadata())
+    canonical = _daily_frame().assign(AdjustedClose=[3.01, 3.04, 3.07])
+    unchanged = publish_snapshot(canonical, tmp_path, _metadata())
+    revised = canonical.copy()
+    revised.loc[1, "AdjustedClose"] = 3.05
+    second = publish_snapshot(revised, tmp_path, _metadata())
+
+    manifest = json.loads((Path(first["path"]) / "manifest.json").read_text())
+    persisted = pd.read_parquet(Path(first["path"]) / "data.parquet")
+    assert manifest["schema_version"] == 2
+    assert manifest["columns"] == [
+        "Date",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "AdjustedClose",
+    ]
+    assert persisted.columns.tolist() == manifest["columns"]
+    assert "Adj Close" not in persisted
+    assert unchanged["snapshot_id"] == first["snapshot_id"]
+    assert second["snapshot_id"] != first["snapshot_id"]
+
+
+def test_required_only_snapshot_remains_legacy_v1(tmp_path: Path):
+    published = publish_snapshot(_daily_frame(), tmp_path, _metadata())
+    manifest = json.loads((Path(published["path"]) / "manifest.json").read_text())
+
+    assert manifest["schema_version"] == 1
+    assert "columns" not in manifest
+
+
+def test_adjusted_close_snapshot_rejects_alias_collision_and_invalid_values(tmp_path: Path):
+    collision = _daily_frame().assign(
+        AdjustedClose=[3.01, 3.04, 3.07],
+        **{"Adj Close": [3.01, 3.04, 3.07]},
+    )
+    invalid = _daily_frame().assign(AdjustedClose=[3.01, float("inf"), 3.07])
+
+    with pytest.raises(DatasetValidationError, match="both AdjustedClose and Adj Close"):
+        publish_snapshot(collision, tmp_path, _metadata())
+    with pytest.raises(DatasetValidationError, match="non-finite"):
+        publish_snapshot(invalid, tmp_path, _metadata())
+
+
+@pytest.mark.parametrize("tamper", ["manifest", "parquet"])
+def test_adjusted_close_snapshot_tampering_fails_closed(tmp_path: Path, tamper: str):
+    published = publish_snapshot(
+        _daily_frame().assign(AdjustedClose=[3.01, 3.04, 3.07]),
+        tmp_path,
+        _metadata(),
+    )
+    target = Path(published["path"])
+    if tamper == "manifest":
+        manifest = json.loads((target / "manifest.json").read_text())
+        manifest["columns"] = manifest["columns"][:-1]
+        (target / "manifest.json").write_text(json.dumps(manifest))
+    else:
+        frame = pd.read_parquet(target / "data.parquet")
+        frame = frame.drop(columns=["AdjustedClose"])
+        frame.to_parquet(target / "data.parquet", index=False)
+
+    with pytest.raises(RuntimeError, match="corrupt snapshot"):
+        _verify_snapshot(target, published["snapshot_id"])
