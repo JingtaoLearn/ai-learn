@@ -101,6 +101,7 @@ def test_latest_and_explicit_resolution_records_complete_audit(tmp_path: Path):
     assert fit["selector_mode"] == "latest"
     assert fit["requested_version"] == "latest"
     assert fit["latest_version_at_submission"] == "1.0.0"
+    assert fit["latest_content_digest_at_submission"] == fit["content_digest"]
     assert fit["resolved_version"] == "1.0.0"
     assert fit["parameters"] == {
         "price_column": "AdjustedClose",
@@ -269,6 +270,13 @@ def test_rerun_keeps_the_experiment_resolution_frozen_while_detail_reports_drift
     attempt = service.attempt_detail(rerun["attempt_id"])
 
     assert attempt["resolved"]["operators"]["fit"]["resolved_version"] == "1.0.0"
-    assert attempt["resolved"]["operators"]["fit"]["latest_version_at_submission"] == "1.0.0"
+    assert attempt["resolved"]["operators"]["fit"]["latest_version_at_submission"] == "1.1.0"
+    assert (
+        attempt["resolved"]["operators"]["fit"]["latest_content_digest_at_submission"]
+        == "9" * 64
+    )
+    assert attempt["resolved"]["operators"]["fit"]["content_digest"] == original[
+        "content_digest"
+    ]
     assert original["resolved_version"] == "1.0.0"
     assert service.experiment_detail(created["experiment_id"])["has_drift"] is True

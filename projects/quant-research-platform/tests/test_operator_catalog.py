@@ -23,6 +23,7 @@ def test_initialization_enables_wal_constraints_and_idempotent_migrations(tmp_pa
         assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
             (1,),
             (2,),
+            (3,),
         ]
         assert connection.execute(
             "SELECT COUNT(*) FROM templates WHERE name = ? AND version = ?",
@@ -194,6 +195,49 @@ def test_attempt_launch_count_is_database_constrained_to_zero_or_one(tmp_path: P
             "INSERT INTO experiments(experiment_id, identity_json, created_at) VALUES (?, ?, ?)",
             ("d" * 64, "{}", "2026-08-27T00:00:00Z"),
         )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "PENDING",
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "INTERRUPTED",
+        "TERMINATION_UNCONFIRMED",
+    ],
+)
+def test_attempt_schema_accepts_only_declared_lifecycle_states(
+    tmp_path: Path, status: str
+):
+    catalog = initialize_catalog(tmp_path / status)
+    with catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            "INSERT INTO experiments(experiment_id, identity_json, created_at) VALUES (?, ?, ?)",
+            ("e" * 64, "{}", "2026-08-27T00:00:00Z"),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts(
+        attempt_id, experiment_id, action_id, sequence, status,
+        requested_json, resolved_json, created_at
+            ) VALUES (?, ?, ?, 1, ?, '{}', '{}', ?)
+            """,
+            (f"attempt-{status}", "e" * 64, f"action-{status}", status, "2026-08-27T00:00:00Z"),
+        )
+
+    with catalog.transaction(immediate=True) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            connection.execute(
+        """
+        INSERT INTO attempts(
+            attempt_id, experiment_id, action_id, sequence, status,
+            requested_json, resolved_json, created_at
+        ) VALUES ('invalid', ?, 'invalid', 2, 'RETRYING', '{}', '{}', ?)
+        """,
+        ("e" * 64, "2026-08-27T00:00:00Z"),
+            )
         for launch_count in (-1, 2):
             with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
                 connection.execute(

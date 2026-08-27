@@ -92,22 +92,25 @@ def test_failure_never_becomes_canonical_and_illegal_transition_fails(tmp_path: 
         )
 
 
-def test_restart_marks_abandoned_running_attempt_failed_and_never_relaunches_it(
+def test_restart_marks_abandoned_running_attempt_interrupted_and_never_relaunches_it(
     tmp_path: Path,
 ):
     service, created = _created(tmp_path)
     running = service.claim_next_attempt()
 
-    recovered = service.recover_abandoned_attempts()
+    recovered = service.recover_abandoned_attempts(
+        container_reconciler=lambda cidfile: True
+    )
     reclaimed = service.claim_next_attempt()
 
     assert recovered == 1
     assert reclaimed is None
     recovered_attempt = service.attempt_detail(created["attempt_id"])
     assert recovered_attempt["attempt_id"] == running["attempt_id"]
-    assert recovered_attempt["status"] == "FAILED"
+    assert recovered_attempt["status"] == "INTERRUPTED"
     assert recovered_attempt["launch_count"] == 1
     assert "abandoned" in recovered_attempt["logs"].lower()
+    assert recovered_attempt["control_path"]
     assert len(service.list_attempts(created["experiment_id"])) == 1
 
 
@@ -118,7 +121,49 @@ def test_claim_atomically_records_the_only_allowed_launch(tmp_path: Path):
 
     assert claimed["attempt_id"] == created["attempt_id"]
     assert claimed["launch_count"] == 1
+    control = service.catalog.state_root / claimed["control_path"]
+    assert control.is_dir()
+    assert (control / "control.json").is_file()
     assert service.claim_next_attempt() is None
+
+
+def test_unconfirmed_restart_quarantines_control_and_blocks_replacement(tmp_path: Path):
+    service, created = _created(tmp_path)
+    running = service.claim_next_attempt()
+    control = service.catalog.state_root / running["control_path"]
+    (control / "container.cid").write_text("f" * 64, encoding="ascii")
+
+    recovered = service.recover_abandoned_attempts(
+        container_reconciler=lambda cidfile: False
+    )
+    attempt = service.attempt_detail(created["attempt_id"])
+
+    assert recovered == 1
+    assert attempt["status"] == "TERMINATION_UNCONFIRMED"
+    assert attempt["control_path"].startswith("attempt-control/")
+    assert attempt["quarantine_path"].startswith("quarantine/attempts/")
+    with pytest.raises(InvalidAttemptTransition, match="confirmed"):
+        service.create_replacement_attempt(
+            created["attempt_id"], action_id="replacement-blocked"
+        )
+
+
+def test_explicit_recovery_creates_distinct_attempt_with_frozen_resolution(
+    tmp_path: Path,
+):
+    service, created = _created(tmp_path)
+    original = service.claim_next_attempt()
+    service.recover_abandoned_attempts(container_reconciler=lambda cidfile: True)
+
+    replacement = service.create_replacement_attempt(
+        original["attempt_id"], action_id="replacement"
+    )
+
+    assert replacement["attempt_id"] != original["attempt_id"]
+    replacement_detail = service.attempt_detail(replacement["attempt_id"])
+    assert replacement_detail["recovery_of_attempt_id"] == original["attempt_id"]
+    assert replacement_detail["launch_count"] == 0
+    assert replacement_detail["resolved"]["operators"] == original["resolved"]["operators"]
 
 
 def test_serial_worker_claims_one_and_records_bounded_failure(tmp_path: Path):
