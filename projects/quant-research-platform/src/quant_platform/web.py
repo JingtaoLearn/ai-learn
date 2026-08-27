@@ -488,7 +488,11 @@ def create_app(
             return _json_error(400, "INVALID_JSON", str(exc))
         if not isinstance(body, dict) or set(body) != {"task"}:
             return _json_error(400, "INVALID_REQUEST", "Expected exactly task")
-        return {"resolved": experiments.resolve_task(body["task"])}
+        return {
+            "resolved": await run_in_threadpool(
+                experiments.resolve_task, body["task"]
+            )
+        }
 
     @app.post("/api/experiments")
     async def api_submit(request: Request):
@@ -502,7 +506,9 @@ def create_app(
             return _json_error(
                 400, "INVALID_REQUEST", "Expected exactly task and action_id"
             )
-        result = experiments.submit(body["task"], action_id=body["action_id"])
+        result = await run_in_threadpool(
+            experiments.submit, body["task"], action_id=body["action_id"]
+        )
         return JSONResponse(result, status_code=201 if result["status"] == "CREATED" else 200)
 
     @app.post("/api/experiments/{experiment_id}/rerun")
@@ -515,7 +521,9 @@ def create_app(
             return _json_error(400, "INVALID_JSON", str(exc))
         if not isinstance(body, dict) or set(body) != {"action_id"}:
             return _json_error(400, "INVALID_REQUEST", "Expected exactly action_id")
-        result = experiments.rerun(experiment_id, action_id=body["action_id"])
+        result = await run_in_threadpool(
+            experiments.rerun, experiment_id, action_id=body["action_id"]
+        )
         return JSONResponse(result, status_code=201 if result["status"] == "CREATED" else 200)
 
     @app.get("/api/experiments")
@@ -704,7 +712,8 @@ def create_app(
                     f"{slot} parameters",
                 ),
             }
-        result = experiments.submit(
+        result = await run_in_threadpool(
+            experiments.submit,
             {
                 "schema_version": 1,
                 "dataset": {
@@ -759,9 +768,8 @@ def create_app(
         if set(form) != {"csrf_token", "action_id"}:
             raise TaskValidationError("rerun form fields are invalid")
         _csrf(request, session, form.get("csrf_token"))
-        result = experiments.rerun(
-            experiment_id,
-            action_id=form["action_id"],
+        result = await run_in_threadpool(
+            experiments.rerun, experiment_id, action_id=form["action_id"]
         )
         return RedirectResponse(
             f"/experiments/{result['experiment_id']}", status_code=303

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .catalog import Catalog
-from .isolation import build_operator_validation_command
+from .isolation import build_operator_validation_command, force_remove_container
 from .submissions import EXECUTION_ENVELOPE
 from .schemas import (
     canonical_json_bytes,
@@ -171,7 +171,13 @@ class OperatorService:
                 raise OperatorSubmissionError("operator validation did not produce passing evidence")
             return evidence
         except subprocess.TimeoutExpired as exc:
-            raise OperatorSubmissionError("operator validation timed out") from exc
+            removed = force_remove_container(evidence_dir / "container.cid")
+            message = (
+                "operator validation timed out and its container was removed"
+                if removed
+                else "operator validation timed out and container cleanup failed"
+            )
+            raise OperatorSubmissionError(message) from exc
         finally:
             shutil.rmtree(evidence_dir, ignore_errors=True)
 

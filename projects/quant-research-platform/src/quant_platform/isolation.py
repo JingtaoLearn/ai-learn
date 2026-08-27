@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -54,6 +55,8 @@ def build_operator_validation_command(
         "docker",
         "run",
         "--rm",
+        "--cidfile",
+        str(evidence / "container.cid"),
         "--pull",
         "never",
         "--network",
@@ -94,6 +97,7 @@ def build_composed_execution_command(
     output_root: Path | str,
     composition_file: Path | str,
     config_file: Path | str,
+    cidfile: Path | str,
     operator_bundles: dict[str, Path],
     runner_image: str,
 ) -> list[str]:
@@ -102,6 +106,7 @@ def build_composed_execution_command(
         Path(output_root),
         Path(composition_file),
         Path(config_file),
+        Path(cidfile),
         *operator_bundles.values(),
     ]
     for path in raw_paths:
@@ -115,12 +120,16 @@ def build_composed_execution_command(
         raise IsolationError("composed dataset and output paths must be directories")
     if not paths[2].is_file() or not paths[3].is_file():
         raise IsolationError("composed execution contracts must be regular files")
+    if paths[4].exists():
+        raise IsolationError("composed execution cidfile must not already exist")
     if not is_immutable_runner_image(runner_image):
         raise IsolationError("composed runner image must be pinned by SHA-256")
     command = [
         "docker",
         "run",
         "--rm",
+        "--cidfile",
+        str(paths[4]),
         "--pull",
         "never",
         "--network",
@@ -173,6 +182,32 @@ def build_composed_execution_command(
         ]
     )
     return command
+
+
+def force_remove_container(cidfile: Path | str) -> bool:
+    """Force-remove the exact Docker container recorded by a timed-out client."""
+
+    path = Path(cidfile)
+    if path.is_symlink():
+        return False
+    try:
+        container_id = path.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return False
+    try:
+        completed = subprocess.run(
+            ["docker", "rm", "--force", container_id],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 class IsolationError(ValueError):

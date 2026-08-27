@@ -13,6 +13,7 @@ from .experiment_service import ExperimentService
 from .operator_service import OperatorService
 from .runner import run_submission
 from .strategy_runner import run_strategy_config
+from .strategy_runner import _effective_source_identity
 from .submissions import publish_submission, submission_status
 from .updates import reconcile_daily_history
 
@@ -179,9 +180,15 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _domain_services(root: str) -> tuple:
     catalog = initialize_catalog(Path(root))
+    source_sha256, _, runtime, _ = _effective_source_identity()
     experiments = ExperimentService(
         catalog,
-        execution_identity={"domain_schema": 1, "runner": "quant_platform"},
+        execution_identity={
+            "domain_schema": 1,
+            "runner": "quant_platform",
+            "source_sha256": source_sha256,
+            "runtime": runtime,
+        },
     )
     return catalog, experiments
 

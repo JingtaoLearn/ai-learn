@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
-from .isolation import build_composed_execution_command
+from .isolation import build_composed_execution_command, force_remove_container
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
 from .strategy_runner import run_strategy_config
@@ -265,6 +265,7 @@ class ResolvedAttemptExecutor:
         )
         config_path = Path(config_name)
         composition_path = Path(composition_name)
+        cidfile = work_root / f".{attempt['attempt_id']}.cid"
         try:
             with os.fdopen(config_descriptor, "wb") as stream:
                 stream.write(canonical_json_bytes(legacy))
@@ -282,6 +283,7 @@ class ResolvedAttemptExecutor:
                 output_root=self.output_root,
                 composition_file=composition_path,
                 config_file=config_path,
+                cidfile=cidfile,
                 operator_bundles=operator_bundles,
                 runner_image=self.runner_image,
             )
@@ -294,10 +296,17 @@ class ResolvedAttemptExecutor:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ResolvedExecutionError("custom composition timed out") from exc
+            removed = force_remove_container(cidfile)
+            message = (
+                "custom composition timed out and its container was removed"
+                if removed
+                else "custom composition timed out and container cleanup failed"
+            )
+            raise ResolvedExecutionError(message) from exc
         finally:
             config_path.unlink(missing_ok=True)
             composition_path.unlink(missing_ok=True)
+            cidfile.unlink(missing_ok=True)
         lines = completed.stdout.splitlines()
         if completed.returncode != 0 or len(lines) != 1:
             raise ResolvedExecutionError("custom composition launch failed")
