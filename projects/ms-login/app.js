@@ -1,181 +1,398 @@
-require("dotenv").config();
-
-const express = require("express");
-const session = require("express-session");
-const msal = require("@azure/msal-node");
-const axios = require("axios");
-const jwt = require("jsonwebtoken");
+const {
+  createHash,
+  randomBytes,
+  timingSafeEqual,
+} = require("node:crypto");
 const path = require("path");
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const msal = require("@azure/msal-node");
+const axios = require("axios");
+const express = require("express");
+const session = require("express-session");
+const jwt = require("jsonwebtoken");
 
-// MSAL configuration
-const msalConfig = {
-  auth: {
-    clientId: process.env.AZURE_CLIENT_ID,
-    authority: "https://login.microsoftonline.com/common",
-    clientSecret: process.env.AZURE_CLIENT_SECRET,
-  },
-};
-
-const REDIRECT_URI =
-  process.env.AZURE_REDIRECT_URI ||
-  "https://ms-login.ai.jingtao.fun/auth/callback";
 const SCOPES = ["openid", "profile", "email", "User.Read"];
-const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET;
+const DEFAULT_REDIRECT_URI =
+  "https://ms-login.ai.jingtao.fun/auth/callback";
 const DEFAULT_CALLBACK_URL =
-  process.env.NOTE_APP_CALLBACK_URL ||
   "https://note.ai.jingtao.fun/auth/callback";
+const OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const MAX_OUTSTANDING_OAUTH_STATES = 5;
+const MAX_GLOBAL_OAUTH_STATES = 1000;
 
-// Allowed callback URL patterns (whitelist)
-const ALLOWED_CALLBACKS = (process.env.ALLOWED_CALLBACKS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-// Always allow the default
-if (DEFAULT_CALLBACK_URL) ALLOWED_CALLBACKS.push(DEFAULT_CALLBACK_URL);
-const DOWNSTREAM_CLIENTS = JSON.parse(process.env.DOWNSTREAM_CLIENTS || "{}");
+function parseDownstreamClients(value) {
+  const clients = JSON.parse(value || "{}");
+  if (!clients || Array.isArray(clients) || typeof clients !== "object") {
+    throw new Error("DOWNSTREAM_CLIENTS must be a JSON object");
+  }
+  return clients;
+}
 
-function isAllowedCallback(url) {
+function readConfig(env) {
+  const isProduction = env.NODE_ENV === "production";
+  if (isProduction && !env.SESSION_SECRET) {
+    throw new Error("SESSION_SECRET is required in production");
+  }
+  if (isProduction && !env.AUTH_SHARED_SECRET) {
+    throw new Error("AUTH_SHARED_SECRET is required in production");
+  }
+
+  const defaultCallbackUrl =
+    env.NOTE_APP_CALLBACK_URL || DEFAULT_CALLBACK_URL;
+  const allowedCallbacks = new Set(
+    (env.ALLOWED_CALLBACKS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+  allowedCallbacks.add(defaultCallbackUrl);
+
+  return {
+    nodeEnv: env.NODE_ENV,
+    port: env.PORT || 3000,
+    sessionSecret:
+      env.SESSION_SECRET || "development-only-session-secret",
+    authSharedSecret: env.AUTH_SHARED_SECRET,
+    redirectUri: env.AZURE_REDIRECT_URI || DEFAULT_REDIRECT_URI,
+    defaultCallbackUrl,
+    allowedCallbacks,
+    downstreamClients: parseDownstreamClients(env.DOWNSTREAM_CLIENTS),
+    msalConfig: {
+      auth: {
+        clientId: env.AZURE_CLIENT_ID,
+        authority: "https://login.microsoftonline.com/common",
+        clientSecret: env.AZURE_CLIENT_SECRET,
+      },
+    },
+  };
+}
+
+function isSafeCallback(callbackUrl) {
   try {
-    const parsed = new URL(url);
-    return ALLOWED_CALLBACKS.some((allowed) => {
-      try {
-        const a = new URL(allowed);
-        return parsed.origin === a.origin && parsed.pathname === a.pathname;
-      } catch {
-        return false;
-      }
-    });
+    const parsed = new URL(callbackUrl);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
   } catch {
     return false;
   }
 }
 
-const cca = new msal.ConfidentialClientApplication(msalConfig);
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
 
-// View engine
-app.set("view engine", "ejs");
-app.set("views", path.join(__dirname, "views"));
+function digestState(state) {
+  return createHash("sha256").update(state).digest();
+}
 
-// Trust proxy (behind nginx-proxy)
-app.set("trust proxy", 1);
+function resolveLimit(value, fallback) {
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
-// Session middleware
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "change-me-in-production",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      httpOnly: true,
-      maxAge: 1000 * 60 * 60, // 1 hour
-    },
-  })
-);
-
-// Landing page
-app.get("/", (req, res) => {
-  res.render("index", { user: req.session.user || null });
-});
-
-// Initiate Microsoft OAuth
-app.get("/auth/login", async (req, res) => {
-  try {
-    // Store the caller's callback URL in session
-    const redirect = req.query.redirect;
-    const audience = redirect ? DOWNSTREAM_CLIENTS[redirect] : null;
-    if (redirect && audience && isAllowedCallback(redirect)) {
-      req.session.callbackUrl = redirect;
-      req.session.audience = audience;
-    } else {
-      req.session.callbackUrl = DEFAULT_CALLBACK_URL;
-      req.session.audience = DOWNSTREAM_CLIENTS[DEFAULT_CALLBACK_URL];
+async function requestGraphProfile(accessToken) {
+  const response = await axios.get(
+    "https://graph.microsoft.com/v1.0/me",
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
     }
-    if (!req.session.audience) throw new Error("Downstream audience is not configured");
+  );
+  return response.data;
+}
 
-    const authCodeUrlParameters = {
-      scopes: SCOPES,
-      redirectUri: REDIRECT_URI,
-    };
+function createApp({
+  env = process.env,
+  msalClient,
+  graphRequest = requestGraphProfile,
+  logger = console,
+  maxOAuthStates = MAX_GLOBAL_OAUTH_STATES,
+  maxOAuthStatesPerSession = MAX_OUTSTANDING_OAUTH_STATES,
+  now = Date.now,
+  sessionStore,
+} = {}) {
+  const config = readConfig(env);
+  const globalStateLimit = resolveLimit(
+    maxOAuthStates,
+    MAX_GLOBAL_OAUTH_STATES
+  );
+  const perSessionStateLimit = resolveLimit(
+    maxOAuthStatesPerSession,
+    MAX_OUTSTANDING_OAUTH_STATES
+  );
+  const client =
+    msalClient ||
+    new msal.ConfidentialClientApplication(config.msalConfig);
+  const app = express();
+  // Session snapshots must never be able to restore consumed states.
+  const oauthStateRegistry = new Map();
 
-    const authUrl = await cca.getAuthCodeUrl(authCodeUrlParameters);
-    res.redirect(authUrl);
-  } catch (error) {
-    console.error("Login error:", error);
-    res.render("error", {
-      message: "Failed to initiate login",
-      detail: error.message,
+  app.set("view engine", "ejs");
+  app.set("views", path.join(__dirname, "views"));
+  app.set("trust proxy", 1);
+
+  app.use((req, res, next) => {
+    res.set({
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+    });
+    next();
+  });
+
+  app.use(
+    session({
+      secret: config.sessionSecret,
+      ...(sessionStore ? { store: sessionStore } : {}),
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        secure: config.nodeEnv === "production",
+        httpOnly: true,
+        sameSite: "lax",
+        maxAge: 1000 * 60 * 60,
+      },
+    })
+  );
+
+  function renderError(res, status, message) {
+    return res.status(status).render("error", {
+      message,
+      detail: null,
     });
   }
-});
 
-// OAuth callback
-app.get("/auth/callback", async (req, res) => {
-  if (req.query.error) {
-    return res.render("error", {
-      message: req.query.error,
-      detail: req.query.error_description || "Authentication was denied",
-    });
+  function getBoundCallback(requestedCallback) {
+    if (
+      requestedCallback &&
+      config.allowedCallbacks.has(requestedCallback) &&
+      isSafeCallback(requestedCallback)
+    ) {
+      return {
+        callbackUrl: requestedCallback,
+        audience: config.downstreamClients[requestedCallback],
+      };
+    }
+
+    return {
+      callbackUrl: config.defaultCallbackUrl,
+      audience:
+        config.downstreamClients[config.defaultCallbackUrl],
+    };
   }
 
-  try {
-    const tokenRequest = {
-      code: req.query.code,
-      scopes: SCOPES,
-      redirectUri: REDIRECT_URI,
-    };
+  function purgeExpiredOAuthStates(currentTime) {
+    for (const [key, flow] of oauthStateRegistry) {
+      if (
+        !Number.isFinite(flow.issuedAt) ||
+        !Number.isFinite(flow.expiresAt) ||
+        currentTime < flow.issuedAt ||
+        currentTime >= flow.expiresAt
+      ) {
+        oauthStateRegistry.delete(key);
+      }
+    }
+  }
 
-    const response = await cca.acquireTokenByCode(tokenRequest);
+  function registerOAuthFlow(sessionID, callbackUrl, audience) {
+    const issuedAt = now();
+    purgeExpiredOAuthStates(issuedAt);
 
-    // Fetch user profile from Microsoft Graph
-    const graphResponse = await axios.get("https://graph.microsoft.com/v1.0/me", {
-      headers: { Authorization: `Bearer ${response.accessToken}` },
-    });
-
-    const user = graphResponse.data;
-    const email = user.mail || user.userPrincipalName;
-    const displayName = user.displayName;
-
-    req.session.user = {
-      displayName,
-      email,
-    };
-
-    // Generate JWT and redirect to note-app via auto-POST
-    const token = jwt.sign(
-      { email, displayName, aud: req.session.audience },
-      AUTH_SHARED_SECRET,
-      { expiresIn: "30s" }
+    const sessionEntries = [...oauthStateRegistry].filter(
+      ([, flow]) => flow.sessionID === sessionID
     );
+    while (sessionEntries.length >= perSessionStateLimit) {
+      const [key] = sessionEntries.shift();
+      oauthStateRegistry.delete(key);
+    }
+    while (oauthStateRegistry.size >= globalStateLimit) {
+      const oldestKey = oauthStateRegistry.keys().next().value;
+      oauthStateRegistry.delete(oldestKey);
+    }
 
-    const callbackUrl = req.session.callbackUrl || DEFAULT_CALLBACK_URL;
-    res.send(`<!DOCTYPE html>
+    let state;
+    let stateDigest;
+    let key;
+    do {
+      state = randomBytes(32).toString("base64url");
+      stateDigest = digestState(state);
+      key = stateDigest.toString("hex");
+    } while (oauthStateRegistry.has(key));
+
+    const flow = {
+      stateDigest,
+      sessionID,
+      callbackUrl,
+      audience,
+      issuedAt,
+      expiresAt: issuedAt + OAUTH_STATE_TTL_MS,
+    };
+    oauthStateRegistry.set(key, flow);
+    return { flow, key, state };
+  }
+
+  function consumeOAuthFlow(sessionID, providedState) {
+    const currentTime = now();
+    purgeExpiredOAuthStates(currentTime);
+
+    if (
+      typeof providedState !== "string" ||
+      providedState.length === 0
+    ) {
+      return null;
+    }
+
+    const providedDigest = digestState(providedState);
+    const key = providedDigest.toString("hex");
+    const flow = oauthStateRegistry.get(key);
+    if (
+      !flow ||
+      !timingSafeEqual(providedDigest, flow.stateDigest) ||
+      flow.sessionID !== sessionID
+    ) {
+      return null;
+    }
+
+    oauthStateRegistry.delete(key);
+    return flow;
+  }
+
+  app.get("/", (req, res) => {
+    res.render("index", { user: req.session.user || null });
+  });
+
+  app.get("/auth/login", async (req, res) => {
+    try {
+      const binding = getBoundCallback(req.query.redirect);
+      if (
+        !binding.audience ||
+        !config.allowedCallbacks.has(binding.callbackUrl) ||
+        !isSafeCallback(binding.callbackUrl)
+      ) {
+        throw new Error("Downstream audience is not configured");
+      }
+
+      const registeredState = registerOAuthFlow(
+        req.sessionID,
+        binding.callbackUrl,
+        binding.audience
+      );
+      let authUrl;
+      try {
+        authUrl = await client.getAuthCodeUrl({
+          scopes: SCOPES,
+          redirectUri: config.redirectUri,
+          state: registeredState.state,
+        });
+      } catch (error) {
+        if (
+          oauthStateRegistry.get(registeredState.key) ===
+          registeredState.flow
+        ) {
+          oauthStateRegistry.delete(registeredState.key);
+        }
+        throw error;
+      }
+      req.session.oauthSession = true;
+      res.redirect(authUrl);
+    } catch {
+      logger.error("Login request failed");
+      renderError(res, 500, "Failed to initiate login");
+    }
+  });
+
+  app.get("/auth/callback", async (req, res) => {
+    const flow = consumeOAuthFlow(req.sessionID, req.query.state);
+    if (!flow) {
+      logger.error("OAuth callback rejected");
+      return renderError(res, 400, "Authentication failed");
+    }
+    if (req.query.error) {
+      return renderError(res, 400, "Authentication was denied");
+    }
+
+    try {
+      const { callbackUrl, audience } = flow;
+      if (
+        !callbackUrl ||
+        !audience ||
+        !config.allowedCallbacks.has(callbackUrl) ||
+        config.downstreamClients[callbackUrl] !== audience ||
+        !isSafeCallback(callbackUrl)
+      ) {
+        throw new Error("Downstream callback is not configured");
+      }
+      if (
+        typeof req.query.code !== "string" ||
+        req.query.code.length === 0
+      ) {
+        return renderError(res, 400, "Authentication failed");
+      }
+
+      const response = await client.acquireTokenByCode({
+        code: req.query.code,
+        scopes: SCOPES,
+        redirectUri: config.redirectUri,
+      });
+      const user = await graphRequest(response.accessToken);
+      const email = user.mail || user.userPrincipalName;
+      const displayName = user.displayName;
+
+      req.session.user = { displayName, email };
+
+      const token = jwt.sign(
+        { email, displayName },
+        config.authSharedSecret,
+        {
+          algorithm: "HS256",
+          audience,
+          expiresIn: "30s",
+        }
+      );
+
+      res.send(`<!DOCTYPE html>
 <html><body>
-<form id="f" method="POST" action="${callbackUrl}">
-  <input type="hidden" name="token" value="${token}" />
+<form id="f" method="POST" action="${escapeHtml(callbackUrl)}">
+  <input type="hidden" name="token" value="${escapeHtml(token)}" />
 </form>
 <script>document.getElementById("f").submit();</script>
 <noscript>Click to continue: <button type="submit" form="f">Continue</button></noscript>
 </body></html>`);
-  } catch (error) {
-    console.error("Callback error:", error);
-    res.render("error", {
-      message: "Authentication failed",
-      detail: error.message,
-    });
-  }
-});
-
-// Logout
-app.get("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.redirect("/");
+    } catch {
+      logger.error("OAuth callback failed");
+      renderError(res, 500, "Authentication failed");
+    }
   });
-});
 
-app.listen(PORT, () => {
-  console.log(`MS Login app running on port ${PORT}`);
-});
+  app.get("/logout", (req, res) => {
+    req.session.destroy(() => {
+      res.redirect("/");
+    });
+  });
+
+  return app;
+}
+
+function start() {
+  require("dotenv").config();
+  const app = createApp();
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => {
+    console.log(`MS Login app running on port ${port}`);
+  });
+}
+
+if (require.main === module) {
+  try {
+    start();
+  } catch (error) {
+    console.error(`MS Login startup failed: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = { createApp };
