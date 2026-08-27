@@ -772,8 +772,9 @@ def create_app(
 
     @app.get("/operators/submit")
     async def operator_submit_form(request: Request):
+        session = _session(request)
         return _render(
-            request, "operator_submit.html", session=_session(request)
+            request, "operator_submit.html", session=session
         )
 
     @app.post("/operators/submit")
@@ -820,12 +821,13 @@ def create_app(
 
     @app.get("/templates/{name}/{version}")
     async def template_detail(request: Request, name: str, version: str):
+        session = _session(request)
         template = catalog.template_detail(name, version)
         grouped = _operator_groups(operators)
         return _render(
             request,
             "template_detail.html",
-            session=_session(request),
+            session=session,
             template=template,
             slot_defaults={
                 slot: grouped[slot][0] for slot in template["slots"]
@@ -876,6 +878,7 @@ def create_app(
 
     @app.get("/history")
     async def history(request: Request):
+        session = _session(request)
         status_filter = request.query_params.get("status", "all")
         drift_filter = request.query_params.get("drift", "all")
         search = request.query_params.get("search", "").strip()
@@ -926,7 +929,7 @@ def create_app(
         return _render(
             request,
             "history.html",
-            session=_session(request),
+            session=session,
             experiments=history_rows,
             filters={
                 "status": status_filter,
@@ -937,6 +940,7 @@ def create_app(
 
     @app.get("/experiments/{experiment_id}")
     async def experiment_detail(request: Request, experiment_id: str):
+        session = _session(request)
         detail = experiments.experiment_detail(experiment_id)
         canonical_attempt = next(
             (
@@ -958,7 +962,7 @@ def create_app(
         return _render(
             request,
             "experiment_detail.html",
-            session=_session(request),
+            session=session,
             experiment=detail,
             report_attempt=next(
                 (
@@ -989,10 +993,11 @@ def create_app(
 
     @app.get("/reports/{attempt_id}")
     async def report(request: Request, attempt_id: str):
+        session = _session(request)
         return _render(
             request,
             "report_wrapper.html",
-            session=_session(request),
+            session=session,
             attempt_id=attempt_id,
         )
 
