@@ -438,6 +438,148 @@ def test_project_root_discovery_rejects_symlinked_root(tmp_path: Path):
         )
 
 
+def test_explicit_current_release_symlink_is_rejected(tmp_path: Path):
+    release = _synthetic_project_root(tmp_path / "releases" / "20260827T071129Z")
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+
+    with pytest.raises(StrategyRunError, match="current"):
+        runner_module._discover_project_root(
+            explicit_root=current,
+            cwd=release,
+            package_root=release / "src" / "quant_platform",
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "O_PATH"), reason="Linux O_PATH is unavailable")
+def test_directory_traversal_prefers_o_path_without_using_it_for_source_files(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    real_open = runner_module.os.open
+    opens = []
+
+    def record_open(path, flags, *args, **kwargs):
+        opens.append((os.fspath(path), flags))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    monkeypatch.setattr(runner_module.os, "open", record_open)
+
+    runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity={
+            "path": "/verified/font.ttc",
+            "family": "Verified CJK",
+            "sha256": "a" * 64,
+        },
+    )
+
+    directory_opens = [
+        (path, flags)
+        for path, flags in opens
+        if flags & getattr(os, "O_DIRECTORY", 0)
+    ]
+    source_opens = [
+        (path, flags)
+        for path, flags in opens
+        if path in {Path(label).name for label in PACKAGE_SOURCE_LABELS}
+        or path in {"pyproject.toml", "requirements.lock"}
+    ]
+    assert directory_opens
+    assert {"src", "quant_platform"} <= {path for path, _ in directory_opens}
+    assert all(flags & os.O_PATH for _, flags in directory_opens)
+    assert source_opens
+    assert all(not flags & os.O_PATH for _, flags in source_opens)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_PATH"), reason="Linux O_PATH is unavailable")
+def test_o_path_descriptor_traversal_and_source_hash_survive_read_denied_directories(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    real_open = runner_module.os.open
+
+    def deny_read_only_directories(path, flags, *args, **kwargs):
+        if flags & getattr(os, "O_DIRECTORY", 0) and not flags & os.O_PATH:
+            raise PermissionError("read-only directory open denied by PrivateTmp probe")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    monkeypatch.setattr(runner_module.os, "open", deny_read_only_directories)
+
+    _, files, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity={
+            "path": "/verified/font.ttc",
+            "family": "Verified CJK",
+            "sha256": "a" * 64,
+        },
+    )
+
+    assert files["src/quant_platform/catalog.py"] == sha256(
+        (package_root / "catalog.py").read_bytes()
+    ).hexdigest()
+    assert files["pyproject.toml"] == sha256(
+        (project_root / "pyproject.toml").read_bytes()
+    ).hexdigest()
+
+
+@pytest.mark.skipif(
+    os.environ.get("QUANT_SYSTEMD_PRIVATE_TMP_PROBE") != "1",
+    reason="set QUANT_SYSTEMD_PRIVATE_TMP_PROBE=1 to run the systemd user probe",
+)
+def test_systemd_user_private_tmp_allows_anchored_source_identity():
+    if shutil.which("systemd-run") is None or shutil.which("systemctl") is None:
+        pytest.skip("systemd user tools are unavailable")
+    manager = subprocess.run(
+        ["systemctl", "--user", "show-environment"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if manager.returncode != 0:
+        pytest.skip("systemd user manager is unavailable")
+    probe = (
+        "from pathlib import Path;"
+        "from quant_platform.strategy_runner import _effective_source_identity;"
+        f"_effective_source_identity(project_root=Path({str(PROJECT_ROOT)!r}))"
+    )
+
+    completed = subprocess.run(
+        [
+            "systemd-run",
+            "--user",
+            "--pipe",
+            "--wait",
+            "--quiet",
+            "--property=PrivateTmp=true",
+            sys.executable,
+            "-c",
+            probe,
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=os.environ | {"PYTHONPATH": str(PROJECT_ROOT / "src")},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_project_root_discovery_rejects_recognizable_incomplete_cwd(
     tmp_path: Path,
 ):
