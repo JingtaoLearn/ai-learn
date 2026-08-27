@@ -1,7 +1,11 @@
 import json
 import os
+import shutil
 import stat
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 from io import StringIO
 from pathlib import Path
 
@@ -15,6 +19,17 @@ from quant_platform.strategy_runner import StrategyRunError, run_strategy_config
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_SOURCE_LABELS = {
+    "src/quant_platform/datasets.py": "datasets.py",
+    "src/quant_platform/__init__.py": "__init__.py",
+    "src/quant_platform/cli.py": "cli.py",
+    "src/quant_platform/strategy_config.py": "strategy_config.py",
+    "src/quant_platform/strategy_operators.py": "strategy_operators.py",
+    "src/quant_platform/strategy_replay.py": "strategy_replay.py",
+    "src/quant_platform/strategy_report.py": "strategy_report.py",
+    "src/quant_platform/strategy_runner.py": "strategy_runner.py",
+}
 REQUIRED_ARTIFACTS = {
     "config.json",
     "run_manifest.json",
@@ -25,6 +40,32 @@ REQUIRED_ARTIFACTS = {
     "cost_breakdown.json",
     "report.html",
 }
+
+
+def _synthetic_project_root(root: Path) -> Path:
+    for label in PACKAGE_SOURCE_LABELS:
+        path = root / label
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# checkout {label}\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='synthetic-quant-platform'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    (root / "requirements.lock").write_text(
+        "# synthetic deterministic lock\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _synthetic_package(package_root: Path) -> Path:
+    package_root.mkdir(parents=True)
+    for label, filename in PACKAGE_SOURCE_LABELS.items():
+        (package_root / filename).write_text(
+            f"# installed executable {label}\n",
+            encoding="utf-8",
+        )
+    return package_root
 
 
 def _foundation(tmp_path: Path) -> Path:
@@ -279,6 +320,210 @@ def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):
     assert Path(second["path"]).is_dir()
 
 
+def test_effective_source_identity_hashes_loaded_wheel_package_with_stable_labels(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+
+    _, files, _, git = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity={
+            "path": "/verified/font.ttc",
+            "family": "Verified CJK",
+            "sha256": "a" * 64,
+        },
+    )
+
+    assert set(files) == set(PACKAGE_SOURCE_LABELS) | {
+        "pyproject.toml",
+        "requirements.lock",
+    }
+    for label, filename in PACKAGE_SOURCE_LABELS.items():
+        assert files[label] == sha256((package_root / filename).read_bytes()).hexdigest()
+        assert files[label] != sha256((project_root / label).read_bytes()).hexdigest()
+    assert git == {"available": False, "commit": None, "dirty": None}
+
+
+def test_project_root_discovery_supports_editable_layout_and_explicit_override(
+    tmp_path: Path,
+):
+    explicit = _synthetic_project_root(tmp_path / "explicit")
+    unrelated_cwd = tmp_path / "elsewhere"
+    unrelated_cwd.mkdir()
+
+    assert runner_module._discover_project_root(
+        explicit_root=explicit,
+        cwd=unrelated_cwd,
+        package_root=PROJECT_ROOT / "src" / "quant_platform",
+    ) == explicit
+    assert runner_module._discover_project_root(
+        cwd=PROJECT_ROOT / "tests",
+        package_root=PROJECT_ROOT / "src" / "quant_platform",
+    ) == PROJECT_ROOT
+
+
+def test_invalid_explicit_or_environment_project_root_fails_without_cwd_fallback(
+    tmp_path: Path, monkeypatch
+):
+    valid = _synthetic_project_root(tmp_path / "valid")
+    missing = tmp_path / "missing"
+
+    with pytest.raises(StrategyRunError, match="explicit project root"):
+        runner_module._discover_project_root(
+            explicit_root=missing,
+            cwd=valid,
+            package_root=valid / "src" / "quant_platform",
+        )
+
+    monkeypatch.setenv("QUANT_PLATFORM_PROJECT_ROOT", str(missing))
+    with pytest.raises(StrategyRunError, match="environment project root"):
+        runner_module._discover_project_root(
+            cwd=valid,
+            package_root=valid / "src" / "quant_platform",
+        )
+
+    monkeypatch.delenv("QUANT_PLATFORM_PROJECT_ROOT")
+    for relative in ("", "."):
+        with pytest.raises(StrategyRunError, match="absolute"):
+            runner_module._discover_project_root(
+                explicit_root=relative,
+                cwd=valid,
+                package_root=valid / "src" / "quant_platform",
+            )
+
+    monkeypatch.setenv("QUANT_PLATFORM_PROJECT_ROOT", ".")
+    with pytest.raises(StrategyRunError, match="absolute"):
+        runner_module._discover_project_root(
+            cwd=valid,
+            package_root=valid / "src" / "quant_platform",
+        )
+
+
+def test_project_root_discovery_rejects_ambiguous_ancestor_candidates(tmp_path: Path):
+    outer = _synthetic_project_root(tmp_path / "outer")
+    inner = _synthetic_project_root(outer / "nested")
+    (inner / "tests").mkdir()
+
+    with pytest.raises(StrategyRunError, match="ambiguous"):
+        runner_module._discover_project_root(
+            cwd=inner / "tests",
+            package_root=tmp_path / "wheel" / "site-packages" / "quant_platform",
+        )
+
+
+def test_project_root_discovery_rejects_symlinked_root(tmp_path: Path):
+    actual = _synthetic_project_root(tmp_path / "actual")
+    linked = tmp_path / "linked"
+    linked.symlink_to(actual, target_is_directory=True)
+
+    with pytest.raises(StrategyRunError, match="symlink|unsafe"):
+        runner_module._discover_project_root(
+            explicit_root=linked,
+            cwd=tmp_path,
+            package_root=actual / "src" / "quant_platform",
+        )
+
+
+def test_project_root_discovery_rejects_recognizable_incomplete_cwd(
+    tmp_path: Path,
+):
+    incomplete = _synthetic_project_root(tmp_path / "incomplete")
+    (incomplete / "requirements.lock").unlink()
+    cwd = incomplete / "tests"
+    cwd.mkdir()
+
+    with pytest.raises(StrategyRunError, match="requirements.lock"):
+        runner_module._discover_project_root(
+            cwd=cwd,
+            package_root=tmp_path / "wheel" / "site-packages" / "quant_platform",
+        )
+
+
+def test_project_root_discovery_rejects_recognizable_incomplete_editable_root(
+    tmp_path: Path,
+):
+    incomplete = _synthetic_project_root(tmp_path / "incomplete")
+    (incomplete / "requirements.lock").unlink()
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+
+    with pytest.raises(StrategyRunError, match="requirements.lock"):
+        runner_module._discover_project_root(
+            cwd=cwd,
+            package_root=incomplete / "src" / "quant_platform",
+        )
+
+
+def test_wheel_layout_without_checkout_requires_validated_project_root(
+    tmp_path: Path, monkeypatch
+):
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    cwd = tmp_path / "runtime"
+    cwd.mkdir()
+    monkeypatch.delenv("QUANT_PLATFORM_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+
+    with pytest.raises(
+        StrategyRunError,
+        match="run from.*source checkout|--project-root",
+    ):
+        runner_module._effective_source_identity(
+            cwd=cwd,
+            font_identity={
+                "path": "/verified/font.ttc",
+                "family": "Verified CJK",
+                "sha256": "a" * 64,
+            },
+        )
+
+
+def test_effective_source_identity_detects_project_root_swap_while_hashing(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    replacement = _synthetic_project_root(tmp_path / "replacement")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    displaced = tmp_path / "displaced"
+    original = runner_module._read_source_payload
+    swapped = False
+
+    def swap_root(path, label, **kwargs):
+        nonlocal swapped
+        if label == "pyproject.toml" and not swapped:
+            swapped = True
+            project_root.rename(displaced)
+            project_root.symlink_to(replacement, target_is_directory=True)
+        return original(path, label, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    monkeypatch.setattr(runner_module, "_read_source_payload", swap_root)
+
+    with pytest.raises(StrategyRunError, match="changed|symlink|unsafe"):
+        runner_module._effective_source_identity(
+            project_root=project_root,
+            font_identity={
+                "path": "/verified/font.ttc",
+                "family": "Verified CJK",
+                "sha256": "a" * 64,
+            },
+        )
+    assert swapped is True
+
+
 @pytest.mark.parametrize(
     "relative_path",
     ["src/quant_platform/datasets.py", "requirements.lock"],
@@ -291,9 +536,9 @@ def test_effective_source_hash_binds_dataset_and_lock_bytes(
     original = runner_module._read_source_payload
     baseline, _, _, _ = runner_module._effective_source_identity()
 
-    def changed(path, project_root):
-        payload = original(path, project_root)
-        if path.relative_to(project_root).as_posix() == relative_path:
+    def changed(path, label, **kwargs):
+        payload = original(path, label, **kwargs)
+        if label == relative_path:
             return payload + b"\naudit-mutation"
         return payload
 
@@ -356,6 +601,67 @@ def test_injectable_cjk_font_bytes_change_source_and_run_identity():
     assert first_runtime["cjk_font_sha256"] == "a" * 64
     assert second_runtime["cjk_font_sha256"] == "b" * 64
     assert first_run != second_run
+
+
+def test_noneditable_site_packages_strategy_run_creates_then_returns_no_change(
+    tmp_path: Path,
+):
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    shutil.copytree(
+        PROJECT_ROOT / "src" / "quant_platform",
+        site_packages / "quant_platform",
+    )
+    environment = {
+        "HOME": str(tmp_path / "home"),
+        "MPLBACKEND": "Agg",
+        "PATH": "",
+        "PYTHONPATH": str(site_packages),
+    }
+    (tmp_path / "home").mkdir()
+    config_path = _foundation(tmp_path / "execution")
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    invoke_cli = (
+        "import json, quant_platform; "
+        "from quant_platform.cli import main; "
+        "print(json.dumps({'package_file': quant_platform.__file__}, sort_keys=True)); "
+        "raise SystemExit(main())"
+    )
+
+    results = []
+    imported_paths = []
+    for _ in range(2):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                invoke_cli,
+                "strategy",
+                "run",
+                "--config",
+                str(config_path),
+                "--project-root",
+                str(PROJECT_ROOT),
+            ],
+            cwd=unrelated_cwd,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stdout
+        assert completed.stderr == ""
+        lines = completed.stdout.strip().splitlines()
+        assert len(lines) == 2
+        imported_paths.append(Path(json.loads(lines[0])["package_file"]).resolve())
+        results.append(json.loads(lines[1]))
+
+    expected_package = (site_packages / "quant_platform" / "__init__.py").resolve()
+    assert imported_paths == [expected_package, expected_package]
+    assert all(not path.is_relative_to(PROJECT_ROOT) for path in imported_paths)
+    assert [result["status"] for result in results] == ["CREATED", "NO_CHANGE"]
+    assert results[0]["run_id"] == results[1]["run_id"]
 
 
 def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, monkeypatch):

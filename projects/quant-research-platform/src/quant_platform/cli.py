@@ -81,6 +81,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     strategy_run = strategy_commands.add_parser("run")
     strategy_run.add_argument("--config", required=True)
+    strategy_run.add_argument("--project-root")
     return parser
 
 
@@ -135,7 +136,14 @@ def _execute(args: argparse.Namespace) -> dict[str, str | int]:
             key: result[key] for key in ("attempt_id", "run_id", "outcome", "path")
         }
     if args.command == "strategy" and args.strategy_command == "run":
-        result = run_strategy_config(Path(args.config))
+        result = (
+            run_strategy_config(
+                Path(args.config),
+                project_root=Path(args.project_root),
+            )
+            if args.project_root is not None
+            else run_strategy_config(Path(args.config))
+        )
         return {
             key: result[key]
             for key in (

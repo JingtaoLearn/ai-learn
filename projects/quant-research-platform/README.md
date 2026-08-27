@@ -38,6 +38,10 @@ example, replace its all-zero `dataset.snapshot_id` with the ID returned by
 equal to that snapshot's instrument metadata. Relative dataset and output roots are
 resolved from the command's working directory.
 
+For an installed wheel, run from the project source checkout or pass its absolute path
+with `--project-root`. `QUANT_PLATFORM_PROJECT_ROOT` provides the equivalent environment
+override. Explicit roots are validated before the working directory is consulted.
+
 Daily snapshot ingestion preserves canonical optional `AdjustedClose`; the legacy input
 header `Adj Close` is accepted only as an ingestion alias and stored as
 `AdjustedClose`. Snapshots containing optional research columns use a column-bound v2
@@ -85,11 +89,17 @@ verified dataset, and effective source identities:
 - `cost_breakdown.json`
 - `report.html`
 
-The effective source identity hashes `datasets.py`, every strategy module,
-`pyproject.toml`, and `requirements.lock`. It also binds the exact Python, pandas,
-NumPy, Matplotlib, and PyArrow runtime versions. The manifest records the Git commit
-and dirty state when Git metadata is available, or explicit null/unavailable values
-for a source archive. File and dependency hashes remain authoritative.
+The effective source identity hashes `datasets.py` and every strategy module from the
+package directory that Python actually loaded, while retaining stable
+`src/quant_platform/...` manifest labels. A complete validated source root is also
+required so `pyproject.toml` and `requirements.lock` are always hashed. Source-root
+discovery checks a validated explicit argument or environment override first, then the
+working directory and its ancestors, and finally an editable `src` layout. Symlinked,
+unsafe, incomplete, missing, or ambiguous roots fail closed. The identity also binds the
+exact Python, pandas, NumPy, Matplotlib, and PyArrow runtime versions. The manifest
+records Git state only for a discovered checkout; complete source archives without Git
+metadata use explicit null/unavailable values. File and dependency hashes remain
+authoritative.
 
 The Chinese mobile-first report is self-contained, uses a verified CJK font, and plots
 raw prices, causal fitted/smoothed trend, actual raw-Open BUY/SELL events, holding spans,
