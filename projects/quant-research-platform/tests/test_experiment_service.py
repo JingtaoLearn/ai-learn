@@ -219,3 +219,26 @@ def test_history_contains_unique_experiments_attempt_count_and_current_drift(tmp
     detail = service.experiment_detail(created["experiment_id"])
     assert detail["attempt_count"] == 2
     assert all(not operator["drifted"] for operator in detail["operators"].values())
+
+
+def test_rerun_audits_current_latest_but_keeps_experiment_resolution(tmp_path: Path):
+    service, snapshot_id = _service(tmp_path)
+    created = service.submit(_task(snapshot_id), action_id="create")
+    original = service.experiment_detail(created["experiment_id"])["operators"]["fit"]
+    service.catalog.insert_operator_version_for_test(
+        operator_id="prior_log_ols",
+        slot="fit",
+        version="1.1.0",
+        content_digest="9" * 64,
+        parameter_schema=service.catalog.operator_detail(
+            "prior_log_ols", "1.0.0"
+        )["parameter_schema"],
+    )
+
+    rerun = service.rerun(created["experiment_id"], action_id="after-drift")
+    attempt = service.attempt_detail(rerun["attempt_id"])
+
+    assert attempt["resolved"]["operators"]["fit"]["resolved_version"] == "1.0.0"
+    assert attempt["resolved"]["operators"]["fit"]["latest_version_at_submission"] == "1.1.0"
+    assert original["resolved_version"] == "1.0.0"
+    assert service.experiment_detail(created["experiment_id"])["has_drift"] is True
