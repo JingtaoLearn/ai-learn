@@ -12,12 +12,20 @@
   {% endfor %}
   {% for slot, items in grouped.items() %}
   <fieldset class="wide slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
-    <label>Published selector<select name="operator_{{ slot }}_selector">{% for operator in items %}<option value="{{ operator.operator_id }}@latest">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}">{{ operator.operator_id }} · {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
-    <input type="hidden" name="operator_{{ slot }}_version" value="latest">
-    <label>Parameters JSON<textarea class="code" name="operator_{{ slot }}_parameters">{}</textarea></label>
+    <label>Published selector<select name="operator_{{ slot }}_selector" data-operator-selector="{{ slot }}">{% for operator in items %}<option value="{{ operator.operator_id }}@latest" data-resolved-version="{{ operator.latest_version }}">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}" data-resolved-version="{{ version.version }}">{{ operator.operator_id }} · {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
+    {% for operator in items %}{% for version in operator.versions %}
+    <div class="parameter-set" data-parameter-set="{{ slot }}" data-selector="{{ operator.operator_id }}@{{ version.version }}" data-testid="generated-params-{{ slot }}-{{ operator.operator_id }}-{{ version.version }}">
+      <p class="mono">{{ operator.operator_id }}@{{ version.version }} parameters</p>
+      {% if version.parameter_schema.properties %}
+      {% for name, schema in version.parameter_schema.properties.items() %}
+      <label>{{ name }}<input name="operator_{{ slot }}_param__{{ operator.operator_id }}__{{ version.version }}__{{ name }}" value="{{ version.defaults[name] if version.defaults[name] is not none else '' }}" data-parameter-type="{{ schema.type }}"></label>
+      {% endfor %}
+      {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
+    </div>
+    {% endfor %}{% endfor %}
   </fieldset>
   {% endfor %}
-  <noscript><p class="notice wide">JavaScript is disabled. All primary submission fields remain available; enter parameters as JSON.</p></noscript>
-  <div class="wide actions"><button type="submit">Create experiment</button></div>
+  <noscript><p class="notice wide">JavaScript is disabled. All selectors and generated parameter controls remain available for primary submission.</p></noscript>
+  <div class="wide actions"><button type="submit" formaction="/experiments/preview" data-testid="preview-experiment">Preview duplicate</button><button type="submit">Create experiment</button></div>
 </form>
 {% endblock %}

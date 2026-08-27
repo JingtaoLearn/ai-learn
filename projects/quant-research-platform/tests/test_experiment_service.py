@@ -167,6 +167,21 @@ def test_exact_duplicate_returns_existing_experiment_without_new_attempt(tmp_pat
     assert len(service.list_attempts(first["experiment_id"])) == 1
 
 
+def test_duplicate_preview_resolves_without_creating_history(tmp_path: Path):
+    service, snapshot_id = _service(tmp_path)
+    task = _task(snapshot_id)
+
+    before = service.preview_task(task)
+    created = service.submit(task, action_id="create")
+    after = service.preview_task(task)
+
+    assert before["duplicate"] is False
+    assert before["experiment_id"] == created["experiment_id"]
+    assert after["duplicate"] is True
+    assert after["experiment_id"] == created["experiment_id"]
+    assert len(service.list_attempts(created["experiment_id"])) == 1
+
+
 def test_latest_and_explicit_selector_audit_share_one_canonical_experiment(
     tmp_path: Path,
 ):

@@ -8,9 +8,16 @@ from pathlib import Path
 import pytest
 import uvicorn
 
+from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
 from quant_platform.web import create_app
 
+from test_experiment_service import _task
+from test_operator_submission import IMAGE, _passing_validator
+from test_web_api import snapshot
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _available_port() -> int:
     with socket.socket() as listener:
@@ -43,6 +50,22 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         secure_cookies=False,
     ).validated()
     app = create_app(settings)
+    app.state.operators.runner_image = IMAGE
+    app.state.operators.validator = _passing_validator
+    report_experiment = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="browser-report"
+    )
+    report_attempt = app.state.experiments.claim_next_attempt()
+    report_result = ResolvedAttemptExecutor(
+        app.state.catalog,
+        output_root=app.state.catalog.state_root / "experiment-runs",
+        project_root=PROJECT_ROOT,
+    )(report_attempt)
+    app.state.experiments.finish_success(
+        report_attempt["attempt_id"],
+        result_path=report_result["result_path"],
+        result_digest=report_result["result_digest"],
+    )
     issued = app.state.auth.issue_session(
         {"email": "researcher@example.com", "display_name": "Researcher"}
     )
@@ -57,19 +80,29 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         time.sleep(0.05)
     assert server.started
     try:
-        subprocess.run(
-            [
-                node,
-                str(Path(__file__).with_name("browser_acceptance.mjs")),
-                base_url,
-                issued.cookie,
-                chromium,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        try:
+            subprocess.run(
+                [
+                    node,
+                    str(Path(__file__).with_name("browser_acceptance.mjs")),
+                    base_url,
+                    issued.cookie,
+                    chromium,
+                    report_experiment["experiment_id"],
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise AssertionError(exc.stderr) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                (exc.stderr or b"").decode(errors="replace")
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "browser acceptance timed out without diagnostics")
+            ) from exc
     finally:
         server.should_exit = True
         thread.join(timeout=10)

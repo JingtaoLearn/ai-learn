@@ -5,9 +5,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium] = process.argv.slice(2);
-if (!baseUrl || !sessionCookie || !chromium) {
-  throw new Error("usage: browser_acceptance.js BASE_URL SESSION_COOKIE CHROMIUM");
+const [baseUrl, sessionCookie, chromium, reportExperimentId] = process.argv.slice(2);
+if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId) {
+  throw new Error(
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID",
+  );
 }
 
 const profile = await mkdtemp(join(tmpdir(), "quant-browser-"));
@@ -86,6 +88,47 @@ try {
     sessionId,
   );
   if (!cookie.success) throw new Error("Could not install authenticated browser cookie");
+  await send(
+    "Network.setExtraHTTPHeaders",
+    { headers: { Origin: baseUrl } },
+    sessionId,
+  );
+
+  async function evaluate(expression) {
+    const { result } = await send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true },
+      sessionId,
+    );
+    if (result.exceptionDetails) {
+      throw new Error(`Browser evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
+    }
+    return result.value;
+  }
+
+  async function navigate(path) {
+    const loaded = once("Page.loadEventFired", sessionId);
+    await send("Page.navigate", { url: `${baseUrl}${path}` }, sessionId);
+    await loaded;
+  }
+
+  async function submit(expression) {
+    const loaded = once("Page.loadEventFired", sessionId);
+    await evaluate(expression);
+    await loaded;
+  }
+
+  async function expectPage(page) {
+    const actual = await evaluate("document.body.dataset.page");
+    if (actual !== page) {
+      const diagnostic = await evaluate(
+        "({location: location.href, body: document.body.textContent.slice(0, 500)})",
+      );
+      throw new Error(
+        `Expected page ${page}, received ${actual}: ${JSON.stringify(diagnostic)}`,
+      );
+    }
+  }
 
   const routes = {
     "/": "dashboard",
@@ -95,6 +138,7 @@ try {
     "/history": "history",
   };
   for (const scriptsDisabled of [false, true]) {
+    console.error(`browser-mode scriptsDisabled=${scriptsDisabled}`);
     await send(
       "Emulation.setScriptExecutionDisabled",
       { value: scriptsDisabled },
@@ -107,13 +151,8 @@ try {
         sessionId,
       );
       for (const [route, expectedPage] of Object.entries(routes)) {
-        const loaded = once("Page.loadEventFired", sessionId);
-        await send("Page.navigate", { url: `${baseUrl}${route}` }, sessionId);
-        await loaded;
-        const { result } = await send(
-          "Runtime.evaluate",
-          {
-            expression: `({
+        await navigate(route);
+        const value = await evaluate(`({
               page: document.body.dataset.page,
               hasMain: Boolean(document.querySelector("main")),
               hasPrimaryAction: ${route === "/experiments/new"
@@ -121,12 +160,7 @@ try {
                 : "true"},
               documentWidth: document.documentElement.scrollWidth,
               viewportWidth: window.innerWidth
-            })`,
-            returnByValue: true,
-          },
-          sessionId,
-        );
-        const value = result.value;
+            })`);
         if (value.page !== expectedPage || !value.hasMain || !value.hasPrimaryAction) {
           throw new Error(`Browser selector failure for ${route}: ${JSON.stringify(value)}`);
         }
@@ -135,6 +169,119 @@ try {
         }
       }
     }
+
+    await navigate("/operators/submit");
+    console.error("stage operator-submit");
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+      sessionId,
+    );
+    const focused = await evaluate(
+      "document.activeElement !== document.body && document.activeElement.matches('a,button,input,select,textarea')",
+    );
+    if (!focused) throw new Error("Keyboard focus did not reach an interactive control");
+
+    const operatorValues = {
+      operator_id: "browser_fit",
+      version: "1.0.0",
+      slot: "fit",
+      title_zh: "浏览器拟合",
+      summary_zh: "真实浏览器隔离提交流程。",
+      source:
+        "OPERATOR_API_VERSION = 1\nSLOT = 'fit'\n\ndef apply(payload, parameters):\n    return payload['values'][-1]\n",
+      parameter_schema:
+        '{"type":"object","properties":{},"required":[],"additionalProperties":false}',
+      defaults: "{}",
+      tests:
+        '[{"input":{"values":[1.0,2.0]},"parameters":{},"expected":2.0}]',
+      documentation: "# Browser fit\n\nDeterministic browser acceptance fixture.",
+    };
+    await submit(`(() => {
+      const values = ${JSON.stringify(operatorValues)};
+      for (const [name, value] of Object.entries(values)) {
+        document.querySelector('[name="' + name + '"]').value = value;
+      }
+      document.querySelector('form[data-testid="operator-form"]').submit();
+    })()`);
+    await expectPage("operator-detail");
+    console.error("stage operator-published");
+
+    await navigate("/experiments/new");
+    console.error("stage experiment-new");
+    const generated = await evaluate(
+      "document.querySelectorAll('[data-testid^=\"generated-params-\"]').length >= 7",
+    );
+    if (!generated) throw new Error("Schema-generated parameter controls are missing");
+    if (scriptsDisabled) {
+      await evaluate(`(() => {
+        for (const selector of document.querySelectorAll("[data-operator-selector]")) {
+          const explicit = Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
+          selector.value = explicit.value;
+        }
+      })()`);
+    }
+    await submit(
+      'document.querySelector(\'form[data-testid="experiment-form"]\').submit()',
+    );
+    await expectPage("experiment-detail");
+    console.error("stage experiment-created");
+    const experimentPath = await evaluate("location.pathname");
+    const hasPending = await evaluate(
+      'document.querySelector(\'[data-testid="attempt-timeline"]\').textContent.includes("PENDING")',
+    );
+    if (!hasPending) throw new Error("Experiment progress state is missing");
+
+    await navigate("/experiments/new");
+    if (scriptsDisabled) {
+      await evaluate(`(() => {
+        for (const selector of document.querySelectorAll("[data-operator-selector]")) {
+          const explicit = Array.from(selector.options).find((option) => !option.value.endsWith("@latest"));
+          selector.value = explicit.value;
+        }
+      })()`);
+    }
+    await submit(`(() => {
+      const form = document.querySelector('form[data-testid="experiment-form"]');
+      form.action = "/experiments/preview";
+      form.submit();
+    })()`);
+    await expectPage("experiment-preview");
+    console.error("stage duplicate-preview");
+    const duplicate = await evaluate(
+      'document.querySelector(\'[data-testid="duplicate-preview"] h1\').textContent.includes("Existing")',
+    );
+    if (!duplicate) throw new Error("Duplicate preview did not detect the existing identity");
+
+    await navigate(experimentPath);
+    await submit('document.querySelector(\'[data-testid="rerun-form"]\').submit()');
+    await expectPage("experiment-detail");
+    console.error("stage experiment-rerun");
+    const rerunVisible = await evaluate(
+      'document.querySelector(\'[data-testid="attempt-timeline"]\').textContent.includes("#2")',
+    );
+    if (!rerunVisible) throw new Error("Rerun attempt is missing from the timeline");
+
+    await navigate("/history");
+    const historyHasExperiment = await evaluate(
+      `document.body.textContent.includes(${JSON.stringify(experimentPath.slice(-64))})`,
+    );
+    if (!historyHasExperiment) throw new Error("Experiment history is missing the submitted identity");
+    console.error("stage history");
+
+    await navigate(`/experiments/${reportExperimentId}`);
+    const sandbox = await evaluate(
+      'document.querySelector("iframe").getAttribute("sandbox")',
+    );
+    if (sandbox !== "allow-scripts") {
+      throw new Error(`Report sandbox is invalid: ${sandbox}`);
+    }
+    console.error("stage report-sandbox");
   }
 } finally {
   socket.close();

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Experiment preview · Quant Research{% endblock %}
+{% block page %}experiment-preview{% endblock %}
+{% block content %}
+<section class="page-heading" data-testid="duplicate-preview">
+  <p class="eyebrow">DUPLICATE PREVIEW</p>
+  <h1>{{ "Existing experiment" if preview.duplicate else "New experiment identity" }}</h1>
+  <p class="mono">{{ preview.experiment_id }}</p>
+  <p>{{ "Submitting these exact resolved inputs will return the existing experiment without another attempt." if preview.duplicate else "These resolved inputs do not yet exist." }}</p>
+  <a class="button" href="/experiments/new">Return to experiment form</a>
+  {% if preview.duplicate %}<a class="button quiet" href="/experiments/{{ preview.experiment_id }}">Open existing experiment</a>{% endif %}
+</section>
+{% endblock %}

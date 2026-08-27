@@ -175,13 +175,97 @@ def _datasets(state_root: Path) -> list[dict[str, str]]:
                     "snapshot_id": manifest["snapshot_id"],
                     "label": (
                         f"{manifest['metadata']['instrument']} · "
-                        f"{manifest['date_start']} to {manifest['date_end']}"
+                        f"{manifest['data_start']} to {manifest['data_end']}"
                     ),
                 }
             )
         except (KeyError, OSError, ValueError):
             continue
     return datasets
+
+
+def _operator_groups(operators: OperatorService) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for operator in operators.list():
+        detail = operators.detail(
+            operator["operator_id"], operator["latest_version"]
+        )
+        grouped.setdefault(operator["slot"], []).append(
+            detail
+            | {
+                "latest_version": operator["latest_version"],
+                "versions": operators.list_versions(operator["operator_id"]),
+            }
+        )
+    return grouped
+
+
+def _form_parameter_value(raw: str, schema: dict[str, Any]) -> Any:
+    if raw == "" and schema.get("nullable"):
+        return None
+    if schema["type"] == "number":
+        return float(raw)
+    if schema["type"] == "integer":
+        return int(raw)
+    if schema["type"] == "boolean":
+        return raw.lower() == "true"
+    return raw
+
+
+def _task_from_form(
+    form: dict[str, str],
+    *,
+    catalog: Any,
+) -> dict[str, Any]:
+    dataset_value = form.get("dataset", "")
+    if "|" not in dataset_value:
+        raise TaskValidationError("dataset selection is required")
+    instrument, snapshot_id = dataset_value.split("|", 1)
+    template = catalog.template_detail("single_stock_daily_causal", "1")
+    template_parameters = {
+        name: _form_parameter_value(
+            form.get(f"template_{name}", ""), schema
+        )
+        for name, schema in template["parameter_schema"]["properties"].items()
+    }
+    task_operators: dict[str, Any] = {}
+    for slot in template["slots"]:
+        selector = form.get(f"operator_{slot}_selector", "")
+        if "@" not in selector:
+            raise TaskValidationError(f"{slot} operator selection is required")
+        operator_id, requested_version = selector.rsplit("@", 1)
+        selected = catalog.operator_detail(
+            operator_id,
+            None if requested_version == "latest" else requested_version,
+        )
+        parameters = {
+            name: _form_parameter_value(
+                form.get(
+                    (
+                        f"operator_{slot}_param__{operator_id}__"
+                        f"{selected['version']}__{name}"
+                    ),
+                    str(selected["defaults"][name]),
+                ),
+                schema,
+            )
+            for name, schema in selected["parameter_schema"]["properties"].items()
+        }
+        task_operators[slot] = {
+            "operator_id": operator_id,
+            "version": requested_version,
+            "parameters": parameters,
+        }
+    return {
+        "schema_version": 1,
+        "dataset": {"instrument": instrument, "snapshot_id": snapshot_id},
+        "template": {
+            "name": template["name"],
+            "version": template["version"],
+            "parameters": template_parameters,
+        },
+        "operators": task_operators,
+    }
 
 
 def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
@@ -544,6 +628,22 @@ def create_app(
             )
         }
 
+    @app.post("/api/experiments/preview")
+    async def api_preview(request: Request):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if not isinstance(body, dict) or set(body) != {"task"}:
+            return _json_error(400, "INVALID_REQUEST", "Expected exactly task")
+        return {
+            "preview": await run_in_threadpool(
+                experiments.preview_task, body["task"]
+            )
+        }
+
     @app.post("/api/experiments")
     async def api_submit(request: Request):
         session = _session(request)
@@ -630,18 +730,7 @@ def create_app(
     @app.get("/operators")
     async def operator_list(request: Request):
         session = _session(request)
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for operator in operators.list():
-            detail = operators.detail(
-                operator["operator_id"], operator["latest_version"]
-            )
-            grouped.setdefault(operator["slot"], []).append(
-                detail
-                | {
-                    "latest_version": operator["latest_version"],
-                    "versions": operators.list_versions(operator["operator_id"]),
-                }
-            )
+        grouped = _operator_groups(operators)
         return _render(
             request, "operators.html", session=session, grouped=grouped
         )
@@ -702,18 +791,7 @@ def create_app(
     @app.get("/experiments/new")
     async def experiment_new(request: Request):
         session = _session(request)
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for operator in operators.list():
-            detail = operators.detail(
-                operator["operator_id"], operator["latest_version"]
-            )
-            grouped.setdefault(operator["slot"], []).append(
-                detail
-                | {
-                    "latest_version": operator["latest_version"],
-                    "versions": operators.list_versions(operator["operator_id"]),
-                }
-            )
+        grouped = _operator_groups(operators)
         return _render(
             request,
             "experiment_new.html",
@@ -724,59 +802,28 @@ def create_app(
             action_id=secrets.token_hex(16),
         )
 
+    @app.post("/experiments/preview")
+    async def experiment_preview_action(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        _csrf(request, session, form.get("csrf_token"))
+        task = _task_from_form(form, catalog=catalog)
+        preview = await run_in_threadpool(experiments.preview_task, task)
+        return _render(
+            request,
+            "experiment_preview.html",
+            session=session,
+            preview=preview,
+        )
+
     @app.post("/experiments/new")
     async def experiment_create_action(request: Request):
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
-        dataset_value = form.get("dataset", "")
-        if "|" not in dataset_value:
-            raise TaskValidationError("dataset selection is required")
-        instrument, snapshot_id = dataset_value.split("|", 1)
-        template = catalog.template_detail("single_stock_daily_causal", "1")
-        template_parameters: dict[str, Any] = {}
-        for name, schema in template["parameter_schema"]["properties"].items():
-            raw = form.get(f"template_{name}", "")
-            if raw == "" and schema.get("nullable"):
-                value: Any = None
-            elif schema["type"] == "number":
-                value = float(raw)
-            elif schema["type"] == "integer":
-                value = int(raw)
-            elif schema["type"] == "boolean":
-                value = raw.lower() == "true"
-            else:
-                value = raw
-            template_parameters[name] = value
-        task_operators: dict[str, Any] = {}
-        for slot in template["slots"]:
-            selector = form.get(f"operator_{slot}_selector", "")
-            if "@" not in selector:
-                raise TaskValidationError(f"{slot} operator selection is required")
-            operator_id, version = selector.rsplit("@", 1)
-            task_operators[slot] = {
-                "operator_id": operator_id,
-                "version": version,
-                "parameters": _json_text(
-                    form.get(f"operator_{slot}_parameters", "{}"),
-                    f"{slot} parameters",
-                ),
-            }
         result = await run_in_threadpool(
             experiments.submit,
-            {
-                "schema_version": 1,
-                "dataset": {
-                    "instrument": instrument,
-                    "snapshot_id": snapshot_id,
-                },
-                "template": {
-                    "name": template["name"],
-                    "version": template["version"],
-                    "parameters": template_parameters,
-                },
-                "operators": task_operators,
-            },
+            _task_from_form(form, catalog=catalog),
             action_id=form.get("action_id") or secrets.token_hex(16),
         )
         return RedirectResponse(

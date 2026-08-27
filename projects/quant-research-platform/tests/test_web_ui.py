@@ -40,8 +40,11 @@ def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     assert 'data-testid="experiment-form"' in response.text
     assert 'name="dataset"' in response.text
     assert 'data-slot="fit"' in response.text
-    assert 'value="latest"' in response.text
-    assert 'name="operator_fit_parameters"' in response.text
+    assert 'value="prior_log_ols@latest"' in response.text
+    assert 'value="prior_log_ols@1.0.0"' in response.text
+    assert 'data-testid="generated-params-fit-prior_log_ols-1.0.0"' in response.text
+    assert "operator_fit_param__prior_log_ols__1.0.0__window_sessions" in response.text
+    assert 'data-testid="preview-experiment"' in response.text
     assert "<noscript" in response.text
 
 

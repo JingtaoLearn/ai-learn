@@ -67,9 +67,10 @@ Validator = Callable[[Path], dict[str, Any]]
 def _require_text(value: Any, path: str, maximum: int) -> str:
     if not isinstance(value, str) or not value.strip() or "\0" in value:
         raise OperatorSubmissionError(f"{path} must be non-empty text")
-    if len(value.encode("utf-8")) > maximum:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    if len(normalized.encode("utf-8")) > maximum:
         raise OperatorSubmissionError(f"{path} exceeds its size limit")
-    return value
+    return normalized
 
 
 def _normalize_submission(value: Any) -> dict[str, Any]:

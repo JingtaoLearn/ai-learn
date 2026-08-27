@@ -314,6 +314,25 @@ class ExperimentService:
             "attempt_id": attempt_id,
         }
 
+    def preview_task(self, task: Any) -> dict[str, Any]:
+        resolved = self.resolve_task(task)
+        experiment_id = hashlib.sha256(
+            canonical_json_bytes(self._identity(resolved))
+        ).hexdigest()
+        connection = self.catalog.connect()
+        try:
+            existing = connection.execute(
+                "SELECT 1 FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return {
+            "experiment_id": experiment_id,
+            "duplicate": existing is not None,
+            "resolved": resolved,
+        }
+
     def rerun(self, experiment_id: str, *, action_id: str) -> dict[str, Any]:
         action_id = _validate_action_id(action_id)
         with self.catalog.transaction(immediate=True) as connection:
