@@ -32,7 +32,9 @@ class SerialAttemptWorker:
             )
         except Exception as exc:
             logs = f"{type(exc).__name__}: {exc}"
-            if getattr(exc, "termination_unconfirmed", False):
+            if getattr(exc, "attempt_finalized", False):
+                pass
+            elif getattr(exc, "termination_unconfirmed", False):
                 self.service.mark_termination_unconfirmed(
                     attempt["attempt_id"], logs=logs
                 )

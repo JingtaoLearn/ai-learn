@@ -20,6 +20,11 @@ from test_operator_submission import IMAGE, _passing_validator, _submission
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEST_EXECUTION_IDENTITY = {"runner": "test"}
+
+
+def _test_identity_provider(project_root, runner_image):
+    return TEST_EXECUTION_IDENTITY
 
 
 def _attempt(tmp_path: Path):
@@ -38,7 +43,7 @@ def _attempt(tmp_path: Path):
             "adjustment": "mixed",
         },
     )
-    service = ExperimentService(catalog, execution_identity={"runner": "test"})
+    service = ExperimentService(catalog, execution_identity=TEST_EXECUTION_IDENTITY)
     created = service.submit(_task(snapshot["snapshot_id"]), action_id="create")
     return catalog, service.attempt_detail(created["attempt_id"])
 
@@ -81,6 +86,7 @@ def test_resolved_execution_matches_existing_financial_artifacts_and_writes_audi
         catalog,
         output_root=tmp_path / "resolved-runs",
         project_root=PROJECT_ROOT,
+        identity_provider=_test_identity_provider,
     )
 
     resolved = executor(attempt)
@@ -105,6 +111,7 @@ def test_exact_resolved_rerun_verifies_and_reuses_immutable_artifacts(tmp_path: 
         catalog,
         output_root=tmp_path / "runs",
         project_root=PROJECT_ROOT,
+        identity_provider=_test_identity_provider,
     )
 
     first = executor(attempt)
@@ -154,7 +161,7 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
         assert loaded_slot == slot
         implementations[slot] = implementation
         implementation_parameters[slot] = {"window": 2}
-    service = ExperimentService(catalog, execution_identity={"runner": "test"})
+    service = ExperimentService(catalog, execution_identity=TEST_EXECUTION_IDENTITY)
     stale = service.claim_next_attempt()
     service.finish_failure(stale["attempt_id"], "superseded test setup")
     service.submit(task, action_id="custom-create")
@@ -228,6 +235,7 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
         attempt_controller=service,
         process_launcher=launch,
         container_reconciler=lambda cidfile: True,
+        identity_provider=_test_identity_provider,
     )
     executed = executor(attempt)
 

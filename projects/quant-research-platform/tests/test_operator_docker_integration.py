@@ -8,7 +8,10 @@ from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
 from quant_platform.operator_service import OperatorService
-from quant_platform.resolved_runner import ResolvedAttemptExecutor
+from quant_platform.resolved_runner import (
+    ResolvedAttemptExecutor,
+    effective_execution_identity,
+)
 
 from test_experiment_service import FIXTURE, _task
 from test_operator_submission import _submission
@@ -50,7 +53,9 @@ def test_all_custom_slots_validate_and_execute_in_one_real_docker_launch(
 
     experiments = ExperimentService(
         catalog,
-        execution_identity={"runner": "docker-integration", "image": runner_image},
+        execution_identity=effective_execution_identity(
+            Path(__file__).resolve().parents[1], runner_image
+        ),
     )
     created = experiments.submit(task, action_id="docker-create")
     attempt = experiments.claim_next_attempt()

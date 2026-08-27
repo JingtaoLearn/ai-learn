@@ -6,7 +6,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .catalog import Catalog
 from .isolation import build_composed_execution_command
@@ -14,7 +14,7 @@ from .experiment_service import ExperimentService
 from .runner import RunnerTerminationError, _terminate_container, reconcile_container
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
-from .strategy_runner import run_strategy_config
+from .strategy_runner import _effective_source_identity, run_strategy_config
 
 
 class ResolvedExecutionError(RuntimeError):
@@ -23,6 +23,35 @@ class ResolvedExecutionError(RuntimeError):
 
 class ResolvedTerminationUnconfirmed(ResolvedExecutionError):
     termination_unconfirmed = True
+
+
+class ExecutionIdentityMismatch(ResolvedExecutionError):
+    attempt_finalized = True
+
+
+ExecutionIdentityProvider = Callable[[Path | None, str | None], dict[str, Any]]
+
+
+def effective_execution_identity(
+    project_root: Path | None,
+    runner_image: str | None,
+    *,
+    source_identity_provider: Callable[..., tuple] = _effective_source_identity,
+) -> dict[str, Any]:
+    source_sha256, _, runtime, _ = (
+        source_identity_provider(project_root=project_root)
+        if project_root is not None
+        else source_identity_provider()
+    )
+    identity = {
+        "domain_schema": 1,
+        "runner": "quant_platform",
+        "source_sha256": source_sha256,
+        "runtime": runtime,
+        "runner_image": runner_image,
+    }
+    canonical_json_bytes(identity)
+    return identity
 
 
 BUILTIN_OPERATORS = {
@@ -107,6 +136,7 @@ class ResolvedAttemptExecutor:
         process_launcher: Any = subprocess.Popen,
         container_terminator: Any = _terminate_container,
         container_reconciler: Any = reconcile_container,
+        identity_provider: ExecutionIdentityProvider = effective_execution_identity,
     ):
         self.catalog = catalog
         self.output_root = Path(output_root)
@@ -116,6 +146,22 @@ class ResolvedAttemptExecutor:
         self.process_launcher = process_launcher
         self.container_terminator = container_terminator
         self.container_reconciler = container_reconciler
+        self.identity_provider = identity_provider
+
+    def _verify_execution_identity(self, attempt: dict[str, Any]) -> None:
+        frozen = attempt["resolved"]["execution_identity"]
+        current = self.identity_provider(self.project_root, self.runner_image)
+        if canonical_json_bytes(frozen) == canonical_json_bytes(current):
+            return
+        frozen_digest = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
+        current_digest = hashlib.sha256(canonical_json_bytes(current)).hexdigest()
+        reason = (
+            "execution identity mismatch: "
+            f"frozen={frozen_digest} current={current_digest}"
+        )
+        if self.attempt_controller is not None:
+            self.attempt_controller.finish_failure(attempt["attempt_id"], reason)
+        raise ExecutionIdentityMismatch(reason)
 
     def _verify_resolution(self, resolved: dict[str, Any]) -> None:
         for slot, operator in resolved["operators"].items():
@@ -186,6 +232,7 @@ class ResolvedAttemptExecutor:
 
     def __call__(self, attempt: dict[str, Any]) -> dict[str, str]:
         resolved = attempt["resolved"]
+        self._verify_execution_identity(attempt)
         self._verify_resolution(resolved)
         custom_slots = {
             slot

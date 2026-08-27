@@ -21,16 +21,16 @@ from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
+from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
+from .resolved_runner import effective_execution_identity
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
 from .settings import Settings
-from .datasets import _verify_snapshot
 from .strategy_runner import (
     ARTIFACT_NAMES,
     HASHED_ARTIFACT_NAMES,
-    _effective_source_identity,
 )
 
 
@@ -364,17 +364,11 @@ def create_app(
 ) -> FastAPI:
     settings = settings.validated()
     catalog = initialize_catalog(settings.state_root)
-    source_sha256, _, runtime, _ = _effective_source_identity(
-        project_root=settings.project_root
-    )
     experiments = ExperimentService(
         catalog,
-        execution_identity={
-            "domain_schema": 1,
-            "runner": "quant_platform",
-            "source_sha256": source_sha256,
-            "runtime": runtime,
-        },
+        execution_identity=effective_execution_identity(
+            settings.project_root, settings.runner_image
+        ),
     )
     experiments.recover_abandoned_attempts()
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))

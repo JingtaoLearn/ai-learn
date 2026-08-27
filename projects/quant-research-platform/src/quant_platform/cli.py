@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import NoReturn, Sequence
 
@@ -11,9 +12,9 @@ from .datasets import publish_snapshot, snapshot_status
 from .catalog import initialize_catalog
 from .experiment_service import ExperimentService
 from .operator_service import OperatorService
+from .resolved_runner import effective_execution_identity
 from .runner import run_submission
 from .strategy_runner import run_strategy_config
-from .strategy_runner import _effective_source_identity
 from .submissions import publish_submission, submission_status
 from .updates import reconcile_daily_history
 
@@ -184,15 +185,11 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _domain_services(root: str) -> tuple:
     catalog = initialize_catalog(Path(root))
-    source_sha256, _, runtime, _ = _effective_source_identity()
     experiments = ExperimentService(
         catalog,
-        execution_identity={
-            "domain_schema": 1,
-            "runner": "quant_platform",
-            "source_sha256": source_sha256,
-            "runtime": runtime,
-        },
+        execution_identity=effective_execution_identity(
+            None, os.environ.get("QUANT_RUNNER_IMAGE")
+        ),
     )
     return catalog, experiments
 
