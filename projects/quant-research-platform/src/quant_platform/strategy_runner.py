@@ -11,6 +11,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -40,18 +42,22 @@ ARTIFACT_NAMES = {
     "report.html",
 }
 HASHED_ARTIFACT_NAMES = ARTIFACT_NAMES - {"run_manifest.json"}
-SOURCE_PATHS = (
-    "src/quant_platform/datasets.py",
-    "src/quant_platform/__init__.py",
-    "src/quant_platform/cli.py",
-    "src/quant_platform/strategy_config.py",
-    "src/quant_platform/strategy_operators.py",
-    "src/quant_platform/strategy_replay.py",
-    "src/quant_platform/strategy_report.py",
-    "src/quant_platform/strategy_runner.py",
+PACKAGE_SOURCE_PATHS = (
+    ("src/quant_platform/datasets.py", "datasets.py"),
+    ("src/quant_platform/__init__.py", "__init__.py"),
+    ("src/quant_platform/cli.py", "cli.py"),
+    ("src/quant_platform/strategy_config.py", "strategy_config.py"),
+    ("src/quant_platform/strategy_operators.py", "strategy_operators.py"),
+    ("src/quant_platform/strategy_replay.py", "strategy_replay.py"),
+    ("src/quant_platform/strategy_report.py", "strategy_report.py"),
+    ("src/quant_platform/strategy_runner.py", "strategy_runner.py"),
+)
+PROJECT_SOURCE_PATHS = (
     "pyproject.toml",
     "requirements.lock",
 )
+SOURCE_PATHS = tuple(label for label, _ in PACKAGE_SOURCE_PATHS) + PROJECT_SOURCE_PATHS
+PROJECT_ROOT_ENV = "QUANT_PLATFORM_PROJECT_ROOT"
 RUNTIME_FIELDS = {
     "python",
     "python_implementation",
@@ -112,14 +118,41 @@ def _runtime_identity(
     }
 
 
-def _git_identity(project_root: Path) -> dict[str, Any]:
-    repository = project_root.parents[1]
+def _unavailable_git_identity() -> dict[str, Any]:
+    return {"available": False, "commit": None, "dirty": None}
+
+
+def _git_identity(project_root: Path | None) -> dict[str, Any]:
+    if project_root is None:
+        return _unavailable_git_identity()
     try:
+        repository_output = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        repository = Path(repository_output).resolve(strict=True)
+        project_relative = project_root.relative_to(repository)
+        tracked_metadata = [
+            (project_relative / relative).as_posix()
+            for relative in PROJECT_SOURCE_PATHS
+        ]
+        subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "--error-unmatch", "--"]
+            + tracked_metadata,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         commit = subprocess.run(
             ["git", "-C", str(repository), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         ).stdout.strip()
         dirty_output = subprocess.run(
             [
@@ -133,58 +166,291 @@ def _git_identity(project_root: Path) -> dict[str, Any]:
             check=True,
             capture_output=True,
             text=True,
+            timeout=5,
         ).stdout
-        if not commit:
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
             raise ValueError("empty Git commit")
         return {"available": True, "commit": commit, "dirty": bool(dirty_output)}
     except (OSError, subprocess.SubprocessError, ValueError):
-        return {"available": False, "commit": None, "dirty": None}
+        return _unavailable_git_identity()
 
 
-def _read_source_payload(path: Path, project_root: Path) -> bytes:
+def _source_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_source_payload(
+    path: Path,
+    label: str,
+    *,
+    directory_fd: int | None = None,
+) -> bytes:
+    target: Path | str = path.name if directory_fd is not None else path
     try:
-        relative = path.relative_to(project_root)
-        before = path.stat(follow_symlinks=False)
-        if path.is_symlink() or not path.is_file():
+        before = os.stat(target, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            raise StrategyRunError(f"effective source input is unsafe: {label}")
+        if before.st_nlink != 1:
             raise StrategyRunError(
-                f"effective source input is unsafe: {relative.as_posix()}"
+                f"effective source input has an unsafe hard link count: {label}"
             )
-        payload = path.read_bytes()
-        after = path.stat(follow_symlinks=False)
-    except (OSError, ValueError) as exc:
+        descriptor = os.open(
+            target,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if _source_file_identity(opened) != _source_file_identity(before):
+                raise StrategyRunError(
+                    f"effective source input changed while opening: {label}"
+                )
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            if _source_file_identity(after) != _source_file_identity(opened):
+                raise StrategyRunError(
+                    f"effective source input changed while hashing: {label}"
+                )
+            payload = b"".join(chunks)
+            if len(payload) != after.st_size:
+                raise StrategyRunError(
+                    f"effective source input read was incomplete: {label}"
+                )
+        finally:
+            os.close(descriptor)
+        current = os.stat(target, dir_fd=directory_fd, follow_symlinks=False)
+        if _source_file_identity(current) != _source_file_identity(after):
+            raise StrategyRunError(
+                f"effective source input path changed while hashing: {label}"
+            )
+    except StrategyRunError:
+        raise
+    except OSError as exc:
         raise StrategyRunError(f"effective source input is unavailable: {path}") from exc
-    identity_before = (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    )
-    identity_after = (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    )
-    if identity_before != identity_after or len(payload) != after.st_size:
-        raise StrategyRunError(f"effective source input changed while hashing: {path}")
     return payload
+
+
+def _absolute_path(path: Path | str) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+
+
+def _require_safe_directory(path: Path, label: str) -> None:
+    try:
+        metadata = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise StrategyRunError(f"{label} is unavailable: {path}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise StrategyRunError(f"{label} is unsafe: {path}")
+
+
+def _require_no_symlink_components(path: Path, label: str) -> None:
+    for component in reversed((path, *path.parents)):
+        try:
+            metadata = os.stat(component, follow_symlinks=False)
+        except OSError as exc:
+            raise StrategyRunError(f"{label} is unavailable: {path}") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise StrategyRunError(f"{label} contains a symlink: {component}")
+
+
+@contextmanager
+def _open_anchored_directory(path: Path, label: str) -> Iterator[int]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(path.anchor, flags)
+        for part in path.parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise StrategyRunError(f"{label} is unsafe: {path}")
+        _require_no_symlink_components(path, label)
+        current = os.stat(path, follow_symlinks=False)
+        if _directory_identity(current) != _directory_identity(opened):
+            raise StrategyRunError(f"{label} changed while opening: {path}")
+        yield descriptor
+        after = os.fstat(descriptor)
+        _require_no_symlink_components(path, label)
+        current = os.stat(path, follow_symlinks=False)
+        if (
+            _directory_identity(after) != _directory_identity(opened)
+            or _directory_identity(current) != _directory_identity(opened)
+        ):
+            raise StrategyRunError(f"{label} changed while hashing: {path}")
+    except StrategyRunError:
+        raise
+    except OSError as exc:
+        raise StrategyRunError(f"{label} is unavailable or unsafe: {path}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _validate_project_layout_at(root_fd: int, label: str) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    src_fd = -1
+    package_fd = -1
+    try:
+        src_fd = os.open("src", flags, dir_fd=root_fd)
+        package_fd = os.open("quant_platform", flags, dir_fd=src_fd)
+        for source_label, filename in PACKAGE_SOURCE_PATHS:
+            metadata = os.stat(
+                filename, dir_fd=package_fd, follow_symlinks=False
+            )
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise StrategyRunError(
+                    f"{label} has an unsafe expected source file: {source_label}"
+                )
+        for relative in PROJECT_SOURCE_PATHS:
+            metadata = os.stat(relative, dir_fd=root_fd, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise StrategyRunError(
+                    f"{label} has an unsafe expected metadata file: {relative}"
+                )
+    except StrategyRunError:
+        raise
+    except OSError as exc:
+        raise StrategyRunError(
+            f"{label} does not have the exact expected project layout"
+        ) from exc
+    finally:
+        if package_fd >= 0:
+            os.close(package_fd)
+        if src_fd >= 0:
+            os.close(src_fd)
+
+
+def _validate_project_root(path: Path | str, label: str) -> Path:
+    raw_path = os.fspath(path)
+    if not raw_path or not Path(raw_path).is_absolute():
+        raise StrategyRunError(f"{label} must be a non-empty absolute path")
+    root = _absolute_path(path)
+    with _open_anchored_directory(root, label) as root_fd:
+        _validate_project_layout_at(root_fd, label)
+    return root
+
+
+def _has_project_layout_signature(path: Path) -> bool:
+    return all(
+        os.path.lexists(path / relative)
+        for relative in ("pyproject.toml", "requirements.lock", "src/quant_platform")
+    )
+
+
+def _discover_project_root(
+    explicit_root: Path | str | None = None,
+    *,
+    cwd: Path | None = None,
+    package_root: Path | None = None,
+) -> Path | None:
+    if explicit_root is not None:
+        return _validate_project_root(explicit_root, "explicit project root")
+
+    environment_root = os.environ.get(PROJECT_ROOT_ENV)
+    if environment_root is not None:
+        if not environment_root:
+            raise StrategyRunError("environment project root is empty")
+        return _validate_project_root(environment_root, "environment project root")
+
+    current = _absolute_path(cwd or Path.cwd())
+    _require_safe_directory(current, "current directory")
+    candidates = [
+        ancestor
+        for ancestor in (current, *current.parents)
+        if _has_project_layout_signature(ancestor)
+    ]
+    validated = [
+        _validate_project_root(candidate, "current-directory project root")
+        for candidate in candidates
+    ]
+    if len(validated) > 1:
+        raise StrategyRunError(
+            "project root discovery is ambiguous: "
+            + ", ".join(str(candidate) for candidate in validated)
+        )
+    if validated:
+        return validated[0]
+
+    loaded_package = _absolute_path(
+        package_root or Path(__file__).resolve(strict=True).parent
+    )
+    if (
+        loaded_package.name == "quant_platform"
+        and loaded_package.parent.name == "src"
+    ):
+        editable_root = loaded_package.parent.parent
+        if _has_project_layout_signature(editable_root):
+            return _validate_project_root(
+                editable_root, "editable-layout project root"
+            )
+    return None
 
 
 def _effective_source_identity(
     *,
     font_identity: dict[str, str] | None = None,
+    project_root: Path | str | None = None,
+    cwd: Path | None = None,
 ) -> tuple[str, dict[str, str], dict[str, str], dict[str, Any]]:
-    project_root = Path(__file__).resolve().parents[2]
+    try:
+        package_root = Path(__file__).resolve(strict=True).parent
+    except OSError as exc:
+        raise StrategyRunError("loaded quant_platform package is unavailable") from exc
+    _require_safe_directory(package_root, "loaded quant_platform package")
+    discovered_root = _discover_project_root(
+        project_root,
+        cwd=cwd,
+        package_root=package_root,
+    )
     digest = hashlib.sha256()
     files: dict[str, str] = {}
-    for relative in SOURCE_PATHS:
-        path = project_root / relative
-        payload = _read_source_payload(path, project_root)
-        files[relative] = _sha256(payload)
-        digest.update(relative.encode("utf-8"))
+
+    def bind_input(label: str, path: Path, directory_fd: int) -> None:
+        payload = _read_source_payload(path, label, directory_fd=directory_fd)
+        files[label] = _sha256(payload)
+        digest.update(label.encode("utf-8"))
         digest.update(b"\0")
         digest.update(payload)
         digest.update(b"\0")
+
+    with _open_anchored_directory(
+        package_root, "loaded quant_platform package"
+    ) as package_fd:
+        for label, filename in PACKAGE_SOURCE_PATHS:
+            bind_input(label, package_root / filename, package_fd)
+    if discovered_root is not None:
+        with _open_anchored_directory(
+            discovered_root, "discovered project root"
+        ) as project_fd:
+            _validate_project_layout_at(project_fd, "discovered project root")
+            for relative in PROJECT_SOURCE_PATHS:
+                bind_input(relative, discovered_root / relative, project_fd)
     runtime = (
         _runtime_identity(font_identity)
         if font_identity is not None
@@ -192,7 +458,7 @@ def _effective_source_identity(
     )
     digest.update(b"runtime\0")
     digest.update(_canonical_json(runtime))
-    return digest.hexdigest(), files, runtime, _git_identity(project_root)
+    return digest.hexdigest(), files, runtime, _git_identity(discovered_root)
 
 
 def _bound_snapshot(
@@ -529,10 +795,19 @@ def _verify_run(
         raise StrategyRunError(f"corrupt immutable strategy run {target}: {exc}") from exc
 
 
-def run_strategy_config(config_path: Path | str) -> dict[str, str]:
+def run_strategy_config(
+    config_path: Path | str,
+    *,
+    project_root: Path | str | None = None,
+) -> dict[str, str]:
     config = load_strategy_config(config_path)
     dataset_path, dataset_manifest, frame = _bound_snapshot(config)
-    source_sha256, source_files, runtime, git = _effective_source_identity()
+    source_identity = (
+        _effective_source_identity(project_root=project_root)
+        if project_root is not None
+        else _effective_source_identity()
+    )
+    source_sha256, source_files, runtime, git = source_identity
     identity = {
         "schema_version": 1,
         "config_sha256": config.config_sha256,
