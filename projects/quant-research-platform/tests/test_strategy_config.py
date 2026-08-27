@@ -10,6 +10,7 @@ from quant_platform.strategy_config import (
     validate_strategy_config,
 )
 from quant_platform.strategy_operators import (
+    OPERATOR_REGISTRY,
     OperatorSpec,
     ParameterSpec,
     validate_registry,
@@ -223,3 +224,13 @@ def test_validation_does_not_mutate_callers_config(tmp_path: Path):
     before = copy.deepcopy(config)
     validate_strategy_config(config)
     assert config == before
+
+
+def test_builtin_operator_registry_is_immutable():
+    with pytest.raises(TypeError):
+        OPERATOR_REGISTRY[("fit", "unsafe", "1")] = OperatorSpec(
+            slot="fit",
+            name="unsafe",
+            version="1",
+            parameters={},
+        )

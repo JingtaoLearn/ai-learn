@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Mapping
 
 import numpy as np
@@ -44,7 +45,7 @@ def validate_registry(
             owners[parameter_name] = owner
 
 
-OPERATOR_REGISTRY: dict[tuple[str, str, str], OperatorSpec] = {
+OPERATOR_REGISTRY: Mapping[tuple[str, str, str], OperatorSpec] = MappingProxyType({
     ("fit", "prior_log_ols", "1"): OperatorSpec(
         "fit",
         "prior_log_ols",
@@ -107,7 +108,7 @@ OPERATOR_REGISTRY: dict[tuple[str, str, str], OperatorSpec] = {
     ("report", "concise_chinese_causal_trade", "1"): OperatorSpec(
         "report", "concise_chinese_causal_trade", "1", {}
     ),
-}
+})
 
 
 @dataclass(frozen=True)

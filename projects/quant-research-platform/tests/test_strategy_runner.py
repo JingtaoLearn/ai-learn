@@ -1,5 +1,6 @@
 import json
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -158,6 +159,24 @@ def test_exact_rerun_verifies_and_returns_same_immutable_run(tmp_path: Path):
     } == before
 
 
+def test_concurrent_identical_publications_reuse_one_verified_run(
+    tmp_path: Path, monkeypatch
+):
+    config_path = _foundation(tmp_path)
+    monkeypatch.setattr(
+        runner_module,
+        "render_report",
+        lambda *args, **kwargs: "<!doctype html><html></html>",
+    )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(run_strategy_config, [config_path] * 4))
+
+    assert [result["status"] for result in results].count("CREATED") == 1
+    assert [result["status"] for result in results].count("NO_CHANGE") == 3
+    assert len({result["run_id"] for result in results}) == 1
+
+
 @pytest.mark.parametrize("artifact", ["metrics.json", "events.csv", "run_manifest.json"])
 def test_existing_run_corruption_fails_closed_without_repair(
     tmp_path: Path, artifact: str
@@ -170,11 +189,40 @@ def test_existing_run_corruption_fails_closed_without_repair(
     path.chmod(0o644)
     path.write_bytes(path.read_bytes() + b"corrupt")
     corrupted = path.read_bytes()
+    path.chmod(0o444)
+    target.chmod(0o555)
 
     with pytest.raises(StrategyRunError, match="corrupt|immutable|checksum|JSON"):
         run_strategy_config(config_path)
 
     assert path.read_bytes() == corrupted
+
+
+@pytest.mark.parametrize("corruption", ["schema_version", "duplicate_key"])
+def test_manifest_semantic_and_duplicate_key_corruption_fails_closed(
+    tmp_path: Path, corruption: str
+):
+    config_path = _foundation(tmp_path)
+    published = run_strategy_config(config_path)
+    target = Path(published["path"])
+    manifest_path = target / "run_manifest.json"
+    target.chmod(0o755)
+    manifest_path.chmod(0o644)
+    if corruption == "schema_version":
+        manifest = json.loads(manifest_path.read_text())
+        manifest["schema_version"] = 999
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        payload = manifest_path.read_text(encoding="utf-8").rstrip()
+        manifest_path.write_text(
+            payload[:-1] + ', "run_id": "' + published["run_id"] + '"}',
+            encoding="utf-8",
+        )
+    manifest_path.chmod(0o444)
+    target.chmod(0o555)
+
+    with pytest.raises(StrategyRunError, match="corrupt|schema|duplicate"):
+        run_strategy_config(config_path)
 
 
 def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):

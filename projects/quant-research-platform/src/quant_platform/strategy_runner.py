@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import shutil
@@ -166,9 +167,18 @@ def _make_removable(directory: Path) -> None:
 
 
 def _load_strict_json(path: Path, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON object key: {key}")
+            value[key] = item
+        return value
+
     try:
         return json.loads(
             path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
     except (OSError, UnicodeError, ValueError) as exc:
@@ -221,6 +231,8 @@ def _verify_run(
         }
         if set(manifest) != expected_fields:
             raise ValueError("run manifest fields are invalid")
+        if manifest["schema_version"] != 1:
+            raise ValueError("run manifest schema_version must be 1")
         identity = {
             "schema_version": 1,
             "config_sha256": config.config_sha256,
@@ -354,7 +366,9 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
         )
         try:
             os.rename(staging, target)
-        except FileExistsError:
+        except OSError as exc:
+            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY} or not target.exists():
+                raise
             _verify_run(
                 target,
                 run_id,
