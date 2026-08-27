@@ -136,6 +136,7 @@ def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
         "event_costs": True,
         "trade_events": True,
         "profit_identity": True,
+        "trade_net_pnl": True,
     }
     assert set(manifest["files"]) == REQUIRED_ARTIFACTS - {"run_manifest.json"}
     assert stat.S_IMODE(target.stat().st_mode) == 0o555

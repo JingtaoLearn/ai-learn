@@ -251,6 +251,14 @@ def _reconcile(
                 atol=1e-7,
             )
         ),
+        "trade_net_pnl": bool(
+            np.isclose(
+                trades["net_pnl_cny"].sum(),
+                daily.iloc[-1]["equity"] - initial_capital,
+                rtol=0,
+                atol=1e-8,
+            )
+        ),
     }
     expected_cash = initial_capital
     expected_holdings = 0
@@ -324,10 +332,15 @@ def replay_strategy(
     account = _Account(capital, sizing, costs)
     zero_account = _Account(capital, sizing, _zero_cost_parameters(costs))
     buy_hold_account = _Account(capital, sizing, costs)
-    buy_hold_account.buy(
+    buy_hold_entry = buy_hold_account.buy(
         evaluation.index[0],
         float(evaluation.iloc[0]["Open"]),
         "BUY_AND_HOLD_ENTRY",
+    )
+    buy_hold_total_cost = (
+        float(buy_hold_entry["total_cost_cny"])
+        if buy_hold_entry is not None
+        else 0.0
     )
     decision = HysteresisDecision(**operator_parameters["decision"])
     event_rows: list[dict[str, Any]] = []
@@ -365,6 +378,13 @@ def replay_strategy(
             zero_account.sell(
                 session, raw_open, "TERMINAL_FORCED_LIQUIDATION"
             )
+            buy_hold_terminal = buy_hold_account.sell(
+                session, raw_open, "TERMINAL_FORCED_LIQUIDATION"
+            )
+            if buy_hold_terminal is not None:
+                buy_hold_total_cost += float(
+                    buy_hold_terminal["total_cost_cny"]
+                )
             if terminal is not None:
                 day_events.append(terminal)
                 action = "SELL"
@@ -431,6 +451,7 @@ def replay_strategy(
         "zero_cost_return": float(daily["zero_cost_equity"].iloc[-1] / capital - 1.0),
         "buy_hold_final_equity_cny": float(daily["buy_hold_equity"].iloc[-1]),
         "buy_hold_return": float(daily["buy_hold_equity"].iloc[-1] / capital - 1.0),
+        "buy_hold_total_cost_cny": buy_hold_total_cost,
         "max_drawdown": float(drawdown.min()),
         "closed_trades": int(len(closed)),
         "open_trades": int((trades["status"] == "OPEN").sum()),

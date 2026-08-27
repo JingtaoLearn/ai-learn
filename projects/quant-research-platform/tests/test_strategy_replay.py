@@ -3,7 +3,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_platform.strategy_replay as replay_module
 from quant_platform.strategy_config import validate_strategy_config
+from quant_platform.strategy_operators import all_in_quantity, cms_cost_breakdown
 from quant_platform.strategy_replay import ReplayError, replay_strategy
 
 
@@ -198,7 +200,9 @@ def test_open_terminal_trade_has_entry_cost_only_and_is_not_a_closed_win():
 
 
 def test_optional_terminal_liquidation_sells_all_at_final_raw_open():
-    result = replay_strategy(_frame(), _config(terminal_handling="force_liquidate"))
+    frame = _frame()
+    marked = replay_strategy(frame, _config())
+    result = replay_strategy(frame, _config(terminal_handling="force_liquidate"))
 
     assert result.events.iloc[-1]["side"] == "SELL"
     assert result.events.iloc[-1]["Date"] == pd.Timestamp("2026-01-12")
@@ -207,6 +211,40 @@ def test_optional_terminal_liquidation_sells_all_at_final_raw_open():
     assert result.trades["status"].tolist() == ["CLOSED", "CLOSED"]
     assert result.metrics["open_trades"] == 0
     assert result.metrics["current_position"] == "FLAT"
+
+    sizing = {"lot_size": 100, "target_fraction": 1.0}
+    costs = _config().canonical["operators"]["cost"]["parameters"]
+    quantity = all_in_quantity(
+        cash=100000.0,
+        raw_price=10.0,
+        cost_parameters=costs,
+        **sizing,
+    )
+    entry_cost = cms_cost_breakdown(
+        side="BUY", raw_price=10.0, quantity=quantity, **costs
+    )["total_cost_cny"]
+    exit_cost = cms_cost_breakdown(
+        side="SELL", raw_price=10.5, quantity=quantity, **costs
+    )["total_cost_cny"]
+    expected_buy_hold = (
+        100000.0
+        - quantity * 10.0
+        - entry_cost
+        + quantity * 10.5
+        - exit_cost
+    )
+    assert result.metrics["buy_hold_final_equity_cny"] == pytest.approx(
+        expected_buy_hold
+    )
+    assert result.metrics["buy_hold_total_cost_cny"] == pytest.approx(
+        entry_cost + exit_cost
+    )
+    assert result.metrics["buy_hold_final_equity_cny"] != pytest.approx(
+        marked.metrics["buy_hold_final_equity_cny"]
+    )
+    assert result.metrics["zero_cost_final_equity_cny"] != pytest.approx(
+        marked.metrics["zero_cost_final_equity_cny"]
+    )
 
 
 def test_ledger_equity_cost_and_benchmark_reconciliation():
@@ -236,7 +274,22 @@ def test_ledger_equity_cost_and_benchmark_reconciliation():
         "event_costs": True,
         "trade_events": True,
         "profit_identity": True,
+        "trade_net_pnl": True,
     }
+
+
+def test_trade_net_pnl_reconciliation_fails_on_ledger_drift(monkeypatch):
+    original = replay_module._trade_ledger
+
+    def corrupt_trade_ledger(events, endpoint):
+        trades = original(events, endpoint)
+        trades.loc[0, "net_pnl_cny"] += 1.0
+        return trades
+
+    monkeypatch.setattr(replay_module, "_trade_ledger", corrupt_trade_ledger)
+
+    with pytest.raises(ReplayError, match="trade_net_pnl"):
+        replay_strategy(_frame(), _config())
 
 
 def test_insufficient_cash_records_no_event_and_stays_flat():
