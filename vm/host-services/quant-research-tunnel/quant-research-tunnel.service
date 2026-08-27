@@ -1,0 +1,19 @@
+[Unit]
+Description=Encrypted ailearn to Feng quant research tunnel
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/ailearn/.config/quant-research-tunnel.env
+ExecStart=/home/ailearn/ai-learn/vm/host-services/quant-research-tunnel/run-tunnel.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/user/%U /home/ailearn/ai-learn/vm/host-services/quant-research-tunnel/flags
+
+[Install]
+WantedBy=default.target

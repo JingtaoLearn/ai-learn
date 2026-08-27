@@ -1,0 +1,26 @@
+services:
+  quant-research-ui-proxy:
+    image: nginx:alpine
+    container_name: quant-research-ui-proxy
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      VIRTUAL_HOST: quant.ai.jingtao.fun
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: quant.ai.jingtao.fun
+      LETSENCRYPT_EMAIL: ${S_EMAIL}
+    extra_hosts:
+      - "quant-research-tunnel:${NGINX_PROXY_GATEWAY:?Use the tunnel-generated gateway env file}"
+    networks:
+      - proxy-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  proxy-network:
+    external: true
+    name: nginx-proxy

@@ -60,7 +60,7 @@ Your downstream service needs:
 3. **Receive callback** — `POST /auth/callback` with `token` in form body:
    ```js
    const payload = jwt.verify(req.body.token, AUTH_SHARED_SECRET);
-   // payload = { email, displayName, iat, exp }
+   // payload = { email, displayName, aud, iat, exp }
    req.session.user = { email: payload.email, displayName: payload.displayName };
    ```
 
@@ -72,6 +72,7 @@ Your downstream service needs:
 | `AZURE_CLIENT_SECRET` | Azure AD App client secret | ✅ |
 | `AUTH_SHARED_SECRET` | JWT signing secret (shared with downstream) | ✅ |
 | `ALLOWED_CALLBACKS` | Comma-separated whitelist of callback URLs | Recommended |
+| `DOWNSTREAM_CLIENTS` | JSON object mapping each exact callback URL to its JWT audience | Required |
 | `NOTE_APP_CALLBACK_URL` | Default callback URL | Optional |
 | `SESSION_SECRET` | Express session secret | Auto-generated |
 | `AZURE_REDIRECT_URI` | OAuth callback URL (auto-set by deploy script) | Auto-set |
@@ -89,8 +90,19 @@ Your downstream service needs:
 
 - **Callback whitelist**: Only URLs matching `ALLOWED_CALLBACKS` are accepted as redirect targets
 - **Short-lived JWT**: 30-second expiry — tokens are one-time-use for the POST redirect
+- **Audience binding**: Each exact callback is mapped to one downstream JWT audience
 - **Server-side secrets**: Client secret and shared secret never reach the browser
 - **HTTPS only**: Secure cookies in production mode
+
+For the quant research UI, configure both values together:
+
+```text
+ALLOWED_CALLBACKS=https://quant.ai.jingtao.fun/auth/callback
+DOWNSTREAM_CLIENTS={"https://quant.ai.jingtao.fun/auth/callback":"quant-research-ui"}
+```
+
+The downstream deployment must set `QUANT_SSO_CALLBACK_URL` to that exact callback and
+`QUANT_SSO_AUDIENCE` to `quant-research-ui`.
 
 ---
 

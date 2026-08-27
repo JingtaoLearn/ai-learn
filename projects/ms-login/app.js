@@ -35,6 +35,7 @@ const ALLOWED_CALLBACKS = (process.env.ALLOWED_CALLBACKS || "")
   .filter(Boolean);
 // Always allow the default
 if (DEFAULT_CALLBACK_URL) ALLOWED_CALLBACKS.push(DEFAULT_CALLBACK_URL);
+const DOWNSTREAM_CLIENTS = JSON.parse(process.env.DOWNSTREAM_CLIENTS || "{}");
 
 function isAllowedCallback(url) {
   try {
@@ -85,11 +86,15 @@ app.get("/auth/login", async (req, res) => {
   try {
     // Store the caller's callback URL in session
     const redirect = req.query.redirect;
-    if (redirect && isAllowedCallback(redirect)) {
+    const audience = redirect ? DOWNSTREAM_CLIENTS[redirect] : null;
+    if (redirect && audience && isAllowedCallback(redirect)) {
       req.session.callbackUrl = redirect;
+      req.session.audience = audience;
     } else {
       req.session.callbackUrl = DEFAULT_CALLBACK_URL;
+      req.session.audience = DOWNSTREAM_CLIENTS[DEFAULT_CALLBACK_URL];
     }
+    if (!req.session.audience) throw new Error("Downstream audience is not configured");
 
     const authCodeUrlParameters = {
       scopes: SCOPES,
@@ -141,7 +146,7 @@ app.get("/auth/callback", async (req, res) => {
 
     // Generate JWT and redirect to note-app via auto-POST
     const token = jwt.sign(
-      { email, displayName },
+      { email, displayName, aud: req.session.audience },
       AUTH_SHARED_SECRET,
       { expiresIn: "30s" }
     );

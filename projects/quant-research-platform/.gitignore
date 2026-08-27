@@ -14,3 +14,4 @@ runs/*
 state/*
 !state/.gitkeep
 analysis/
+deploy/quant-research-ui.env
