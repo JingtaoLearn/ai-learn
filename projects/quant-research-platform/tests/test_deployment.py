@@ -34,7 +34,10 @@ def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
     assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
     assert "QUANT_STATE_ROOT=/home/feng/quant-platform/state/ui" in environment
     assert "QUANT_AUTH_MODE=sso" in environment
-    assert "QUANT_SSO_AUDIENCE=quant-research-ui" in environment
+    assert (
+        "QUANT_SSO_AUDIENCE=https://quant.ai.jingtao.fun/auth/callback"
+        in environment
+    )
     assert (
         "QUANT_SSO_CALLBACK_URL=https://quant.ai.jingtao.fun/auth/callback"
         in environment
@@ -86,7 +89,10 @@ def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
 
     assert "deploy/quant-research-ui.env" in ignored
     assert "quant.ai.jingtao.fun/auth/callback" in ms_login
-    assert "quant-research-ui" in ms_login
+    assert (
+        '"https://quant.ai.jingtao.fun/auth/callback":"https://quant.ai.jingtao.fun/auth/callback"'
+        in ms_login
+    )
     assert "audience" in ms_login_app
     deploy_script = (repository / "projects/ms-login/deploy-azure.sh").read_text()
     assert 'DOWNSTREAM_CLIENTS="$DOWNSTREAM_CLIENTS"' in deploy_script

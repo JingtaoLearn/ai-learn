@@ -80,6 +80,21 @@ if [[ -z "${DOWNSTREAM_CLIENTS:-}" ]]; then
   echo "❌ DOWNSTREAM_CLIENTS is required to bind callbacks to JWT audiences."
   exit 1
 fi
+
+QUANT_CALLBACK_URL="https://quant.ai.jingtao.fun/auth/callback"
+case ",${ALLOWED_CALLBACKS:-}," in
+  *",${QUANT_CALLBACK_URL},"*) ;;
+  *) ALLOWED_CALLBACKS="${ALLOWED_CALLBACKS:+${ALLOWED_CALLBACKS},}${QUANT_CALLBACK_URL}" ;;
+esac
+DOWNSTREAM_CLIENTS="$(
+  DOWNSTREAM_CLIENTS="${DOWNSTREAM_CLIENTS}" \
+  QUANT_CALLBACK_URL="${QUANT_CALLBACK_URL}" \
+  node -e '
+    const clients = JSON.parse(process.env.DOWNSTREAM_CLIENTS);
+    clients[process.env.QUANT_CALLBACK_URL] = process.env.QUANT_CALLBACK_URL;
+    process.stdout.write(JSON.stringify(clients));
+  '
+)"
 if [[ -z "${SESSION_SECRET:-}" ]]; then
   SESSION_SECRET=$(openssl rand -base64 24)
 fi

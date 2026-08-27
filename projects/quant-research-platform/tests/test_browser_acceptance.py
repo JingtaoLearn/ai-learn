@@ -37,7 +37,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         session_secret="b" * 48,
         allowed_emails_file=allowlist,
         sso_login_url="https://ms-login.ai.jingtao.fun/auth/login",
-        sso_audience="quant-research-ui",
+        sso_audience=f"{base_url}/auth/callback",
         sso_callback_url=f"{base_url}/auth/callback",
         password_scrypt_hash=None,
         secure_cookies=False,

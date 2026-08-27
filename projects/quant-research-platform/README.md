@@ -157,7 +157,7 @@ python -m quant_platform.web
 ```
 
 Production settings fail closed unless Microsoft SSO, session signing, allowed emails, the exact
-`https://quant.ai.jingtao.fun/auth/callback`, audience `quant-research-ui`, secure cookies, and a
+`https://quant.ai.jingtao.fun/auth/callback`, the same exact callback as JWT audience, secure cookies, and a
 digest-pinned runner image are configured. The app binds only `127.0.0.1:8090`. Reports are served
 only from verified immutable attempt artifacts and embedded without script, same-origin,
 navigation, popup, or download privileges.

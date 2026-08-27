@@ -7,7 +7,7 @@ from quant_platform.datasets import publish_snapshot
 from quant_platform.settings import Settings
 from quant_platform.web import create_app
 
-from test_auth import NOW, SESSION, SHARED, _claims, _token
+from test_auth import AUDIENCE, NOW, SESSION, SHARED, _claims, _token
 from test_experiment_service import FIXTURE, _task
 
 
@@ -24,7 +24,7 @@ def make_app(tmp_path: Path):
         session_secret=SESSION,
         allowed_emails_file=allowlist,
         sso_login_url="https://ms-login.ai.jingtao.fun/auth/login",
-        sso_audience="quant-research-ui",
+        sso_audience=AUDIENCE,
         sso_callback_url="https://quant.ai.jingtao.fun/auth/callback",
         password_scrypt_hash=None,
         secure_cookies=True,

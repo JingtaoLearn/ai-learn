@@ -98,11 +98,16 @@ For the quant research UI, configure both values together:
 
 ```text
 ALLOWED_CALLBACKS=https://quant.ai.jingtao.fun/auth/callback
-DOWNSTREAM_CLIENTS={"https://quant.ai.jingtao.fun/auth/callback":"quant-research-ui"}
+DOWNSTREAM_CLIENTS={"https://quant.ai.jingtao.fun/auth/callback":"https://quant.ai.jingtao.fun/auth/callback"}
 ```
 
-The downstream deployment must set `QUANT_SSO_CALLBACK_URL` to that exact callback and
-`QUANT_SSO_AUDIENCE` to `quant-research-ui`.
+The downstream deployment must set both `QUANT_SSO_CALLBACK_URL` and `QUANT_SSO_AUDIENCE` to that
+exact callback URL. Existing consumers that ignore the additional `aud` claim remain compatible.
+
+`AUTH_SHARED_SECRET` defines one signing trust domain: any holder can mint assertions accepted by
+every verifier using that secret. Restrict it to the login broker and explicitly approved
+downstream verifiers, never expose it to browsers or logs, and rotate it across the whole trust
+domain after any suspected disclosure.
 
 ---
 

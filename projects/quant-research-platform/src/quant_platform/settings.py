@@ -86,6 +86,10 @@ class Settings:
                 raise SettingsError(
                     "SSO callback URL must exactly match the public auth callback"
                 )
+            if self.sso_audience != self.sso_callback_url:
+                raise SettingsError(
+                    "SSO audience must exactly equal the public auth callback URL"
+                )
         elif not self.password_scrypt_hash:
             raise SettingsError("password fallback requires a configured scrypt hash")
         return self
@@ -119,7 +123,8 @@ class Settings:
                 "https://ms-login.ai.jingtao.fun/auth/login",
             ),
             sso_audience=os.environ.get(
-                "QUANT_SSO_AUDIENCE", "quant-research-ui"
+                "QUANT_SSO_AUDIENCE",
+                "https://quant.ai.jingtao.fun/auth/callback",
             ),
             sso_callback_url=os.environ.get(
                 "QUANT_SSO_CALLBACK_URL",

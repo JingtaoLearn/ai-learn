@@ -19,6 +19,7 @@ from quant_platform.settings import Settings, SettingsError
 NOW = 1_787_800_000
 SHARED = "s" * 48
 SESSION = "c" * 48
+AUDIENCE = "https://quant.ai.jingtao.fun/auth/callback"
 
 
 def _b64(value: bytes) -> str:
@@ -39,7 +40,7 @@ def _claims(**changes):
     return {
         "email": "Researcher@Example.com",
         "displayName": "Researcher",
-        "aud": "quant-research-ui",
+        "aud": AUDIENCE,
         "iat": NOW - 5,
         "exp": NOW + 25,
     } | changes
@@ -58,7 +59,7 @@ def _settings(tmp_path: Path, **changes) -> Settings:
         "session_secret": SESSION,
         "allowed_emails_file": allowlist,
         "sso_login_url": "https://ms-login.ai.jingtao.fun/auth/login",
-        "sso_audience": "quant-research-ui",
+        "sso_audience": AUDIENCE,
         "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
@@ -98,7 +99,7 @@ def test_valid_sso_assertion_is_allowlisted_one_time_and_normalized(tmp_path: Pa
         (lambda: _token(_claims(iat=NOW - 5, exp=NOW + 120)), "lifetime"),
         (lambda: _token({key: value for key, value in _claims().items() if key != "aud"}), "audience"),
         (lambda: _token(_claims(aud="other-service")), "audience"),
-        (lambda: _token(_claims(aud=["quant-research-ui"])), "audience"),
+        (lambda: _token(_claims(aud=[AUDIENCE])), "audience"),
         (lambda: _token({key: value for key, value in _claims().items() if key != "email"}), "email"),
         (lambda: _token(_claims(email="denied@example.com")), "allowed"),
     ],
@@ -210,7 +211,7 @@ def test_incomplete_production_auth_configuration_prevents_startup(
         "session_secret": SESSION,
         "allowed_emails_file": allowlist,
         "sso_login_url": "https://ms-login.ai.jingtao.fun/auth/login",
-        "sso_audience": "quant-research-ui",
+        "sso_audience": AUDIENCE,
         "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
@@ -228,3 +229,5 @@ def test_callback_and_audience_configuration_are_exact(tmp_path: Path):
         )
     with pytest.raises(SettingsError, match="audience"):
         _settings(tmp_path, sso_audience="")
+    with pytest.raises(SettingsError, match="audience"):
+        _settings(tmp_path, sso_audience="quant-research-ui")
