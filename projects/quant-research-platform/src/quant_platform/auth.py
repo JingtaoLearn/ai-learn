@@ -154,18 +154,26 @@ class AuthManager:
         if not hmac.compare_digest(signature, expected):
             raise AuthError("invalid token signature")
         claims = _strict_json(_b64decode(parts[1], "token payload"), "token payload")
-        required = {"email", "displayName", "iat", "exp"}
+        required = {"email", "displayName", "aud", "iat", "exp"}
         if not required <= set(claims):
             missing = sorted(required - set(claims))
-            raise AuthError(f"token is missing required email or time claims: {missing}")
+            raise AuthError(
+                f"token is missing required audience, email, or time claims: {missing}"
+            )
         email = claims["email"]
         display_name = claims["displayName"]
+        audience = claims["aud"]
         issued = claims["iat"]
         expires = claims["exp"]
         if not isinstance(email, str) or "@" not in email:
             raise AuthError("token email is invalid")
         if not isinstance(display_name, str) or not display_name.strip():
             raise AuthError("token display name is invalid")
+        if (
+            not isinstance(audience, str)
+            or not hmac.compare_digest(audience, self.settings.sso_audience)
+        ):
+            raise AuthError("token audience is invalid")
         if (
             isinstance(issued, bool)
             or isinstance(expires, bool)

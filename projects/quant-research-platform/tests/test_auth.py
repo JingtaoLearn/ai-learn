@@ -39,6 +39,7 @@ def _claims(**changes):
     return {
         "email": "Researcher@Example.com",
         "displayName": "Researcher",
+        "aud": "quant-research-ui",
         "iat": NOW - 5,
         "exp": NOW + 25,
     } | changes
@@ -57,6 +58,8 @@ def _settings(tmp_path: Path, **changes) -> Settings:
         "session_secret": SESSION,
         "allowed_emails_file": allowlist,
         "sso_login_url": "https://ms-login.ai.jingtao.fun/auth/login",
+        "sso_audience": "quant-research-ui",
+        "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
     }
@@ -92,6 +95,9 @@ def test_valid_sso_assertion_is_allowlisted_one_time_and_normalized(tmp_path: Pa
         (lambda: _token(_claims(exp=NOW - 1)), "expired"),
         (lambda: _token(_claims(iat=NOW + 10)), "future"),
         (lambda: _token(_claims(iat=NOW - 5, exp=NOW + 120)), "lifetime"),
+        (lambda: _token({key: value for key, value in _claims().items() if key != "aud"}), "audience"),
+        (lambda: _token(_claims(aud="other-service")), "audience"),
+        (lambda: _token(_claims(aud=["quant-research-ui"])), "audience"),
         (lambda: _token({key: value for key, value in _claims().items() if key != "email"}), "email"),
         (lambda: _token(_claims(email="denied@example.com")), "allowed"),
     ],
@@ -203,8 +209,20 @@ def test_incomplete_production_auth_configuration_prevents_startup(
         "session_secret": SESSION,
         "allowed_emails_file": allowlist,
         "sso_login_url": "https://ms-login.ai.jingtao.fun/auth/login",
+        "sso_audience": "quant-research-ui",
+        "sso_callback_url": "https://quant.ai.jingtao.fun/auth/callback",
         "password_scrypt_hash": None,
         "secure_cookies": True,
     }
     with pytest.raises(SettingsError):
         Settings(**(values | changes)).validated()
+
+
+def test_callback_and_audience_configuration_are_exact(tmp_path: Path):
+    with pytest.raises(SettingsError, match="callback"):
+        _settings(
+            tmp_path,
+            sso_callback_url="https://quant.ai.jingtao.fun/wrong",
+        )
+    with pytest.raises(SettingsError, match="audience"):
+        _settings(tmp_path, sso_audience="")

@@ -22,6 +22,8 @@ class Settings:
     session_secret: str
     allowed_emails_file: Path | None
     sso_login_url: str
+    sso_audience: str
+    sso_callback_url: str
     password_scrypt_hash: str | None
     secure_cookies: bool
 
@@ -63,6 +65,15 @@ class Settings:
                 raise SettingsError("SSO allowed-email file must be a regular file")
             if urlsplit(self.sso_login_url).scheme != "https":
                 raise SettingsError("SSO login URL must use HTTPS")
+            if not self.sso_audience or any(
+                character.isspace() for character in self.sso_audience
+            ):
+                raise SettingsError("SSO audience must be a non-empty identifier")
+            expected_callback = self.public_url.rstrip("/") + "/auth/callback"
+            if self.sso_callback_url != expected_callback:
+                raise SettingsError(
+                    "SSO callback URL must exactly match the public auth callback"
+                )
         elif not self.password_scrypt_hash:
             raise SettingsError("password fallback requires a configured scrypt hash")
         return self
@@ -94,6 +105,13 @@ class Settings:
             sso_login_url=os.environ.get(
                 "QUANT_SSO_LOGIN_URL",
                 "https://ms-login.ai.jingtao.fun/auth/login",
+            ),
+            sso_audience=os.environ.get(
+                "QUANT_SSO_AUDIENCE", "quant-research-ui"
+            ),
+            sso_callback_url=os.environ.get(
+                "QUANT_SSO_CALLBACK_URL",
+                "https://quant.ai.jingtao.fun/auth/callback",
             ),
             password_scrypt_hash=os.environ.get("QUANT_PASSWORD_SCRYPT_HASH"),
             secure_cookies=os.environ.get("QUANT_SECURE_COOKIES", "true").lower()
