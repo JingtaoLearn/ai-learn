@@ -20,7 +20,10 @@ def test_initialization_enables_wal_constraints_and_idempotent_migrations(tmp_pa
     with sqlite3.connect(state_root / "catalog.sqlite3") as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
-        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+            (1,),
+            (2,),
+        ]
         assert connection.execute(
             "SELECT COUNT(*) FROM templates WHERE name = ? AND version = ?",
             (TEMPLATE_NAME, TEMPLATE_VERSION),
@@ -182,6 +185,32 @@ def test_database_unique_constraints_cover_domain_convergence(tmp_path: Path):
             )
     finally:
         connection.close()
+
+
+def test_attempt_launch_count_is_database_constrained_to_zero_or_one(tmp_path: Path):
+    catalog = initialize_catalog(tmp_path / "state")
+    with catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            "INSERT INTO experiments(experiment_id, identity_json, created_at) VALUES (?, ?, ?)",
+            ("d" * 64, "{}", "2026-08-27T00:00:00Z"),
+        )
+        for launch_count in (-1, 2):
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                connection.execute(
+                    """
+                    INSERT INTO attempts(
+                        attempt_id, experiment_id, action_id, sequence, status,
+                        requested_json, resolved_json, created_at, launch_count
+                    ) VALUES (?, ?, ?, 1, 'PENDING', '{}', '{}', ?, ?)
+                    """,
+                    (
+                        f"attempt-{launch_count}",
+                        "d" * 64,
+                        f"action-{launch_count}",
+                        "2026-08-27T00:00:00Z",
+                        launch_count,
+                    ),
+                )
 
 
 def test_catalog_rejects_symlink_state_root(tmp_path: Path):

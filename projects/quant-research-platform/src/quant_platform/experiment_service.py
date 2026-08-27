@@ -323,10 +323,6 @@ class ExperimentService:
                 """,
                 (experiment_id,),
             ).fetchone()
-            resolved = json.loads(previous["resolved_json"])
-            for operator in resolved["operators"].values():
-                latest = self.catalog.operator_detail(operator["operator_id"])
-                operator["latest_version_at_submission"] = latest["version"]
             sequence = previous["sequence"] + 1
             attempt_id = hashlib.sha256(
                 canonical_json_bytes(
@@ -350,7 +346,7 @@ class ExperimentService:
                     action_id,
                     sequence,
                     previous["requested_json"],
-                    canonical_json_bytes(resolved).decode(),
+                    previous["resolved_json"],
                     _now(),
                 ),
             )
@@ -470,15 +466,17 @@ class ExperimentService:
             row = connection.execute(
                 """
                 SELECT attempt_id FROM attempts
-                WHERE status = 'PENDING' ORDER BY created_at, sequence LIMIT 1
+                WHERE status = 'PENDING' AND launch_count = 0
+                ORDER BY created_at, sequence LIMIT 1
                 """
             ).fetchone()
             if row is None:
                 return None
             connection.execute(
                 """
-                UPDATE attempts SET status = 'RUNNING', started_at = ?
-                WHERE attempt_id = ? AND status = 'PENDING'
+                UPDATE attempts
+                SET status = 'RUNNING', started_at = ?, launch_count = 1
+                WHERE attempt_id = ? AND status = 'PENDING' AND launch_count = 0
                 """,
                 (_now(), row["attempt_id"]),
             )
@@ -489,14 +487,14 @@ class ExperimentService:
             cursor = connection.execute(
                 """
                 UPDATE attempts
-                SET status = 'PENDING', started_at = NULL,
+                SET status = 'FAILED', finished_at = ?,
                     logs = CASE
-                        WHEN logs IS NULL THEN 'Recovered abandoned RUNNING attempt.'
-                        ELSE substr(logs || '\nRecovered abandoned RUNNING attempt.', 1, ?)
+                        WHEN logs IS NULL THEN 'Runner marked abandoned RUNNING attempt failed.'
+                        ELSE substr(logs || '\nRunner marked abandoned RUNNING attempt failed.', 1, ?)
                     END
                 WHERE status = 'RUNNING'
                 """,
-                (MAX_LOG_BYTES,),
+                (_now(), MAX_LOG_BYTES),
             )
             return cursor.rowcount
 

@@ -114,6 +114,12 @@ BEFORE DELETE ON operator_versions BEGIN
 END;
 """
 
+MIGRATION_2 = """
+ALTER TABLE attempts
+ADD COLUMN launch_count INTEGER NOT NULL DEFAULT 0
+CHECK (launch_count IN (0, 1));
+"""
+
 
 class Catalog:
     def __init__(self, state_root: Path | str):
@@ -185,6 +191,17 @@ class Catalog:
                     VALUES (1, '2026-08-27T00:00:00Z')
                     """
                 )
+                migrated = connection.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = 2"
+                ).fetchone()
+                if migrated is None:
+                    connection.executescript(MIGRATION_2)
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations(version, applied_at)
+                        VALUES (2, '2026-08-27T00:00:00Z')
+                        """
+                    )
             finally:
                 connection.close()
             from .seed import seed_catalog

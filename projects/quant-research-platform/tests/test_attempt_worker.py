@@ -92,7 +92,9 @@ def test_failure_never_becomes_canonical_and_illegal_transition_fails(tmp_path: 
         )
 
 
-def test_restart_recovers_abandoned_running_attempt_without_duplication(tmp_path: Path):
+def test_restart_marks_abandoned_running_attempt_failed_and_never_relaunches_it(
+    tmp_path: Path,
+):
     service, created = _created(tmp_path)
     running = service.claim_next_attempt()
 
@@ -100,8 +102,23 @@ def test_restart_recovers_abandoned_running_attempt_without_duplication(tmp_path
     reclaimed = service.claim_next_attempt()
 
     assert recovered == 1
-    assert reclaimed["attempt_id"] == running["attempt_id"] == created["attempt_id"]
+    assert reclaimed is None
+    recovered_attempt = service.attempt_detail(created["attempt_id"])
+    assert recovered_attempt["attempt_id"] == running["attempt_id"]
+    assert recovered_attempt["status"] == "FAILED"
+    assert recovered_attempt["launch_count"] == 1
+    assert "abandoned" in recovered_attempt["logs"].lower()
     assert len(service.list_attempts(created["experiment_id"])) == 1
+
+
+def test_claim_atomically_records_the_only_allowed_launch(tmp_path: Path):
+    service, created = _created(tmp_path)
+
+    claimed = service.claim_next_attempt()
+
+    assert claimed["attempt_id"] == created["attempt_id"]
+    assert claimed["launch_count"] == 1
+    assert service.claim_next_attempt() is None
 
 
 def test_serial_worker_claims_one_and_records_bounded_failure(tmp_path: Path):
