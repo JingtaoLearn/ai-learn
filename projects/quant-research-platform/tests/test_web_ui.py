@@ -84,11 +84,17 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
 
     assert created["experiment_id"] in history.text
     assert 'data-testid="attempt-timeline"' in detail.text
-    assert '<iframe sandbox=""' in detail.text
+    assert '<iframe sandbox="allow-scripts"' in detail.text
     assert report.status_code == 200
-    assert report.headers["content-security-policy"].startswith("sandbox")
-    assert "allow-scripts" not in detail.text
+    report_csp = report.headers["content-security-policy"]
+    assert report_csp.startswith("sandbox allow-scripts")
+    assert "default-src 'none'" in report_csp
+    assert "connect-src 'none'" in report_csp
+    assert "script-src 'unsafe-inline'" in report_csp
+    assert "style-src 'unsafe-inline'" in report_csp
+    assert "img-src data:" in report_csp
     assert "allow-same-origin" not in detail.text
+    assert "connect-src 'none'" not in detail.headers["content-security-policy"]
 
 
 def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):
@@ -112,6 +118,34 @@ def test_report_route_rejects_database_bound_symlink_escape(tmp_path: Path):
 
     assert response.status_code == 404
     assert "unsafe" not in response.text
+
+
+def test_report_route_rejects_any_tampered_run_artifact(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    app.state.experiments.submit(_task(snapshot(app)), action_id="create")
+    attempt = app.state.experiments.claim_next_attempt()
+    result = ResolvedAttemptExecutor(
+        app.state.catalog,
+        output_root=app.state.catalog.state_root / "experiment-runs",
+        project_root=PROJECT_ROOT,
+    )(attempt)
+    app.state.experiments.finish_success(
+        attempt["attempt_id"],
+        result_path=result["result_path"],
+        result_digest=result["result_digest"],
+    )
+    metrics = Path(result["result_path"]) / "metrics.json"
+    run_dir = metrics.parent
+    run_dir.chmod(0o755)
+    metrics.chmod(0o644)
+    metrics.write_bytes(metrics.read_bytes() + b" ")
+    metrics.chmod(0o444)
+    run_dir.chmod(0o555)
+
+    response = client.get(f"/reports/{attempt['attempt_id']}")
+
+    assert response.status_code == 404
 
 
 def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: Path):

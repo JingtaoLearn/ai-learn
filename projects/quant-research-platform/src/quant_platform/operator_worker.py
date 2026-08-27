@@ -179,8 +179,8 @@ def _validate_output(slot: str, value: Any, payload: dict[str, Any]) -> Any:
         if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 1_000_000:
             raise ValueError("report output must be bounded non-empty HTML")
         lowered = value.lower()
-        if "<script" in lowered or "http://" in lowered or "https://" in lowered:
-            raise ValueError("report output cannot contain scripts or remote resources")
+        if "http://" in lowered or "https://" in lowered:
+            raise ValueError("report output cannot contain remote resources")
         return value
     raise ValueError(f"unsupported operator slot: {slot}")
 

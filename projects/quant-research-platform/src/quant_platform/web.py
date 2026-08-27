@@ -23,8 +23,14 @@ from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
+from .schemas import canonical_json_bytes
 from .settings import Settings
-from .strategy_runner import _effective_source_identity
+from .datasets import _verify_snapshot
+from .strategy_runner import (
+    ARTIFACT_NAMES,
+    HASHED_ARTIFACT_NAMES,
+    _effective_source_identity,
+)
 
 
 SESSION_COOKIE = "quant_session"
@@ -185,9 +191,12 @@ def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
     run_dir = Path(attempt["result_path"]).absolute()
     if run_dir.parent != allowed_root or run_dir.is_symlink() or not run_dir.is_dir():
         raise FileNotFoundError("report run path is outside the result store")
-    report = run_dir / "report.html"
-    manifest_path = run_dir / "run_manifest.json"
-    for path in (report, manifest_path):
+    if stat.S_IMODE(run_dir.stat().st_mode) & 0o222:
+        raise FileNotFoundError("report run directory is not sealed")
+    if {path.name for path in run_dir.iterdir()} != ARTIFACT_NAMES:
+        raise FileNotFoundError("report run artifact set is invalid")
+    payloads: dict[str, bytes] = {}
+    for path in run_dir.iterdir():
         metadata = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(metadata.st_mode)
@@ -195,15 +204,56 @@ def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
             or metadata.st_mode & 0o222
         ):
             raise FileNotFoundError("report artifact is not immutable")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected = manifest["files"]["report.html"]
-    payload = report.read_bytes()
-    if expected != {
-        "sha256": hashlib.sha256(payload).hexdigest(),
-        "size": len(payload),
-    }:
-        raise FileNotFoundError("report artifact checksum mismatch")
-    return payload
+        payloads[path.name] = path.read_bytes()
+    manifest = json.loads(
+        payloads["run_manifest.json"],
+        object_pairs_hook=_strict_pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"non-finite run manifest value: {value}")
+        ),
+    )
+    if (
+        manifest.get("run_id") != run_dir.name
+        or set(manifest.get("files", {})) != HASHED_ARTIFACT_NAMES
+    ):
+        raise FileNotFoundError("report run manifest identity is invalid")
+    for name, expected in manifest["files"].items():
+        payload = payloads[name]
+        if expected != {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }:
+            raise FileNotFoundError(f"report run artifact checksum mismatch: {name}")
+    config = json.loads(
+        payloads["config.json"],
+        object_pairs_hook=_strict_pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"non-finite run configuration value: {value}")
+        ),
+    )
+    if (
+        hashlib.sha256(canonical_json_bytes(config)).hexdigest()
+        != manifest["config_sha256"]
+    ):
+        raise FileNotFoundError("report run configuration binding is invalid")
+    resolved_dataset = attempt["resolved"]["dataset"]
+    if manifest["dataset_snapshot_id"] != resolved_dataset["snapshot_id"]:
+        raise FileNotFoundError("report run dataset binding is invalid")
+    snapshot_dir = (
+        settings.state_root
+        / "datasets"
+        / resolved_dataset["instrument"]
+        / resolved_dataset["snapshot_id"]
+    )
+    snapshot_manifest = _verify_snapshot(
+        snapshot_dir, resolved_dataset["snapshot_id"]
+    )
+    if (
+        snapshot_manifest["canonical_sha256"]
+        != resolved_dataset["canonical_sha256"]
+    ):
+        raise FileNotFoundError("report dataset canonical binding is invalid")
+    return payloads["report.html"]
 
 
 def create_app(
@@ -782,15 +832,16 @@ def create_app(
             payload = _report_payload(
                 settings, experiments.attempt_detail(attempt_id)
             )
-        except (FileNotFoundError, KeyError, OSError, ValueError):
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
             return HTMLResponse("Report not found.", status_code=404)
         return Response(
             payload,
             media_type="text/html",
             headers={
                 "Content-Security-Policy": (
-                    "sandbox; default-src 'none'; img-src data:; "
-                    "style-src 'unsafe-inline'"
+                    "sandbox allow-scripts; default-src 'none'; "
+                    "connect-src 'none'; img-src data:; "
+                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
                 ),
                 "Content-Disposition": "inline",
             },

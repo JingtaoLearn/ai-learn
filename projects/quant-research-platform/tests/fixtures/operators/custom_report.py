@@ -3,4 +3,8 @@ SLOT = "report"
 
 
 def apply(payload, parameters):
-    return "<!doctype html><html><body><h1>" + payload["title"] + "</h1></body></html>"
+    return (
+        "<!doctype html><html><body><h1>"
+        + payload["title"]
+        + "</h1><script>document.body.dataset.ready='true'</script></body></html>"
+    )

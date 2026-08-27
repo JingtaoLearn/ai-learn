@@ -76,7 +76,10 @@ def _submission(version: str = "1.0.0", slot: str = "fit") -> dict:
         "report": {
             "input": {"title": "Fixture", "metrics": {"return": 0.0}},
             "parameters": {"window": 2},
-            "expected": "<!doctype html><html><body><h1>Fixture</h1></body></html>",
+            "expected": (
+                "<!doctype html><html><body><h1>Fixture</h1>"
+                "<script>document.body.dataset.ready='true'</script></body></html>"
+            ),
         },
     }
     return {
