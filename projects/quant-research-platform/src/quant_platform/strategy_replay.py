@@ -394,6 +394,7 @@ def replay_strategy(
                 "position_before": position_before,
                 "position_after": int(account.holdings > 0),
                 "price": raw_open,
+                "close": raw_close,
                 "quantity": sum(
                     event["quantity"] * (1 if event["side"] == "BUY" else -1)
                     for event in day_events
