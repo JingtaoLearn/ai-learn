@@ -102,7 +102,7 @@ class Settings:
             auth_mode=os.environ.get("QUANT_AUTH_MODE", "sso"),
             state_root=Path(
                 os.environ.get(
-                    "QUANT_STATE_ROOT", "/home/feng/quant-platform/state/ui"
+                    "QUANT_STATE_ROOT", "/home/feng/quant-platform/state/platform"
                 )
             ),
             public_url=os.environ.get(

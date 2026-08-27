@@ -42,7 +42,16 @@ def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
     assert "/home/feng/quant-platform/.venv/bin/python" not in service
     assert "127.0.0.1:8090" not in service
     assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
-    assert "QUANT_STATE_ROOT=/home/feng/quant-platform/state/ui" in environment
+    assert (
+        "QUANT_STATE_ROOT=/home/feng/quant-platform/state/platform"
+        in environment
+    )
+    assert (
+        "ExecStartPre=/usr/bin/mkdir -p /home/feng/quant-platform/state/platform"
+        in service
+    )
+    assert "/home/feng/quant-platform/state/ui" not in service
+    assert "/home/feng/quant-platform/state/ui" not in environment
     assert "QUANT_AUTH_MODE=sso" in environment
     assert (
         "QUANT_SSO_AUDIENCE=https://quant.ai.jingtao.fun/auth/callback"
@@ -120,3 +129,16 @@ def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
     assert "audience" in ms_login_app
     deploy_script = (repository / "projects/ms-login/deploy-azure.sh").read_text()
     assert 'DOWNSTREAM_CLIENTS="$DOWNSTREAM_CLIENTS"' in deploy_script
+
+
+def test_documentation_uses_the_authoritative_shared_platform_root():
+    readme = (ROOT / "README.md").read_text()
+    plan = (
+        ROOT
+        / "docs/plans/2026-08-27-operator-registry-ui.md"
+    ).read_text()
+
+    assert "--root state/platform" in readme
+    assert "--root state/ui" not in readme
+    assert "/home/feng/quant-platform/state/platform" in plan
+    assert "/home/feng/quant-platform/state/ui" not in plan

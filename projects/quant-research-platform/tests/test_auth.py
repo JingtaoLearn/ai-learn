@@ -231,3 +231,19 @@ def test_callback_and_audience_configuration_are_exact(tmp_path: Path):
         _settings(tmp_path, sso_audience="")
     with pytest.raises(SettingsError, match="audience"):
         _settings(tmp_path, sso_audience="quant-research-ui")
+
+
+def test_production_default_uses_authoritative_platform_state_root(
+    tmp_path: Path, monkeypatch
+):
+    allowlist = tmp_path / "allowed.txt"
+    allowlist.write_text("researcher@example.com\n", encoding="utf-8")
+    monkeypatch.delenv("QUANT_STATE_ROOT", raising=False)
+    monkeypatch.setenv("QUANT_ALLOWED_EMAILS_FILE", str(allowlist))
+    monkeypatch.setenv("AUTH_SHARED_SECRET", SHARED)
+    monkeypatch.setenv("QUANT_SESSION_SECRET", SESSION)
+    monkeypatch.setenv("QUANT_RUNNER_IMAGE", "sha256:" + "a" * 64)
+
+    settings = Settings.from_environment()
+
+    assert settings.state_root == Path("/home/feng/quant-platform/state/platform")

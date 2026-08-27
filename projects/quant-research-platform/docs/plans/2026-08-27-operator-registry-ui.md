@@ -443,7 +443,7 @@ verify the main app CSP remains strict and separate from the untrusted report CS
 **RED:**
 
 1. Assert Uvicorn binds only `127.0.0.1:8090`, runs as Feng's non-root user, uses
-   `/home/feng/quant-platform/state/ui`, validates startup, recovers attempts, and starts one serial
+   `/home/feng/quant-platform/state/platform`, validates startup, recovers attempts, and starts one serial
    worker.
 2. Assert environment examples contain placeholders, production mode is SSO, and real env files
    are ignored.

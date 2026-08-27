@@ -195,6 +195,54 @@ def test_rerun_endpoint_rejects_task_selectors_and_source(tmp_path: Path):
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
+def test_catalog_coexists_with_authoritative_platform_datasets(tmp_path: Path):
+    root = tmp_path / "state" / "platform"
+    frame = pd.read_csv(FIXTURE)
+    frame["Date"] = pd.to_datetime(frame["Date"])
+    snapshot_id = publish_snapshot(
+        frame,
+        root,
+        {
+            "instrument": "SYNTH.SS",
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "mixed",
+        },
+    )["snapshot_id"]
+    snapshot_dir = root / "datasets" / "SYNTH.SS" / snapshot_id
+    before = {
+        path.name: path.read_bytes() for path in snapshot_dir.iterdir()
+    }
+    allowlist = tmp_path / "allowed.txt"
+    allowlist.write_text("researcher@example.com\n", encoding="utf-8")
+    settings = Settings(
+        environment="test",
+        auth_mode="sso",
+        state_root=root,
+        public_url="https://quant.ai.jingtao.fun",
+        allowed_hosts=("quant.ai.jingtao.fun",),
+        auth_shared_secret=SHARED,
+        session_secret=SESSION,
+        allowed_emails_file=allowlist,
+        sso_login_url="https://ms-login.ai.jingtao.fun/auth/login",
+        sso_audience=AUDIENCE,
+        sso_callback_url=AUDIENCE,
+        password_scrypt_hash=None,
+        secure_cookies=True,
+    ).validated()
+
+    app = create_app(settings, clock=lambda: NOW)
+    resolved = app.state.experiments.resolve_task(_task(snapshot_id))
+
+    assert app.state.catalog.database_path == root / "catalog.sqlite3"
+    assert resolved["dataset"]["snapshot_id"] == snapshot_id
+    assert {
+        path.name: path.read_bytes() for path in snapshot_dir.iterdir()
+    } == before
+    assert not snapshot_dir.is_symlink()
+
+
 def test_password_fallback_has_reachable_csrf_protected_login(tmp_path: Path):
     from quant_platform.auth import encode_scrypt_password
 

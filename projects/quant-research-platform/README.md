@@ -123,14 +123,14 @@ The authenticated registry UI separates immutable operator publication from expe
 submission. Initialize or inspect the same domain layer without HTTP:
 
 ```bash
-research operator list --root state/ui
-research operator detail --root state/ui --operator-id prior_log_ols --version 1.0.0
-research template detail --root state/ui --name single_stock_daily_causal --version 1
-research task resolve --root state/ui --spec task.json
-research task submit --root state/ui --spec task.json --action-id request-001
-research task rerun --root state/ui --experiment-id EXPERIMENT_SHA256 --action-id rerun-001
-research experiment list --root state/ui
-research attempt list --root state/ui --experiment-id EXPERIMENT_SHA256
+research operator list --root state/platform
+research operator detail --root state/platform --operator-id prior_log_ols --version 1.0.0
+research template detail --root state/platform --name single_stock_daily_causal --version 1
+research task resolve --root state/platform --spec task.json
+research task submit --root state/platform --spec task.json --action-id request-001
+research task rerun --root state/platform --experiment-id EXPERIMENT_SHA256 --action-id rerun-001
+research experiment list --root state/platform
+research attempt list --root state/platform --experiment-id EXPERIMENT_SHA256
 ```
 
 The initial migration seeds template `single_stock_daily_causal@1` and the seven built-in
@@ -142,6 +142,11 @@ digest-pinned Docker runner compiles and tests it with no network, a read-only r
 created by that runner and binds the candidate, fixtures, image, and execution envelope.
 At experiment time, every resolved custom slot is assembled into one composition and the complete
 causal daily replay runs in one isolated container launch for that attempt.
+
+Production uses the existing `/home/feng/quant-platform/state/platform` root. The catalog database,
+operator bundles, experiments, controls, and results coexist there with authoritative immutable
+`datasets/` snapshots and future daily updates. Initialization does not copy, move, or symlink
+snapshot data.
 
 Task documents contain no source. They select `latest` or an explicit published version and set
 only declared parameters. Submission freezes the dataset snapshot, template, resolved operator
