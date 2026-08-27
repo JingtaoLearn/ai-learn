@@ -14,8 +14,10 @@ closed built-in operator set as published `1.0.0` bundles and seed immutable tem
 adapts resolved built-ins into the existing config-driven runner rather than changing its replay,
 accounting, or report semantics. Submitted source is treated as opaque bytes by the web process.
 Compile, contract, fixture, and runtime loading for every slot occur only in a no-network,
-read-only, resource-limited, non-root Docker process. The runner, not the web process or submitter,
-creates validation evidence from observed execution. FastAPI/Jinja2 presents the same domain
+read-only, resource-limited, non-root Docker process. Custom code receives no writable bind mount:
+source/input are read-only and scratch space is bounded tmpfs. The host runner, not the web process,
+container, or submitter, owns CID/stdout/stderr/control capture and creates validation evidence only
+after confirmed termination. FastAPI/Jinja2 presents the same domain
 services through JSON endpoints and semantic HTML. Authentication accepts one-use,
 audience-bound HS256 assertions from the existing Microsoft login proxy or a deliberately
 configured scrypt password fallback.
@@ -27,7 +29,7 @@ configured scrypt password fallback.
 - A task never carries source, documentation, schema, defaults, or tests. It references only
   published selectors and supplies declared parameters.
 - The web process never imports, compiles, or executes submitted operator source.
-- No network access, writable source/input mounts, elevated user, added capability, or relaxed
+- No network access, container-writable evidence/source/input mounts, elevated user, added capability, or relaxed
   CPU/memory/PID/no-new-privileges control is introduced for operator validation or execution.
 - All seven slots have narrow dynamic contracts and deterministic fixtures. A slot whose complete
   contract cannot be validated and executed in the existing sandbox fails publication explicitly;
@@ -69,9 +71,11 @@ configured scrypt password fallback.
   canonical finite JSON input, parameters, and expected output. Slot adapters validate exact
   input/output schemas before results can enter replay, accounting, or report generation.
 - Validation creates a sealed candidate bundle, mounts it read-only with the validator harness,
-  uses a writable artifact-only mount, and runs the existing digest-pinned worker image with the
-  established Docker envelope. Publication requires successful compile, metadata, forbidden
-  import, synthetic contract, and submitted fixture checks with checksummed JSON evidence.
+  gives custom code only bounded tmpfs, and runs the existing digest-pinned worker image with the
+  established Docker envelope. The host captures CID/stdout/stderr outside container mounts,
+  reconciles termination, rejects links/special files/hostile modes, and seals its own evidence.
+  Publication requires successful compile, metadata, forbidden import, synthetic contract, and
+  submitted fixture checks with checksummed host-owned evidence.
 - Experiment execution resolves only published bundles. Built-ins use the existing in-process
   numerical implementation. Any composition containing custom operators is assembled and executed
   as one isolated replay launch so cross-slot values never require repeated container launches and
@@ -88,13 +92,18 @@ configured scrypt password fallback.
   selectors, parameters, or source. It atomically creates one new attempt with the experiment's
   already-frozen resolution. The initial non-duplicate submission creates one attempt. A caller
   action ID is unique so request retries cannot create extra attempts.
-- Attempts retain requested selectors, `latest_version_at_submission`, explicit/latest mode,
-  resolved versions/digests, timestamps, state, logs, result/report identity, and canonical output
-  comparison. States are `PENDING -> RUNNING -> SUCCEEDED|FAILED`.
+- Attempts retain, for every action and slot, requested selector mode/value, latest version and
+  digest at action time, frozen resolved version and digest, timestamps, state, logs, CID/control
+  evidence, result/report identity, and canonical output
+  comparison. Normal terminal states are `SUCCEEDED|FAILED`; restart reconciliation additionally
+  uses `INTERRUPTED|TERMINATION_UNCONFIRMED`.
 - Each attempt has an immutable launch count constrained to zero or one. Claiming records the
   launch before process creation, and no recovery path may launch that attempt again. Restart
-  recovery marks abandoned `RUNNING` attempts `FAILED` with a runner-owned recovery reason; an
-  explicit rerun creates a new attempt. A failed attempt never establishes canonical success.
+  recovery reconciles runner-owned CID/control evidence through the existing termination and
+  quarantine boundary. It preserves the prior attempt as `INTERRUPTED` after confirmed termination
+  or `TERMINATION_UNCONFIRMED` when survival cannot be excluded. Explicit recovery policy requires
+  a distinct replacement attempt/action; it never returns the same attempt to `PENDING`. A failed
+  or interrupted attempt never establishes canonical success.
   First success becomes canonical. Equal later success points at the canonical run; divergent
   output remains immutable and is flagged.
 - Drift is computed at read time by comparing each resolved version/digest with the current latest
@@ -105,7 +114,9 @@ configured scrypt password fallback.
 - Production SSO login redirects to
   `https://ms-login.ai.jingtao.fun/auth/login?redirect=<exact callback>`.
 - `POST /auth/callback` accepts form-urlencoded `token`; verifies exact three-part HS256 JWT,
-  signature, required service audience, `iat`, `exp`, short lifetime, email, and allowlist; stores a token SHA-256 once in
+  signature, an `aud` claim exactly equal to
+  `https://quant.ai.jingtao.fun/auth/callback`, `iat`, `exp`, short lifetime, email, and allowlist;
+  stores a token SHA-256 once in
   SQLite before creating a signed session. Token bytes are never logged.
 - Signed sessions contain only user identity, issued/expiry time, and CSRF seed, and use
   `Secure; HttpOnly; SameSite=Lax`. Logout is a CSRF-protected POST.
@@ -139,7 +150,8 @@ configured scrypt password fallback.
 4. Prove semantic version ordering handles numeric major/minor/patch values, rejects non-canonical
    or prerelease syntax, and updates latest only for a higher published version.
 5. Prove unique/check constraints prevent duplicate operator versions, experiment identities,
-   action IDs, replay-token hashes, and any attempt launch count outside zero or one.
+   action IDs, replay-token hashes, any attempt launch count outside zero or one, and illegal
+   attempt statuses including recovery-only terminal states.
 
 **GREEN:**
 
@@ -176,15 +188,19 @@ two focused test files, and inspect the state root to ensure no mutable files li
 3. Cover path traversal, absolute paths, symlink/hardlink source, unsafe state root, partial
    publication, and candidate/bundle race replacement.
 4. Assert the exact validator Docker command: pinned image, no pull/network, read-only root and
-   source, non-root, no-new-privileges, cap-drop, CPU/memory/PID limits, bounded tmpfs, and one
-   writable evidence mount.
-5. Assert runner-owned evidence binds the candidate digest, validator image digest, execution
-   envelope, fixture digest, observed checks, timestamps, and outcome. Reject caller-supplied
-   evidence and any evidence whose binding differs from the staged candidate.
+   source/input, non-root, no-new-privileges, cap-drop, CPU/memory/PID limits, bounded tmpfs, no
+   writable bind mount, and host-only CID/stdout/stderr/control paths.
+5. Assert host-runner-owned evidence binds the candidate digest, validator image digest, execution
+   envelope, fixture digest, observed checks, CID/exit/termination state, captured stream digests,
+   timestamps, and outcome. Reject caller/container-supplied evidence and any evidence whose
+   binding differs from the staged candidate.
 6. Run safe deterministic fixtures for all seven slot contracts through compile/contract/fixture
    validation where Docker is available; otherwise test the runner contracts directly and command
    construction separately.
-7. Prove imports or side effects outside the narrow contracts fail rather than being marked
+7. Prove timeout and launch failure terminate by exact CID, surviving/unconfirmed containers
+   quarantine the candidate/control evidence, evidence finalization rejects links, special files,
+   and hostile chmod, and no publication occurs before confirmed termination.
+8. Prove imports or side effects outside the narrow contracts fail rather than being marked
    runnable.
 
 **GREEN:**
@@ -193,8 +209,9 @@ two focused test files, and inspect the state root to ensure no mutable files li
   evidence, atomically rename to the digest/version target, seal `0555/0444`, then insert catalog
   rows and latest pointer under an immediate SQLite transaction and filesystem lock.
 - Implement a validator/executor harness that imports submitted source only in its container
-  process and emits strict JSON evidence for every slot. The host accepts evidence only from the
-  dedicated runner output mount and verifies its candidate and envelope bindings.
+  process and emits one bounded strict-JSON result on stdout for every slot. The host runner owns
+  all control/evidence paths, confirms termination, hashes bounded stdout/stderr, builds evidence,
+  and only then seals/publishes the bundle.
 - Expose service methods for submit, grouped list, and version detail.
 
 **REFACTOR/GATE:** Reuse the established Docker envelope constants and safe file readers. Run
@@ -224,19 +241,25 @@ focused tests and scan bundles for writable, linked, unexpected, or unchecksumme
 4. Prove explicit rerun accepts only an existing `experiment_id` and action ID, creates an attempt
    under that experiment, and action retries converge. Task/selectors/parameters/source are not
    accepted on rerun.
-5. Cover attempt state transitions, an atomic zero-to-one launch count, launch failure, restart
-   recovery of abandoned `RUNNING` attempts to terminal `FAILED`, failure handling, log bounds, and
-   illegal transitions. Prove no attempt can be claimed or launched twice.
-6. Cover first canonical success, equal rerun artifact sharing, divergent rerun preservation and
+5. Prove every submit/rerun attempt records, per slot, requested selector mode/value, current latest
+   version/digest for that action, and frozen resolved version/digest. After latest advances, rerun
+   executes the original frozen resolution while its action audit records the new latest pointer.
+6. Cover attempt state transitions, an atomic zero-to-one launch count, launch failure, restart
+   reconciliation through CID/control evidence to `INTERRUPTED` or `TERMINATION_UNCONFIRMED`,
+   quarantine/termination confirmation, log bounds, and illegal transitions. Prove no attempt can
+   be claimed or launched twice and explicit recovery creates a distinct attempt ID.
+7. Cover first canonical success, equal rerun artifact sharing, divergent rerun preservation and
    prominent flagging, and failed reruns not replacing canonical success.
-7. Cover current latest drift and unique-experiment history filtering.
+8. Cover current latest drift and unique-experiment history filtering.
 
 **GREEN:**
 
 - Resolve and validate a task inside one immediate transaction, calculate canonical identity, and
   use unique constraints plus action IDs for convergence.
-- Add serial worker claim/recovery and explicit state transition methods. Increment launch count in
-  the claim transaction and never transition a launched attempt back to `PENDING`.
+- Add serial worker claim/reconciliation and explicit state transition methods. Increment launch
+  count in the claim transaction, persist runner control identity before launch, reuse the existing
+  exact-CID termination/quarantine semantics, and never transition a launched attempt back to
+  `PENDING`.
 - Store bounded logs and immutable run identities; compare canonical output from stable metrics and
   ledger checksums rather than mutable paths.
 
@@ -368,8 +391,9 @@ and confirm no assertion/session/token value appears in logs or error bodies.
    output.
 7. Prove report responses never serve arbitrary paths: resolve only a successful attempt's
    database-bound immutable artifact; reject symlinks, hardlinks, path escapes, writable or
-   unverified files; send a restrictive report CSP; and embed with an iframe `sandbox` that grants
-   no scripts, navigation, downloads, popups, or same-origin privilege.
+   unverified files; send a separate restrictive report CSP with `default-src 'none'`,
+   `connect-src 'none'`, inline style/script and data-image allowances only; and embed with exactly
+   `sandbox="allow-scripts"` without same-origin, navigation, downloads, forms, or popups.
 8. Assert durable browser selectors and responsive accessibility structure: landmarks, labels,
    focus states, 44 px targets, reduced motion, scroll-contained tables, and no page overflow.
 
@@ -382,13 +406,16 @@ and confirm no assertion/session/token value appears in logs or error bodies.
 - Apply the explicit Linear-inspired tokens: `#08090a` canvas, `#0f1011` surfaces, restrained
   `#5e6ad2` accent, system/Inter-compatible sans, mono technical labels, subtle borders, no
   gradients, glass effects, emoji, or decorative dashboard cards.
-- Render empty/loading/success/error states. Serve reports only through a dedicated verified
-  artifact route and embed them in a maximally restrictive sandboxed iframe.
+- Render empty/loading/success/error states. Serve reports only through a dedicated ID-based,
+  containment-checked, fully sealed/verified artifact route and embed with
+  `sandbox="allow-scripts"` but never `allow-same-origin`.
 
 **REFACTOR/GATE:** Run API/UI unit tests, then real browser tests at 390 px and desktop with
-JavaScript enabled and disabled. Exercise login, operator submission, experiment submission,
-duplicate preview, progress, history, detail, rerun, and report sandbox behavior. Inspect generated
-HTML for inline script/style/event handlers and verify all CSP resources are same-origin.
+JavaScript enabled and disabled. Use keyboard navigation and exercise operator submission,
+latest/explicit selection, schema-generated parameters, duplicate preview, experiment submission,
+progress, history, detail, rerun, and report sandbox behavior. Static selectors alone are not an
+acceptance substitute. Inspect generated parent HTML for inline script/style/event handlers and
+verify the main app CSP remains strict and separate from the untrusted report CSP.
 
 **Commits:**
 
@@ -422,16 +449,23 @@ HTML for inline script/style/event handlers and verify all CSP resources are sam
    are ignored.
 3. Assert the ailearn tunnel resolves the nginx-proxy bridge gateway once, rejects
    empty/loopback/wildcard/multiple resolution, and uses that exact same address as both the SSH
-   bind address and nginx upstream address. It encrypts transport to Feng loopback, has strict
-   host-key checking, and fails rather than selecting another interface.
+   bind address and literal nginx upstream address, with no `host-gateway` alias or independent
+   second lookup. It encrypts transport to Feng loopback, has strict host-key checking, and fails
+   rather than selecting another interface.
 4. Assert nginx uses pinned `nginx:alpine` image identity where repository policy permits,
-   nginx-proxy external network, no host port, host-gateway upstream, body/time limits, health
+   nginx-proxy external network, no host port, literal resolved-gateway upstream, body/time limits, health
    handling, secure proxy headers, HSTS, CSP-compatible headers, and no buffering of secrets.
-   Uvicorn trusts forwarded headers only from the same resolved gateway address; untrusted clients
-   cannot influence scheme, host, or source identity.
-5. Assert deployment configuration publishes the exact callback URL and JWT audience expected by
-   the downstream verifier and documents the matching `ms-login` callback allowlist entry.
-6. Validate systemd units, shell syntax, Compose rendering, and nginx syntax where local tools are
+   Uvicorn trusts forwarding only from the SSH endpoint; the sidecar accepts client address
+   forwarding only from the explicitly trusted outer proxy and replaces hostile client headers.
+   If a trustworthy address is unavailable, authentication limits use a normalized account/login
+   key rather than a globally shared proxy address.
+5. Assert deployment configuration adds the exact
+   `https://quant.ai.jingtao.fun/auth/callback` to `ALLOWED_CALLBACKS` and makes ms-login issue the
+   same value as the 30-second JWT `aud`, without reading or printing the shared secret. Document
+   the shared-secret trust domain and compatibility for consumers that ignore the added claim.
+6. Run a real acceptance probe from the proxy container through the exact-address tunnel to Feng's
+   application `/health`, not merely a local nginx synthetic health response.
+7. Validate systemd units, shell syntax, Compose rendering, and nginx syntax where local tools are
    available.
 
 **GREEN:**
@@ -467,7 +501,10 @@ validators, and confirm no service was started or restarted.
 8. Execute deterministic fixtures for custom operators in all seven slots and one composed custom
    replay through a single isolated launch where Docker is available; if the daemon is unavailable,
    retain passing worker-contract and exact-command tests and record that environmental limitation.
-9. Confirm production startup fails without auth configuration, all API errors are JSON, all
+9. Exercise real-browser desktop and 390 px keyboard flows with JavaScript enabled and with primary
+   actions JavaScript disabled: operator submission, latest/explicit selection, generated
+   parameters, duplicate preview, rerun, history, and `allow-scripts`/opaque-origin report sandbox.
+10. Confirm production startup fails without auth configuration, all API errors are JSON, all
    generated JSON rejects NaN/infinity, and all user content is escaped/sanitized.
 10. Confirm committed files are English except permitted Chinese UI/operator copy, no secrets or
     runtime artifacts are tracked, every requested change is committed, and `git status --short`
@@ -489,7 +526,7 @@ validators, and confirm no service was started or restarted.
   accounting/report results.
 - No submitted source is imported or executed by the web process; custom implementations for all
   seven slots validate and execute only within one hardened Docker launch per attempt.
-- Microsoft SSO audience/callback binding, replay prevention, secure sessions, CSRF/origin/host
+- Microsoft SSO exact callback-as-audience binding, replay prevention, secure sessions, CSRF/origin/host
   checks, rate limiting, and fail-closed password fallback are deterministic and tested.
 - The professional dark UI provides all required pages and primary no-JS flows, is secure against
   XSS, serves reports only through the verified sandbox route, and passes real-browser acceptance
