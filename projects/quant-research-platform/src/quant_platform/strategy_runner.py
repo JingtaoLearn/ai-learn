@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import copy
 import hashlib
 import json
 import os
@@ -903,13 +904,17 @@ def run_strategy_config(
         "git_dirty": git["dirty"],
         }
     if implementations is not None and "report" in implementations:
+        report_payload = {
+            "title": config.template_parameters["instrument_display_name"],
+            "metrics": copy.deepcopy(replay.metrics),
+        }
+        report_payload_before = _canonical_json(report_payload)
         report = implementations["report"](
-            {
-                "title": config.template_parameters["instrument_display_name"],
-                "metrics": replay.metrics,
-            },
+            report_payload,
             dict((implementation_parameters or {})["report"]),
         )
+        if _canonical_json(report_payload) != report_payload_before:
+            raise StrategyRunError("custom report operator mutated its input payload")
     else:
         report = render_report(replay, config, provenance)
     output_root.mkdir(parents=True, exist_ok=True)

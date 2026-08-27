@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
@@ -123,7 +124,10 @@ def _session(request: Request) -> SessionData:
     cookie = request.cookies.get(SESSION_COOKIE)
     if cookie is None:
         raise AuthError("Authentication required")
-    return request.app.state.auth.verify_session(cookie)
+    session = request.app.state.auth.verify_session(cookie)
+    if session.email == "__login__":
+        raise AuthError("Authentication required")
+    return session
 
 
 def _csrf(request: Request, session: SessionData, token: str | None = None) -> None:
@@ -325,11 +329,36 @@ def create_app(
         login_url = settings.sso_login_url + "?" + urlencode(
             {"redirect": settings.sso_callback_url, "audience": settings.sso_audience}
         )
-        return TEMPLATES.TemplateResponse(
+        context = {
+            "login_url": login_url,
+            "auth_mode": settings.auth_mode,
+            "login_csrf": None,
+        }
+        response = TEMPLATES.TemplateResponse(
             request=request,
             name="login.html",
-            context={"login_url": login_url},
+            context=context,
         )
+        if settings.auth_mode == "password":
+            issued = auth.issue_session(
+                {"email": "__login__", "display_name": "Login"}
+            )
+            context["login_csrf"] = issued.csrf_token
+            response = TEMPLATES.TemplateResponse(
+                request=request,
+                name="login.html",
+                context=context,
+            )
+            response.set_cookie(
+                SESSION_COOKIE,
+                issued.cookie,
+                max_age=600,
+                secure=settings.secure_cookies,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return response
 
     @app.get("/auth/login")
     async def auth_login():
@@ -358,6 +387,39 @@ def create_app(
             issued = auth.issue_session(user)
         except (AuthError, ValueError) as exc:
             return _json_error(401, "AUTH_FAILED", str(exc))
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie(
+            SESSION_COOKIE,
+            issued.cookie,
+            max_age=3600,
+            secure=settings.secure_cookies,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    @app.post("/auth/password")
+    async def auth_password(request: Request):
+        if settings.auth_mode != "password":
+            return _json_error(404, "NOT_FOUND", "Password login is not enabled")
+        form = await _form_body(request)
+        if set(form) != {"password", "login_csrf"}:
+            return _json_error(400, "INVALID_REQUEST", "Password login fields are invalid")
+        cookie = request.cookies.get(SESSION_COOKIE, "")
+        try:
+            login_session = auth.verify_session(cookie)
+            if login_session.email != "__login__":
+                raise AuthError("password login session is invalid")
+            auth.verify_csrf(login_session, form["login_csrf"])
+            user = await run_in_threadpool(
+                auth.authenticate_password,
+                form["password"],
+                remote_address=request.client.host if request.client else "unknown",
+            )
+        except AuthError as exc:
+            return _json_error(401, "AUTH_FAILED", str(exc))
+        issued = auth.issue_session(user)
         response = RedirectResponse("/", status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
@@ -403,7 +465,7 @@ def create_app(
             body = await _json_body(request)
         except ValueError as exc:
             return _json_error(400, "INVALID_JSON", str(exc))
-        result = operators.submit(body)
+        result = await run_in_threadpool(operators.submit, body)
         return JSONResponse(
             result, status_code=201 if result["status"] == "CREATED" else 200
         )
@@ -551,7 +613,7 @@ def create_app(
             "documentation": form.get("documentation", ""),
             "tests": _json_text(form.get("tests", ""), "tests"),
         }
-        result = operators.submit(submission)
+        result = await run_in_threadpool(operators.submit, submission)
         return RedirectResponse(
             f"/operators/{result['operator_id']}/{result['version']}",
             status_code=303,
@@ -601,6 +663,7 @@ def create_app(
             datasets=_datasets(settings.state_root),
             grouped=grouped,
             template=catalog.template_detail("single_stock_daily_causal", "1"),
+            action_id=secrets.token_hex(16),
         )
 
     @app.post("/experiments/new")
@@ -686,16 +749,19 @@ def create_app(
                 ),
                 None,
             ),
+            rerun_action_id=secrets.token_hex(16),
         )
 
     @app.post("/experiments/{experiment_id}/rerun")
     async def experiment_rerun_action(request: Request, experiment_id: str):
         session = _session(request)
         form = await _form_body(request)
+        if set(form) != {"csrf_token", "action_id"}:
+            raise TaskValidationError("rerun form fields are invalid")
         _csrf(request, session, form.get("csrf_token"))
         result = experiments.rerun(
             experiment_id,
-            action_id=form.get("action_id") or secrets.token_hex(16),
+            action_id=form["action_id"],
         )
         return RedirectResponse(
             f"/experiments/{result['experiment_id']}", status_code=303

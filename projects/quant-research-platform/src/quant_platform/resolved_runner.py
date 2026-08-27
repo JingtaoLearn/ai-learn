@@ -247,6 +247,10 @@ class ResolvedAttemptExecutor:
             composition_operators[slot] = {
                 "bundle_path": f"/operators/{slot}",
                 "parameters": operator["parameters"],
+                "content_digest": operator["content_digest"],
+                "evidence_digest": hashlib.sha256(
+                    canonical_json_bytes(detail["validation_evidence"])
+                ).hexdigest(),
             }
         composition = {
             "schema_version": 1,

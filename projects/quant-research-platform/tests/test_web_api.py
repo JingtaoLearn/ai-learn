@@ -193,3 +193,40 @@ def test_rerun_endpoint_rejects_task_selectors_and_source(tmp_path: Path):
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_password_fallback_has_reachable_csrf_protected_login(tmp_path: Path):
+    from quant_platform.auth import encode_scrypt_password
+
+    app, client = make_app(tmp_path)
+    settings = app.state.settings
+    password_settings = Settings(
+        **{
+            **settings.__dict__,
+            "environment": "test",
+            "auth_mode": "password",
+            "auth_shared_secret": None,
+            "password_scrypt_hash": encode_scrypt_password(
+                "correct horse", salt=b"fixed-test-salt"
+            ),
+            "secure_cookies": False,
+        }
+    ).validated()
+    password_app = create_app(password_settings)
+    password_client = TestClient(
+        password_app,
+        base_url="https://quant.ai.jingtao.fun",
+        headers={"host": "quant.ai.jingtao.fun"},
+    )
+
+    login = password_client.get("/login")
+    assert 'action="/auth/password"' in login.text
+    csrf = login.text.split('name="login_csrf" value="', 1)[1].split('"', 1)[0]
+    response = password_client.post(
+        "/auth/password",
+        data={"password": "correct horse", "login_csrf": csrf},
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "HttpOnly" in response.headers["set-cookie"]

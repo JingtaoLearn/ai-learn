@@ -11,7 +11,15 @@
     <p class="eyebrow">RESEARCH ACCESS</p>
     <h1>Quant Research Platform</h1>
     <p>Authenticate with the approved Microsoft account to access immutable experiments.</p>
+    {% if auth_mode == "password" %}
+    <form method="post" action="/auth/password">
+      <input type="hidden" name="login_csrf" value="{{ login_csrf }}">
+      <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+      <button type="submit">Sign in</button>
+    </form>
+    {% else %}
     <a class="button" href="{{ login_url }}">Continue with Microsoft</a>
+    {% endif %}
   </main>
 </body>
 </html>

@@ -30,10 +30,14 @@ def execute_composition(
         if not isinstance(descriptor, dict) or set(descriptor) != {
             "bundle_path",
             "parameters",
+            "content_digest",
+            "evidence_digest",
         }:
             raise ValueError(f"composition operator descriptor is invalid: {slot}")
         loaded_slot, implementation = load_published_operator(
-            descriptor["bundle_path"]
+            descriptor["bundle_path"],
+            expected_content_digest=descriptor["content_digest"],
+            expected_evidence_digest=descriptor["evidence_digest"],
         )
         if loaded_slot != slot:
             raise ValueError(f"composition operator slot mismatch: {slot}")

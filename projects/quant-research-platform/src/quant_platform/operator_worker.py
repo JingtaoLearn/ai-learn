@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import math
@@ -275,6 +276,9 @@ def validate_candidate(
 
 def load_published_operator(
     bundle_dir: Path | str,
+    *,
+    expected_content_digest: str | None = None,
+    expected_evidence_digest: str | None = None,
 ) -> tuple[str, Callable[[dict[str, Any], dict[str, Any]], Any]]:
     bundle = Path(bundle_dir)
     manifest = _load_json(bundle / "manifest.json")
@@ -301,8 +305,16 @@ def load_published_operator(
     } | {"source": source, "tests": tests}
     digest = hashlib.sha256(canonical_json_bytes(reconstructed)).hexdigest()
     fixture_digest = hashlib.sha256(canonical_json_bytes(tests)).hexdigest()
+    evidence_digest = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
     if digest != manifest["content_digest"]:
         raise ValueError("published operator content digest mismatch")
+    if expected_content_digest is not None and digest != expected_content_digest:
+        raise ValueError("published operator does not match the resolved content digest")
+    if (
+        expected_evidence_digest is not None
+        and evidence_digest != expected_evidence_digest
+    ):
+        raise ValueError("published operator does not match the resolved evidence digest")
     if (
         not isinstance(evidence, dict)
         or evidence.get("passed") is not True
@@ -326,13 +338,18 @@ def load_published_operator(
     slot = manifest["slot"]
 
     def invoke(payload: dict[str, Any], parameters: dict[str, Any]) -> Any:
-        validated_payload = _validate_input(slot, payload)
+        isolated_payload = copy.deepcopy(payload)
+        validated_payload = _validate_input(slot, isolated_payload)
+        before = canonical_json_bytes(validated_payload)
         validated_parameters = validate_parameters(schema, parameters)
-        return _validate_output(
+        result = _validate_output(
             slot,
             apply(validated_payload, validated_parameters),
             validated_payload,
         )
+        if canonical_json_bytes(validated_payload) != before:
+            raise ValueError(f"{slot} operator mutated its input payload")
+        return result
 
     return slot, invoke
 

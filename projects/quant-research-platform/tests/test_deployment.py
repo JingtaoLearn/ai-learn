@@ -73,7 +73,8 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
     assert "name: nginx-proxy" in compose
     assert "proxy_pass http://quant-research-tunnel:18090" in nginx
     assert "proxy_set_header X-Forwarded-Proto https" in nginx
-    assert "proxy_set_header X-Forwarded-For $remote_addr" in nginx
+    assert "proxy_set_header X-Forwarded-For $http_x_real_ip" in nginx
+    assert "location = /health" in nginx
     assert "client_max_body_size 2m" in nginx
 
 
@@ -87,3 +88,5 @@ def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
     assert "quant.ai.jingtao.fun/auth/callback" in ms_login
     assert "quant-research-ui" in ms_login
     assert "audience" in ms_login_app
+    deploy_script = (repository / "projects/ms-login/deploy-azure.sh").read_text()
+    assert 'DOWNSTREAM_CLIENTS="$DOWNSTREAM_CLIENTS"' in deploy_script

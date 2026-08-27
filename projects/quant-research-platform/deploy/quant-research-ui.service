@@ -7,15 +7,13 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/feng/quant-platform/current
 EnvironmentFile=/home/feng/.config/quant-research-ui.env
+ExecStartPre=/usr/bin/mkdir -p /home/feng/quant-platform/state/ui
 ExecStart=/home/feng/quant-platform/.venv/bin/python -m quant_platform.web
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/feng/quant-platform/state/ui
 RestrictSUIDSGID=true
 LockPersonality=true
 

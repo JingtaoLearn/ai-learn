@@ -106,13 +106,34 @@ class _Account:
                 dict(self.implementation_parameters["sizing"]),
             )
         else:
-            quantity = all_in_quantity(
-                cash=self.cash,
-                raw_price=raw_price,
-                lot_size=self.sizing["lot_size"],
-                target_fraction=self.sizing["target_fraction"],
-                cost_parameters=self.costs,
-            )
+            if "cost" in self.implementations:
+                budget = self.cash * self.sizing["target_fraction"]
+                lot_size = self.sizing["lot_size"]
+                quantity = int(budget // (raw_price * lot_size)) * lot_size
+                while quantity > 0:
+                    custom_costs = self.implementations["cost"](
+                        {
+                            "side": "BUY",
+                            "raw_price": raw_price,
+                            "quantity": quantity,
+                        },
+                        dict(self.implementation_parameters["cost"]),
+                    )
+                    if (
+                        raw_price * quantity
+                        + custom_costs["total_cost_cny"]
+                        <= budget
+                    ):
+                        break
+                    quantity -= lot_size
+            else:
+                quantity = all_in_quantity(
+                    cash=self.cash,
+                    raw_price=raw_price,
+                    lot_size=self.sizing["lot_size"],
+                    target_fraction=self.sizing["target_fraction"],
+                    cost_parameters=self.costs,
+                )
         if quantity == 0:
             return None
         return self._event(date, "BUY", raw_price, quantity, reason)
@@ -377,13 +398,17 @@ def replay_strategy(
         )
     if "smoothing" in implementations:
         finite_fit = fit["curve"].dropna()
-        custom_smoothed = implementations["smoothing"](
-            {"values": finite_fit.astype(float).tolist()},
-            dict(implementation_parameters["smoothing"]),
+        custom_smoothed = []
+        for position in range(1, len(finite_fit) + 1):
+            prefix = finite_fit.iloc[:position].astype(float).tolist()
+            output = implementations["smoothing"](
+                {"values": prefix},
+                dict(implementation_parameters["smoothing"]),
+            )
+            custom_smoothed.append(output[-1])
+        smoothed = pd.Series(custom_smoothed, index=finite_fit.index, dtype=float).reindex(
+            indexed.index
         )
-        smoothed = pd.Series(
-            custom_smoothed, index=finite_fit.index, dtype=float
-        ).reindex(indexed.index)
     else:
         smoothed = recursive_log_ema(
             fit["curve"],
@@ -391,10 +416,14 @@ def replay_strategy(
         )
     if "statistic" in implementations:
         finite_smoothed = smoothed.dropna()
-        custom_statistic = implementations["statistic"](
-            {"values": finite_smoothed.astype(float).tolist()},
-            dict(implementation_parameters["statistic"]),
-        )
+        custom_statistic = []
+        for position in range(1, len(finite_smoothed) + 1):
+            prefix = finite_smoothed.iloc[:position].astype(float).tolist()
+            output = implementations["statistic"](
+                {"values": prefix},
+                dict(implementation_parameters["statistic"]),
+            )
+            custom_statistic.append(output[-1])
         statistic = pd.Series(
             custom_statistic, index=finite_smoothed.index, dtype=float
         ).reindex(indexed.index)
@@ -444,18 +473,6 @@ def replay_strategy(
         else 0.0
     )
     decision = HysteresisDecision(**operator_parameters["decision"])
-    custom_decisions = None
-    if "decision" in implementations:
-        custom_decisions = implementations["decision"](
-            {
-                "statistics": [
-                    None if pd.isna(value) else float(value)
-                    for value in statistic.loc[evaluation.index]
-                ],
-                "initial_position": 0,
-            },
-            dict(implementation_parameters["decision"]),
-        )
     event_rows: list[dict[str, Any]] = []
     daily_rows: list[dict[str, Any]] = []
     cumulative_costs = 0.0
@@ -464,10 +481,20 @@ def replay_strategy(
         raw_open = float(bar["Open"])
         raw_close = float(bar["Close"])
         position_before = int(account.holdings > 0)
-        if custom_decisions is None:
+        if "decision" not in implementations:
             decision_result = decision.step(float(statistic.loc[session]))
         else:
-            custom_decision = custom_decisions[position]
+            statistic_prefix = [
+                None if pd.isna(value) else float(value)
+                for value in statistic.loc[evaluation.index[: position + 1]]
+            ]
+            custom_decision = implementations["decision"](
+                {
+                    "statistics": statistic_prefix,
+                    "initial_position": int(account.holdings > 0),
+                },
+                dict(implementation_parameters["decision"]),
+            )[-1]
             previous_statistic = (
                 None
                 if position == 0

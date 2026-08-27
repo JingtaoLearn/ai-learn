@@ -166,6 +166,22 @@ def test_exact_duplicate_returns_existing_experiment_without_new_attempt(tmp_pat
     assert len(service.list_attempts(first["experiment_id"])) == 1
 
 
+def test_latest_and_explicit_selector_audit_share_one_canonical_experiment(
+    tmp_path: Path,
+):
+    service, snapshot_id = _service(tmp_path)
+    latest_task = _task(snapshot_id)
+    explicit_task = _task(snapshot_id)
+    for operator in explicit_task["operators"].values():
+        operator["version"] = "1.0.0"
+
+    latest = service.submit(latest_task, action_id="latest")
+    explicit = service.submit(explicit_task, action_id="explicit")
+
+    assert explicit["status"] == "DUPLICATE"
+    assert explicit["experiment_id"] == latest["experiment_id"]
+
+
 def test_concurrent_identical_submissions_converge_to_one_experiment_and_attempt(
     tmp_path: Path,
 ):
@@ -204,6 +220,18 @@ def test_explicit_rerun_adds_attempt_under_same_experiment_and_action_retry_conv
         1,
         2,
     ]
+
+
+def test_rerun_action_id_cannot_cross_experiment_boundaries(tmp_path: Path):
+    service, snapshot_id = _service(tmp_path)
+    first = service.submit(_task(snapshot_id), action_id="create-first")
+    changed = _task(snapshot_id)
+    changed["template"]["parameters"]["initial_capital_cny"] = 200000.0
+    second = service.submit(changed, action_id="create-second")
+    service.rerun(first["experiment_id"], action_id="shared-rerun")
+
+    with pytest.raises(TaskValidationError, match="another experiment"):
+        service.rerun(second["experiment_id"], action_id="shared-rerun")
 
 
 def test_history_contains_unique_experiments_attempt_count_and_current_drift(tmp_path: Path):

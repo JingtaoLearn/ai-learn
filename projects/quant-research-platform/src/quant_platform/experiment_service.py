@@ -219,16 +219,28 @@ class ExperimentService:
         }
 
     def _identity(self, resolved: dict[str, Any]) -> dict[str, Any]:
-        return {
+        identity = {
             key: resolved[key]
             for key in (
                 "schema_version",
                 "dataset",
                 "template",
-                "operators",
                 "execution_identity",
             )
         }
+        identity["operators"] = {
+            slot: {
+                key: operator[key]
+                for key in (
+                    "operator_id",
+                    "resolved_version",
+                    "content_digest",
+                    "parameters",
+                )
+            }
+            for slot, operator in resolved["operators"].items()
+        }
+        return identity
 
     def submit(self, task: Any, *, action_id: str) -> dict[str, Any]:
         action_id = _validate_action_id(action_id)
@@ -307,10 +319,14 @@ class ExperimentService:
             if experiment is None:
                 raise TaskValidationError(f"unknown experiment: {experiment_id}")
             repeated = connection.execute(
-                "SELECT attempt_id FROM attempts WHERE action_id = ?",
+                "SELECT attempt_id, experiment_id FROM attempts WHERE action_id = ?",
                 (action_id,),
             ).fetchone()
             if repeated is not None:
+                if repeated["experiment_id"] != experiment_id:
+                    raise TaskValidationError(
+                        "action_id is already used by another experiment"
+                    )
                 return {
                     "status": "NO_CHANGE",
                     "experiment_id": experiment_id,

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
@@ -13,6 +14,7 @@ from quant_platform.operator_worker import load_published_operator
 from quant_platform.resolved_runner import ResolvedAttemptExecutor, build_legacy_config
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.strategy_runner import run_strategy_config
+from quant_platform.strategy_runner import StrategyRunError
 
 from test_experiment_service import FIXTURE, _task
 from test_operator_submission import IMAGE, _passing_validator, _submission
@@ -221,3 +223,77 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
         for argument in launches[0]
         for slot in task["operators"]
     ) == 7
+
+
+def test_custom_series_operators_receive_only_growing_causal_prefixes(tmp_path: Path):
+    catalog, attempt = _attempt(tmp_path)
+    legacy = build_legacy_config(
+        attempt["resolved"],
+        state_root=catalog.state_root,
+        output_root=tmp_path / "prefix-runs",
+    )
+    config_path = tmp_path / "prefix.json"
+    config_path.write_text(json.dumps(legacy), encoding="utf-8")
+    observed = {"smoothing": [], "statistic": [], "decision": []}
+
+    def fit(payload, parameters):
+        return payload["values"][-1]
+
+    def smoothing(payload, parameters):
+        observed["smoothing"].append(len(payload["values"]))
+        return payload["values"]
+
+    def statistic(payload, parameters):
+        observed["statistic"].append(len(payload["values"]))
+        return [None] + [0.0] * (len(payload["values"]) - 1)
+
+    def decision(payload, parameters):
+        observed["decision"].append(len(payload["statistics"]))
+        return [
+            {"action": "HOLD", "reason": "PREFIX_ONLY"}
+            for _ in payload["statistics"]
+        ]
+
+    run_strategy_config(
+        config_path,
+        project_root=PROJECT_ROOT,
+        implementations={
+            "fit": fit,
+            "smoothing": smoothing,
+            "statistic": statistic,
+            "decision": decision,
+        },
+        implementation_parameters={
+            slot: {} for slot in ("fit", "smoothing", "statistic", "decision")
+        },
+        composition_digest="b" * 64,
+    )
+
+    for lengths in observed.values():
+        assert lengths == sorted(lengths)
+        assert len(lengths) > 1
+        assert len(set(lengths)) == len(lengths)
+
+
+def test_custom_report_cannot_mutate_canonical_metrics(tmp_path: Path):
+    catalog, attempt = _attempt(tmp_path)
+    legacy = build_legacy_config(
+        attempt["resolved"],
+        state_root=catalog.state_root,
+        output_root=tmp_path / "mutation-runs",
+    )
+    config_path = tmp_path / "mutation.json"
+    config_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    def mutating_report(payload, parameters):
+        payload["metrics"].clear()
+        return "<!doctype html><html></html>"
+
+    with pytest.raises(StrategyRunError, match="mutated"):
+        run_strategy_config(
+            config_path,
+            project_root=PROJECT_ROOT,
+            implementations={"report": mutating_report},
+            implementation_parameters={"report": {}},
+            composition_digest="c" * 64,
+        )

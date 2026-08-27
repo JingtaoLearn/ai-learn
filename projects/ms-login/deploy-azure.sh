@@ -47,8 +47,9 @@ while [[ $# -gt 0 ]]; do
       echo "Environment variables (set in file or export):"
       echo "  AZURE_CLIENT_ID        - Azure AD App Registration client ID (required)"
       echo "  AZURE_CLIENT_SECRET    - Azure AD App Registration client secret (required)"
-      echo "  AUTH_SHARED_SECRET     - Shared secret for JWT signing (auto-generated if missing)"
+      echo "  AUTH_SHARED_SECRET     - Shared secret for JWT signing (required)"
       echo "  ALLOWED_CALLBACKS      - Comma-separated whitelist of callback URLs"
+      echo "  DOWNSTREAM_CLIENTS     - JSON callback-to-audience mapping (required)"
       echo "  NOTE_APP_CALLBACK_URL  - Default callback URL for downstream services"
       exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -71,11 +72,13 @@ if [[ -z "${AZURE_CLIENT_SECRET:-}" ]]; then
   echo ""
 fi
 
-# Auto-generate secrets if not provided
 if [[ -z "${AUTH_SHARED_SECRET:-}" ]]; then
-  AUTH_SHARED_SECRET=$(openssl rand -base64 32)
-  echo "🔧 Generated AUTH_SHARED_SECRET (save this for downstream services):"
-  echo "   $AUTH_SHARED_SECRET"
+  echo "❌ AUTH_SHARED_SECRET is required and is never generated or printed by this script."
+  exit 1
+fi
+if [[ -z "${DOWNSTREAM_CLIENTS:-}" ]]; then
+  echo "❌ DOWNSTREAM_CLIENTS is required to bind callbacks to JWT audiences."
+  exit 1
 fi
 if [[ -z "${SESSION_SECRET:-}" ]]; then
   SESSION_SECRET=$(openssl rand -base64 24)
@@ -167,6 +170,7 @@ az webapp config appsettings set \
     SESSION_SECRET="$SESSION_SECRET" \
     NOTE_APP_CALLBACK_URL="${NOTE_APP_CALLBACK_URL:-}" \
     ALLOWED_CALLBACKS="${ALLOWED_CALLBACKS:-}" \
+    DOWNSTREAM_CLIENTS="$DOWNSTREAM_CLIENTS" \
     NODE_ENV="production" \
     WEBSITES_PORT="3000" \
     SCM_DO_BUILD_DURING_DEPLOYMENT="true" \

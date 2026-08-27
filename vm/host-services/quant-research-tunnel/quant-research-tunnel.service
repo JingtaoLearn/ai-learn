@@ -11,9 +11,6 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/run/user/%U /home/ailearn/ai-learn/vm/host-services/quant-research-tunnel/flags
 
 [Install]
 WantedBy=default.target

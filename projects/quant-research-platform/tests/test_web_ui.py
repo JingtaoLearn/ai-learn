@@ -141,3 +141,27 @@ def test_rendered_pages_have_no_inline_executable_content(tmp_path: Path):
     for handler in ("onclick=", "onchange=", "onsubmit=", "onerror="):
         assert handler not in response.text
     assert '<script src="/static/app.js" defer></script>' in response.text
+
+
+def test_no_js_rerun_has_server_generated_id_and_rejects_extra_fields(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="create"
+    )
+    detail = client.get(f"/experiments/{created['experiment_id']}")
+    marker = 'name="action_id" value="'
+    action_id = detail.text.split(marker, 1)[1].split('"', 1)[0]
+    assert action_id
+
+    response = client.post(
+        f"/experiments/{created['experiment_id']}/rerun",
+        data={
+            "csrf_token": issued.csrf_token,
+            "action_id": action_id,
+            "source": "forbidden",
+        },
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert response.status_code == 400
+    assert len(app.state.experiments.list_attempts(created["experiment_id"])) == 1

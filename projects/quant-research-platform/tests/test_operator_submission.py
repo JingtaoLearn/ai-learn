@@ -13,7 +13,7 @@ from quant_platform.operator_service import (
     OperatorService,
     OperatorSubmissionError,
 )
-from quant_platform.operator_worker import validate_candidate
+from quant_platform.operator_worker import load_published_operator, validate_candidate
 from quant_platform.schemas import canonical_json_bytes
 
 
@@ -329,3 +329,30 @@ def test_submission_rejects_unbound_or_submitter_supplied_evidence(tmp_path: Pat
         OperatorService(
             catalog, validator=unbound, runner_image=IMAGE
         ).submit(_submission())
+
+
+def test_runtime_loader_requires_catalog_bound_content_and_evidence_digests(
+    tmp_path: Path,
+):
+    catalog = initialize_catalog(tmp_path / "state")
+    service = OperatorService(
+        catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+    service.submit(_submission())
+    detail = service.detail("fixture_fit", "1.0.0")
+    bundle = catalog.state_root / detail["bundle_path"]
+
+    with pytest.raises(ValueError, match="resolved content digest"):
+        load_published_operator(
+            bundle,
+            expected_content_digest="0" * 64,
+            expected_evidence_digest=hashlib.sha256(
+                canonical_json_bytes(detail["validation_evidence"])
+            ).hexdigest(),
+        )
+    with pytest.raises(ValueError, match="resolved evidence digest"):
+        load_published_operator(
+            bundle,
+            expected_content_digest=detail["content_digest"],
+            expected_evidence_digest="0" * 64,
+        )
