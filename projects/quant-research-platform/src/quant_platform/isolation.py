@@ -29,6 +29,63 @@ RUNNER_CONTROL_FILENAMES = {
 }
 
 
+def build_operator_validation_command(
+    candidate_dir: Path | str,
+    evidence_dir: Path | str,
+    runner_image: str,
+) -> list[str]:
+    """Build the fixed command that validates an operator only inside Docker."""
+
+    raw_candidate = Path(candidate_dir)
+    raw_evidence = Path(evidence_dir)
+    for path in (raw_candidate, raw_evidence):
+        if path.is_symlink():
+            raise IsolationError(f"operator validation path cannot be a symlink: {path}")
+    candidate = _resolved(raw_candidate)
+    evidence = _resolved(raw_evidence)
+    for path in (candidate, evidence):
+        _reject_protected(path)
+        _reject_unsafe_mount_syntax(path)
+        if not path.is_dir():
+            raise IsolationError(f"operator validation directory does not exist: {path}")
+    if not is_immutable_runner_image(runner_image):
+        raise IsolationError("operator validator image must be pinned by SHA-256")
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--cpus",
+        str(EXECUTION_ENVELOPE["cpus"]),
+        "--memory",
+        f"{EXECUTION_ENVELOPE['memory_mib']}m",
+        "--pids-limit",
+        str(EXECUTION_ENVELOPE["pids_limit"]),
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--user",
+        "1000:1000",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--mount",
+        f"type=bind,src={candidate},dst=/operator,readonly",
+        "--mount",
+        f"type=bind,src={evidence},dst=/evidence",
+        runner_image,
+        "python",
+        "-m",
+        "quant_platform.operator_worker",
+        "validate",
+        "/operator",
+    ]
+
+
 class IsolationError(ValueError):
     """Raised when a run would escape the fixed research sandbox."""
 

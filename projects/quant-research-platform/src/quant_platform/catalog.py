@@ -277,6 +277,84 @@ class Catalog:
             "created_at": row["created_at"],
         }
 
+    def list_operator_versions(self, operator_id: str) -> list[dict[str, Any]]:
+        connection = self.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT version FROM operator_versions
+                WHERE operator_id = ? AND status = 'PUBLISHED'
+                """,
+                (operator_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            self.operator_detail(operator_id, version)
+            for version in sorted(
+                (row["version"] for row in rows),
+                key=parse_semantic_version,
+                reverse=True,
+            )
+        ]
+
+    def publish_operator_record(
+        self,
+        *,
+        operator_id: str,
+        slot: str,
+        version: str,
+        title_zh: str,
+        summary_zh: str,
+        content_digest: str,
+        parameter_schema_json: str,
+        defaults_json: str,
+        documentation: str,
+        bundle_path: str,
+        validation_evidence_json: str,
+        created_at: str,
+    ) -> None:
+        with self.transaction(immediate=True) as connection:
+            operator = connection.execute(
+                "SELECT slot FROM operators WHERE operator_id = ?",
+                (operator_id,),
+            ).fetchone()
+            if operator is not None and operator["slot"] != slot:
+                raise ValueError(
+                    f"operator {operator_id} is already assigned to slot {operator['slot']}"
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO operators(
+                    operator_id, slot, title_zh, summary_zh, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (operator_id, slot, title_zh, summary_zh, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO operator_versions(
+                    operator_id, version, content_digest, parameter_schema_json,
+                    defaults_json, documentation, bundle_path,
+                    validation_evidence_json, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PUBLISHED', ?)
+                """,
+                (
+                    operator_id,
+                    version,
+                    content_digest,
+                    parameter_schema_json,
+                    defaults_json,
+                    documentation,
+                    bundle_path,
+                    validation_evidence_json,
+                    created_at,
+                ),
+            )
+            self._set_latest_if_newer(
+                connection, operator_id, version, content_digest, "PUBLISHED"
+            )
+
     def _set_latest_if_newer(
         self,
         connection: sqlite3.Connection,
