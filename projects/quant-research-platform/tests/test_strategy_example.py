@@ -23,7 +23,7 @@ def test_bocom_example_is_valid_and_freezes_owned_strategy_parameters():
     assert template["initial_state"] == "flat"
     assert template["terminal_handling"] == "mark_to_market"
     assert "保守研究假设" in template["cost_assumption_label"]
-    assert "非靖涛或任何账户的实际费率" in template["cost_assumption_label"]
+    assert "非任何账户的实际费率" in template["cost_assumption_label"]
     assert "conservative research assumption" not in template[
         "cost_assumption_label"
     ].lower()

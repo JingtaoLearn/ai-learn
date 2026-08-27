@@ -16,7 +16,7 @@
       "initial_capital_cny": 100000.0,
       "initial_state": "flat",
       "terminal_handling": "mark_to_market",
-      "cost_assumption_label": "保守研究假设（非靖涛或任何账户的实际费率）：双边佣金3个基点且最低5元，过户费0.1个基点，卖出印花税5个基点，双边滑点5个基点。"
+      "cost_assumption_label": "保守研究假设（非任何账户的实际费率）：双边佣金3个基点且最低5元，过户费0.1个基点，卖出印花税5个基点，双边滑点5个基点。"
     }
   },
   "operators": {
