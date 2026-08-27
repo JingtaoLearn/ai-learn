@@ -1,6 +1,7 @@
 import json
 import hashlib
 import stat
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -215,6 +216,53 @@ def test_same_identity_and_content_is_no_change_but_changed_content_conflicts(tm
     changed["documentation"] += "\nChanged."
     with pytest.raises(OperatorConflictError, match="different content"):
         service.submit(changed)
+
+
+def test_no_change_verifies_bundle_integrity_instead_of_trusting_catalog(tmp_path: Path):
+    catalog = initialize_catalog(tmp_path / "state")
+    service = OperatorService(
+        catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+    service.submit(_submission())
+    bundle = catalog.state_root / service.detail("fixture_fit", "1.0.0")["bundle_path"]
+    bundle.chmod(0o755)
+    source = bundle / "operator.py"
+    source.chmod(0o644)
+    source.write_text(source.read_text(encoding="utf-8") + "\n# corrupt", encoding="utf-8")
+    source.chmod(0o444)
+    bundle.chmod(0o555)
+
+    with pytest.raises(OperatorSubmissionError, match="bundle|digest"):
+        service.submit(_submission())
+
+
+def test_complete_orphan_bundle_reconciles_after_pre_database_crash(tmp_path: Path):
+    source_catalog = initialize_catalog(tmp_path / "source")
+    source_service = OperatorService(
+        source_catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+    source_service.submit(_submission())
+    source_bundle = (
+        source_catalog.state_root
+        / source_service.detail("fixture_fit", "1.0.0")["bundle_path"]
+    )
+    target_catalog = initialize_catalog(tmp_path / "target")
+    target_bundle = target_catalog.state_root / "operators/fixture_fit/1.0.0"
+    target_bundle.parent.mkdir(parents=True)
+    shutil.copytree(source_bundle, target_bundle, copy_function=shutil.copy2)
+    target_bundle.chmod(0o555)
+    for path in target_bundle.iterdir():
+        path.chmod(0o444)
+    target_service = OperatorService(
+        target_catalog, validator=_passing_validator, runner_image=IMAGE
+    )
+
+    result = target_service.submit(_submission())
+
+    assert result["status"] == "NO_CHANGE"
+    assert target_service.detail("fixture_fit", "1.0.0")["content_digest"] == result[
+        "content_digest"
+    ]
 
 
 def test_concurrent_identical_submission_converges(tmp_path: Path):

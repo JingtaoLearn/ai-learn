@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -196,6 +197,12 @@ class OperatorService:
                     raise OperatorConflictError(
                         f"{operator_id}@{version} already exists with different content"
                     )
+                self._verify_bundle(
+                    self.catalog.state_root / current["bundle_path"],
+                    submission=submission,
+                    digest=digest,
+                    expected_evidence=current["validation_evidence"],
+                )
                 return {
                     "status": "NO_CHANGE",
                     "operator_id": operator_id,
@@ -207,9 +214,34 @@ class OperatorService:
             parent.mkdir(parents=True, exist_ok=True)
             target = parent / version
             if target.exists():
-                raise OperatorConflictError(
-                    f"unregistered immutable bundle already exists: {operator_id}@{version}"
+                evidence = self._verify_bundle(
+                    target, submission=submission, digest=digest
                 )
+                created_at = (
+                    datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+                )
+                self.catalog.publish_operator_record(
+                    operator_id=operator_id,
+                    slot=submission["slot"],
+                    version=version,
+                    title_zh=submission["title_zh"],
+                    summary_zh=submission["summary_zh"],
+                    content_digest=digest,
+                    parameter_schema_json=canonical_json_bytes(
+                        submission["parameter_schema"]
+                    ).decode(),
+                    defaults_json=canonical_json_bytes(submission["defaults"]).decode(),
+                    documentation=submission["documentation"],
+                    bundle_path=target.relative_to(self.catalog.state_root).as_posix(),
+                    validation_evidence_json=canonical_json_bytes(evidence).decode(),
+                    created_at=created_at,
+                )
+                return {
+                    "status": "NO_CHANGE",
+                    "operator_id": operator_id,
+                    "version": version,
+                    "content_digest": digest,
+                }
             staging = Path(tempfile.mkdtemp(prefix=f".{version}.", dir=parent))
             try:
                 worker_manifest = {
@@ -256,6 +288,9 @@ class OperatorService:
                     path.chmod(0o444)
                 staging.chmod(0o555)
                 os.rename(staging, target)
+                self._verify_bundle(
+                    target, submission=submission, digest=digest
+                )
                 created_at = (
                     datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
                 )
@@ -291,6 +326,81 @@ class OperatorService:
             "version": version,
             "content_digest": digest,
         }
+
+    def _verify_bundle(
+        self,
+        target: Path,
+        *,
+        submission: dict[str, Any],
+        digest: str,
+        expected_evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        expected_names = {
+            "documentation.md",
+            "evidence.json",
+            "manifest.json",
+            "operator.py",
+            "tests.json",
+        }
+        if (
+            target.is_symlink()
+            or not target.is_dir()
+            or stat.S_IMODE(target.stat().st_mode) & 0o222
+            or {path.name for path in target.iterdir()} != expected_names
+        ):
+            raise OperatorSubmissionError("immutable operator bundle is unsafe or incomplete")
+        for path in target.iterdir():
+            metadata = os.stat(path, follow_symlinks=False)
+            if (
+                path.is_symlink()
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or stat.S_IMODE(metadata.st_mode) & 0o222
+            ):
+                raise OperatorSubmissionError(
+                    f"immutable operator bundle file is unsafe: {path.name}"
+                )
+        try:
+            manifest = json.loads(
+                (target / "manifest.json").read_text(encoding="utf-8")
+            )
+            tests = json.loads((target / "tests.json").read_text(encoding="utf-8"))
+            evidence = json.loads(
+                (target / "evidence.json").read_text(encoding="utf-8")
+            )
+            source = (target / "operator.py").read_text(encoding="utf-8")
+            documentation = (target / "documentation.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise OperatorSubmissionError("immutable operator bundle is unreadable") from exc
+        manifest_expected = {
+            key: submission[key]
+            for key in (
+                "operator_id",
+                "slot",
+                "version",
+                "parameter_schema",
+                "defaults",
+                "title_zh",
+                "summary_zh",
+                "documentation",
+            )
+        } | {"content_digest": digest}
+        if (
+            manifest != manifest_expected
+            or source != submission["source"]
+            or documentation != submission["documentation"]
+            or tests != submission["tests"]
+        ):
+            raise OperatorSubmissionError("immutable operator bundle digest binding mismatch")
+        self._verify_evidence(
+            evidence,
+            digest=digest,
+            slot=submission["slot"],
+            tests=submission["tests"],
+        )
+        if expected_evidence is not None and evidence != expected_evidence:
+            raise OperatorSubmissionError("immutable operator bundle evidence mismatch")
+        return evidence
 
     def _verify_evidence(
         self,
