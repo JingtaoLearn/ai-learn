@@ -43,6 +43,7 @@ def _foundation(tmp_path: Path) -> Path:
         "schema_version": 1,
         "dataset": {
             "root": str(state),
+            "instrument": "SYNTH.SS",
             "snapshot_id": snapshot["snapshot_id"],
         },
         "output_root": str(tmp_path / "runs"),
@@ -266,6 +267,16 @@ def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, mon
         run_strategy_config(config_path)
     output_root = Path(json.loads(config_path.read_text())["output_root"])
     assert not output_root.exists() or not any(output_root.iterdir())
+
+
+def test_configured_instrument_must_match_snapshot_metadata(tmp_path: Path):
+    config_path = _foundation(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["dataset"]["instrument"] = "OTHER.SS"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(StrategyRunError, match="instrument"):
+        run_strategy_config(config_path)
 
 
 def test_persisted_json_is_strict_finite_and_canonical_config_is_bound(tmp_path: Path):

@@ -22,6 +22,7 @@ def valid_config(tmp_path: Path) -> dict:
         "schema_version": 1,
         "dataset": {
             "root": str(tmp_path / "state"),
+            "instrument": "SYNTH.SS",
             "snapshot_id": "a" * 64,
         },
         "output_root": str(tmp_path / "runs"),
@@ -112,7 +113,7 @@ def test_valid_config_is_canonical_and_hash_stable(tmp_path: Path):
     [
         (lambda value: value.update(extra=True), "unknown fields"),
         (lambda value: value.pop("dataset"), "missing fields"),
-        (lambda value: value["dataset"].update(instrument="601328.SS"), "unknown fields"),
+        (lambda value: value["dataset"].update(provider="synthetic"), "unknown fields"),
         (lambda value: value["template"].pop("version"), "missing fields"),
         (
             lambda value: value["template"]["parameters"].update(initial_capital_cny=True),
@@ -234,3 +235,29 @@ def test_builtin_operator_registry_is_immutable():
             version="1",
             parameters={},
         )
+
+
+def test_schema_version_rejects_float_one(tmp_path: Path):
+    config = valid_config(tmp_path)
+    config["schema_version"] = 1.0
+
+    with pytest.raises(StrategyConfigError, match="schema_version"):
+        validate_strategy_config(config)
+
+
+@pytest.mark.parametrize("instrument", ["../SYNTH", "SYNTH/SS", "", True])
+def test_dataset_instrument_uses_safe_snapshot_semantics(
+    tmp_path: Path, instrument
+):
+    config = valid_config(tmp_path)
+    config["dataset"]["instrument"] = instrument
+
+    with pytest.raises(StrategyConfigError, match="dataset.instrument"):
+        validate_strategy_config(config)
+
+
+def test_operator_parameter_schema_is_recursively_immutable():
+    operator = OPERATOR_REGISTRY[("fit", "prior_log_ols", "1")]
+
+    with pytest.raises(TypeError):
+        operator.parameters["unsafe"] = ParameterSpec("string")

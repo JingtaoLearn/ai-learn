@@ -15,6 +15,7 @@ def test_bocom_example_is_valid_and_freezes_owned_strategy_parameters():
     template = config["template"]["parameters"]
     operators = config["operators"]
 
+    assert config["dataset"]["instrument"] == "601328.SS"
     assert template["instrument_display_name"] == "Bank of Communications (601328.SS)"
     assert template["evaluation_start"] == "2025-01-02"
     assert template["evaluation_end"] is None

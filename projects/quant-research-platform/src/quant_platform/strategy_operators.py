@@ -24,6 +24,13 @@ class OperatorSpec:
     version: str
     parameters: Mapping[str, ParameterSpec]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "parameters",
+            MappingProxyType(dict(self.parameters)),
+        )
+
 
 def validate_registry(
     registry: Mapping[tuple[str, str, str], OperatorSpec],

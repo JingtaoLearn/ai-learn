@@ -82,21 +82,21 @@ def _effective_source_identity() -> tuple[str, dict[str, str]]:
 def _bound_snapshot(config: ValidatedStrategyConfig) -> tuple[Path, dict[str, Any]]:
     dataset = config.canonical["dataset"]
     root = Path(dataset["root"]).resolve()
+    instrument = dataset["instrument"]
     snapshot_id = dataset["snapshot_id"]
-    matches = sorted((root / "datasets").glob(f"*/{snapshot_id}"))
-    if (
-        len(matches) != 1
-        or matches[0].is_symlink()
-        or not matches[0].is_dir()
-    ):
+    target = root / "datasets" / instrument / snapshot_id
+    if target.is_symlink() or not target.is_dir():
         raise StrategyRunError(
-            f"dataset snapshot is not uniquely available: {snapshot_id}"
+            f"dataset snapshot is not available for instrument {instrument}: {snapshot_id}"
         )
-    target = matches[0]
     try:
         manifest = _verify_snapshot(target, snapshot_id)
     except RuntimeError as exc:
         raise StrategyRunError(f"dataset snapshot verification failed: {exc}") from exc
+    if manifest["metadata"]["instrument"] != instrument:
+        raise StrategyRunError(
+            "configured dataset instrument does not match snapshot metadata"
+        )
     return target, manifest
 
 
@@ -323,6 +323,7 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
         {
             "config_sha256": config.config_sha256,
             "dataset_snapshot_id": dataset_manifest["snapshot_id"],
+            "dataset_instrument": dataset_manifest["metadata"]["instrument"],
             "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
             "source_sha256": source_sha256,
         },

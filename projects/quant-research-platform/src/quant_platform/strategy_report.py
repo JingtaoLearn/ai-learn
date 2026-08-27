@@ -288,6 +288,11 @@ def render_report(
     config: ValidatedStrategyConfig,
     provenance: Mapping[str, Any],
 ) -> str:
+    dataset_instrument = config.canonical["dataset"]["instrument"]
+    if provenance.get("dataset_instrument") != dataset_instrument:
+        raise ReportError(
+            "report dataset instrument provenance does not match configuration"
+        )
     family = _verified_font_family()
     chart = base64.b64encode(_chart_png(result, config, family)).decode("ascii")
     template = config.canonical["template"]["parameters"]

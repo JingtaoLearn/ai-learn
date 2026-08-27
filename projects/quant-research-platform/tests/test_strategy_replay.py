@@ -14,7 +14,11 @@ def _config(*, terminal_handling: str = "mark_to_market", capital: float = 10000
     return validate_strategy_config(
         {
             "schema_version": 1,
-            "dataset": {"root": "unused", "snapshot_id": "a" * 64},
+            "dataset": {
+                "root": "unused",
+                "instrument": "SYNTH.SS",
+                "snapshot_id": "a" * 64,
+            },
             "output_root": "unused",
             "template": {
                 "name": "single_stock_daily_causal",

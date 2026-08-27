@@ -20,7 +20,11 @@ def _config():
     return validate_strategy_config(
         {
             "schema_version": 1,
-            "dataset": {"root": "state", "snapshot_id": "a" * 64},
+            "dataset": {
+                "root": "state",
+                "instrument": "SYNTH.SS",
+                "snapshot_id": "a" * 64,
+            },
             "output_root": "runs",
             "template": {
                 "name": "single_stock_daily_causal",
@@ -95,6 +99,15 @@ def _result():
     return replay_strategy(frame, _config())
 
 
+def _provenance(**extra):
+    return {
+        "config_sha256": "b" * 64,
+        "dataset_instrument": "SYNTH.SS",
+        "source_sha256": "c" * 64,
+        **extra,
+    }
+
+
 def test_report_fails_closed_without_verified_cjk_font(monkeypatch):
     monkeypatch.setattr(
         report_module,
@@ -106,7 +119,7 @@ def test_report_fails_closed_without_verified_cjk_font(monkeypatch):
         render_report(
             _result(),
             _config(),
-            {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+            _provenance(),
         )
 
 
@@ -114,7 +127,7 @@ def test_report_escapes_user_content_and_contains_no_external_resources():
     html = render_report(
         _result(),
         _config(),
-        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+        _provenance(),
     )
 
     assert 'Bank &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;' in html
@@ -130,11 +143,7 @@ def test_report_rules_are_literal_config_derived_and_complete():
     html = render_report(
         _result(),
         _config(),
-        {
-            "config_sha256": "b" * 64,
-            "dataset_snapshot_id": "a" * 64,
-            "source_sha256": "c" * 64,
-        },
+        _provenance(dataset_snapshot_id="a" * 64),
     )
 
     assert "向上穿越 +1.00%/日" in html
@@ -151,11 +160,7 @@ def test_report_contains_required_panels_summary_tables_and_provenance():
     html = render_report(
         _result(),
         _config(),
-        {
-            "config_sha256": "b" * 64,
-            "dataset_snapshot_id": "a" * 64,
-            "source_sha256": "c" * 64,
-        },
+        _provenance(dataset_snapshot_id="a" * 64),
     )
 
     for literal in (
@@ -199,7 +204,7 @@ def test_report_prevents_root_overflow_and_cues_each_wide_table():
     html = render_report(
         _result(),
         _config(),
-        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+        _provenance(),
     )
 
     assert "html,body{max-width:100%;overflow-x:hidden}" in html
@@ -215,7 +220,7 @@ def test_report_translates_machine_event_trade_and_reason_values():
     html = render_report(
         _result(),
         _config(),
-        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+        _provenance(),
     )
 
     for translated in (
@@ -243,7 +248,7 @@ def test_report_has_accessible_self_contained_chart_lightbox():
     html = render_report(
         _result(),
         _config(),
-        {"config_sha256": "b" * 64, "source_sha256": "c" * 64},
+        _provenance(),
     )
 
     assert 'id="chart-open"' in html
@@ -255,3 +260,12 @@ def test_report_has_accessible_self_contained_chart_lightbox():
     assert "event.target===lightbox" in html
     assert "event.key==='Escape'" in html
     assert "https://" not in html
+
+
+def test_report_rejects_dataset_instrument_provenance_mismatch():
+    with pytest.raises(ReportError, match="instrument"):
+        render_report(
+            _result(),
+            _config(),
+            _provenance(dataset_instrument="OTHER.SS"),
+        )

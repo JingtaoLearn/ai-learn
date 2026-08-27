@@ -2,6 +2,7 @@
   "schema_version": 1,
   "dataset": {
     "root": "state/platform",
+    "instrument": "601328.SS",
     "snapshot_id": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "output_root": "runs/strategy",

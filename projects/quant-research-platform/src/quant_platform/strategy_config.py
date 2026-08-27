@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
 
+from .datasets import SAFE_INSTRUMENT
 from .strategy_operators import (
     OPERATOR_REGISTRY,
     OperatorSpec,
@@ -187,10 +188,17 @@ def validate_strategy_config(value: Any) -> ValidatedStrategyConfig:
         {"schema_version", "dataset", "output_root", "template", "operators"},
         "config",
     )
-    if isinstance(config["schema_version"], bool) or config["schema_version"] != 1:
+    if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise StrategyConfigError("schema_version must be integer 1")
-    dataset = _exact_fields(config["dataset"], {"root", "snapshot_id"}, "dataset")
+    dataset = _exact_fields(
+        config["dataset"], {"root", "instrument", "snapshot_id"}, "dataset"
+    )
     dataset_root = _validate_path(dataset["root"], "dataset.root")
+    instrument = dataset["instrument"]
+    if not isinstance(instrument, str) or not SAFE_INSTRUMENT.fullmatch(instrument):
+        raise StrategyConfigError(
+            "dataset.instrument must use the safe snapshot instrument syntax"
+        )
     snapshot_id = dataset["snapshot_id"]
     if not isinstance(snapshot_id, str) or not SHA256.fullmatch(snapshot_id):
         raise StrategyConfigError("dataset.snapshot_id must be a lowercase SHA-256 value")
@@ -229,7 +237,11 @@ def validate_strategy_config(value: Any) -> ValidatedStrategyConfig:
 
     canonical = {
         "schema_version": 1,
-        "dataset": {"root": dataset_root, "snapshot_id": snapshot_id},
+        "dataset": {
+            "root": dataset_root,
+            "instrument": instrument,
+            "snapshot_id": snapshot_id,
+        },
         "output_root": _validate_path(config["output_root"], "output_root"),
         "template": {
             "name": "single_stock_daily_causal",
