@@ -1,3 +1,7 @@
+const {
+  randomBytes,
+  timingSafeEqual,
+} = require("node:crypto");
 const path = require("path");
 
 const msal = require("@azure/msal-node");
@@ -11,6 +15,8 @@ const DEFAULT_REDIRECT_URI =
   "https://ms-login.ai.jingtao.fun/auth/callback";
 const DEFAULT_CALLBACK_URL =
   "https://note.ai.jingtao.fun/auth/callback";
+const OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const MAX_OUTSTANDING_OAUTH_STATES = 5;
 
 function parseDownstreamClients(value) {
   const clients = JSON.parse(value || "{}");
@@ -77,6 +83,41 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function statesEqual(providedState, expectedState) {
+  const provided = Buffer.from(providedState);
+  const expected = Buffer.from(expectedState);
+  return (
+    provided.length === expected.length &&
+    timingSafeEqual(provided, expected)
+  );
+}
+
+function activeOAuthFlows(flows, currentTime) {
+  if (!flows || Array.isArray(flows) || typeof flows !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(flows).filter(([, flow]) => {
+      const age = currentTime - flow?.issuedAt;
+      return (
+        Number.isFinite(flow?.issuedAt) &&
+        age >= 0 &&
+        age <= OAUTH_STATE_TTL_MS
+      );
+    })
+  );
+}
+
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
 async function requestGraphProfile(accessToken) {
   const response = await axios.get(
     "https://graph.microsoft.com/v1.0/me",
@@ -92,6 +133,7 @@ function createApp({
   msalClient,
   graphRequest = requestGraphProfile,
   logger = console,
+  now = Date.now,
 } = {}) {
   const config = readConfig(env);
   const client =
@@ -154,6 +196,42 @@ function createApp({
     };
   }
 
+  function consumeOAuthFlow(req, providedState) {
+    if (
+      typeof providedState !== "string" ||
+      providedState.length === 0
+    ) {
+      return { consumed: false, flow: null };
+    }
+
+    const flows = req.session.oauthFlows;
+    if (!flows || Array.isArray(flows) || typeof flows !== "object") {
+      return { consumed: false, flow: null };
+    }
+
+    const storedState = Object.keys(flows).find((candidate) =>
+      statesEqual(providedState, candidate)
+    );
+    if (!storedState) {
+      return { consumed: false, flow: null };
+    }
+
+    const flow = flows[storedState];
+    delete flows[storedState];
+    req.session.oauthFlows = flows;
+
+    const age = now() - flow?.issuedAt;
+    if (
+      !Number.isFinite(flow?.issuedAt) ||
+      age < 0 ||
+      age > OAUTH_STATE_TTL_MS
+    ) {
+      return { consumed: true, flow: null };
+    }
+
+    return { consumed: true, flow };
+  }
+
   app.get("/", (req, res) => {
     res.render("index", { user: req.session.user || null });
   });
@@ -169,13 +247,30 @@ function createApp({
         throw new Error("Downstream audience is not configured");
       }
 
-      req.session.callbackUrl = binding.callbackUrl;
-      req.session.audience = binding.audience;
+      const issuedAt = now();
+      const flows = activeOAuthFlows(
+        req.session.oauthFlows,
+        issuedAt
+      );
+      while (
+        Object.keys(flows).length >=
+        MAX_OUTSTANDING_OAUTH_STATES
+      ) {
+        delete flows[Object.keys(flows)[0]];
+      }
+      const state = randomBytes(32).toString("base64url");
 
       const authUrl = await client.getAuthCodeUrl({
         scopes: SCOPES,
         redirectUri: config.redirectUri,
+        state,
       });
+      flows[state] = {
+        issuedAt,
+        callbackUrl: binding.callbackUrl,
+        audience: binding.audience,
+      };
+      req.session.oauthFlows = flows;
       res.redirect(authUrl);
     } catch {
       logger.error("Login request failed");
@@ -184,13 +279,25 @@ function createApp({
   });
 
   app.get("/auth/callback", async (req, res) => {
+    const stateResult = consumeOAuthFlow(req, req.query.state);
+    if (stateResult.consumed) {
+      try {
+        await saveSession(req);
+      } catch {
+        logger.error("OAuth state consumption failed");
+        return renderError(res, 500, "Authentication failed");
+      }
+    }
+    if (!stateResult.flow) {
+      logger.error("OAuth callback rejected");
+      return renderError(res, 400, "Authentication failed");
+    }
     if (req.query.error) {
       return renderError(res, 400, "Authentication was denied");
     }
 
     try {
-      const callbackUrl = req.session.callbackUrl;
-      const audience = req.session.audience;
+      const { callbackUrl, audience } = stateResult.flow;
       if (
         !callbackUrl ||
         !audience ||
@@ -199,6 +306,12 @@ function createApp({
         !isSafeCallback(callbackUrl)
       ) {
         throw new Error("Downstream callback is not configured");
+      }
+      if (
+        typeof req.query.code !== "string" ||
+        req.query.code.length === 0
+      ) {
+        return renderError(res, 400, "Authentication failed");
       }
 
       const response = await client.acquireTokenByCode({

@@ -415,6 +415,7 @@ test("bounds each session to five outstanding OAuth states", async () => {
 });
 
 test("does not expose or log access tokens and secrets on callback errors", async () => {
+  const calls = createCallTracker();
   const logged = [];
   const logger = {
     error(...args) {
@@ -426,6 +427,7 @@ test("does not expose or log access tokens and secrets on callback errors", asyn
 
   await withServer(
     createTestApp({
+      calls,
       nodeEnv: "production",
       graphRequest: async () => {
         throw new Error(sensitiveError);
@@ -448,6 +450,15 @@ test("does not expose or log access tokens and secrets on callback errors", asyn
       assert.doesNotMatch(body, new RegExp(AUTH_SHARED_SECRET));
       assert.doesNotMatch(logged.join("\n"), /graph-access-token/);
       assert.doesNotMatch(logged.join("\n"), new RegExp(AUTH_SHARED_SECRET));
+
+      const replay = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
+      assert.equal(replay.status, 400);
+      assert.equal(calls.tokenRequests.length, 1);
+      assert.equal(calls.graphRequests.length, 1);
     }
   );
 });
