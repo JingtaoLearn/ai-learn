@@ -74,7 +74,7 @@ Your downstream service needs:
 | `ALLOWED_CALLBACKS` | Comma-separated whitelist of callback URLs | Recommended |
 | `DOWNSTREAM_CLIENTS` | JSON object mapping each exact callback URL to its JWT audience | Required |
 | `NOTE_APP_CALLBACK_URL` | Default callback URL | Optional |
-| `SESSION_SECRET` | Express session secret | Auto-generated |
+| `SESSION_SECRET` | Express session secret | Required in production |
 | `AZURE_REDIRECT_URI` | OAuth callback URL (auto-set by deploy script) | Auto-set |
 
 ## Routes
@@ -88,11 +88,11 @@ Your downstream service needs:
 
 ## Security
 
-- **Callback whitelist**: Only URLs matching `ALLOWED_CALLBACKS` are accepted as redirect targets
+- **Callback whitelist**: Only exact URLs present in `ALLOWED_CALLBACKS` are accepted as redirect targets
+- **Audience binding**: Every allowed callback must have an exact `DOWNSTREAM_CLIENTS` audience mapping
 - **Short-lived JWT**: 30-second expiry — tokens are one-time-use for the POST redirect
-- **Audience binding**: Each exact callback is mapped to one downstream JWT audience
 - **Server-side secrets**: Client secret and shared secret never reach the browser
-- **HTTPS only**: Secure cookies in production mode
+- **Hardened auth responses**: Production requires explicit signing/session secrets, secure cookies, and no-store headers
 
 For the quant research UI, configure both values together:
 
