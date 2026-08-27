@@ -4,7 +4,8 @@
   "description": "Microsoft Account Login demo with MSAL and Express",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js"
+    "start": "node app.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@azure/msal-node": "^2.16.0",
