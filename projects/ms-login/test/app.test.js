@@ -9,6 +9,14 @@ const DEFAULT_CALLBACK = "https://note.example/auth/callback";
 const QUANT_CALLBACK = "https://quant.example/auth/callback";
 const AUTH_SHARED_SECRET = "test-auth-shared-secret-with-32-bytes";
 
+function createCallTracker() {
+  return {
+    authCodeRequests: [],
+    tokenRequests: [],
+    graphRequests: [],
+  };
+}
+
 function createTestApp({
   callbacks = {
     [DEFAULT_CALLBACK]: "note-app",
@@ -19,14 +27,21 @@ function createTestApp({
     mail: "person@example.com",
     displayName: "Example Person",
   }),
+  calls = createCallTracker(),
   logger = { error() {} },
   nodeEnv = "test",
+  now,
 } = {}) {
   const msalClient = {
-    async getAuthCodeUrl() {
-      return "https://login.microsoftonline.com/authorize";
+    async getAuthCodeUrl(parameters) {
+      calls.authCodeRequests.push(parameters);
+      return (
+        "https://login.microsoftonline.com/authorize?state=" +
+        encodeURIComponent(parameters.state)
+      );
     },
-    async acquireTokenByCode() {
+    async acquireTokenByCode(parameters) {
+      calls.tokenRequests.push(parameters);
       return { accessToken: "graph-access-token" };
     },
   };
@@ -42,8 +57,12 @@ function createTestApp({
       DOWNSTREAM_CLIENTS: JSON.stringify(callbacks),
     },
     msalClient,
-    graphRequest,
+    graphRequest: async (accessToken) => {
+      calls.graphRequests.push(accessToken);
+      return graphRequest(accessToken);
+    },
     logger,
+    now,
   });
 }
 
@@ -64,23 +83,40 @@ async function withServer(app, callback) {
   }
 }
 
-async function beginLogin(baseUrl, redirect, headers = {}) {
+async function beginLogin(baseUrl, redirect, headers = {}, cookie) {
   const query = redirect ? `?redirect=${encodeURIComponent(redirect)}` : "";
   const response = await fetch(`${baseUrl}/auth/login${query}`, {
-    headers,
+    headers: {
+      ...headers,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
     redirect: "manual",
   });
   const setCookie = response.headers.get("set-cookie");
+  const location = response.headers.get("location");
 
   return {
     response,
-    cookie: setCookie && setCookie.split(";", 1)[0],
+    cookie: (setCookie && setCookie.split(";", 1)[0]) || cookie,
     setCookie,
+    state: location ? new URL(location).searchParams.get("state") : null,
   };
 }
 
-async function completeLogin(baseUrl, cookie) {
-  return fetch(`${baseUrl}/auth/callback?code=test-code`, {
+async function completeLogin(
+  baseUrl,
+  cookie,
+  state,
+  { code = "test-code", stateValues } = {}
+) {
+  const query = new URLSearchParams({ code });
+  if (stateValues) {
+    for (const value of stateValues) query.append("state", value);
+  } else if (state !== undefined) {
+    query.set("state", state);
+  }
+
+  return fetch(`${baseUrl}/auth/callback?${query}`, {
     headers: { Cookie: cookie },
     redirect: "manual",
   });
@@ -95,15 +131,14 @@ function extractAutoPost(body) {
 }
 
 test("binds an exactly allowed quant callback to its configured audience", async () => {
-  await withServer(createTestApp(), async (baseUrl) => {
+  const calls = createCallTracker();
+  await withServer(createTestApp({ calls }), async (baseUrl) => {
     const login = await beginLogin(baseUrl, QUANT_CALLBACK);
     assert.equal(login.response.status, 302);
-    assert.equal(
-      login.response.headers.get("location"),
-      "https://login.microsoftonline.com/authorize"
-    );
+    assert.match(login.state, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(calls.authCodeRequests[0].state, login.state);
 
-    const response = await completeLogin(baseUrl, login.cookie);
+    const response = await completeLogin(baseUrl, login.cookie, login.state);
     assert.equal(response.status, 200);
     const { action, token } = extractAutoPost(await response.text());
     assert.equal(action, QUANT_CALLBACK);
@@ -126,7 +161,7 @@ test("does not use an unknown callback and preserves the default consumer", asyn
     const login = await beginLogin(baseUrl, unknownCallback);
     assert.equal(login.response.status, 302);
 
-    const response = await completeLogin(baseUrl, login.cookie);
+    const response = await completeLogin(baseUrl, login.cookie, login.state);
     const { action, token } = extractAutoPost(await response.text());
     assert.equal(action, DEFAULT_CALLBACK);
     assert.doesNotMatch(action, /attacker/);
@@ -166,7 +201,11 @@ test("escapes the configured auto-POST action", async () => {
     }),
     async (baseUrl) => {
       const login = await beginLogin(baseUrl, callback);
-      const response = await completeLogin(baseUrl, login.cookie);
+      const response = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
       const body = await response.text();
 
       assert.match(
@@ -218,6 +257,163 @@ test("requires production session and signing secrets", () => {
   );
 });
 
+test("rejects missing, mismatched, and duplicate state without token calls", async (t) => {
+  for (const scenario of [
+    { name: "missing state", state: undefined },
+    { name: "mismatched state", state: "mismatched-sensitive-state" },
+    {
+      name: "duplicate state",
+      stateValues: ["first-sensitive-state", "second-sensitive-state"],
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const calls = createCallTracker();
+      const logged = [];
+      const logger = {
+        error(...args) {
+          logged.push(args.join(" "));
+        },
+      };
+
+      await withServer(
+        createTestApp({ calls, logger }),
+        async (baseUrl) => {
+          const login = await beginLogin(baseUrl, QUANT_CALLBACK);
+          const response = await completeLogin(
+            baseUrl,
+            login.cookie,
+            scenario.state,
+            { code: "sensitive-authorization-code", stateValues: scenario.stateValues }
+          );
+          const body = await response.text();
+
+          assert.equal(response.status, 400);
+          assert.match(body, /Authentication failed/);
+          assert.doesNotMatch(body, /sensitive|authorization-code/);
+          assert.doesNotMatch(logged.join("\n"), /sensitive|authorization-code/);
+          assert.equal(calls.tokenRequests.length, 0);
+          assert.equal(calls.graphRequests.length, 0);
+        }
+      );
+    });
+  }
+});
+
+test("expires and consumes old state before token exchange", async () => {
+  let currentTime = 1_000_000;
+  const calls = createCallTracker();
+
+  await withServer(
+    createTestApp({ calls, now: () => currentTime }),
+    async (baseUrl) => {
+      const login = await beginLogin(baseUrl, QUANT_CALLBACK);
+      currentTime += 5 * 60 * 1000 + 1;
+
+      const expired = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
+      assert.equal(expired.status, 400);
+      assert.equal(calls.tokenRequests.length, 0);
+      assert.equal(calls.graphRequests.length, 0);
+
+      const replay = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
+      assert.equal(replay.status, 400);
+      assert.equal(calls.tokenRequests.length, 0);
+      assert.equal(calls.graphRequests.length, 0);
+    }
+  );
+});
+
+test("consumes state after one successful callback", async () => {
+  const calls = createCallTracker();
+
+  await withServer(createTestApp({ calls }), async (baseUrl) => {
+    const login = await beginLogin(baseUrl, QUANT_CALLBACK);
+    const first = await completeLogin(baseUrl, login.cookie, login.state);
+    assert.equal(first.status, 200);
+
+    const replay = await completeLogin(baseUrl, login.cookie, login.state);
+    assert.equal(replay.status, 400);
+    assert.equal(calls.tokenRequests.length, 1);
+    assert.equal(calls.graphRequests.length, 1);
+  });
+});
+
+test("keeps concurrent login states bound to their own callbacks", async () => {
+  const calls = createCallTracker();
+
+  await withServer(createTestApp({ calls }), async (baseUrl) => {
+    const quantLogin = await beginLogin(baseUrl, QUANT_CALLBACK);
+    const noteLogin = await beginLogin(
+      baseUrl,
+      undefined,
+      {},
+      quantLogin.cookie
+    );
+    assert.notEqual(quantLogin.state, noteLogin.state);
+
+    const quantResponse = await completeLogin(
+      baseUrl,
+      quantLogin.cookie,
+      quantLogin.state
+    );
+    const quantPost = extractAutoPost(await quantResponse.text());
+    assert.equal(quantPost.action, QUANT_CALLBACK);
+    assert.equal(
+      jwt.verify(quantPost.token, AUTH_SHARED_SECRET).aud,
+      "quant-app"
+    );
+
+    const noteResponse = await completeLogin(
+      baseUrl,
+      noteLogin.cookie,
+      noteLogin.state
+    );
+    const notePost = extractAutoPost(await noteResponse.text());
+    assert.equal(notePost.action, DEFAULT_CALLBACK);
+    assert.equal(
+      jwt.verify(notePost.token, AUTH_SHARED_SECRET).aud,
+      "note-app"
+    );
+  });
+});
+
+test("bounds each session to five outstanding OAuth states", async () => {
+  const calls = createCallTracker();
+
+  await withServer(createTestApp({ calls }), async (baseUrl) => {
+    const logins = [];
+    let cookie;
+    for (let index = 0; index < 6; index += 1) {
+      const login = await beginLogin(baseUrl, QUANT_CALLBACK, {}, cookie);
+      cookie = login.cookie;
+      logins.push(login);
+    }
+
+    const evicted = await completeLogin(
+      baseUrl,
+      cookie,
+      logins[0].state
+    );
+    assert.equal(evicted.status, 400);
+    assert.equal(calls.tokenRequests.length, 0);
+
+    const newest = await completeLogin(
+      baseUrl,
+      cookie,
+      logins[5].state
+    );
+    assert.equal(newest.status, 200);
+    assert.equal(calls.tokenRequests.length, 1);
+  });
+});
+
 test("does not expose or log access tokens and secrets on callback errors", async () => {
   const logged = [];
   const logger = {
@@ -240,7 +436,11 @@ test("does not expose or log access tokens and secrets on callback errors", asyn
       const login = await beginLogin(baseUrl, QUANT_CALLBACK, {
         "X-Forwarded-Proto": "https",
       });
-      const response = await completeLogin(baseUrl, login.cookie);
+      const response = await completeLogin(
+        baseUrl,
+        login.cookie,
+        login.state
+      );
       const body = await response.text();
 
       assert.equal(response.status, 500);
