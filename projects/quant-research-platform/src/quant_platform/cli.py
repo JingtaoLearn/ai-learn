@@ -146,6 +146,10 @@ def _parser() -> argparse.ArgumentParser:
     attempt_detail = attempt_commands.add_parser("detail")
     attempt_detail.add_argument("--root", required=True)
     attempt_detail.add_argument("--attempt-id", required=True)
+    attempt_recover = attempt_commands.add_parser("recover")
+    attempt_recover.add_argument("--root", required=True)
+    attempt_recover.add_argument("--attempt-id", required=True)
+    attempt_recover.add_argument("--action-id", required=True)
     return parser
 
 
@@ -294,6 +298,10 @@ def _execute(args: argparse.Namespace) -> dict:
             return {"attempts": experiments.list_attempts(args.experiment_id)}
         if args.attempt_command == "detail":
             return {"attempt": experiments.attempt_detail(args.attempt_id)}
+        if args.attempt_command == "recover":
+            return experiments.create_replacement_attempt(
+                args.attempt_id, action_id=args.action_id
+            )
     raise CLIUsageError("unsupported command")
 
 

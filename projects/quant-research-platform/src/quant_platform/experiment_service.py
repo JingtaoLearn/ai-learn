@@ -598,6 +598,43 @@ class ExperimentService:
             )
         return self.attempt_detail(attempt_id)
 
+    def record_termination(
+        self,
+        attempt_id: str,
+        *,
+        exit_status: int | None,
+        outcome: str,
+    ) -> dict[str, Any]:
+        if exit_status is not None and type(exit_status) is not int:
+            raise ValueError("exit_status must be an integer or null")
+        if not isinstance(outcome, str) or not outcome:
+            raise ValueError("termination outcome must be non-empty")
+        with self.catalog.transaction(immediate=True) as connection:
+            row = self._require_running(connection, attempt_id)
+            control_dir = self._control_directory(row)
+            control = json.loads(row["control_json"])
+            if control["state"] != "LAUNCHING":
+                raise InvalidAttemptTransition(
+                    "termination requires a recorded physical launch"
+                )
+            control.update(
+                {
+                    "state": "TERMINATED",
+                    "exit_status": exit_status,
+                    "outcome": outcome,
+                    "termination_confirmed": True,
+                    "terminated_at": _now(),
+                }
+            )
+            replacement = control_dir / "control.next.json"
+            self._write_control_json(replacement, control)
+            os.replace(replacement, control_dir / "control.json")
+            connection.execute(
+                "UPDATE attempts SET control_json = ? WHERE attempt_id = ?",
+                (canonical_json_bytes(control).decode(), attempt_id),
+            )
+        return self.attempt_detail(attempt_id)
+
     def _seal_control(
         self, control_dir: Path, evidence: dict[str, Any], *, filename: str
     ) -> None:
@@ -833,12 +870,45 @@ class ExperimentService:
         self, attempt: sqlite3.Row, *, status: str, finished_at: str
     ) -> None:
         control_dir = self._control_directory(attempt)
+        control = json.loads(attempt["control_json"])
+        files: dict[str, dict[str, Any]] = {}
+        for path in control_dir.iterdir():
+            if path.name in {"terminal.json", "recovery.json"}:
+                continue
+            metadata = os.stat(path, follow_symlinks=False)
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise InvalidAttemptTransition(
+                    f"attempt control evidence is unsafe: {path.name}"
+                )
+            payload = path.read_bytes()
+            files[path.name] = {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+        container_id = None
+        cidfile = control_dir / "container.cid"
+        if cidfile.exists():
+            candidate = cidfile.read_text(encoding="ascii").strip()
+            if SHA256.fullmatch(candidate) is None:
+                raise InvalidAttemptTransition("attempt container ID is invalid")
+            container_id = candidate
         evidence = {
             "schema_version": 1,
             "attempt_id": attempt["attempt_id"],
             "status": status,
             "finished_at": finished_at,
             "launch_count": attempt["launch_count"],
+            "container_id": container_id,
+            "termination_confirmed": (
+                control["state"] == "CLAIMED"
+                or control.get("termination_confirmed") is True
+            ),
+            "control": control,
+            "files": files,
         }
         self._seal_control(control_dir, evidence, filename="terminal.json")
 

@@ -699,6 +699,25 @@ def create_app(
         except TaskValidationError as exc:
             return _json_error(404, "NOT_FOUND", str(exc))
 
+    @app.post("/api/attempts/{attempt_id}/recover")
+    async def api_attempt_recover(request: Request, attempt_id: str):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if not isinstance(body, dict) or set(body) != {"action_id"}:
+            return _json_error(400, "INVALID_REQUEST", "Expected exactly action_id")
+        result = await run_in_threadpool(
+            experiments.create_replacement_attempt,
+            attempt_id,
+            action_id=body["action_id"],
+        )
+        return JSONResponse(
+            result, status_code=201 if result["status"] == "CREATED" else 200
+        )
+
     @app.get("/")
     async def dashboard(request: Request):
         try:

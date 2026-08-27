@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -140,10 +141,18 @@ def test_physical_launch_control_is_recorded_once_and_terminal_evidence_is_seale
         service.record_physical_launch(
             claimed["attempt_id"], container_name="quant-attempt-test-2"
         )
+    service.record_termination(
+        launched["attempt_id"], exit_status=2, outcome="FAILED"
+    )
     service.finish_failure(launched["attempt_id"], "synthetic")
     control = service.catalog.state_root / launched["control_path"]
 
     assert (control / "terminal.json").is_file()
+    terminal = json.loads((control / "terminal.json").read_text(encoding="utf-8"))
+    assert terminal["termination_confirmed"] is True
+    assert terminal["control"]["state"] == "TERMINATED"
+    assert terminal["control"]["exit_status"] == 2
+    assert terminal["files"]["control.json"]["sha256"]
     assert not control.stat().st_mode & 0o222
     assert all(not path.stat().st_mode & 0o222 for path in control.iterdir())
 

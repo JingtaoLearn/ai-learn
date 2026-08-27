@@ -150,3 +150,43 @@ def test_domain_cli_errors_are_single_json_objects(tmp_path: Path, capsys):
     assert status == 2
     assert result["ok"] is False
     assert "unknown" in result["error"]
+
+
+def test_domain_cli_recovery_creates_a_distinct_attempt(tmp_path: Path, capsys):
+    root, snapshot_id = _state(tmp_path)
+    spec = tmp_path / "task.json"
+    spec.write_text(json.dumps(_task(snapshot_id)), encoding="utf-8")
+    _, created = _invoke(
+        capsys,
+        [
+            "task",
+            "submit",
+            "--root",
+            str(root),
+            "--spec",
+            str(spec),
+            "--action-id",
+            "create",
+        ],
+    )
+    from quant_platform.cli import _domain_services
+
+    _, service = _domain_services(str(root))
+    claimed = service.claim_next_attempt()
+    service.recover_abandoned_attempts(container_reconciler=lambda cidfile: True)
+    _, replacement = _invoke(
+        capsys,
+        [
+            "attempt",
+            "recover",
+            "--root",
+            str(root),
+            "--attempt-id",
+            claimed["attempt_id"],
+            "--action-id",
+            "replacement",
+        ],
+    )
+
+    assert replacement["status"] == "CREATED"
+    assert replacement["attempt_id"] != created["attempt_id"]

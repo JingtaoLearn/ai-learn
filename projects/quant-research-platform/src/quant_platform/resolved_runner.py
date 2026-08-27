@@ -318,27 +318,42 @@ class ResolvedAttemptExecutor:
                 attempt["attempt_id"], container_name=container_name
             )
             with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-                process = self.process_launcher(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    shell=False,
-                    env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
-                    start_new_session=True,
-                    close_fds=True,
-                )
+                try:
+                    process = self.process_launcher(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        shell=False,
+                        env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+                        start_new_session=True,
+                        close_fds=True,
+                    )
+                except OSError as exc:
+                    self.attempt_controller.record_termination(
+                        attempt["attempt_id"],
+                        exit_status=None,
+                        outcome="LAUNCH_FAILED",
+                    )
+                    raise ResolvedExecutionError(
+                        "custom composition process launch failed"
+                    ) from exc
                 try:
                     exit_status = process.wait(timeout=600)
                 except subprocess.TimeoutExpired as exc:
                     try:
-                        self.container_terminator(
+                        terminated_status = self.container_terminator(
                             cidfile, container_name, process
                         )
                     except RunnerTerminationError as termination_error:
                         raise ResolvedTerminationUnconfirmed(
                             "custom composition termination was not confirmed"
                         ) from termination_error
+                    self.attempt_controller.record_termination(
+                        attempt["attempt_id"],
+                        exit_status=terminated_status,
+                        outcome="TIMED_OUT",
+                    )
                     raise ResolvedExecutionError(
                         "custom composition timed out after confirmed termination"
                     ) from exc
@@ -346,6 +361,11 @@ class ResolvedAttemptExecutor:
                     raise ResolvedTerminationUnconfirmed(
                         "custom composition container absence was not confirmed"
                     )
+                self.attempt_controller.record_termination(
+                    attempt["attempt_id"],
+                    exit_status=exit_status,
+                    outcome="SUCCEEDED" if exit_status == 0 else "FAILED",
+                )
                 for stream in (stdout, stderr):
                     stream.flush()
                     os.fsync(stream.fileno())
