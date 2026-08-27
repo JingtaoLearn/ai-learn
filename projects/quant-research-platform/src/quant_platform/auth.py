@@ -48,9 +48,12 @@ def _b64decode(value: str, label: str) -> bytes:
     if not value or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value):
         raise AuthError(f"invalid {label} encoding")
     try:
-        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     except (ValueError, base64.binascii.Error) as exc:
         raise AuthError(f"invalid {label} encoding") from exc
+    if _b64encode(decoded) != value:
+        raise AuthError(f"invalid {label} encoding")
+    return decoded
 
 
 def _strict_json(payload: bytes, label: str) -> dict[str, Any]:

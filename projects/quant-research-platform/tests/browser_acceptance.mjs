@@ -28,7 +28,7 @@ const browser = spawn(
 
 let stderr = "";
 const webSocketUrl = await new Promise((resolve, reject) => {
-  const timeout = setTimeout(() => reject(new Error(`Chromium startup timed out: ${stderr}`)), 15000);
+  const timeout = setTimeout(() => reject(new Error(`Chromium startup timed out: ${stderr}`)), 30000);
   browser.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
     const match = stderr.match(/DevTools listening on (ws:\/\/\S+)/);
