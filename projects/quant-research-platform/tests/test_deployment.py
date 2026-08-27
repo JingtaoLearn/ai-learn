@@ -35,7 +35,11 @@ def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
 
     assert "User=root" not in service
     assert "WorkingDirectory=/home/feng/quant-platform/current" in service
-    assert "python -m quant_platform.web" in service
+    assert (
+        "ExecStart=/home/feng/quant-platform/current/.venv/bin/python "
+        "-m quant_platform.web"
+    ) in service
+    assert "/home/feng/quant-platform/.venv/bin/python" not in service
     assert "127.0.0.1:8090" not in service
     assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
     assert "QUANT_STATE_ROOT=/home/feng/quant-platform/state/ui" in environment
