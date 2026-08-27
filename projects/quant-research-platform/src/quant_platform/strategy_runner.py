@@ -22,7 +22,7 @@ import pyarrow as pa
 from .datasets import _verify_snapshot
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
 from .strategy_replay import replay_strategy
-from .strategy_report import render_report
+from .strategy_report import render_report, verified_cjk_font_identity
 
 
 class StrategyRunError(RuntimeError):
@@ -42,6 +42,8 @@ ARTIFACT_NAMES = {
 HASHED_ARTIFACT_NAMES = ARTIFACT_NAMES - {"run_manifest.json"}
 SOURCE_PATHS = (
     "src/quant_platform/datasets.py",
+    "src/quant_platform/__init__.py",
+    "src/quant_platform/cli.py",
     "src/quant_platform/strategy_config.py",
     "src/quant_platform/strategy_operators.py",
     "src/quant_platform/strategy_replay.py",
@@ -57,6 +59,9 @@ RUNTIME_FIELDS = {
     "numpy",
     "matplotlib",
     "pyarrow",
+    "cjk_font_path",
+    "cjk_font_family",
+    "cjk_font_sha256",
 }
 GIT_FIELDS = {"available", "commit", "dirty"}
 RECONCILIATION_FIELDS = {
@@ -90,7 +95,10 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _runtime_identity() -> dict[str, str]:
+def _runtime_identity(
+    font_identity: dict[str, str] | None = None,
+) -> dict[str, str]:
+    font = font_identity or verified_cjk_font_identity()
     return {
         "python": sys.version,
         "python_implementation": platform.python_implementation(),
@@ -98,6 +106,9 @@ def _runtime_identity() -> dict[str, str]:
         "numpy": np.__version__,
         "matplotlib": matplotlib.__version__,
         "pyarrow": pa.__version__,
+        "cjk_font_path": font["path"],
+        "cjk_font_family": font["family"],
+        "cjk_font_sha256": font["sha256"],
     }
 
 
@@ -160,6 +171,8 @@ def _read_source_payload(path: Path, project_root: Path) -> bytes:
 
 
 def _effective_source_identity(
+    *,
+    font_identity: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, str], dict[str, Any]]:
     project_root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
@@ -172,7 +185,11 @@ def _effective_source_identity(
         digest.update(b"\0")
         digest.update(payload)
         digest.update(b"\0")
-    runtime = _runtime_identity()
+    runtime = (
+        _runtime_identity(font_identity)
+        if font_identity is not None
+        else _runtime_identity()
+    )
     digest.update(b"runtime\0")
     digest.update(_canonical_json(runtime))
     return digest.hexdigest(), files, runtime, _git_identity(project_root)
@@ -270,7 +287,52 @@ def _make_removable(directory: Path) -> None:
             path.chmod(0o644)
 
 
-def _load_strict_json(path: Path, label: str) -> Any:
+def _artifact_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_immutable_artifact(path: Path) -> bytes:
+    before = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"artifact is not a regular file: {path.name}")
+    if before.st_mode & 0o222:
+        raise ValueError(f"artifact is not immutable: {path.name}")
+    if before.st_nlink != 1:
+        raise ValueError(f"artifact has an unsafe hard link count: {path.name}")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if _artifact_identity(opened) != _artifact_identity(before):
+            raise ValueError(f"artifact changed while opening: {path.name}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if _artifact_identity(after) != _artifact_identity(opened):
+            raise ValueError(f"artifact changed while reading: {path.name}")
+        payload = b"".join(chunks)
+        if len(payload) != after.st_size:
+            raise ValueError(f"artifact read was incomplete: {path.name}")
+    finally:
+        os.close(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if _artifact_identity(current) != _artifact_identity(after):
+        raise ValueError(f"artifact path changed while reading: {path.name}")
+    return payload
+
+
+def _load_strict_json(payload: bytes, label: str) -> Any:
     def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         value: dict[str, Any] = {}
         for key, item in pairs:
@@ -281,11 +343,11 @@ def _load_strict_json(path: Path, label: str) -> Any:
 
     try:
         return json.loads(
-            path.read_text(encoding="utf-8"),
+            payload.decode("utf-8"),
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError) as exc:
         raise StrategyRunError(f"corrupt {label} JSON: {exc}") from exc
 
 
@@ -357,14 +419,15 @@ def _verify_run(
                 f"artifact set mismatch: expected={sorted(ARTIFACT_NAMES)}, "
                 f"actual={sorted(actual_names)}"
             )
-        for path in target.iterdir():
-            if path.is_symlink() or not path.is_file():
-                raise ValueError(f"artifact is not a regular file: {path.name}")
-            if stat.S_IMODE(path.stat().st_mode) & 0o222:
-                raise ValueError(f"artifact is not immutable: {path.name}")
+        artifact_payloads = {
+            name: _read_immutable_artifact(target / name)
+            for name in sorted(ARTIFACT_NAMES)
+        }
 
         manifest = _require_object(
-            _load_strict_json(target / "run_manifest.json", "run manifest"),
+            _load_strict_json(
+                artifact_payloads["run_manifest.json"], "run manifest"
+            ),
             "run manifest",
         )
         expected_fields = {
@@ -433,7 +496,9 @@ def _verify_run(
         if not all(reconciliation.values()):
             raise ValueError("stored reconciliation gates are not all true")
 
-        stored_config = _load_strict_json(target / "config.json", "canonical config")
+        stored_config = _load_strict_json(
+            artifact_payloads["config.json"], "canonical config"
+        )
         if stored_config != config.canonical:
             raise ValueError("canonical config artifact mismatch")
         if _sha256(_canonical_json(stored_config)) != config.config_sha256:
@@ -453,8 +518,7 @@ def _verify_run(
                 or expected["size"] < 0
             ):
                 raise ValueError(f"artifact checksum entry is invalid: {name}")
-            path = target / name
-            payload = path.read_bytes()
+            payload = artifact_payloads[name]
             if expected != {"sha256": _sha256(payload), "size": len(payload)}:
                 raise ValueError(f"artifact checksum or size mismatch: {name}")
         _verify_snapshot(dataset_path, dataset_manifest["snapshot_id"])
@@ -509,6 +573,11 @@ def run_strategy_config(config_path: Path | str) -> dict[str, str]:
             "dataset_canonical_sha256": dataset_manifest["canonical_sha256"],
             "source_sha256": source_sha256,
             "runtime": runtime,
+            "cjk_font_identity": {
+                "path": runtime["cjk_font_path"],
+                "family": runtime["cjk_font_family"],
+                "sha256": runtime["cjk_font_sha256"],
+            },
             "git_commit": git["commit"],
             "git_dirty": git["dirty"],
         },

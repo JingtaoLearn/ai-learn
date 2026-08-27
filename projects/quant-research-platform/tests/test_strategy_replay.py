@@ -189,6 +189,7 @@ def test_events_use_raw_open_and_costs_reconcile_exactly():
 def test_open_terminal_trade_has_entry_cost_only_and_is_not_a_closed_win():
     result = replay_strategy(_frame(), _config())
 
+    assert "return" in result.trades.columns
     assert result.trades["status"].tolist() == ["CLOSED", "OPEN"]
     open_trade = result.trades.iloc[-1]
     assert pd.isna(open_trade["exit_date"])

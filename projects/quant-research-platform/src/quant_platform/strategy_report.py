@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -49,22 +52,69 @@ class ReportError(RuntimeError):
     """Raised when the required Chinese report cannot be rendered safely."""
 
 
-def _verified_font_family() -> str:
-    if not CJK_FONT_PATH.is_file():
-        raise ReportError(f"verified CJK font is unavailable: {CJK_FONT_PATH}")
+def verified_cjk_font_identity(
+    font_path: Path | None = None,
+) -> dict[str, str]:
+    path = font_path or CJK_FONT_PATH
     try:
-        font = font_manager.get_font(str(CJK_FONT_PATH))
+        before = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
+            raise ReportError(f"verified CJK font is unavailable: {path}")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino, opened.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ReportError(f"CJK font changed while opening: {path}")
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            if (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ) != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+            ):
+                raise ReportError(f"CJK font changed while reading: {path}")
+        finally:
+            os.close(descriptor)
+        payload = b"".join(chunks)
+        if len(payload) != after.st_size:
+            raise ReportError(f"CJK font read was incomplete: {path}")
+        font = font_manager.get_font(str(path))
         if 0x4E2D not in font.get_charmap():
-            raise ReportError(f"CJK font lacks required Chinese glyphs: {CJK_FONT_PATH}")
-        font_manager.fontManager.addfont(str(CJK_FONT_PATH))
-        family = font_manager.FontProperties(fname=str(CJK_FONT_PATH)).get_name()
+            raise ReportError(f"CJK font lacks required Chinese glyphs: {path}")
+        font_manager.fontManager.addfont(str(path))
+        family = font_manager.FontProperties(fname=str(path)).get_name()
     except (OSError, RuntimeError) as exc:
         if isinstance(exc, ReportError):
             raise
-        raise ReportError(f"could not register CJK font: {CJK_FONT_PATH}") from exc
+        raise ReportError(f"could not register CJK font: {path}") from exc
     if not family:
-        raise ReportError(f"CJK font family could not be verified: {CJK_FONT_PATH}")
-    return family
+        raise ReportError(f"CJK font family could not be verified: {path}")
+    return {
+        "path": str(path.resolve()),
+        "family": family,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _verified_font_family() -> str:
+    return verified_cjk_font_identity()["family"]
 
 
 def execution_marker_points(
@@ -293,7 +343,16 @@ def render_report(
         raise ReportError(
             "report dataset instrument provenance does not match configuration"
         )
-    family = _verified_font_family()
+    font_identity = verified_cjk_font_identity()
+    expected_font_identity = provenance.get("cjk_font_identity")
+    if (
+        expected_font_identity is not None
+        and expected_font_identity != font_identity
+    ):
+        raise ReportError(
+            "report CJK font identity does not match run provenance"
+        )
+    family = font_identity["family"]
     chart = base64.b64encode(_chart_png(result, config, family)).decode("ascii")
     template = config.canonical["template"]["parameters"]
     metrics = result.metrics
@@ -326,7 +385,7 @@ def render_report(
             ("exit_date", "卖出日"),
             ("exit_price", "卖出开盘价"),
             ("net_pnl_cny", "净损益"),
-            ("return", "收益率"),
+            ("return", "仓位收益率"),
         ],
         TRADE_DISPLAY_TRANSLATIONS,
     )
@@ -381,7 +440,7 @@ code{{overflow-wrap:anywhere;white-space:normal}}pre{{max-width:100%;overflow-x:
 <div class="kpi"><span>滑点</span><b>¥{costs["slippage_cny"]:,.2f}</b></div>
 </div><p>总成本 ¥{costs["total_cost_cny"]:,.2f}。成本只在实际事件发生时计提。</p></section>
 <section><h2>事件明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{event_table}</div></div></section>
-<section><h2>交易明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{trade_table}</div></div><p class="muted">未平交易只含买入成本，不计虚构卖出成本，也不纳入完整交易胜率。</p></section>
+<section><h2>交易明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{trade_table}</div></div><p class="muted">仓位收益率按该笔投入资金计算，不包含账户剩余现金；账户组合收益见上方账户摘要。未平交易只含买入成本，不计虚构卖出成本，也不纳入完整交易胜率。</p></section>
 <section><h2>可复现来源</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll"><table>{provenance_rows}</table></div></div></section>
 <section><h2>口径限制</h2><p class="warning">这是价格收益账户。除非数据和账本另行提供分红及公司行动现金流，否则不代表包含分红现金流的股东总回报，也不构成投资建议。</p>
 <pre>{html.escape(json.dumps(result.reconciliation, sort_keys=True, ensure_ascii=False))}</pre></section>

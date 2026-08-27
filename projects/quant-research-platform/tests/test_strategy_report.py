@@ -182,6 +182,8 @@ def test_report_contains_required_panels_summary_tables_and_provenance():
         "config_sha256",
         "dataset_snapshot_id",
         "source_sha256",
+        "仓位收益率",
+        "不包含账户剩余现金",
     ):
         assert literal in html
 

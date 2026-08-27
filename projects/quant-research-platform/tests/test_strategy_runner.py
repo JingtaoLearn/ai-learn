@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
@@ -138,9 +139,14 @@ def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
         "pyarrow",
         "python",
         "python_implementation",
+        "cjk_font_path",
+        "cjk_font_family",
+        "cjk_font_sha256",
     }
     assert set(manifest["git"]) == {"available", "commit", "dirty"}
     assert "src/quant_platform/datasets.py" in manifest["source_files"]
+    assert "src/quant_platform/__init__.py" in manifest["source_files"]
+    assert "src/quant_platform/cli.py" in manifest["source_files"]
     assert "pyproject.toml" in manifest["source_files"]
     assert "requirements.lock" in manifest["source_files"]
     assert manifest["reconciliation"] == {
@@ -244,6 +250,7 @@ def test_manifest_semantic_and_duplicate_key_corruption_fails_closed(
 def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):
     config_path = _foundation(tmp_path)
     first = run_strategy_config(config_path)
+    font = runner_module.verified_cjk_font_identity()
     monkeypatch.setattr(
         runner_module,
         "_effective_source_identity",
@@ -257,6 +264,9 @@ def test_source_identity_changes_run_id(tmp_path: Path, monkeypatch):
                 "numpy": "1",
                 "matplotlib": "1",
                 "pyarrow": "1",
+                "cjk_font_path": font["path"],
+                "cjk_font_family": font["family"],
+                "cjk_font_sha256": font["sha256"],
             },
             {"available": False, "commit": None, "dirty": None},
         ),
@@ -310,6 +320,42 @@ def test_effective_source_hash_binds_runtime_versions(tmp_path: Path, monkeypatc
     assert mutated != baseline
     assert recorded_runtime == changed_runtime
     assert second["run_id"] != first["run_id"]
+
+
+def test_injectable_cjk_font_bytes_change_source_and_run_identity():
+    first_font = {
+        "path": "/verified/font.ttc",
+        "family": "Verified CJK",
+        "sha256": "a" * 64,
+    }
+    second_font = first_font | {"sha256": "b" * 64}
+
+    first_source, _, first_runtime, _ = runner_module._effective_source_identity(
+        font_identity=first_font
+    )
+    second_source, _, second_runtime, _ = runner_module._effective_source_identity(
+        font_identity=second_font
+    )
+    fixed = {
+        "schema_version": 1,
+        "config_sha256": "c" * 64,
+        "dataset_snapshot_id": "d" * 64,
+    }
+    first_run = runner_module._sha256(
+        runner_module._canonical_json(
+            fixed | {"source_sha256": first_source, "runtime": first_runtime}
+        )
+    )
+    second_run = runner_module._sha256(
+        runner_module._canonical_json(
+            fixed | {"source_sha256": second_source, "runtime": second_runtime}
+        )
+    )
+
+    assert first_source != second_source
+    assert first_runtime["cjk_font_sha256"] == "a" * 64
+    assert second_runtime["cjk_font_sha256"] == "b" * 64
+    assert first_run != second_run
 
 
 def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, monkeypatch):
@@ -405,6 +451,55 @@ def test_csv_float_serialization_round_trips_binary64(tmp_path: Path):
     restored = pd.read_csv(StringIO(path.read_text()), float_precision="round_trip")
 
     assert restored["value"].tolist() == frame["value"].tolist()
+
+
+def test_immutable_run_rejects_hardlinked_artifact_and_cli_returns_json(
+    tmp_path: Path, capsys
+):
+    config_path = _foundation(tmp_path)
+    published = run_strategy_config(config_path)
+    artifact = Path(published["path"]) / "metrics.json"
+    os.link(artifact, tmp_path / "metrics-hardlink.json")
+
+    with pytest.raises(StrategyRunError, match="hard link"):
+        run_strategy_config(config_path)
+
+    code = main(["strategy", "run", "--config", str(config_path)])
+    output = capsys.readouterr()
+    assert code == 2
+    assert output.err == ""
+    failure = json.loads(output.out)
+    assert failure["ok"] is False
+    assert "StrategyRunError" in failure["error"]
+
+
+def test_immutable_run_detects_artifact_swap_between_stat_and_open(
+    tmp_path: Path, monkeypatch
+):
+    config_path = _foundation(tmp_path)
+    published = run_strategy_config(config_path)
+    target = Path(published["path"])
+    artifact = target / "metrics.json"
+    displaced = tmp_path / "original-metrics.json"
+    real_open = runner_module.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path) == artifact:
+            swapped = True
+            target.chmod(0o755)
+            artifact.rename(displaced)
+            artifact.write_text('{"mutated":true}', encoding="utf-8")
+            artifact.chmod(0o444)
+            target.chmod(0o555)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(runner_module.os, "open", swap_before_open)
+
+    with pytest.raises(StrategyRunError, match="changed while opening"):
+        run_strategy_config(config_path)
+    assert swapped is True
 
 
 @pytest.mark.parametrize(

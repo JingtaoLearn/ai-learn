@@ -97,6 +97,9 @@ slope thresholds, and cumulative strategy/zero-cost/buy-and-hold equity. It deri
 literal rules from the frozen configuration and escapes user-controlled text. Exact
 reruns verify every artifact and return the same run with `NO_CHANGE`; missing, changed,
 writable, or conflicting artifacts fail closed and are never repaired in place.
+The `trades.csv` machine column `return` is each trade's invested-position return and
+excludes residual account cash; portfolio return remains the account-level metric in
+`metrics.json` and the report summary.
 
 The strategy, zero-cost comparison, and same-period buy-and-hold account are
 research-only price-return accounts. Without explicit dividend or corporate-action cash
