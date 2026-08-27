@@ -127,6 +127,27 @@ def test_claim_atomically_records_the_only_allowed_launch(tmp_path: Path):
     assert service.claim_next_attempt() is None
 
 
+def test_physical_launch_control_is_recorded_once_and_terminal_evidence_is_sealed(
+    tmp_path: Path,
+):
+    service, created = _created(tmp_path)
+    claimed = service.claim_next_attempt()
+
+    launched = service.record_physical_launch(
+        claimed["attempt_id"], container_name="quant-attempt-test"
+    )
+    with pytest.raises(InvalidAttemptTransition, match="already"):
+        service.record_physical_launch(
+            claimed["attempt_id"], container_name="quant-attempt-test-2"
+        )
+    service.finish_failure(launched["attempt_id"], "synthetic")
+    control = service.catalog.state_root / launched["control_path"]
+
+    assert (control / "terminal.json").is_file()
+    assert not control.stat().st_mode & 0o222
+    assert all(not path.stat().st_mode & 0o222 for path in control.iterdir())
+
+
 def test_unconfirmed_restart_quarantines_control_and_blocks_replacement(tmp_path: Path):
     service, created = _created(tmp_path)
     running = service.claim_next_attempt()

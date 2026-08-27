@@ -5,14 +5,12 @@ import copy
 import hashlib
 import json
 import math
-import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from .schemas import canonical_json_bytes, validate_parameters
-from .submissions import EXECUTION_ENVELOPE, is_immutable_runner_image
+from .submissions import EXECUTION_ENVELOPE
 
 
 ALLOWED_BUILTINS = {
@@ -187,23 +185,14 @@ def _validate_output(slot: str, value: Any, payload: dict[str, Any]) -> Any:
     raise ValueError(f"unsupported operator slot: {slot}")
 
 
-def _runner_timestamp(clock: Callable[[], datetime]) -> str:
-    return clock().astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
 def validate_candidate(
     candidate_dir: Path | str,
-    *,
-    validator_image: str,
-    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     candidate = Path(candidate_dir)
     manifest = _load_json(candidate / "manifest.json")
     tests = _load_json(candidate / "tests.json")
     source = (candidate / "operator.py").read_text(encoding="utf-8")
     documentation = (candidate / "documentation.md").read_text(encoding="utf-8")
-    if not is_immutable_runner_image(validator_image):
-        raise ValueError("validator image must be pinned by SHA-256")
     required_manifest = {
         "operator_id",
         "slot",
@@ -228,8 +217,6 @@ def validate_candidate(
     if candidate_digest != manifest["content_digest"]:
         raise ValueError("candidate content digest mismatch")
     fixture_digest = hashlib.sha256(canonical_json_bytes(tests)).hexdigest()
-    now = clock or (lambda: datetime.now(UTC))
-    started_at = _runner_timestamp(now)
     code = _validate_source(source)
     namespace: dict[str, Any] = {"__builtins__": ALLOWED_BUILTINS}
     exec(code, namespace)
@@ -257,14 +244,9 @@ def validate_candidate(
             raise ValueError(f"operator fixture {index} is not deterministic")
     return {
         "schema_version": 1,
-        "passed": True,
         "slot": slot,
         "candidate_digest": candidate_digest,
         "fixture_digest": fixture_digest,
-        "validator_image": validator_image,
-        "execution_envelope": EXECUTION_ENVELOPE,
-        "started_at": started_at,
-        "finished_at": _runner_timestamp(now),
         "observations": {
             "api_version": 1,
             "compile": True,
@@ -359,14 +341,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if len(arguments) != 2 or arguments[0] != "validate":
             raise ValueError("usage: operator_worker validate CANDIDATE_DIR")
-        validator_image = os.environ.get("QUANT_OPERATOR_VALIDATOR_IMAGE", "")
-        evidence = validate_candidate(
-            arguments[1], validator_image=validator_image
-        )
-        output = Path("/evidence/evidence.json")
-        output.write_text(
-            json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
+        result = validate_candidate(arguments[1])
+        print(
+            json.dumps(
+                {"ok": True, "result": result},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         )
         return 0
     except (OSError, ValueError, SyntaxError) as exc:

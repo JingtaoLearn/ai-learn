@@ -2,6 +2,7 @@ import json
 import hashlib
 import stat
 import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -13,10 +14,12 @@ from quant_platform.operator_service import (
     OperatorConflictError,
     OperatorService,
     OperatorSubmissionError,
+    OperatorValidationRunError,
 )
 from quant_platform.operator_worker import load_published_operator, validate_candidate
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.submissions import EXECUTION_ENVELOPE
+from quant_platform.runner import RunnerTerminationError
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "operators"
@@ -108,6 +111,7 @@ def _passing_validator(candidate: Path) -> dict:
         "execution_envelope": EXECUTION_ENVELOPE,
         "started_at": "2026-08-27T00:00:00Z",
         "finished_at": "2026-08-27T00:00:01Z",
+        "duration_seconds": 1.0,
         "exit_status": 0,
         "outcome": "SUCCEEDED",
         "container_id": "a" * 64,
@@ -188,7 +192,7 @@ def test_validation_command_reuses_hardened_docker_boundary(tmp_path: Path):
     assert "--read-only" in command
     assert f"type=bind,src={candidate.resolve()},dst=/operator,readonly" in command
     assert str(cidfile.resolve()) in command
-    assert not any("/evidence" in argument for argument in command)
+    assert not any("dst=/evidence" in argument for argument in command)
     mounts = [
         command[index + 1]
         for index, argument in enumerate(command)
@@ -433,3 +437,159 @@ def test_runtime_loader_requires_catalog_bound_content_and_evidence_digests(
             expected_content_digest=detail["content_digest"],
             expected_evidence_digest="0" * 64,
         )
+
+
+class _ValidationProcess:
+    def __init__(self, returncode=0, *, timeout=False):
+        self.returncode = returncode
+        self.timeout = timeout
+        self.pid = 999999
+
+    def wait(self, timeout=None):
+        if self.timeout:
+            raise subprocess.TimeoutExpired(["docker"], timeout)
+        return self.returncode
+
+    def poll(self):
+        return None if self.timeout else self.returncode
+
+
+def _fake_successful_validation(command, **kwargs):
+    mount = next(
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--mount"
+    )
+    candidate = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
+    result = validate_candidate(candidate)
+    kwargs["stdout"].write(
+        json.dumps(
+            {"ok": True, "result": result},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    cidfile = Path(command[command.index("--cidfile") + 1])
+    cidfile.write_text("d" * 64, encoding="ascii")
+    return _ValidationProcess()
+
+
+def test_default_validator_builds_and_seals_host_owned_evidence(
+    tmp_path: Path, monkeypatch
+):
+    catalog = initialize_catalog(tmp_path / "state")
+    monkeypatch.setattr(
+        "quant_platform.operator_service.subprocess.Popen",
+        _fake_successful_validation,
+    )
+    monkeypatch.setattr(
+        "quant_platform.operator_service.reconcile_container",
+        lambda cidfile: True,
+    )
+    service = OperatorService(catalog, runner_image=IMAGE)
+
+    result = service.submit(_submission())
+    evidence = service.detail("fixture_fit", "1.0.0")["validation_evidence"]
+    control = catalog.state_root / evidence["control_path"]
+
+    assert result["status"] == "CREATED"
+    assert evidence["outcome"] == "SUCCEEDED"
+    assert evidence["termination_confirmed"] is True
+    assert evidence["container_id"] == "d" * 64
+    assert control.is_dir()
+    assert {path.name for path in control.iterdir()} == {
+        "container.cid",
+        "stdout.log",
+        "stderr.log",
+        "evidence.json",
+    }
+    assert not control.stat().st_mode & 0o222
+    assert all(not path.stat().st_mode & 0o222 for path in control.iterdir())
+
+
+def test_validation_timeout_is_terminal_and_seals_failure_evidence(
+    tmp_path: Path, monkeypatch
+):
+    catalog = initialize_catalog(tmp_path / "state")
+    monkeypatch.setattr(
+        "quant_platform.operator_service.subprocess.Popen",
+        lambda *args, **kwargs: _ValidationProcess(timeout=True),
+    )
+    monkeypatch.setattr(
+        "quant_platform.operator_service._terminate_container",
+        lambda cidfile, name, process: 137,
+    )
+    service = OperatorService(catalog, runner_image=IMAGE)
+
+    with pytest.raises(OperatorValidationRunError, match="TIMED_OUT"):
+        service.submit(_submission())
+
+    evidence_files = list(
+        (catalog.state_root / "validation-evidence").glob("*/*/evidence.json")
+    )
+    assert len(evidence_files) == 1
+    evidence = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+    assert evidence["outcome"] == "TIMED_OUT"
+    assert evidence["passed"] is False
+    assert evidence["termination_confirmed"] is True
+    with pytest.raises(ValueError, match="unknown"):
+        service.detail("fixture_fit")
+
+
+def test_unconfirmed_surviving_validation_quarantines_control_and_candidate(
+    tmp_path: Path, monkeypatch
+):
+    catalog = initialize_catalog(tmp_path / "state")
+    monkeypatch.setattr(
+        "quant_platform.operator_service.subprocess.Popen",
+        lambda *args, **kwargs: _ValidationProcess(timeout=True),
+    )
+    monkeypatch.setattr(
+        "quant_platform.operator_service._terminate_container",
+        lambda cidfile, name, process: (_ for _ in ()).throw(
+            RunnerTerminationError("survived")
+        ),
+    )
+    service = OperatorService(catalog, runner_image=IMAGE)
+
+    with pytest.raises(
+        OperatorValidationRunError, match="TERMINATION_UNCONFIRMED"
+    ):
+        service.submit(_submission())
+
+    assert list(
+        (catalog.state_root / "quarantine/operator-validation-control").glob(
+            "*/*/evidence.json"
+        )
+    )
+    assert list(
+        (catalog.state_root / "quarantine/operator-validation-candidates").glob(
+            "*/*/operator.py"
+        )
+    )
+
+
+def test_hostile_validation_control_entry_prevents_evidence_finalization(
+    tmp_path: Path, monkeypatch
+):
+    catalog = initialize_catalog(tmp_path / "state")
+
+    def hostile(command, **kwargs):
+        process = _fake_successful_validation(command, **kwargs)
+        cidfile = Path(command[command.index("--cidfile") + 1])
+        (cidfile.parent / "hostile").symlink_to("/tmp")
+        return process
+
+    monkeypatch.setattr(
+        "quant_platform.operator_service.subprocess.Popen", hostile
+    )
+    monkeypatch.setattr(
+        "quant_platform.operator_service.reconcile_container",
+        lambda cidfile: True,
+    )
+
+    with pytest.raises(OperatorSubmissionError, match="unsafe"):
+        OperatorService(catalog, runner_image=IMAGE).submit(_submission())
+    with pytest.raises(ValueError, match="unknown"):
+        catalog.operator_detail("fixture_fit")

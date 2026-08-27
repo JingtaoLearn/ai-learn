@@ -460,6 +460,41 @@ def _terminate_container(
     )
 
 
+def reconcile_container(cidfile: Path) -> bool:
+    """Terminate an abandoned exact-CID container and prove repeated absence."""
+
+    if cidfile.is_symlink():
+        return False
+    try:
+        container_id = cidfile.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return False
+    absent_checks = 0
+    for _ in range(50):
+        try:
+            inspected = _docker_control(["docker", "inspect", container_id])
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if inspected.returncode == 0:
+            absent_checks = 0
+            try:
+                killed = _docker_control(["docker", "kill", container_id])
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+            if killed.returncode != 0 and not _authoritative_absence(killed.stderr):
+                return False
+        elif _authoritative_absence(inspected.stderr):
+            absent_checks += 1
+            if absent_checks >= 3:
+                return True
+        else:
+            return False
+        time.sleep(0.1)
+    return False
+
+
 def _validate_timeout(timeout_seconds: float) -> float:
     if (
         isinstance(timeout_seconds, bool)

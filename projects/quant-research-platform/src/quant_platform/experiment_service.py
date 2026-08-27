@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import sqlite3
+import stat
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
@@ -181,6 +185,7 @@ class ExperimentService:
                 "selector_mode": mode,
                 "requested_version": requested_version,
                 "latest_version_at_submission": latest["version"],
+                "latest_content_digest_at_submission": latest["content_digest"],
                 "resolved_version": selected["version"],
                 "content_digest": selected["content_digest"],
                 "parameters": parameters,
@@ -339,6 +344,9 @@ class ExperimentService:
                 """,
                 (experiment_id,),
             ).fetchone()
+            resolved = self._refresh_action_audit(
+                json.loads(previous["resolved_json"])
+            )
             sequence = previous["sequence"] + 1
             attempt_id = hashlib.sha256(
                 canonical_json_bytes(
@@ -362,7 +370,7 @@ class ExperimentService:
                     action_id,
                     sequence,
                     previous["requested_json"],
-                    previous["resolved_json"],
+                    canonical_json_bytes(resolved).decode(),
                     _now(),
                 ),
             )
@@ -371,6 +379,15 @@ class ExperimentService:
             "experiment_id": experiment_id,
             "attempt_id": attempt_id,
         }
+
+    def _refresh_action_audit(self, resolved: dict[str, Any]) -> dict[str, Any]:
+        for operator in resolved["operators"].values():
+            latest = self.catalog.operator_detail(operator["operator_id"])
+            operator["latest_version_at_submission"] = latest["version"]
+            operator["latest_content_digest_at_submission"] = latest[
+                "content_digest"
+            ]
+        return resolved
 
     def list_attempts(self, experiment_id: str) -> list[dict[str, Any]]:
         connection = self.catalog.connect()
@@ -488,31 +505,252 @@ class ExperimentService:
             ).fetchone()
             if row is None:
                 return None
-            connection.execute(
-                """
-                UPDATE attempts
-                SET status = 'RUNNING', started_at = ?, launch_count = 1
-                WHERE attempt_id = ? AND status = 'PENDING' AND launch_count = 0
-                """,
-                (_now(), row["attempt_id"]),
-            )
+            attempt_id = row["attempt_id"]
+            control_relative = f"attempt-control/{attempt_id}"
+            control_dir = self.catalog.state_root / control_relative
+            control_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            control_dir.mkdir(mode=0o700)
+            claimed_at = _now()
+            control = {
+                "schema_version": 1,
+                "attempt_id": attempt_id,
+                "launch_count": 1,
+                "state": "CLAIMED",
+                "claimed_at": claimed_at,
+                "container_name": None,
+            }
+            try:
+                self._write_control_json(control_dir / "control.json", control)
+                connection.execute(
+                    """
+                    UPDATE attempts
+                    SET status = 'RUNNING', started_at = ?, launch_count = 1,
+                        control_path = ?, control_json = ?
+                    WHERE attempt_id = ? AND status = 'PENDING' AND launch_count = 0
+                    """,
+                    (
+                        claimed_at,
+                        control_relative,
+                        canonical_json_bytes(control).decode(),
+                        attempt_id,
+                    ),
+                )
+            except BaseException:
+                shutil.rmtree(control_dir, ignore_errors=True)
+                raise
         return self.attempt_detail(row["attempt_id"])
 
-    def recover_abandoned_attempts(self) -> int:
+    def _write_control_json(self, path: os.PathLike[str], value: dict[str, Any]) -> None:
+        payload = canonical_json_bytes(value) + b"\n"
+        with Path(path).open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(path).chmod(0o600)
+
+    def _control_directory(self, row: sqlite3.Row | dict[str, Any]) -> Path:
+        expected = f"attempt-control/{row['attempt_id']}"
+        if row["control_path"] != expected:
+            raise InvalidAttemptTransition("attempt control path is missing or invalid")
+        target = self.catalog.state_root / expected
+        if target.is_symlink() or not target.is_dir():
+            raise InvalidAttemptTransition("attempt control directory is unsafe")
+        return target
+
+    def record_physical_launch(
+        self, attempt_id: str, *, container_name: str
+    ) -> dict[str, Any]:
+        if not isinstance(container_name, str) or not container_name:
+            raise ValueError("container_name must be non-empty")
         with self.catalog.transaction(immediate=True) as connection:
-            cursor = connection.execute(
-                """
-                UPDATE attempts
-                SET status = 'FAILED', finished_at = ?,
-                    logs = CASE
-                        WHEN logs IS NULL THEN 'Runner marked abandoned RUNNING attempt failed.'
-                        ELSE substr(logs || '\nRunner marked abandoned RUNNING attempt failed.', 1, ?)
-                    END
-                WHERE status = 'RUNNING'
-                """,
-                (_now(), MAX_LOG_BYTES),
+            row = self._require_running(connection, attempt_id)
+            control_dir = self._control_directory(row)
+            control = json.loads(row["control_json"])
+            if control["state"] != "CLAIMED":
+                raise InvalidAttemptTransition("physical launch is already recorded")
+            control["state"] = "LAUNCHING"
+            control["container_name"] = container_name
+            replacement = control_dir / "control.next.json"
+            self._write_control_json(replacement, control)
+            os.replace(replacement, control_dir / "control.json")
+            connection.execute(
+                "UPDATE attempts SET control_json = ? WHERE attempt_id = ?",
+                (canonical_json_bytes(control).decode(), attempt_id),
             )
-            return cursor.rowcount
+        return self.attempt_detail(attempt_id)
+
+    def _seal_control(
+        self, control_dir: Path, evidence: dict[str, Any], *, filename: str
+    ) -> None:
+        evidence_path = control_dir / filename
+        if not evidence_path.exists():
+            self._write_control_json(evidence_path, evidence)
+        allowed = {
+            "control.json",
+            "container.cid",
+            "stdout.log",
+            "stderr.log",
+            "recovery.json",
+            "terminal.json",
+        }
+        for path in control_dir.iterdir():
+            metadata = os.stat(path, follow_symlinks=False)
+            if (
+                path.name not in allowed
+                or stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_mode & 0o7000
+            ):
+                raise InvalidAttemptTransition(
+                    f"attempt control evidence is unsafe: {path.name}"
+                )
+            path.chmod(0o444)
+        control_dir.chmod(0o555)
+
+    def recover_abandoned_attempts(
+        self,
+        *,
+        container_reconciler: Any | None = None,
+    ) -> int:
+        if container_reconciler is None:
+            from .runner import reconcile_container
+
+            container_reconciler = reconcile_container
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM attempts WHERE status = 'RUNNING'"
+            ).fetchall()
+        finally:
+            connection.close()
+        recovered = 0
+        for row in rows:
+            control_dir = self._control_directory(row)
+            control = json.loads(row["control_json"])
+            cidfile = control_dir / "container.cid"
+            confirmed = control.get("state") == "CLAIMED" and not cidfile.exists()
+            if not confirmed:
+                try:
+                    confirmed = bool(container_reconciler(cidfile))
+                except (OSError, RuntimeError):
+                    confirmed = False
+            status = "INTERRUPTED" if confirmed else "TERMINATION_UNCONFIRMED"
+            quarantine_relative = None
+            evidence = {
+                "schema_version": 1,
+                "attempt_id": row["attempt_id"],
+                "status": status,
+                "reconciled_at": _now(),
+                "termination_confirmed": confirmed,
+            }
+            if confirmed:
+                self._seal_control(control_dir, evidence, filename="recovery.json")
+            else:
+                quarantine_relative = f"quarantine/attempts/{row['attempt_id']}"
+                quarantine = self.catalog.state_root / quarantine_relative
+                quarantine.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if quarantine.exists():
+                    raise InvalidAttemptTransition(
+                        "attempt termination quarantine already exists"
+                    )
+                os.rename(control_dir, quarantine)
+                control_dir.mkdir(mode=0o700)
+                evidence["quarantine_path"] = quarantine_relative
+                self._seal_control(control_dir, evidence, filename="recovery.json")
+            message = (
+                f"Runner reconciled abandoned attempt as {status}; "
+                f"termination_confirmed={str(confirmed).lower()}."
+            )
+            with self.catalog.transaction(immediate=True) as update:
+                current = self._require_running(update, row["attempt_id"])
+                if current["launch_count"] != 1:
+                    raise InvalidAttemptTransition(
+                        "abandoned attempt launch count is invalid"
+                    )
+                update.execute(
+                    """
+                    UPDATE attempts
+                    SET status = ?, finished_at = ?, logs = ?, quarantine_path = ?
+                    WHERE attempt_id = ?
+                    """,
+                    (
+                        status,
+                        evidence["reconciled_at"],
+                        message[-MAX_LOG_BYTES:],
+                        quarantine_relative,
+                        row["attempt_id"],
+                    ),
+                )
+            recovered += 1
+        return recovered
+
+    def create_replacement_attempt(
+        self, attempt_id: str, *, action_id: str
+    ) -> dict[str, Any]:
+        action_id = _validate_action_id(action_id)
+        with self.catalog.transaction(immediate=True) as connection:
+            prior = connection.execute(
+                "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+            if prior is None:
+                raise TaskValidationError(f"unknown attempt: {attempt_id}")
+            if prior["status"] == "TERMINATION_UNCONFIRMED":
+                raise InvalidAttemptTransition(
+                    "replacement requires confirmed prior termination"
+                )
+            if prior["status"] != "INTERRUPTED":
+                raise InvalidAttemptTransition(
+                    "replacement requires an INTERRUPTED attempt"
+                )
+            repeated = connection.execute(
+                "SELECT attempt_id FROM attempts WHERE action_id = ?", (action_id,)
+            ).fetchone()
+            if repeated is not None:
+                return {
+                    "status": "NO_CHANGE",
+                    "experiment_id": prior["experiment_id"],
+                    "attempt_id": repeated["attempt_id"],
+                }
+            sequence = connection.execute(
+                "SELECT MAX(sequence) FROM attempts WHERE experiment_id = ?",
+                (prior["experiment_id"],),
+            ).fetchone()[0] + 1
+            replacement_id = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "experiment_id": prior["experiment_id"],
+                        "action_id": action_id,
+                        "sequence": sequence,
+                    }
+                )
+            ).hexdigest()
+            resolved = self._refresh_action_audit(
+                json.loads(prior["resolved_json"])
+            )
+            connection.execute(
+                """
+                INSERT INTO attempts(
+                    attempt_id, experiment_id, action_id, sequence, status,
+                    requested_json, resolved_json, created_at, recovery_of_attempt_id
+                ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
+                """,
+                (
+                    replacement_id,
+                    prior["experiment_id"],
+                    action_id,
+                    sequence,
+                    prior["requested_json"],
+                    canonical_json_bytes(resolved).decode(),
+                    _now(),
+                    attempt_id,
+                ),
+            )
+        return {
+            "status": "CREATED",
+            "experiment_id": prior["experiment_id"],
+            "attempt_id": replacement_id,
+        }
 
     def _require_running(
         self, connection: sqlite3.Connection, attempt_id: str
@@ -527,6 +765,19 @@ class ExperimentService:
                 f"attempt {attempt_id} must be RUNNING, not {row['status']}"
             )
         return row
+
+    def _finalize_terminal_control(
+        self, attempt: sqlite3.Row, *, status: str, finished_at: str
+    ) -> None:
+        control_dir = self._control_directory(attempt)
+        evidence = {
+            "schema_version": 1,
+            "attempt_id": attempt["attempt_id"],
+            "status": status,
+            "finished_at": finished_at,
+            "launch_count": attempt["launch_count"],
+        }
+        self._seal_control(control_dir, evidence, filename="terminal.json")
 
     def finish_success(
         self,
@@ -543,6 +794,10 @@ class ExperimentService:
         logs = str(logs)[-MAX_LOG_BYTES:]
         with self.catalog.transaction(immediate=True) as connection:
             attempt = self._require_running(connection, attempt_id)
+            finished_at = _now()
+            self._finalize_terminal_control(
+                attempt, status="SUCCEEDED", finished_at=finished_at
+            )
             experiment = connection.execute(
                 "SELECT * FROM experiments WHERE experiment_id = ?",
                 (attempt["experiment_id"],),
@@ -576,7 +831,7 @@ class ExperimentService:
                 WHERE attempt_id = ?
                 """,
                 (
-                    _now(),
+                    finished_at,
                     logs,
                     canonical_path,
                     result_digest,
@@ -589,13 +844,17 @@ class ExperimentService:
     def finish_failure(self, attempt_id: str, logs: str) -> dict[str, Any]:
         logs = str(logs)[-MAX_LOG_BYTES:]
         with self.catalog.transaction(immediate=True) as connection:
-            self._require_running(connection, attempt_id)
+            attempt = self._require_running(connection, attempt_id)
+            finished_at = _now()
+            self._finalize_terminal_control(
+                attempt, status="FAILED", finished_at=finished_at
+            )
             connection.execute(
                 """
                 UPDATE attempts
                 SET status = 'FAILED', finished_at = ?, logs = ?
                 WHERE attempt_id = ?
                 """,
-                (_now(), logs, attempt_id),
+                (finished_at, logs, attempt_id),
             )
         return self.attempt_detail(attempt_id)

@@ -120,6 +120,50 @@ ADD COLUMN launch_count INTEGER NOT NULL DEFAULT 0
 CHECK (launch_count IN (0, 1));
 """
 
+MIGRATION_3 = """
+DROP INDEX IF EXISTS idx_attempts_status_created;
+ALTER TABLE attempts RENAME TO attempts_v2;
+CREATE TABLE attempts (
+    attempt_id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id),
+    action_id TEXT NOT NULL UNIQUE,
+    sequence INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED',
+            'INTERRUPTED', 'TERMINATION_UNCONFIRMED'
+        )
+    ),
+    requested_json TEXT NOT NULL,
+    resolved_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    logs TEXT,
+    result_path TEXT,
+    result_digest TEXT,
+    comparison TEXT,
+    launch_count INTEGER NOT NULL DEFAULT 0 CHECK (launch_count IN (0, 1)),
+    control_path TEXT,
+    control_json TEXT,
+    quarantine_path TEXT,
+    recovery_of_attempt_id TEXT,
+    UNIQUE (experiment_id, sequence)
+);
+INSERT INTO attempts(
+    attempt_id, experiment_id, action_id, sequence, status,
+    requested_json, resolved_json, created_at, started_at, finished_at,
+    logs, result_path, result_digest, comparison, launch_count
+)
+SELECT
+    attempt_id, experiment_id, action_id, sequence, status,
+    requested_json, resolved_json, created_at, started_at, finished_at,
+    logs, result_path, result_digest, comparison, launch_count
+FROM attempts_v2;
+DROP TABLE attempts_v2;
+CREATE INDEX idx_attempts_status_created ON attempts(status, created_at);
+"""
+
 
 class Catalog:
     def __init__(self, state_root: Path | str):
@@ -200,6 +244,17 @@ class Catalog:
                         """
                         INSERT INTO schema_migrations(version, applied_at)
                         VALUES (2, '2026-08-27T00:00:00Z')
+                        """
+                    )
+                migrated = connection.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = 3"
+                ).fetchone()
+                if migrated is None:
+                    connection.executescript(MIGRATION_3)
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations(version, applied_at)
+                        VALUES (3, '2026-08-27T00:00:00Z')
                         """
                     )
             finally:

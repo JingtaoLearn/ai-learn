@@ -32,31 +32,39 @@ RUNNER_CONTROL_FILENAMES = {
 
 def build_operator_validation_command(
     candidate_dir: Path | str,
-    evidence_dir: Path | str,
+    cidfile: Path | str,
     runner_image: str,
 ) -> list[str]:
     """Build the fixed command that validates an operator only inside Docker."""
 
     raw_candidate = Path(candidate_dir)
-    raw_evidence = Path(evidence_dir)
-    for path in (raw_candidate, raw_evidence):
+    raw_cidfile = Path(cidfile)
+    for path in (raw_candidate, raw_cidfile):
         if path.is_symlink():
             raise IsolationError(f"operator validation path cannot be a symlink: {path}")
     candidate = _resolved(raw_candidate)
-    evidence = _resolved(raw_evidence)
-    for path in (candidate, evidence):
+    cidfile = _resolved(raw_cidfile)
+    for path in (candidate, cidfile):
         _reject_protected(path)
         _reject_unsafe_mount_syntax(path)
-        if not path.is_dir():
-            raise IsolationError(f"operator validation directory does not exist: {path}")
+    if not candidate.is_dir():
+        raise IsolationError(f"operator candidate directory does not exist: {candidate}")
+    if not cidfile.parent.is_dir() or cidfile.exists():
+        raise IsolationError("operator validation cidfile location is unsafe")
     if not is_immutable_runner_image(runner_image):
         raise IsolationError("operator validator image must be pinned by SHA-256")
+    container_name = (
+        "quant-operator-validation-"
+        + hashlib.sha256(str(candidate).encode("utf-8")).hexdigest()[:24]
+    )
     return [
         "docker",
         "run",
         "--rm",
         "--cidfile",
-        str(evidence / "container.cid"),
+        str(cidfile),
+        "--name",
+        container_name,
         "--pull",
         "never",
         "--network",
@@ -78,10 +86,6 @@ def build_operator_validation_command(
         "/tmp:rw,noexec,nosuid,size=64m",
         "--mount",
         f"type=bind,src={candidate},dst=/operator,readonly",
-        "--mount",
-        f"type=bind,src={evidence},dst=/evidence",
-        "--env",
-        f"QUANT_OPERATOR_VALIDATOR_IMAGE={runner_image}",
         runner_image,
         "python",
         "-m",
