@@ -64,6 +64,10 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
         repository
         / "vm/docker-services/quant-research-ui-proxy/nginx.conf"
     ).read_text()
+    probe = (
+        repository
+        / "vm/docker-services/quant-research-ui-proxy/check-health.sh"
+    ).read_text()
 
     assert "docker network inspect nginx-proxy" in tunnel
     assert "NGINX_PROXY_GATEWAY" in tunnel
@@ -73,12 +77,22 @@ def test_tunnel_and_proxy_share_one_resolved_gateway_without_public_port():
     assert "EnvironmentFile=" in unit
     assert "ports:" not in compose
     assert "${NGINX_PROXY_GATEWAY:?" in compose
+    assert "host-gateway" not in compose
+    assert "extra_hosts:" not in compose
     assert "name: nginx-proxy" in compose
-    assert "proxy_pass http://quant-research-tunnel:18090" in nginx
+    assert "proxy_pass http://${NGINX_PROXY_GATEWAY}:18090" in nginx
+    assert "set_real_ip_from ${NGINX_PROXY_GATEWAY}" in nginx
+    assert "real_ip_header X-Real-IP" in nginx
     assert "proxy_set_header X-Forwarded-Proto https" in nginx
-    assert "proxy_set_header X-Forwarded-For $http_x_real_ip" in nginx
-    assert "location = /health" in nginx
+    assert "proxy_set_header X-Forwarded-For $remote_addr" in nginx
     assert "client_max_body_size 2m" in nginx
+    assert "--header=Host: quant.ai.jingtao.fun" in compose
+    assert "http://127.0.0.1/health" in compose
+    assert 'return 200 "ok' not in nginx
+    assert "docker compose" in probe
+    assert "exec -T quant-research-ui-proxy" in probe
+    assert "http://127.0.0.1/health" in probe
+    assert '\'{"status":"ok"}\'' in probe
 
 
 def test_deployment_ignores_real_auth_env_and_documents_ms_login_binding():
