@@ -8,11 +8,11 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@azure/msal-node": "^2.16.0",
-    "axios": "^1.7.0",
+    "@azure/msal-node": "5.6.0",
+    "axios": "1.20.0",
     "dotenv": "^16.4.0",
     "ejs": "^3.1.10",
-    "express": "^4.21.0",
+    "express": "4.22.2",
     "express-session": "^1.18.0",
     "jsonwebtoken": "^9.0.0"
   }
