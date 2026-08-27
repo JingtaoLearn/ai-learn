@@ -12,6 +12,7 @@ import pytest
 
 from quant_platform.catalog import initialize_catalog
 from quant_platform.dataset_service import (
+    MAX_PROVIDER_RESPONSE_BYTES,
     DatasetCatalogItem,
     DatasetResolutionError,
     DatasetService,
@@ -406,6 +407,43 @@ def test_experiment_identity_binds_catalog_range_and_snapshot_and_rerun_is_froze
     ]
 
 
+def test_catalog_and_direct_selectors_bind_the_same_verified_snapshot_lineage(
+    tmp_path: Path,
+):
+    source = FixedSource(_bars(SESSIONS))
+    datasets = _dataset_service(tmp_path, source)
+    experiments = ExperimentService(
+        datasets.catalog,
+        execution_identity={
+            "runner": "quant-platform",
+            "source_digest": "e" * 64,
+            "runtime_digest": "f" * 64,
+        },
+        datasets=datasets,
+    )
+
+    catalog_resolved = experiments.resolve_task(
+        _catalog_task("2026-08-18", "2026-08-20")
+    )
+    direct_task = _task(catalog_resolved["dataset"]["snapshot_id"])
+    direct_task["dataset"]["instrument"] = ITEM.instrument
+    direct_resolved = experiments.resolve_task(direct_task)
+    created = experiments.submit(direct_task, action_id="direct-lineage")
+    connection = datasets.catalog.connect()
+    try:
+        row = connection.execute(
+            "SELECT identity_json FROM experiments WHERE experiment_id = ?",
+            (created["experiment_id"],),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    lineage = catalog_resolved["dataset"]["lineage"]
+    assert lineage["kind"] == "verified_update"
+    assert direct_resolved["dataset"]["lineage"] == lineage
+    assert json.loads(row["identity_json"])["dataset"]["lineage"] == lineage
+
+
 def test_weekend_and_session_bounds_share_effective_experiment_identity(
     tmp_path: Path,
 ):
@@ -485,18 +523,35 @@ def test_weekend_and_session_bounds_share_effective_experiment_identity(
     assert detail["template"]["parameters"]["evaluation_start"] == "2026-08-17"
 
 
-def _yahoo_payload(symbol: str = "601328.SS") -> bytes:
-    timestamps = [
+def _yahoo_payload(
+    symbol: str = "601328.SS",
+    *,
+    metadata: dict | None = None,
+    timestamps: list[int] | None = None,
+    volume: list | None = None,
+) -> bytes:
+    timestamps = timestamps or [
         int(pd.Timestamp("2026-08-25", tz="UTC").timestamp()),
         int(pd.Timestamp("2026-08-26", tz="UTC").timestamp()),
     ]
+    yahoo_metadata = {
+        "symbol": symbol,
+        "dataGranularity": "1d",
+        "currency": "CNY",
+        "exchangeName": "SHH",
+        "instrumentType": "EQUITY",
+        "exchangeTimezoneName": "Asia/Shanghai",
+        "gmtoffset": 28800,
+    }
+    if metadata:
+        yahoo_metadata.update(metadata)
     return json.dumps(
         {
             "chart": {
                 "error": None,
                 "result": [
                     {
-                        "meta": {"symbol": symbol, "dataGranularity": "1d"},
+                        "meta": yahoo_metadata,
                         "timestamp": timestamps,
                         "indicators": {
                             "quote": [
@@ -505,7 +560,7 @@ def _yahoo_payload(symbol: str = "601328.SS") -> bytes:
                                     "high": [6.2, 6.3],
                                     "low": [6.0, 6.1],
                                     "close": [6.15, 6.25],
-                                    "volume": [1000, 1100],
+                                    "volume": volume or [1000, 1100],
                                 }
                             ],
                             "adjclose": [{"adjclose": [6.05, 6.15]}],
@@ -519,12 +574,34 @@ def _yahoo_payload(symbol: str = "601328.SS") -> bytes:
 
 
 class FakeResponse:
-    def __init__(self, payload: bytes):
-        self.content = payload
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        content_length: str | None = None,
+        chunks: list[bytes] | None = None,
+    ):
+        self.payload = payload
         self.headers = {"content-type": "application/json"}
+        if content_length is not None:
+            self.headers["content-length"] = content_length
+        self.chunks = chunks
+        self.iterated = False
+        self.closed = False
 
     def raise_for_status(self) -> None:
         return None
+
+    def iter_content(self, chunk_size: int):
+        self.iterated = True
+        yield from self.chunks if self.chunks is not None else [self.payload]
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def content(self):
+        raise AssertionError("Yahoo responses must be consumed as bounded streams")
 
 
 def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
@@ -543,6 +620,7 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
         "https://query1.finance.yahoo.com/v8/finance/chart/601328.SS?"
     )
     assert calls[0][1]["timeout"] == 30
+    assert calls[0][1]["stream"] is True
     assert result.bars["Date"].dt.strftime("%Y-%m-%d").tolist() == [
         "2026-08-25",
         "2026-08-26",
@@ -594,6 +672,108 @@ def test_yahoo_source_rejects_mismatched_or_incoherent_responses(payload, messag
 
     with pytest.raises(DatasetResolutionError, match=message):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("symbol", "OTHER.SS"),
+        ("dataGranularity", "1h"),
+        ("currency", "USD"),
+        ("exchangeName", "NYQ"),
+        ("instrumentType", "ETF"),
+        ("exchangeTimezoneName", "UTC"),
+        ("gmtoffset", 0),
+    ],
+)
+def test_yahoo_source_rejects_mismatched_production_metadata(field, value):
+    payload = _yahoo_payload(metadata={field: value})
+    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    with pytest.raises(DatasetResolutionError, match=field):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+
+def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
+    timestamps = [
+        int(pd.Timestamp("2026-08-24 16:00:00", tz="UTC").timestamp()),
+        int(pd.Timestamp("2026-08-25 16:00:00", tz="UTC").timestamp()),
+    ]
+    payload = _yahoo_payload(timestamps=timestamps)
+    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert result.bars["Date"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2026-08-25",
+        "2026-08-26",
+    ]
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        [True, 1100],
+        [-1, 1100],
+        [float("nan"), 1100],
+        [1000.5, 1100],
+    ],
+)
+def test_yahoo_source_rejects_non_count_volume_values(volume):
+    payload = _yahoo_payload(volume=volume)
+    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    with pytest.raises(DatasetResolutionError, match="volume|Volume|non-finite"):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+
+def test_yahoo_source_accepts_integral_numeric_volume_as_float64():
+    payload = _yahoo_payload(volume=[1000, 1100.0])
+    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert result.bars["Volume"].tolist() == [1000.0, 1100.0]
+    assert result.bars["Volume"].dtype == "float64"
+
+
+def test_yahoo_source_rejects_oversized_content_length_before_streaming():
+    response = FakeResponse(
+        _yahoo_payload(),
+        content_length=str(MAX_PROVIDER_RESPONSE_BYTES + 1),
+    )
+    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+
+    with pytest.raises(DatasetResolutionError, match="size limit"):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert response.iterated is False
+    assert response.closed is True
+
+
+def test_yahoo_source_rejects_oversized_stream_and_closes_response():
+    response = FakeResponse(
+        b"",
+        chunks=[b"x" * (1024 * 1024)] * 17,
+    )
+    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+
+    with pytest.raises(DatasetResolutionError, match="size limit"):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert response.closed is True
+
+
+@pytest.mark.parametrize("content_length", [None, "invalid"])
+def test_yahoo_source_safely_streams_without_valid_content_length(content_length):
+    payload = _yahoo_payload()
+    response = FakeResponse(payload, content_length=content_length)
+    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+
+    result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert result.source_identity["response_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert response.closed is True
 
 
 def test_catalog_registration_is_immutable(tmp_path: Path):

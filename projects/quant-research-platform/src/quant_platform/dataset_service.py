@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -35,6 +36,15 @@ PRODUCTION_DATASET_NAMES = {
 }
 CATALOG_CREATED_AT = "2026-08-27T00:00:00Z"
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
+PRODUCTION_XSHG_YAHOO_METADATA = {
+    "dataGranularity": "1d",
+    "currency": "CNY",
+    "exchangeName": "SHH",
+    "instrumentType": "EQUITY",
+    "exchangeTimezoneName": "Asia/Shanghai",
+    "gmtoffset": 28800,
+}
+PROVIDER_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 class DatasetResolutionError(ValueError):
@@ -168,20 +178,45 @@ class YahooChartSource:
                 url,
                 timeout=self.timeout,
                 headers={"User-Agent": "quant-research-platform/0.1"},
+                stream=True,
             )
             response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if isinstance(content_length, str):
+                digits = content_length.strip()
+                if re.fullmatch(r"[0-9]+", digits):
+                    significant = digits.lstrip("0") or "0"
+                    limit = str(MAX_PROVIDER_RESPONSE_BYTES)
+                    if len(significant) > len(limit) or (
+                        len(significant) == len(limit) and significant > limit
+                    ):
+                        raise DatasetResolutionError(
+                            "Yahoo response body exceeds the size limit"
+                        )
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("application/json"):
+                raise DatasetResolutionError("Yahoo response is not JSON")
+            payload = bytearray()
+            for chunk in response.iter_content(chunk_size=PROVIDER_STREAM_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                if not isinstance(chunk, bytes):
+                    raise DatasetResolutionError("Yahoo response body is invalid")
+                if len(payload) + len(chunk) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise DatasetResolutionError(
+                        "Yahoo response body exceeds the size limit"
+                    )
+                payload.extend(chunk)
         except requests.RequestException as exc:
             raise DatasetResolutionError(
                 f"Yahoo chart request failed for {instrument}: {exc}"
             ) from exc
-        payload_bytes = response.content
-        if not isinstance(payload_bytes, bytes) or not payload_bytes:
+        finally:
+            if "response" in locals():
+                response.close()
+        payload_bytes = bytes(payload)
+        if not payload_bytes:
             raise DatasetResolutionError("Yahoo response body is empty")
-        if len(payload_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
-            raise DatasetResolutionError("Yahoo response body exceeds the size limit")
-        content_type = response.headers.get("content-type", "").lower()
-        if not content_type.startswith("application/json"):
-            raise DatasetResolutionError("Yahoo response is not JSON")
         try:
             payload = json.loads(
                 payload_bytes,
@@ -206,8 +241,16 @@ class YahooChartSource:
             metadata = result["meta"]
             if metadata.get("symbol") != instrument:
                 raise DatasetResolutionError("Yahoo response symbol does not match request")
-            if metadata.get("dataGranularity") != "1d":
-                raise DatasetResolutionError("Yahoo response is not daily data")
+            if instrument.endswith(".SS"):
+                for field, expected in PRODUCTION_XSHG_YAHOO_METADATA.items():
+                    if metadata.get(field) != expected:
+                        raise DatasetResolutionError(
+                            f"Yahoo response {field} does not match XSHG production data"
+                        )
+            elif metadata.get("dataGranularity") != "1d":
+                raise DatasetResolutionError(
+                    "Yahoo response dataGranularity does not match daily data"
+                )
             timestamps = result["timestamp"]
             quotes = result["indicators"]["quote"]
             if not isinstance(quotes, list) or len(quotes) != 1:
@@ -240,8 +283,27 @@ class YahooChartSource:
         if len(lengths) != 1:
             raise DatasetResolutionError("Yahoo response arrays are not aligned")
 
+        for value in quote["volume"]:
+            if value is None:
+                continue
+            if (
+                type(value) not in (int, float)
+                or not math.isfinite(value)
+                or value < 0
+                or not float(value).is_integer()
+            ):
+                raise DatasetResolutionError(
+                    "Yahoo response volume values must be non-negative finite counts"
+                )
+
         try:
-            dates = pd.to_datetime(timestamps, unit="s", utc=True).normalize().tz_localize(None)
+            exchange_timezone = metadata.get("exchangeTimezoneName", "UTC")
+            dates = (
+                pd.to_datetime(timestamps, unit="s", utc=True)
+                .tz_convert(ZoneInfo(exchange_timezone))
+                .normalize()
+                .tz_localize(None)
+            )
         except (TypeError, ValueError) as exc:
             raise DatasetResolutionError("Yahoo response timestamps are invalid") from exc
         if dates.duplicated().any():

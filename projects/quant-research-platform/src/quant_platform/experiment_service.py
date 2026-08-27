@@ -13,12 +13,13 @@ from typing import Any
 
 from .catalog import Catalog
 from .dataset_service import DatasetResolutionError, DatasetService
-from .datasets import SAFE_INSTRUMENT, _verify_snapshot
+from .datasets import DatasetValidationError, SAFE_INSTRUMENT, _verify_snapshot
 from .schemas import (
     SchemaValidationError,
     canonical_json_bytes,
     validate_parameters,
 )
+from .updates import snapshot_update_lineage
 
 
 class TaskValidationError(ValueError):
@@ -181,11 +182,21 @@ class ExperimentService:
         if snapshot_manifest["metadata"]["instrument"] != instrument:
             raise TaskValidationError("dataset snapshot instrument does not match")
         if resolved_dataset is None:
+            try:
+                lineage = snapshot_update_lineage(
+                    self.catalog.state_root,
+                    instrument,
+                    snapshot_id,
+                )
+            except (DatasetValidationError, OSError, RuntimeError) as exc:
+                raise TaskValidationError(
+                    f"dataset update lineage failed verification: {exc}"
+                ) from exc
             resolved_dataset = {
                 "instrument": instrument,
                 "snapshot_id": snapshot_id,
                 "canonical_sha256": snapshot_manifest["canonical_sha256"],
-                "lineage": {"kind": "legacy_snapshot"},
+                "lineage": lineage,
             }
         elif resolved_dataset["canonical_sha256"] != snapshot_manifest["canonical_sha256"]:
             raise TaskValidationError("dataset catalog resolution digest does not match snapshot")
