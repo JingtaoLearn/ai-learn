@@ -364,6 +364,9 @@ def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: 
     assert "linear-gradient" not in css
     assert "backdrop-filter" not in css
     assert "innerHTML" not in javascript
+    assert "quant:preview-settled" in javascript
+    assert "new AbortController()" in javascript
+    assert "request timed out after 10 seconds" in javascript
 
 
 def test_rendered_pages_have_no_inline_executable_content(tmp_path: Path):

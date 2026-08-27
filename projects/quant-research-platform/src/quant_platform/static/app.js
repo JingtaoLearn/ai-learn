@@ -104,6 +104,24 @@ function updateResolvedSummary() {
 }
 
 let previewTimer;
+let previewController;
+let previewSequence = 0;
+
+function dispatchPreviewSettled(status, detail) {
+  status.dispatchEvent(
+    new CustomEvent("quant:preview-settled", {
+      bubbles: true,
+      detail,
+    }),
+  );
+}
+
+function settlePreviewText(status, state, text, detail = {}) {
+  status.dataset.state = state;
+  status.textContent = text;
+  dispatchPreviewSettled(status, { state, message: text, ...detail });
+}
+
 async function updateDuplicatePreview() {
   if (!experimentForm) return;
   const status = experimentForm.querySelector(
@@ -111,10 +129,21 @@ async function updateDuplicatePreview() {
   );
   const task = experimentTask();
   if (!task) {
-    status.dataset.state = "idle";
-    status.textContent = "Duplicate preview requires an immutable dataset.";
+    settlePreviewText(
+      status,
+      "idle",
+      "Duplicate preview requires an immutable dataset.",
+    );
     return;
   }
+  const sequence = ++previewSequence;
+  const controller = new AbortController();
+  previewController = controller;
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 10000);
   status.dataset.state = "loading";
   status.textContent = "Resolving immutable versions and checking for duplicates...";
   try {
@@ -126,9 +155,11 @@ async function updateDuplicatePreview() {
         "X-CSRF-Token": experimentForm.querySelector('[name="csrf_token"]').value,
       },
       body: JSON.stringify({ task }),
+      signal: controller.signal,
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error?.message || "Preview failed");
+    if (sequence !== previewSequence) return;
     const preview = payload.preview;
     status.dataset.state = preview.duplicate ? "duplicate" : "new";
     const message = document.createElement("span");
@@ -145,15 +176,36 @@ async function updateDuplicatePreview() {
       link.textContent = " Open existing experiment";
       status.append(link);
     }
+    dispatchPreviewSettled(status, {
+      state: status.dataset.state,
+      duplicate: preview.duplicate,
+      experiment_id: preview.experiment_id,
+      message: status.textContent,
+    });
   } catch (error) {
-    status.dataset.state = "error";
-    status.textContent = `Duplicate preview unavailable: ${error.message}`;
+    if (sequence !== previewSequence) return;
+    if (error.name === "AbortError" && !timedOut) return;
+    const reason = timedOut
+      ? "request timed out after 10 seconds"
+      : error.message || String(error);
+    settlePreviewText(
+      status,
+      "error",
+      `Duplicate preview unavailable: ${reason}`,
+    );
+  } finally {
+    window.clearTimeout(timeout);
+    if (sequence === previewSequence) previewController = undefined;
   }
 }
 
 function schedulePreview() {
   updateResolvedSummary();
   window.clearTimeout(previewTimer);
+  if (previewController) {
+    previewController.abort();
+    previewController = undefined;
+  }
   previewTimer = window.setTimeout(updateDuplicatePreview, 200);
 }
 

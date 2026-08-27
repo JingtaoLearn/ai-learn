@@ -95,15 +95,15 @@ try {
   );
 
   async function evaluate(expression) {
-    const { result } = await send(
+    const evaluation = await send(
       "Runtime.evaluate",
       { expression, returnByValue: true },
       sessionId,
     );
-    if (result.exceptionDetails) {
-      throw new Error(`Browser evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
+    if (evaluation.exceptionDetails) {
+      throw new Error(`Browser evaluation failed: ${JSON.stringify(evaluation.exceptionDetails)}`);
     }
-    return result.value;
+    return evaluation.result.value;
   }
 
   async function navigate(path) {
@@ -138,6 +138,35 @@ try {
       sessionId,
     );
     await loaded;
+  }
+
+  async function selectAndWaitForPreview(selectorQuery, value) {
+    const evaluation = await send(
+      "Runtime.evaluate",
+      {
+        expression: `new Promise((resolve, reject) => {
+          const status = document.querySelector('[data-testid="live-duplicate-preview"]');
+          const timeout = setTimeout(
+            () => reject(new Error("preview-settled event timed out: " + status.textContent)),
+            15000,
+          );
+          status.addEventListener("quant:preview-settled", (event) => {
+            clearTimeout(timeout);
+            resolve(event.detail);
+          }, { once: true });
+          const selector = document.querySelector(${JSON.stringify(selectorQuery)});
+          selector.value = ${JSON.stringify(value)};
+          selector.dispatchEvent(new Event("change", { bubbles: true }));
+        })`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    if (evaluation.exceptionDetails) {
+      throw new Error(`Live preview failed: ${JSON.stringify(evaluation.exceptionDetails)}`);
+    }
+    return evaluation.result.value;
   }
 
   async function expectPage(page) {
@@ -245,11 +274,13 @@ try {
     await navigate("/experiments/new");
     console.error("stage experiment-new");
     if (!scriptsDisabled) {
-      await evaluate(`(() => {
-        const selector = document.querySelector('[data-operator-selector="fit"]');
-        selector.value = "browser_fit@latest";
-        selector.dispatchEvent(new Event("change", { bubbles: true }));
-      })()`);
+      const novelPreview = await selectAndWaitForPreview(
+        '[data-operator-selector="fit"]',
+        "browser_fit@latest",
+      );
+      if (novelPreview.state !== "new") {
+        throw new Error(`Novel live preview did not resolve: ${JSON.stringify(novelPreview)}`);
+      }
     }
     const generated = await evaluate(
       "document.querySelectorAll('[data-testid^=\"generated-params-\"]').length >= 7",
@@ -290,17 +321,14 @@ try {
 
     await navigate("/experiments/new");
     if (!scriptsDisabled) {
-      await evaluate(`(() => {
-        const selector = document.querySelector('[data-operator-selector="fit"]');
-        selector.value = "browser_fit@latest";
-        selector.dispatchEvent(new Event("change", { bubbles: true }));
-      })()`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const liveDuplicate = await evaluate(
-        'document.querySelector(\'[data-testid="live-duplicate-preview"]\').dataset.state',
+      const duplicatePreview = await selectAndWaitForPreview(
+        '[data-operator-selector="fit"]',
+        "browser_fit@latest",
       );
-      if (liveDuplicate !== "duplicate") {
-        throw new Error(`Live duplicate preview did not resolve: ${liveDuplicate}`);
+      if (duplicatePreview.state !== "duplicate") {
+        throw new Error(
+          `Live duplicate preview did not resolve: ${JSON.stringify(duplicatePreview)}`,
+        );
       }
     }
     if (scriptsDisabled) {
