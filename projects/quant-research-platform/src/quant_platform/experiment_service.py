@@ -752,6 +752,50 @@ class ExperimentService:
             "attempt_id": replacement_id,
         }
 
+    def mark_termination_unconfirmed(
+        self, attempt_id: str, *, logs: str
+    ) -> dict[str, Any]:
+        with self.catalog.transaction(immediate=True) as connection:
+            attempt = self._require_running(connection, attempt_id)
+            control_dir = self._control_directory(attempt)
+            quarantine_relative = f"quarantine/attempts/{attempt_id}"
+            quarantine = self.catalog.state_root / quarantine_relative
+            quarantine.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if quarantine.exists():
+                raise InvalidAttemptTransition(
+                    "attempt termination quarantine already exists"
+                )
+            os.rename(control_dir, quarantine)
+            control_dir.mkdir(mode=0o700)
+            finished_at = _now()
+            self._seal_control(
+                control_dir,
+                {
+                    "schema_version": 1,
+                    "attempt_id": attempt_id,
+                    "status": "TERMINATION_UNCONFIRMED",
+                    "reconciled_at": finished_at,
+                    "termination_confirmed": False,
+                    "quarantine_path": quarantine_relative,
+                },
+                filename="recovery.json",
+            )
+            connection.execute(
+                """
+                UPDATE attempts
+                SET status = 'TERMINATION_UNCONFIRMED', finished_at = ?,
+                    logs = ?, quarantine_path = ?
+                WHERE attempt_id = ?
+                """,
+                (
+                    finished_at,
+                    str(logs)[-MAX_LOG_BYTES:],
+                    quarantine_relative,
+                    attempt_id,
+                ),
+            )
+        return self.attempt_detail(attempt_id)
+
     def _require_running(
         self, connection: sqlite3.Connection, attempt_id: str
     ) -> sqlite3.Row:

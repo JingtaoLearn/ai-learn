@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
-from .isolation import build_composed_execution_command, force_remove_container
+from .isolation import build_composed_execution_command
+from .experiment_service import ExperimentService
+from .runner import RunnerTerminationError, _terminate_container, reconcile_container
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
 from .strategy_runner import run_strategy_config
@@ -17,6 +19,10 @@ from .strategy_runner import run_strategy_config
 
 class ResolvedExecutionError(RuntimeError):
     """Raised when a resolved experiment cannot use the proven strategy runner."""
+
+
+class ResolvedTerminationUnconfirmed(ResolvedExecutionError):
+    termination_unconfirmed = True
 
 
 BUILTIN_OPERATORS = {
@@ -97,11 +103,19 @@ class ResolvedAttemptExecutor:
         output_root: Path,
         project_root: Path | None = None,
         runner_image: str | None = None,
+        attempt_controller: ExperimentService | None = None,
+        process_launcher: Any = subprocess.Popen,
+        container_terminator: Any = _terminate_container,
+        container_reconciler: Any = reconcile_container,
     ):
         self.catalog = catalog
         self.output_root = Path(output_root)
         self.project_root = project_root
         self.runner_image = runner_image
+        self.attempt_controller = attempt_controller
+        self.process_launcher = process_launcher
+        self.container_terminator = container_terminator
+        self.container_reconciler = container_reconciler
 
     def _verify_resolution(self, resolved: dict[str, Any]) -> None:
         for slot, operator in resolved["operators"].items():
@@ -218,6 +232,10 @@ class ResolvedAttemptExecutor:
             raise ResolvedExecutionError(
                 "a pinned runner image is required for custom composition"
             )
+        if self.attempt_controller is None:
+            raise ResolvedExecutionError(
+                "attempt controller is required for custom composition"
+            )
         resolved = attempt["resolved"]
         composition_digest = hashlib.sha256(
             canonical_json_bytes(
@@ -265,7 +283,15 @@ class ResolvedAttemptExecutor:
         )
         config_path = Path(config_name)
         composition_path = Path(composition_name)
-        cidfile = work_root / f".{attempt['attempt_id']}.cid"
+        control_path = attempt.get("control_path")
+        if control_path != f"attempt-control/{attempt['attempt_id']}":
+            raise ResolvedExecutionError("attempt control path is invalid")
+        control_dir = self.catalog.state_root / control_path
+        if control_dir.is_symlink() or not control_dir.is_dir():
+            raise ResolvedExecutionError("attempt control directory is unsafe")
+        cidfile = control_dir / "container.cid"
+        stdout_path = control_dir / "stdout.log"
+        stderr_path = control_dir / "stderr.log"
         try:
             with os.fdopen(config_descriptor, "wb") as stream:
                 stream.write(canonical_json_bytes(legacy))
@@ -287,28 +313,52 @@ class ResolvedAttemptExecutor:
                 operator_bundles=operator_bundles,
                 runner_image=self.runner_image,
             )
-            completed = subprocess.run(
-                command,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=600,
-                check=False,
+            container_name = command[command.index("--name") + 1]
+            self.attempt_controller.record_physical_launch(
+                attempt["attempt_id"], container_name=container_name
             )
-        except subprocess.TimeoutExpired as exc:
-            removed = force_remove_container(cidfile)
-            message = (
-                "custom composition timed out and its container was removed"
-                if removed
-                else "custom composition timed out and container cleanup failed"
-            )
-            raise ResolvedExecutionError(message) from exc
+            with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+                process = self.process_launcher(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    shell=False,
+                    env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                try:
+                    exit_status = process.wait(timeout=600)
+                except subprocess.TimeoutExpired as exc:
+                    try:
+                        self.container_terminator(
+                            cidfile, container_name, process
+                        )
+                    except RunnerTerminationError as termination_error:
+                        raise ResolvedTerminationUnconfirmed(
+                            "custom composition termination was not confirmed"
+                        ) from termination_error
+                    raise ResolvedExecutionError(
+                        "custom composition timed out after confirmed termination"
+                    ) from exc
+                if not self.container_reconciler(cidfile):
+                    raise ResolvedTerminationUnconfirmed(
+                        "custom composition container absence was not confirmed"
+                    )
+                for stream in (stdout, stderr):
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            stdout_payload = stdout_path.read_bytes()
+            if exit_status != 0:
+                raise ResolvedExecutionError(
+                    "custom composition worker exited unsuccessfully"
+                )
         finally:
             config_path.unlink(missing_ok=True)
             composition_path.unlink(missing_ok=True)
-            cidfile.unlink(missing_ok=True)
-        lines = completed.stdout.splitlines()
-        if completed.returncode != 0 or len(lines) != 1:
+        lines = stdout_payload.splitlines()
+        if len(stdout_payload) > 1_048_576 or len(lines) != 1:
             raise ResolvedExecutionError("custom composition launch failed")
         try:
             result = json.loads(lines[0])

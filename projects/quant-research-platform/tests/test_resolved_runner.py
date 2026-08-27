@@ -2,7 +2,6 @@ import json
 import hashlib
 import stat
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -132,7 +131,7 @@ def test_custom_operator_uses_a_validated_builtin_placeholder_config(tmp_path: P
 
 
 def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ):
     catalog, original_attempt = _attempt(tmp_path)
     operator_service = OperatorService(
@@ -156,8 +155,10 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
         implementations[slot] = implementation
         implementation_parameters[slot] = {"window": 2}
     service = ExperimentService(catalog, execution_identity={"runner": "test"})
-    created = service.submit(task, action_id="custom-create")
-    attempt = service.attempt_detail(created["attempt_id"])
+    stale = service.claim_next_attempt()
+    service.finish_failure(stale["attempt_id"], "superseded test setup")
+    service.submit(task, action_id="custom-create")
+    attempt = service.claim_next_attempt()
     legacy = build_legacy_config(
         attempt["resolved"],
         state_root=catalog.state_root,
@@ -190,11 +191,20 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
 
     launches = []
 
+    class Process:
+        pid = 999999
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
     def launch(command, **kwargs):
         launches.append(command)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
+        kwargs["stdout"].write(
+            (
+                json.dumps(
                 {
                     "ok": True,
                     "status": "CREATED",
@@ -202,16 +212,22 @@ def test_all_seven_custom_implementations_run_through_one_composed_replay_call(
                     "path": f"/artifacts/{result['run_id']}",
                 }
             )
-            + "\n",
-            stderr="",
+                + "\n"
+            ).encode()
         )
+        Path(command[command.index("--cidfile") + 1]).write_text(
+            "e" * 64, encoding="ascii"
+        )
+        return Process()
 
-    monkeypatch.setattr("quant_platform.resolved_runner.subprocess.run", launch)
     executor = ResolvedAttemptExecutor(
         catalog,
         output_root=tmp_path / "custom-runs",
         project_root=PROJECT_ROOT,
         runner_image=IMAGE,
+        attempt_controller=service,
+        process_launcher=launch,
+        container_reconciler=lambda cidfile: True,
     )
     executed = executor(attempt)
 

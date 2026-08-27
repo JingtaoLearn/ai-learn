@@ -199,3 +199,24 @@ def test_serial_worker_claims_one_and_records_bounded_failure(tmp_path: Path):
     assert attempt["status"] == "FAILED"
     assert len(attempt["logs"]) <= 16384
     assert worker.run_once() is False
+
+
+def test_serial_worker_preserves_unconfirmed_termination_instead_of_failed(
+    tmp_path: Path,
+):
+    service, created = _created(tmp_path)
+
+    class SurvivingContainer(RuntimeError):
+        termination_unconfirmed = True
+
+    worker = SerialAttemptWorker(
+        service,
+        executor=lambda attempt: (_ for _ in ()).throw(
+            SurvivingContainer("container survival could not be excluded")
+        ),
+    )
+
+    assert worker.run_once() is True
+    attempt = service.attempt_detail(created["attempt_id"])
+    assert attempt["status"] == "TERMINATION_UNCONFIRMED"
+    assert attempt["quarantine_path"]

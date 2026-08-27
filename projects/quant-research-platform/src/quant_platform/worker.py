@@ -31,7 +31,11 @@ class SerialAttemptWorker:
                 logs=result.get("logs", ""),
             )
         except Exception as exc:
-            self.service.finish_failure(
-                attempt["attempt_id"], f"{type(exc).__name__}: {exc}"
-            )
+            logs = f"{type(exc).__name__}: {exc}"
+            if getattr(exc, "termination_unconfirmed", False):
+                self.service.mark_termination_unconfirmed(
+                    attempt["attempt_id"], logs=logs
+                )
+            else:
+                self.service.finish_failure(attempt["attempt_id"], logs)
         return True

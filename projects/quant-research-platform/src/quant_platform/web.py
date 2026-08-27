@@ -812,6 +812,7 @@ def main() -> None:
         output_root=settings.state_root / "experiment-runs",
         project_root=settings.project_root,
         runner_image=settings.runner_image,
+        attempt_controller=application.state.experiments,
     )
     worker = SerialAttemptWorker(application.state.experiments, executor=executor)
 

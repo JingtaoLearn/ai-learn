@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -128,12 +127,18 @@ def build_composed_execution_command(
         raise IsolationError("composed execution cidfile must not already exist")
     if not is_immutable_runner_image(runner_image):
         raise IsolationError("composed runner image must be pinned by SHA-256")
+    container_name = (
+        "quant-composition-"
+        + hashlib.sha256(str(paths[2]).encode("utf-8")).hexdigest()[:32]
+    )
     command = [
         "docker",
         "run",
         "--rm",
         "--cidfile",
         str(paths[4]),
+        "--name",
+        container_name,
         "--pull",
         "never",
         "--network",
@@ -186,33 +191,6 @@ def build_composed_execution_command(
         ]
     )
     return command
-
-
-def force_remove_container(cidfile: Path | str) -> bool:
-    """Force-remove the exact Docker container recorded by a timed-out client."""
-
-    path = Path(cidfile)
-    if path.is_symlink():
-        return False
-    try:
-        container_id = path.read_text(encoding="ascii").strip()
-    except OSError:
-        return False
-    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
-        return False
-    try:
-        completed = subprocess.run(
-            ["docker", "rm", "--force", container_id],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
-
 
 class IsolationError(ValueError):
     """Raised when a run would escape the fixed research sandbox."""
