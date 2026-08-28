@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_study_evidence.html" import study_evidence %}
+{% block title %}Parameter Study · Quant Research{% endblock %}
+{% block page %}study-detail{% endblock %}
+{% block content %}
+<section class="page-heading split"><div><p class="eyebrow">PARAMETER STUDY</p><h1>{{ study.frozen_plan.dataset.name }}</h1><p class="mono">{{ study.study_id }}</p></div><a class="button quiet" href="/studies/{{ study.study_id }}/report">Open report view</a></section>
+{% if outcome_message %}<div class="validation-summary" role="status" tabindex="-1" data-testid="study-outcome">{{ outcome_message }}</div>{% endif %}
+<section class="metrics"><div><span>Phase</span><strong>{{ study.phase }}</strong></div><div><span>Control</span><strong>{{ study.control_status }}</strong></div><div><span>Selection</span><strong>{{ study.selection_outcome }}</strong></div><div><span>Holdout access</span><strong>{{ study.holdout.access }}</strong></div></section>
+<section class="panel" aria-labelledby="study-controls-heading"><div class="section-heading"><div><p class="eyebrow">COORDINATION</p><h2 id="study-controls-heading">Study controls</h2></div></div>
+  <div class="actions control-actions">
+    <form method="post" action="/studies/{{ study.study_id }}/advance"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Advance</button></form>
+    {% for operation in ("PAUSE", "RESUME", "CANCEL") %}<form method="post" action="/studies/{{ study.study_id }}/control"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="{{ operation }}"><input type="hidden" name="action_id" value="{{ control_action_id }}-{{ operation|lower }}"><button class="{{ 'quiet' if operation != 'CANCEL' else 'danger-button' }}" type="submit">{{ operation|title }}</button></form>{% endfor %}
+  </div>
+  <h3>Study coordinator lease</h3>
+  {% if study.coordination.lease %}<dl class="technical"><dt>Coordinator</dt><dd>{{ study.coordination.lease.owner }}</dd><dt>Lease expires</dt><dd>{{ study.coordination.lease.expires_at }}</dd><dt>Fencing token</dt><dd>{{ study.coordination.lease.fencing_token }}</dd></dl>{% else %}<p class="notice">No coordinator lease is active.</p>{% endif %}
+</section>
+{{ study_evidence(study) }}
+<section class="panel" aria-labelledby="lineage-heading"><p class="eyebrow">MULTIPLE-TESTING HISTORY</p><h2 id="lineage-heading">Study Lineage</h2><dl class="technical"><dt>Complete</dt><dd>{{ "Yes" if study.lineage.is_complete else "No" }}</dd><dt>Prior candidates</dt><dd>{{ study.lineage.prior_unique_candidate_count }}</dd><dt>Parent Studies</dt><dd>{% for parent in study.lineage.parent_study_ids %}<a class="mono" href="/studies/{{ parent }}">{{ parent }}</a>{% else %}None declared{% endfor %}</dd></dl></section>
+<section class="panel" aria-labelledby="identity-heading"><p class="eyebrow">FROZEN IDENTITY</p><h2 id="identity-heading">Execution identity</h2><p>New effects compare against this frozen identity. Drift outcomes are shown only when returned by a Study action.</p><details><summary>Frozen execution identity</summary><pre>{{ study.identities.execution|canonical_json }}</pre></details></section>
+<section class="panel"><h2>Study events</h2>{% for event in study.events|reverse %}<div class="timeline-item"><span class="badge">{{ event.sequence }}</span><strong>{{ event.event_type }}</strong><span>{{ event.occurred_at }}</span><details><summary>Payload</summary><pre>{{ event.payload|canonical_json }}</pre></details></div>{% endfor %}</section>
+{% endblock %}
