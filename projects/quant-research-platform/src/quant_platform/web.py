@@ -30,7 +30,7 @@ from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
 from .resolved_runner import effective_execution_identity
-from .schemas import canonical_json_bytes
+from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
 from .settings import Settings
 from .strategy_runner import (
@@ -505,7 +505,12 @@ def _study_from_form(
     creation: dict[str, Any],
 ) -> dict[str, Any]:
     task = _study_task_from_form(form, creation)
-    search_space: dict[str, dict[str, list[Any]]] = {}
+    suggester = form.get("suggester", "GRID")
+    if suggester not in {"GRID", "SEEDED_RANDOM", "OPTUNA_TPE"}:
+        raise StudyValidationError("suggester: unsupported Study suggester")
+
+    search_space: dict[str, dict[str, Any]] = {}
+    eligible: dict[str, tuple[str, str, dict[str, Any], dict[str, Any]]] = {}
     for slot, selector in task["operators"].items():
         selected = _study_operator_version(
             creation,
@@ -514,24 +519,194 @@ def _study_from_form(
             selector["version"],
         )
         for name, schema in selected["parameter_schema"]["properties"].items():
-            field_name = (
-                f"search__{slot}__{selector['operator_id']}__"
-                f"{selected['version']}__{name}"
-            )
-            raw = form.get(field_name, "").strip()
-            if not raw:
+            if slot in {"cost", "report"}:
                 continue
+            identity = (
+                f"{slot}__{selector['operator_id']}__{selected['version']}__{name}"
+            )
+            eligible[identity] = (
+                slot,
+                name,
+                schema,
+                selected["parameter_schema"],
+            )
+
+    selected_domains: dict[str, str] = {}
+    for field_name, raw_kind in form.items():
+        if not field_name.startswith("study__"):
+            continue
+        identity = field_name.removeprefix("study__")
+        if identity not in eligible:
+            raise StudyValidationError(
+                f"{field_name}: parameter is not eligible for the selected operator version"
+            )
+        schema = eligible[identity][2]
+        expected_kind = (
+            "categorical"
+            if "enum" in schema or schema["type"] in {"string", "boolean"}
+            else "int"
+            if schema["type"] == "integer"
+            else "float"
+        )
+        if raw_kind != expected_kind:
+            raise StudyValidationError(
+                f"{field_name}: {schema['type']} parameter must use {expected_kind} domain"
+            )
+        selected_domains[identity] = expected_kind
+
+    for field_name, raw in form.items():
+        if not (
+            field_name.startswith("domain__") or field_name.startswith("search__")
+        ):
+            continue
+        parts = field_name.split("__")
+        identity = "__".join(parts[1:5])
+        if raw.strip() and identity not in selected_domains:
+            raise StudyValidationError(
+                f"{field_name}: domain fields are not allowed for an unchecked parameter"
+            )
+
+    def domain_value(
+        *,
+        field_name: str,
+        raw: str,
+        schema: dict[str, Any],
+        parameter_schema: dict[str, Any],
+        parameter_name: str,
+        cast: type[int] | type[float] | None = None,
+    ) -> Any:
+        try:
+            value = _json_text(raw, field_name) if cast is None else cast(raw)
+            parameters = dict(task["operators"][identity.split("__", 1)[0]]["parameters"])
+            parameters[parameter_name] = value
+            return validate_parameters(parameter_schema, parameters)[parameter_name]
+        except (SchemaValidationError, ValueError) as exc:
+            raise StudyValidationError(f"{field_name}: {exc}") from exc
+
+    for identity, kind in selected_domains.items():
+        slot, name, schema, parameter_schema = eligible[identity]
+        path = f"/operators/{slot}/{name}"
+        prefix = f"domain__{identity}__"
+        if suggester in {"GRID", "SEEDED_RANDOM"}:
+            field_name = f"search__{identity}"
+            raw = form.get(field_name, "").strip()
+            if not raw and kind == "categorical":
+                field_name = f"{prefix}choices"
+                raw = form.get(field_name, "").strip()
+            if not raw:
+                raise StudyValidationError(
+                    f"{field_name}: finite search values are required for {suggester}"
+                )
             try:
-                values = _json_text(raw, f"search range for {slot}.{name}")
-            except ValueError as exc:
+                values = _json_text(raw, f"finite search values for {slot}.{name}")
+            except (SchemaValidationError, ValueError) as exc:
                 raise StudyValidationError(f"{field_name}: {exc}") from exc
             if not isinstance(values, list) or not values:
                 raise StudyValidationError(
-                    f"{field_name}: search range must be a non-empty JSON array"
+                    f"{field_name}: finite search values must be a non-empty JSON array"
                 )
-            search_space[f"/operators/{slot}/{name}"] = {"values": values}
+            normalized = [
+                domain_value(
+                    field_name=field_name,
+                    raw=_canonical_json_text(value),
+                    schema=schema,
+                    parameter_schema=parameter_schema,
+                    parameter_name=name,
+                )
+                for value in values
+            ]
+            identities = [_canonical_json_text(value) for value in normalized]
+            if len(set(identities)) != len(identities):
+                raise StudyValidationError(
+                    f"{field_name}: finite search values must be unique"
+                )
+            search_space[path] = {"values": normalized}
+            continue
+
+        if kind == "categorical":
+            field_name = f"{prefix}choices"
+            raw = form.get(field_name, "").strip()
+            try:
+                choices = _json_text(raw, f"categorical choices for {slot}.{name}")
+            except (SchemaValidationError, ValueError) as exc:
+                raise StudyValidationError(f"{field_name}: {exc}") from exc
+            if not isinstance(choices, list) or not choices:
+                raise StudyValidationError(
+                    f"{field_name}: choices must be a non-empty JSON array"
+                )
+            normalized = [
+                domain_value(
+                    field_name=field_name,
+                    raw=_canonical_json_text(value),
+                    schema=schema,
+                    parameter_schema=parameter_schema,
+                    parameter_name=name,
+                )
+                for value in choices
+            ]
+            identities = [_canonical_json_text(value) for value in normalized]
+            if len(set(identities)) != len(identities):
+                raise StudyValidationError(f"{field_name}: choices must be unique")
+            search_space[path] = {"kind": "categorical", "choices": normalized}
+            continue
+
+        low_field = f"{prefix}low"
+        high_field = f"{prefix}high"
+        step_field = f"{prefix}step"
+        log_field = f"{prefix}log"
+        cast = int if kind == "int" else float
+        low = domain_value(
+            field_name=low_field,
+            raw=form.get(low_field, ""),
+            schema=schema,
+            parameter_schema=parameter_schema,
+            parameter_name=name,
+            cast=cast,
+        )
+        high = domain_value(
+            field_name=high_field,
+            raw=form.get(high_field, ""),
+            schema=schema,
+            parameter_schema=parameter_schema,
+            parameter_name=name,
+            cast=cast,
+        )
+        if high < low:
+            raise StudyValidationError(
+                f"{high_field}: high must be greater than or equal to low"
+            )
+        raw_log = form.get(log_field, "")
+        if raw_log not in {"", "true"}:
+            raise StudyValidationError(f"{log_field}: log must be true when selected")
+        log = raw_log == "true"
+        raw_step = form.get(step_field, "").strip()
+        if raw_step and log:
+            raise StudyValidationError(
+                f"{step_field}: step and log cannot be used together"
+            )
+        definition: dict[str, Any] = {
+            "kind": kind,
+            "low": low,
+            "high": high,
+        }
+        if kind == "int":
+            raw_step = raw_step or "1"
+        if raw_step:
+            try:
+                step = cast(raw_step)
+            except ValueError as exc:
+                raise StudyValidationError(
+                    f"{step_field}: step must be a {schema['type']}"
+                ) from exc
+            if step <= 0:
+                raise StudyValidationError(f"{step_field}: step must be greater than zero")
+            definition["step"] = step
+        definition["log"] = log
+        search_space[path] = definition
     if not search_space:
-        raise StudyValidationError("at least one finite search range is required")
+        raise StudyValidationError(
+            "study-form: at least one eligible parameter must be selected"
+        )
 
     def integer(name: str, default: str) -> int:
         raw = form.get(name, default)
@@ -541,7 +716,7 @@ def _study_from_form(
             raise StudyValidationError(f"{name} must be an integer") from exc
 
     task["search"] = {
-        "suggester": form.get("suggester", "GRID"),
+        "suggester": suggester,
         "suggester_version": "1.0.0",
         "seed": integer("seed", "17"),
         "unique_trial_budget": integer("unique_trial_budget", "1"),

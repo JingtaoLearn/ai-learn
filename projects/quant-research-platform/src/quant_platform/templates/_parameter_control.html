@@ -18,3 +18,51 @@
 <input id="{{ field_name }}" name="{{ field_name }}" type="text" value="{{ raw_value if preserve_raw else value if value is not none else '' }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
 {% endif %}
 {%- endmacro %}
+
+{% macro study_parameter_domain(slot, operator_id, version, name, schema, default, form_values, invalid_fields, error_messages) -%}
+{% set identity = slot ~ "__" ~ operator_id ~ "__" ~ version ~ "__" ~ name %}
+{% set selection_name = "study__" ~ identity %}
+{% set domain_kind = "categorical" if schema.enum or schema.type in ("string", "boolean") else "int" if schema.type == "integer" else "float" %}
+{% set editor_id = selection_name ~ "-domain" %}
+<div class="study-parameter" data-study-parameter>
+  <label class="check-control" for="{{ selection_name }}">
+    <input type="checkbox" id="{{ selection_name }}" name="{{ selection_name }}" value="{{ domain_kind }}" aria-controls="{{ editor_id }}"{% if form_values.get(selection_name) == domain_kind %} checked{% endif %}>
+    <span><strong>Study this parameter</strong><small>{{ domain_kind }} domain</small></span>
+  </label>
+  <div id="{{ editor_id }}" class="domain-editor" data-domain-editor="{{ selection_name }}">
+    <p class="baseline">Fixed baseline: <code>{{ default|canonical_json }}</code></p>
+    {% if domain_kind == "categorical" %}
+      {% set field_name = "domain__" ~ identity ~ "__choices" %}
+      <label>Choices <span class="optional">(unique JSON scalars)</span>
+        <input id="{{ field_name }}" class="mono" name="{{ field_name }}" value="{{ form_values.get(field_name, '') }}" placeholder="{{ schema.enum|canonical_json if schema.enum else [default]|canonical_json }}" data-domain-mode="both"{% if field_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ field_name }}-error" autofocus{% endif %}>
+        {% if field_name in invalid_fields %}<span id="{{ field_name }}-error" class="field-error">{{ error_messages[field_name] }}</span>{% endif %}
+      </label>
+    {% else %}
+      <div class="domain-grid" data-domain-mode="adaptive">
+        {% for bound in ("low", "high") %}
+          {% set field_name = "domain__" ~ identity ~ "__" ~ bound %}
+          <label>{{ bound|title }}
+            <input id="{{ field_name }}" name="{{ field_name }}" type="number" step="{{ '1' if domain_kind == 'int' else 'any' }}" value="{{ form_values.get(field_name, '') }}"{% if schema.minimum is defined %} min="{{ schema.minimum }}"{% endif %}{% if schema.maximum is defined %} max="{{ schema.maximum }}"{% endif %} placeholder="{{ schema.minimum if bound == 'low' and schema.minimum is defined else schema.maximum if bound == 'high' and schema.maximum is defined else default }}"{% if field_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ field_name }}-error" autofocus{% endif %}>
+            {% if field_name in invalid_fields %}<span id="{{ field_name }}-error" class="field-error">{{ error_messages[field_name] }}</span>{% endif %}
+          </label>
+        {% endfor %}
+        {% set step_name = "domain__" ~ identity ~ "__step" %}
+        <label>Step <span class="optional">({{ "required; defaults to 1" if domain_kind == "int" else "optional" }})</span>
+          <input id="{{ step_name }}" name="{{ step_name }}" type="number" min="{{ 1 if domain_kind == 'int' else 0 }}" step="{{ '1' if domain_kind == 'int' else 'any' }}" value="{{ form_values.get(step_name, '') }}"{% if step_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ step_name }}-error" autofocus{% endif %}>
+          {% if step_name in invalid_fields %}<span id="{{ step_name }}-error" class="field-error">{{ error_messages[step_name] }}</span>{% endif %}
+        </label>
+        {% set log_name = "domain__" ~ identity ~ "__log" %}
+        <label class="check-control domain-log" for="{{ log_name }}">
+          <input id="{{ log_name }}" name="{{ log_name }}" type="checkbox" value="true"{% if form_values.get(log_name) == "true" %} checked{% endif %}>
+          <span>Log scale <small>Cannot be combined with step.</small></span>
+        </label>
+      </div>
+      {% set finite_name = "search__" ~ identity %}
+      <label data-domain-mode="finite">Finite values <span class="optional">(Grid / Seeded Random JSON array)</span>
+        <input id="{{ finite_name }}" class="mono" name="{{ finite_name }}" value="{{ form_values.get(finite_name, '') }}" placeholder="[{{ default }}, ...]"{% if finite_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ finite_name }}-error" autofocus{% endif %}>
+        {% if finite_name in invalid_fields %}<span id="{{ finite_name }}-error" class="field-error">{{ error_messages[finite_name] }}</span>{% endif %}
+      </label>
+    {% endif %}
+  </div>
+</div>
+{%- endmacro %}

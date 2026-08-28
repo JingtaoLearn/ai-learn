@@ -317,6 +317,9 @@ try {
         if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value;
       }
       form.elements.namedItem(
+        "study__fit__prior_log_ols__1.0.0__window_sessions",
+      ).checked = true;
+      form.elements.namedItem(
         "search__fit__prior_log_ols__1.0.0__window_sessions",
       ).value = "[2,";
       form.submit();
@@ -361,6 +364,7 @@ try {
         holdout_sessions: "1", evaluation_version: "1.0.0",
         parent_study_ids: "", prior_unique_candidate_count: "0",
         lineage_complete: "true",
+        "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
         "search__fit__prior_log_ols__1.0.0__window_sessions": "[2,3]",
       });
       const submission = document.createElement("form");

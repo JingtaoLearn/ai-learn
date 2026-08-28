@@ -5,8 +5,8 @@
 <section class="page-heading"><p class="eyebrow">CONTENT-ADDRESSED PREVIEW</p><h1>{% if stale %}Preview changed{% else %}Review frozen Study plan{% endif %}</h1><p>{% if stale %}An external identity changed before submission. Nothing was created. Review this freshly resolved plan and submit again.{% else %}This exact plan will be submitted only while its preview digest remains current.{% endif %}</p></section>
 {% if stale %}<div class="validation-summary danger" role="alert" data-testid="stale-preview">The previous preview was stale. A new digest and action ID have been issued safely.</div>{% endif %}
 <section class="metrics" aria-label="Study estimates">
-  <div><span>Unique Trial budget</span><strong>{{ preview.frozen_plan.search.unique_trial_budget }}</strong></div>
-  <div><span>Raw suggestion budget</span><strong>{{ preview.frozen_plan.search.max_suggestions }}</strong></div>
+  <div><span>Adaptive unique Trial budget</span><strong>{{ preview.frozen_plan.search.unique_trial_budget }}</strong></div>
+  <div><span>Adaptive raw suggestion budget</span><strong>{{ preview.frozen_plan.search.max_suggestions }}</strong></div>
   <div><span>Candidate capacity</span><strong>{{ preview.frozen_plan.search.candidate_capacity }}</strong></div>
   <div><span>Minimum Experiment bindings</span><strong>{{ preview.execution_estimate.minimum_experiment_bindings }}</strong></div>
   <div><span>Conditional maximum bindings</span><strong>{{ preview.execution_estimate.conditional_maximum_experiment_bindings }}</strong></div>

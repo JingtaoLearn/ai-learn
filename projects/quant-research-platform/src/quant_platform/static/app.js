@@ -257,7 +257,13 @@ for (const selector of document.querySelectorAll("[data-operator-selector]")) {
     for (const parameters of document.querySelectorAll(
       `[data-parameter-set="${slot}"]`,
     )) {
-      parameters.hidden = parameters.dataset.selector !== explicit;
+      const inactive = parameters.dataset.selector !== explicit;
+      parameters.hidden = inactive;
+      for (const control of parameters.querySelectorAll(
+        '[name^="study__"], [name^="domain__"], [name^="search__"]',
+      )) {
+        control.disabled = inactive;
+      }
     }
   };
   selector.addEventListener("change", () => {
@@ -287,6 +293,29 @@ if (experimentForm) {
 
 const studyForm = document.querySelector('form[data-testid="study-form"]');
 if (studyForm) {
+  const suggester = studyForm.querySelector("[data-study-suggester]");
+  const updateStudyDomains = () => {
+    const adaptive = suggester.value === "OPTUNA_TPE";
+    for (const parameter of studyForm.querySelectorAll("[data-study-parameter]")) {
+      const checkbox = parameter.querySelector('input[name^="study__"]');
+      const editor = parameter.querySelector("[data-domain-editor]");
+      editor.hidden = !checkbox.checked;
+      for (const controls of editor.querySelectorAll("[data-domain-mode]")) {
+        controls.hidden =
+          controls.dataset.domainMode !== "both" &&
+          controls.dataset.domainMode !== (adaptive ? "adaptive" : "finite");
+      }
+    }
+  };
+  studyForm.addEventListener("change", (event) => {
+    if (
+      event.target === suggester ||
+      event.target.matches('input[name^="study__"]')
+    ) {
+      updateStudyDomains();
+    }
+  });
+  updateStudyDomains();
   const datasetSelector = studyForm.querySelector("[data-dataset-selector]");
   datasetSelector.addEventListener("change", () => {
     const option = datasetSelector.selectedOptions[0];
