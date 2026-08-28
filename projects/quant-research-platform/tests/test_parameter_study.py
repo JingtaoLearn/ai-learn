@@ -369,6 +369,69 @@ def test_preview_freezes_one_canonical_plan_for_semantically_equivalent_inputs(
     assert plan["holdout"]["fold_window"]["role"] == "TERMINAL_HOLDOUT"
 
 
+def test_preview_estimates_bindings_from_actual_defaults_first_suggestions(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    spec["search"].update(
+        {
+            "unique_trial_budget": 2,
+            "max_suggestions": 2,
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "values": [0.3]
+                }
+            },
+        }
+    )
+
+    preview = studies.preview(spec)
+
+    assert preview["frozen_plan"]["search"]["candidate_capacity"] == 1
+    assert [
+        item["candidate_count"] for item in preview["execution_estimate"]["rounds"]
+    ] == [2, 2]
+    assert preview["execution_estimate"] == {
+        "expected_experiment_bindings": 6,
+        "rounds": [
+            {
+                "search_round": "OUTER:1",
+                "candidate_count": 2,
+                "binding_count": 3,
+            },
+            {
+                "search_round": "FINAL",
+                "candidate_count": 2,
+                "binding_count": 2,
+            },
+        ],
+        "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
+    }
+
+
+def test_creation_options_are_supplied_by_the_parameter_study_boundary(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+
+    options = studies.creation_options()
+
+    assert options["datasets"][0]["dataset_id"] == "SYNTH.SS"
+    assert options["template"]["name"] == "single_stock_daily_causal"
+    assert {item["slot"] for item in options["operators"]} == {
+        "fit",
+        "statistic",
+        "smoothing",
+        "decision",
+        "cost",
+        "sizing",
+        "report",
+    }
+    assert all(item["versions"] for item in options["operators"])
+    assert options["evaluation"]["policy_id"] == "robust_walk_forward"
+
+
 def test_resolved_dataset_dates_are_interchangeable_between_preview_and_submit(
     tmp_path: Path,
 ):
@@ -1684,6 +1747,74 @@ def test_public_detail_rejects_projection_only_holdout_pass(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="projection"):
         studies.detail(submitted["study_id"])
+
+
+def test_holdout_access_is_recorded_before_dataset_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-holdout-materialization-crash",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=_real_attempt_executor(
+            studies,
+            experiments,
+            studies.catalog.state_root / "study-runs",
+        ),
+    )
+    for _ in range(40):
+        coordinator.advance(submitted["study_id"])
+        if coordinator.detail(submitted["study_id"])["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail("selection did not reach HOLDOUT_READY")
+    assert coordinator.advance(submitted["study_id"])["status"] == "HOLDOUT_CLAIMED"
+    original_materialize = coordinator.dataset_slice_factory.materialize
+
+    def crash_after_materialization(*args, **kwargs):
+        assert coordinator.detail(submitted["study_id"])["holdout"]["access"] == (
+            "ACCESSED"
+        )
+        original_materialize(*args, **kwargs)
+        raise RuntimeError("crash during holdout materialization")
+
+    monkeypatch.setattr(
+        coordinator.dataset_slice_factory,
+        "materialize",
+        crash_after_materialization,
+    )
+    with pytest.raises(RuntimeError, match="holdout materialization"):
+        coordinator.advance(submitted["study_id"])
+
+    detail = coordinator.detail(submitted["study_id"])
+    assert detail["phase"] == "HOLDOUT_RUNNING"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert not any(binding["role"] == "TERMINAL_HOLDOUT" for binding in detail["bindings"])
+    _expire_study_lease(studies, submitted["study_id"])
+    restarted = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=lambda effect, action_id: (_ for _ in ()).throw(
+            AssertionError("terminal holdout was redispatched")
+        ),
+    )
+
+    result = restarted.advance(submitted["study_id"])
+
+    assert result["status"] == "HOLDOUT_EXECUTION_AMBIGUOUS"
+    assert restarted.detail(submitted["study_id"])["control_status"] == "FAILED"
 
 
 def test_terminal_holdout_crash_after_access_never_redispatches(tmp_path: Path):

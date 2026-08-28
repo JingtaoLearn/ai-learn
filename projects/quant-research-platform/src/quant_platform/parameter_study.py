@@ -1530,7 +1530,65 @@ class ParameterStudy:
     def preview(self, spec: Any) -> dict[str, Any]:
         resolved = self._resolve_external_inputs(spec)
         with self.catalog.transaction() as connection:
-            return self._freeze_resolved_plan(resolved, connection)
+            preview = self._freeze_resolved_plan(resolved, connection)
+        expected_bindings = 1  # One separately governed terminal holdout.
+        round_counts = []
+        for search_round, inner_folds, outer_audit in self._selection_rounds(
+            preview["frozen_plan"]
+        ):
+            candidate_count = len(
+                self._round_candidates(
+                    preview["preview_digest"],
+                    preview["frozen_plan"],
+                    search_round,
+                )
+            )
+            binding_count = candidate_count * len(inner_folds)
+            if outer_audit is not None:
+                binding_count += 1
+            expected_bindings += binding_count
+            round_counts.append(
+                {
+                    "search_round": search_round,
+                    "candidate_count": candidate_count,
+                    "binding_count": binding_count,
+                }
+            )
+        preview["execution_estimate"] = {
+            "expected_experiment_bindings": expected_bindings,
+            "rounds": round_counts,
+            "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
+        }
+        return preview
+
+    def creation_options(self) -> dict[str, Any]:
+        """Return the published inputs accepted by the Study creation boundary."""
+        template = self.catalog.template_detail("single_stock_daily_causal", "1")
+        operators = []
+        for summary in self.catalog.list_operators():
+            if summary["latest_version"] is None:
+                continue
+            latest = self.catalog.operator_detail(
+                summary["operator_id"], summary["latest_version"]
+            )
+            operators.append(
+                latest
+                | {
+                    "latest_version": summary["latest_version"],
+                    "versions": self.catalog.list_operator_versions(
+                        summary["operator_id"]
+                    ),
+                }
+            )
+        result = {
+            "datasets": self.datasets.list_available(),
+            "template": template,
+            "operators": operators,
+            "evaluation": deepcopy(EVALUATION_POLICY_IDENTITY),
+        }
+        if len(canonical_json_bytes(result)) > MAX_STUDY_DOCUMENT_BYTES:
+            raise RuntimeError("Parameter Study creation options exceed bounded size")
+        return result
 
     def _load_action(
         self,
@@ -4526,32 +4584,6 @@ class ParameterStudy:
             study_id,
             claim["candidate_digest"],
         )
-        dataset_slice = self.dataset_slice_factory.materialize(
-            frozen_plan["dataset"],
-            fold_window,
-        )
-        task = self._task_for_candidate(
-            candidate=configuration,
-            instrument=frozen_plan["dataset"]["instrument"],
-            snapshot_id=dataset_slice["snapshot_id"],
-            fold_window=fold_window,
-        )
-        preview = self.experiments.preview_task(task)
-        if preview["duplicate"]:
-            attempts = self.experiments.list_attempts(preview["experiment_id"])
-            if not attempts:
-                raise RuntimeError("duplicate holdout Experiment has no Attempt")
-            expected_attempt_id = attempts[0]["attempt_id"]
-        else:
-            expected_attempt_id = hashlib.sha256(
-                canonical_json_bytes(
-                    {
-                        "experiment_id": preview["experiment_id"],
-                        "action_id": claim["effect_action_id"],
-                        "sequence": 1,
-                    }
-                )
-            ).hexdigest()
         now = self._now()
         with self.catalog.transaction(immediate=True) as connection:
             access = connection.execute(
@@ -4585,10 +4617,11 @@ class ParameterStudy:
                             "candidate_digest": claim["candidate_digest"],
                             "binding_id": claim["binding_id"],
                             "effect_action_id": claim["effect_action_id"],
-                            "experiment_id": preview["experiment_id"],
-                            "attempt_id": expected_attempt_id,
-                            "dataset_snapshot_id": dataset_slice["snapshot_id"],
-                            "task_digest": _digest(task),
+                            "parent_dataset_snapshot_id": frozen_plan["dataset"][
+                                "snapshot_id"
+                            ],
+                            "fold_window": fold_window,
+                            "access_boundary": "BEFORE_DATASET_MATERIALIZATION",
                         }
                     ).decode(),
                     study_id,
@@ -4602,6 +4635,32 @@ class ParameterStudy:
                 """,
                 (now, study_id),
             )
+        dataset_slice = self.dataset_slice_factory.materialize(
+            frozen_plan["dataset"],
+            fold_window,
+        )
+        task = self._task_for_candidate(
+            candidate=configuration,
+            instrument=frozen_plan["dataset"]["instrument"],
+            snapshot_id=dataset_slice["snapshot_id"],
+            fold_window=fold_window,
+        )
+        preview = self.experiments.preview_task(task)
+        if preview["duplicate"]:
+            attempts = self.experiments.list_attempts(preview["experiment_id"])
+            if not attempts:
+                raise RuntimeError("duplicate holdout Experiment has no Attempt")
+            expected_attempt_id = attempts[0]["attempt_id"]
+        else:
+            expected_attempt_id = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "experiment_id": preview["experiment_id"],
+                        "action_id": claim["effect_action_id"],
+                        "sequence": 1,
+                    }
+                )
+            ).hexdigest()
         submission = self.experiments.submit_study_effect(
             task,
             action_id=claim["effect_action_id"],

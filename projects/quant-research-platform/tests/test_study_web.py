@@ -4,8 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from quant_platform.web import _json_text
+from quant_platform.parameter_study import ParameterStudy
+from quant_platform.resolved_runner import ResolvedAttemptExecutor
+from quant_platform.web import _json_text, _study_from_form
 
+from test_parameter_study import (
+    EXECUTION_IDENTITY,
+    _minimal_orchestration_spec,
+    _study_service,
+)
 from test_web_api import authenticate, make_app, snapshot
 from test_web_ui import _experiment_form
 
@@ -85,28 +92,40 @@ def _study_detail() -> dict:
             "execution": {"source_sha256": "d" * 64},
             "dataset": {"snapshot_id": "b" * 64},
         },
-        "execution_identity_drift": {
-            "detected": True,
+        "drift": {
             "reason": "SOURCE_CHANGED",
         },
         "trials": [
             {
-                "rank": 1,
-                "trial_id": "trial-1",
-                "parameter_identity": "e" * 64,
-                "parameters": {"window_sessions": 20},
-                "validation_score": 1.25,
-                "independent_metrics": {"max_drawdown": -0.08},
+                "candidate_digest": "e" * 64,
+                "configuration": {"window_sessions": 20},
+                "first_search_round": "FINAL",
+                "proposal_sequence": 1,
+                "classification": "IN_RANGE",
+                "created_at": "2026-08-28T08:01:00Z",
+            }
+        ],
+        "rankings": [
+            {
+                "candidate_digest": "e" * 64,
+                "champion_eligible": False,
                 "eligible": False,
-                "constraint_reasons": ["minimum_trades"],
-                "experiment_bindings": [
-                    {
-                        "role": "OUTER_AUDIT",
-                        "experiment_id": "f" * 64,
-                        "attempt_id": "1" * 64,
-                        "attempt_status": "RUNNING",
-                    }
-                ],
+                "validation_score": 1.25,
+                "independent_metrics": {"maximum_drawdown": -0.08},
+                "explanation": {"constraint_failures": ["minimum_trades"]},
+            }
+        ],
+        "bindings": [
+            {
+                "candidate_digest": "e" * 64,
+                "role": "OUTER_AUDIT",
+                "experiment_id": "f" * 64,
+                "attempt_id": "1" * 64,
+                "state": "SUBMITTED",
+                "attempt": {
+                    "status": "RUNNING",
+                    "comparison": None,
+                },
             }
         ],
         "events": [
@@ -171,6 +190,55 @@ def test_study_json_routes_use_the_public_service(tmp_path: Path, monkeypatch):
         ("preview", spec),
         ("submit", spec, STUDY_ID, "web-submit"),
     ]
+
+
+def test_study_html_creation_uses_only_the_public_parameter_study_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form.update(
+        {
+            "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
+            "suggester": "GRID",
+            "seed": "17",
+            "unique_trial_budget": "1",
+            "max_suggestions": "1",
+            "outer_folds": "1",
+            "inner_folds": "1",
+            "scoring_sessions": "1",
+            "minimum_training_sessions": "2",
+            "purge_sessions": "0",
+            "holdout_sessions": "1",
+            "evaluation_version": "latest",
+            "parent_study_ids": "",
+            "prior_unique_candidate_count": "0",
+            "lineage_complete": "true",
+        }
+    )
+    creation = app.state.studies.creation_options()
+    spec = _study_from_form(form, creation=creation)
+    preview = app.state.studies.preview(spec)
+    monkeypatch.setattr(app.state.studies, "creation_options", lambda: creation)
+    monkeypatch.setattr(app.state.studies, "preview", lambda value: preview)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Study Web bypassed the ParameterStudy public seam")
+
+    monkeypatch.setattr(app.state.catalog, "template_detail", forbidden)
+    monkeypatch.setattr(app.state.datasets, "list_available", forbidden)
+    monkeypatch.setattr(app.state.operators, "list", forbidden)
+
+    page = client.get("/studies/new")
+    posted = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert page.status_code == 200
+    assert posted.status_code == 200
 
 
 def test_study_pages_expose_research_evidence_and_escape_values(
@@ -370,7 +438,7 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     assert 'data-page="study-preview"' in preview.text
     assert "Split preview" in preview.text
     assert "Candidate capacity" in preview.text
-    assert "Experiment bindings" not in preview.text
+    assert "Expected Experiment bindings" in preview.text
     values = {
         name: html.unescape(
             re.search(
@@ -461,9 +529,15 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
     fresh_digest = "b" * 64
     preview = {
         "preview_digest": fresh_digest,
+        "execution_estimate": {
+            "expected_experiment_bindings": 4,
+            "rounds": [],
+            "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
+        },
         "frozen_plan": {
             "search": {
                 "unique_trial_budget": 1,
+                "max_suggestions": 1,
                 "candidate_capacity": 1,
             },
             "validation": {
@@ -489,6 +563,16 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
                 "dataset_id": "SYNTH.SS",
                 "name": "Synthetic",
                 "snapshot_id": "c" * 64,
+            },
+            "template": {
+                "name": "single_stock_daily_causal",
+                "version": "1",
+                "content_digest": "e" * 64,
+            },
+            "evaluation": {
+                "policy_id": "robust_walk_forward",
+                "resolved_version": "1.0.0",
+                "content_digest": "f" * 64,
             },
             "execution": {"identity": {"source_sha256": "d" * 64}},
         },
@@ -520,6 +604,80 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
     assert 'data-testid="stale-preview"' in response.text
     assert fresh_digest in response.text
     assert "Nothing was created" in response.text
+
+
+def test_real_parameter_study_evidence_renders_through_the_public_web_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    studies, experiments = _study_service(tmp_path / "domain")
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-real-web-integration",
+    )
+    runner = ResolvedAttemptExecutor(
+        studies.catalog,
+        output_root=studies.catalog.state_root / "study-runs",
+        project_root=Path(__file__).parents[1],
+        attempt_controller=experiments,
+        identity_provider=lambda project_root, runner_image: EXECUTION_IDENTITY,
+    )
+
+    def execute(effect: dict, action_id: str) -> dict:
+        attempt = experiments.claim_next_attempt()
+        assert attempt is not None
+        assert attempt["attempt_id"] == effect["attempt_id"]
+        experiments.record_physical_launch(
+            attempt["attempt_id"],
+            container_name=f"study-{attempt['attempt_id'][:12]}",
+        )
+        result = runner(attempt)
+        experiments.record_termination(
+            attempt["attempt_id"],
+            exit_status=0,
+            outcome="SUCCEEDED",
+        )
+        experiments.finish_success(
+            attempt["attempt_id"],
+            result_path=result["result_path"],
+            result_digest=result["result_digest"],
+            logs=result["logs"],
+        )
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
+
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/160",
+        effect_executor=execute,
+    )
+    for _ in range(40):
+        coordinator.advance(submitted["study_id"])
+        detail = coordinator.detail(submitted["study_id"])
+        if detail["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail("selection orchestration did not reach HOLDOUT_READY")
+
+    assert detail["rankings"]
+    assert detail["bindings"]
+    web_root = tmp_path / "web"
+    web_root.mkdir()
+    app, client = make_app(web_root)
+    authenticate(app, client)
+    monkeypatch.setattr(app.state.studies, "detail", coordinator.detail)
+
+    response = client.get(f"/studies/{submitted['study_id']}")
+
+    assert response.status_code == 200
+    assert str(detail["rankings"][0]["validation_score"]) in response.text
+    assert detail["bindings"][0]["experiment_id"] in response.text
 
 
 def test_deeply_nested_study_json_is_a_controlled_bad_request(tmp_path: Path):

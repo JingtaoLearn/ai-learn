@@ -40,7 +40,6 @@ PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
     "src/quant_platform/study_contracts.py": "study_contracts.py",
     "src/quant_platform/study_datasets.py": "study_datasets.py",
-    "src/quant_platform/study_evaluation.py": "study_evaluation.py",
     "src/quant_platform/worker.py": "worker.py",
 }
 REQUIRED_ARTIFACTS = {
@@ -444,6 +443,38 @@ def test_effective_source_identity_hashes_loaded_wheel_package_with_stable_label
         assert files[label] == sha256((package_root / filename).read_bytes()).hexdigest()
         assert files[label] != sha256((project_root / label).read_bytes()).hexdigest()
     assert git == {"available": False, "commit": None, "dirty": None}
+
+
+def test_evaluation_policy_source_does_not_change_strategy_runner_identity(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    evaluation_source = package_root / "study_evaluation.py"
+    evaluation_source.write_text("POLICY_VERSION = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    font = {
+        "path": "/verified/font.ttc",
+        "family": "Verified CJK",
+        "sha256": "a" * 64,
+    }
+
+    first, _, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+    evaluation_source.write_text("POLICY_VERSION = 2\n", encoding="utf-8")
+    second, files, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+
+    assert first == second
+    assert "src/quant_platform/study_evaluation.py" not in files
 
 
 def test_project_root_discovery_supports_editable_layout_and_explicit_override(

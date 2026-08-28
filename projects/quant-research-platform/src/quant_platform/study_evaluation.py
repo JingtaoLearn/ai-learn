@@ -125,7 +125,7 @@ _METRIC_DOCUMENT_FACTORY_TOKEN = object()
 class VerifiedMetricDocument(dict[str, Any]):
     """Factory-issued evidence capability accepted by evaluation policies."""
 
-    __slots__ = ("_factory_token",)
+    __slots__ = ("_factory_token", "_issued_canonical_bytes")
 
     def __init__(
         self,
@@ -137,6 +137,10 @@ class VerifiedMetricDocument(dict[str, Any]):
             raise TypeError("VerifiedMetricDocument is factory-issued")
         super().__init__(value)
         self._factory_token = _factory_token
+        self._issued_canonical_bytes = canonical_json_bytes(self)
+
+    def is_pristine(self) -> bool:
+        return canonical_json_bytes(self) == self._issued_canonical_bytes
 
 
 def _sha256(payload: bytes) -> str:
@@ -1098,8 +1102,7 @@ class MetricDocumentFactory:
                 "reported drawdown or trade metrics do not reconcile"
             )
         _finite(independent, "independent_metrics")
-        document = VerifiedMetricDocument(
-            {
+        document = {
                 "schema_version": 1,
                 "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
                 "candidate_digest": candidate_digest,
@@ -1126,11 +1129,12 @@ class MetricDocumentFactory:
                     "ledger_equity_cost": True,
                     "force_flat_with_cost": True,
                 },
-            },
+            }
+        document["document_digest"] = _sha256(canonical_json_bytes(document))
+        return VerifiedMetricDocument(
+            document,
             _factory_token=_METRIC_DOCUMENT_FACTORY_TOKEN,
         )
-        document["document_digest"] = _sha256(canonical_json_bytes(document))
-        return document
 
 
 class RobustWalkForwardPolicy:
@@ -1198,9 +1202,11 @@ class RobustWalkForwardPolicy:
                 not isinstance(factory_document, VerifiedMetricDocument)
                 or factory_document._factory_token
                 is not _METRIC_DOCUMENT_FACTORY_TOKEN
+                or not factory_document.is_pristine()
             ):
                 raise EvaluationPolicyError(
-                    f"metric_documents[{index}] was not issued by MetricDocumentFactory"
+                    f"metric_documents[{index}] is not pristine "
+                    "MetricDocumentFactory-issued evidence"
                 )
             document = dict(factory_document)
             if (

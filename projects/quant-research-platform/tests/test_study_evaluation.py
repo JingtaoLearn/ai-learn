@@ -246,6 +246,31 @@ def test_policy_rejects_forged_plain_metric_document(tmp_path: Path):
         )
 
 
+def test_policy_rejects_mutated_factory_document_with_recomputed_digest(
+    tmp_path: Path,
+):
+    document = _verified_document(tmp_path)
+    document["metrics"]["net_sharpe"] = 1_000_000.0
+    document["document_digest"] = hashlib.sha256(
+        canonical_json_bytes(
+            {key: value for key, value in document.items() if key != "document_digest"}
+        )
+    ).hexdigest()
+
+    with pytest.raises(EvaluationPolicyError, match="not pristine"):
+        RobustWalkForwardPolicy().evaluate(
+            document["candidate_digest"],
+            [document],
+            {
+                "stability_weight": 0.5,
+                "turnover_weight": 0.05,
+                "minimum_trades": 0,
+                "maximum_drawdown": None,
+                "maximum_annual_turnover": None,
+            },
+        )
+
+
 def test_metric_factory_rejects_candidate_relabeling(tmp_path: Path):
     factory, attempt, fold_window = _attempt_and_factory(tmp_path)
     candidate = json.loads(json.dumps(attempt["candidate_configuration"]))

@@ -62,7 +62,6 @@ PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/strategy_runner.py", "strategy_runner.py"),
     ("src/quant_platform/study_contracts.py", "study_contracts.py"),
     ("src/quant_platform/study_datasets.py", "study_datasets.py"),
-    ("src/quant_platform/study_evaluation.py", "study_evaluation.py"),
     ("src/quant_platform/worker.py", "worker.py"),
 )
 PROJECT_SOURCE_PATHS = (

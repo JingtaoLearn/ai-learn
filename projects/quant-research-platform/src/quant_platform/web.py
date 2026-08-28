@@ -288,6 +288,22 @@ def _operator_groups(operators: OperatorService) -> dict[str, list[dict[str, Any
     return grouped
 
 
+def _study_operator_groups(
+    creation: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for operator in creation["operators"]:
+        grouped.setdefault(operator["slot"], []).append(operator)
+    for slot, items in grouped.items():
+        items.sort(
+            key=lambda item: (
+                item["operator_id"] != DEFAULT_OPERATOR_IDS[slot],
+                item["operator_id"],
+            )
+        )
+    return grouped
+
+
 def _form_parameter_value(raw: str, schema: dict[str, Any]) -> Any:
     if "enum" in schema:
         value = _json_text(raw, "enum parameter")
@@ -391,17 +407,109 @@ def _task_from_form(
     }
 
 
+def _study_operator_version(
+    creation: dict[str, Any],
+    slot: str,
+    operator_id: str,
+    requested_version: str,
+) -> dict[str, Any]:
+    for operator in creation["operators"]:
+        if operator["slot"] != slot or operator["operator_id"] != operator_id:
+            continue
+        resolved_version = (
+            operator["latest_version"]
+            if requested_version == "latest"
+            else requested_version
+        )
+        for version in operator["versions"]:
+            if version["version"] == resolved_version:
+                return version
+    raise TaskValidationError(
+        f"unknown published Study operator: {operator_id}@{requested_version}"
+    )
+
+
+def _study_task_from_form(
+    form: dict[str, str], creation: dict[str, Any]
+) -> dict[str, Any]:
+    dataset_id = form.get("dataset_id", "")
+    start_date = form.get("start_date", "")
+    end_date = form.get("end_date", "")
+    if not dataset_id or not start_date or not end_date:
+        raise TaskValidationError("dataset selection is required")
+    if dataset_id not in {item["dataset_id"] for item in creation["datasets"]}:
+        raise TaskValidationError("dataset selection is not published")
+    template = creation["template"]
+    template_parameters = {
+        name: (
+            start_date
+            if name == "evaluation_start"
+            else end_date
+            if name == "evaluation_end"
+            else _form_parameter(
+                form,
+                f"template_{name}",
+                schema,
+                _form_parameter_default(template["defaults"][name], schema),
+            )
+        )
+        for name, schema in template["parameter_schema"]["properties"].items()
+    }
+    task_operators: dict[str, Any] = {}
+    for slot in template["slots"]:
+        selector = form.get(f"operator_{slot}_selector", "")
+        if "@" not in selector:
+            raise TaskValidationError(f"{slot} operator selection is required")
+        operator_id, requested_version = selector.rsplit("@", 1)
+        selected = _study_operator_version(
+            creation, slot, operator_id, requested_version
+        )
+        parameters = {
+            name: _form_parameter(
+                form,
+                (
+                    f"operator_{slot}_param__{operator_id}__"
+                    f"{selected['version']}__{name}"
+                ),
+                schema,
+                _form_parameter_default(selected["defaults"][name], schema),
+            )
+            for name, schema in selected["parameter_schema"]["properties"].items()
+        }
+        task_operators[slot] = {
+            "operator_id": operator_id,
+            "version": requested_version,
+            "parameters": parameters,
+        }
+    return {
+        "schema_version": 1,
+        "dataset": {
+            "dataset_id": dataset_id,
+            "start": start_date,
+            "end": end_date,
+        },
+        "template": {
+            "name": template["name"],
+            "version": template["version"],
+            "parameters": template_parameters,
+        },
+        "operators": task_operators,
+    }
+
+
 def _study_from_form(
     form: dict[str, str],
     *,
-    catalog: Any,
+    creation: dict[str, Any],
 ) -> dict[str, Any]:
-    task = _task_from_form(form, catalog=catalog)
+    task = _study_task_from_form(form, creation)
     search_space: dict[str, dict[str, list[Any]]] = {}
     for slot, selector in task["operators"].items():
-        selected = catalog.operator_detail(
+        selected = _study_operator_version(
+            creation,
+            slot,
             selector["operator_id"],
-            None if selector["version"] == "latest" else selector["version"],
+            selector["version"],
         )
         for name, schema in selected["parameter_schema"]["properties"].items():
             field_name = (
@@ -1268,10 +1376,13 @@ def create_app(
         form_values: dict[str, str] | None = None,
         *,
         validation_error: Exception | None = None,
+        creation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        grouped = _operator_groups(operators)
-        dataset_options = await run_in_threadpool(datasets.list_available)
-        template = catalog.template_detail("single_stock_daily_causal", "1")
+        if creation is None:
+            creation = await run_in_threadpool(studies.creation_options)
+        grouped = _study_operator_groups(creation)
+        dataset_options = creation["datasets"]
+        template = creation["template"]
         default_search = None
         for slot in template["slots"]:
             if slot in {"cost", "report"} or not grouped.get(slot):
@@ -1327,8 +1438,9 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
+        creation = await run_in_threadpool(studies.creation_options)
         try:
-            spec = _study_from_form(form, catalog=catalog)
+            spec = _study_from_form(form, creation=creation)
             preview = await run_in_threadpool(studies.preview, spec)
         except (StudyValidationError, TaskValidationError, ValueError) as exc:
             return _render(
@@ -1336,7 +1448,9 @@ def create_app(
                 "study_new.html",
                 session=session,
                 status_code=400,
-                **await study_form_context(form, validation_error=exc),
+                **await study_form_context(
+                    form, validation_error=exc, creation=creation
+                ),
             )
         return _render(
             request,

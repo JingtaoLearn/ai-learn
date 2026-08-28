@@ -8,12 +8,14 @@
   <div><span>Unique Trial budget</span><strong>{{ preview.frozen_plan.search.unique_trial_budget }}</strong></div>
   <div><span>Raw suggestion budget</span><strong>{{ preview.frozen_plan.search.max_suggestions }}</strong></div>
   <div><span>Candidate capacity</span><strong>{{ preview.frozen_plan.search.candidate_capacity }}</strong></div>
+  <div><span>Expected Experiment bindings</span><strong>{{ preview.execution_estimate.expected_experiment_bindings }}</strong></div>
 </section>
+<p class="notice">Existing Experiments are reused only when their canonical identity matches at dispatch. This preview never assumes a reuse count.</p>
 <section class="panel" data-testid="split-preview"><div class="section-heading"><div><p class="eyebrow">CHRONOLOGICAL WINDOWS</p><h2>Split preview</h2></div><span class="badge">{{ preview.frozen_plan.validation.rules.outer_account_policy }}</span></div>
   {% for round in preview.frozen_plan.validation.outer_rounds %}<div class="evidence-window"><strong>Planned outer OOS {{ loop.index }}</strong><span>{{ round.outer_audit.scoring_start }} → {{ round.outer_audit.scoring_end }}</span><small>{{ round.inner_folds|length }} inner validation folds</small></div>{% endfor %}
   <div class="evidence-window holdout-window"><strong>Terminal holdout</strong><span>{{ preview.frozen_plan.holdout.fold_window.scoring_start }} → {{ preview.frozen_plan.holdout.fold_window.scoring_end }}</span><small>Remains sealed until one final candidate is frozen.</small></div>
 </section>
-<section class="panel"><h2>Resolved plan identity</h2><dl class="technical"><dt>Preview digest</dt><dd>{{ preview.preview_digest }}</dd><dt>Dataset</dt><dd>{{ preview.frozen_plan.dataset.dataset_id }} · {{ preview.frozen_plan.dataset.name }}</dd><dt>Snapshot</dt><dd>{{ preview.frozen_plan.dataset.snapshot_id }}</dd><dt>Execution identity</dt><dd>{{ preview.frozen_plan.execution.identity|canonical_json }}</dd></dl></section>
+<section class="panel"><h2>Resolved plan identity</h2><dl class="technical"><dt>Preview digest</dt><dd>{{ preview.preview_digest }}</dd><dt>Dataset</dt><dd>{{ preview.frozen_plan.dataset.dataset_id }} · {{ preview.frozen_plan.dataset.name }}</dd><dt>Snapshot</dt><dd>{{ preview.frozen_plan.dataset.snapshot_id }}</dd><dt>Template</dt><dd>{{ preview.frozen_plan.template.name }}@{{ preview.frozen_plan.template.version }} · {{ preview.frozen_plan.template.content_digest }}</dd><dt>Evaluation</dt><dd>{{ preview.frozen_plan.evaluation.policy_id }}@{{ preview.frozen_plan.evaluation.resolved_version }} · {{ preview.frozen_plan.evaluation.content_digest }}</dd><dt>Execution identity</dt><dd>{{ preview.frozen_plan.execution.identity|canonical_json }}</dd></dl><details><summary>Complete frozen Study plan</summary><pre>{{ preview.frozen_plan|canonical_json }}</pre></details></section>
 <div class="actions">
 <form method="post" action="/studies/edit" data-testid="study-edit-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -379,9 +379,16 @@ try {
     await loaded;
     await expectPage("study-preview");
     const previewIsPlan = await evaluate(
-      'document.body.textContent.includes("Planned outer OOS") && !document.body.textContent.includes("Experiment bindings")',
+      `(() => {
+        const text = document.body.textContent;
+        return text.includes("Planned outer OOS") &&
+          text.includes("Expected Experiment bindings") &&
+          text.includes("Complete frozen Study plan") &&
+          !text.includes("Assumed reuse") &&
+          !text.includes("Observed outer OOS evidence");
+      })()`,
     );
-    if (!previewIsPlan) throw new Error("Study preview fabricated observed evidence or estimates");
+    if (!previewIsPlan) throw new Error("Study preview did not render the frozen protocol and canonical estimate");
     await assertLayout("study preview", width);
     await keyboardActivate('form[action="/studies/edit"] button[type="submit"]');
     await expectPage("study-new");
