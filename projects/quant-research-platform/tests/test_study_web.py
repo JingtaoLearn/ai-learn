@@ -195,19 +195,21 @@ def test_study_pages_expose_research_evidence_and_escape_values(
             "Constraint reasons",
             "Parameter identity",
             "Experiment bindings",
-            "Outer OOS evidence",
-            "Terminal holdout evidence",
+            "Planned outer OOS windows",
+            "Terminal holdout plan and state",
             "Study Lineage",
-            "Current in-flight Attempt",
-            "Execution identity drift",
+            "Study coordinator lease",
+            "Execution identity",
         )
     )
+    assert "These chronological windows describe the frozen protocol" in study.text
+    assert "Verified report" not in study.text
     assert "&lt;Synthetic &amp; safe&gt;" in study.text
     assert "<Synthetic & safe>" not in study.text
     assert report.status_code == 200
     assert 'data-page="study-report"' in report.text
-    assert "Outer OOS evidence" in report.text
-    assert "Terminal holdout evidence" in report.text
+    assert "Planned outer OOS windows" in report.text
+    assert "Terminal holdout plan and state" in report.text
 
 
 def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
@@ -247,9 +249,8 @@ def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
     )
 
     assert paused.status_code == advanced.status_code == 303
-    assert paused.headers["location"] == advanced.headers["location"] == (
-        f"/studies/{STUDY_ID}"
-    )
+    assert paused.headers["location"] == f"/studies/{STUDY_ID}?outcome=PAUSED"
+    assert advanced.headers["location"] == f"/studies/{STUDY_ID}?outcome=ADVANCED"
     assert calls == [(STUDY_ID, "PAUSE", "pause-web"), (STUDY_ID, "ADVANCE")]
 
 
@@ -309,7 +310,8 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     assert preview.status_code == 200
     assert 'data-page="study-preview"' in preview.text
     assert "Split preview" in preview.text
-    assert "Experiment bindings" in preview.text
+    assert "Candidate capacity" in preview.text
+    assert "Experiment bindings" not in preview.text
     values = {
         name: html.unescape(
             re.search(
@@ -403,3 +405,72 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
     assert 'data-testid="stale-preview"' in response.text
     assert fresh_digest in response.text
     assert "Nothing was created" in response.text
+
+
+def test_deeply_nested_study_json_is_a_controlled_bad_request(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    nested = "[" * 1_100 + "0" + "]" * 1_100
+    headers = {
+        "origin": "https://quant.ai.jingtao.fun",
+        "x-csrf-token": issued.csrf_token,
+        "content-type": "application/json",
+    }
+
+    api = client.post(
+        "/api/studies/preview",
+        content='{"study":' + nested + "}",
+        headers=headers,
+    )
+    html_response = client.post(
+        "/studies",
+        data={
+            "csrf_token": issued.csrf_token,
+            "action_id": "deep-study-json",
+            "expected_preview_digest": STUDY_ID,
+            "study_json": nested,
+        },
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert api.status_code == 400
+    assert api.json()["error"]["code"] == "INVALID_JSON"
+    assert "nesting limit" in api.json()["error"]["message"]
+    assert html_response.status_code == 400
+    assert "nesting limit" in html_response.text
+    assert "RecursionError" not in api.text + html_response.text
+
+
+def test_study_not_found_and_mutation_outcomes_are_visible(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    headers = {"origin": "https://quant.ai.jingtao.fun"}
+
+    missing_api = client.get("/api/studies/not-a-study")
+    missing_html = client.get("/studies/not-a-study")
+
+    assert missing_api.status_code == 404
+    assert missing_api.json()["error"]["code"] == "NOT_FOUND"
+    assert missing_html.status_code == 404
+
+    monkeypatch.setattr(
+        app.state.studies,
+        "advance",
+        lambda study_id: {
+            "status": "EXECUTION_IDENTITY_DRIFT",
+            "study_id": study_id,
+        },
+    )
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: _study_detail())
+    response = client.post(
+        f"/studies/{STUDY_ID}/advance",
+        data={"csrf_token": issued.csrf_token},
+        headers=headers,
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert 'role="status"' in response.text
+    assert "Execution identity drift" in response.text

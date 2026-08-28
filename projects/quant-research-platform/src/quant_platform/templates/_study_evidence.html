@@ -1,19 +1,19 @@
 {% macro study_evidence(study, compact=false) %}
-{% set trials = study.get("trials", []) %}
 <section class="evidence-panel outer-evidence" aria-labelledby="outer-evidence-heading">
-  <p class="eyebrow">SELECTION-PROCESS AUDIT</p><h2 id="outer-evidence-heading">Outer OOS evidence</h2>
-  <p>Chronological out-of-sample folds audit repeated selection. They are not terminal holdout evidence.</p>
-  {% for round in study.frozen_plan.validation.outer_rounds %}<div class="evidence-window"><strong>Outer fold {{ loop.index }}</strong><span>{{ round.outer_audit.scoring_start }} → {{ round.outer_audit.scoring_end }}</span></div>{% else %}<p class="empty">No outer evidence is available yet.</p>{% endfor %}
+  <p class="eyebrow">FROZEN STUDY PLAN</p><h2 id="outer-evidence-heading">Planned outer OOS windows</h2>
+  <p>These chronological windows describe the frozen protocol. They are not observed evidence.</p>
+  {% for round in study.frozen_plan.validation.outer_rounds %}<div class="evidence-window"><strong>Planned outer fold {{ loop.index }}</strong><span>{{ round.outer_audit.scoring_start }} → {{ round.outer_audit.scoring_end }}</span></div>{% endfor %}
 </section>
 <section class="evidence-panel holdout-evidence" aria-labelledby="holdout-evidence-heading">
-  <p class="eyebrow">SEPARATELY GOVERNED EVIDENCE</p><h2 id="holdout-evidence-heading">Terminal holdout evidence</h2>
+  <p class="eyebrow">SEPARATELY GOVERNED STATE</p><h2 id="holdout-evidence-heading">Terminal holdout plan and state</h2>
   <div class="holdout-dimensions"><div><span>Access</span><strong>{{ study.holdout.access }}</strong></div><div><span>Outcome</span><strong>{{ study.holdout.outcome }}</strong></div><div><span>Freshness</span><strong>{{ study.holdout.freshness }}</strong></div></div>
   <p>{{ study.frozen_plan.holdout.fold_window.scoring_start }} → {{ study.frozen_plan.holdout.fold_window.scoring_end }}. Freshness describes recorded platform history only; it does not claim global novelty.</p>
 </section>
-{% if not compact %}
+{% if not compact and "trials" in study %}
+{% set trials = study.trials %}
 <section class="panel" aria-labelledby="trial-ranking-heading"><div class="section-heading"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2 id="trial-ranking-heading">Trial ranking</h2></div><span class="badge">{{ trials|length }} Trials</span></div>
 {% if trials %}<div class="table-wrap"><table><thead><tr><th>Rank / Trial</th><th>Validation score</th><th>Independent metrics</th><th>Eligibility / Constraint reasons</th><th>Parameter identity</th><th>Experiment bindings</th></tr></thead><tbody>
-{% for trial in trials %}<tr><td><strong>#{{ trial.get("rank", loop.index) }}</strong><br><span class="mono">{{ trial.get("trial_id", "—") }}</span></td><td>{{ trial.get("validation_score", "Pending") }}</td><td><pre>{{ trial.get("independent_metrics", {})|canonical_json }}</pre></td><td><span class="badge">{{ "Eligible" if trial.get("eligible") else "Ineligible" }}</span><ul>{% for reason in trial.get("constraint_reasons", []) %}<li>{{ reason }}</li>{% else %}<li>No constraint reasons</li>{% endfor %}</ul></td><td><span class="mono">{{ trial.get("parameter_identity", "Pending") }}</span><details><summary>Parameters</summary><pre>{{ trial.get("parameters", {})|canonical_json }}</pre></details></td><td>{% for binding in trial.get("experiment_bindings", []) %}<div class="binding"><strong>{{ binding.get("role", "UNKNOWN") }}</strong><a class="mono" href="/experiments/{{ binding.get('experiment_id', '') }}">{{ binding.get("experiment_id", "Pending") }}</a><span>{{ binding.get("attempt_status", "No Attempt") }}</span>{% if binding.get("attempt_id") %}<a href="/reports/{{ binding.attempt_id }}">Verified report</a>{% endif %}</div>{% else %}No bindings{% endfor %}</td></tr>{% endfor %}
+{% for trial in trials %}<tr><td><strong>#{{ trial.get("rank", loop.index) }}</strong><br><span class="mono">{{ trial.get("trial_id", "—") }}</span></td><td>{{ trial.get("validation_score", "Pending") }}</td><td><pre>{{ trial.get("independent_metrics", {})|canonical_json }}</pre></td><td><span class="badge">{{ "Eligible" if trial.get("eligible") else "Ineligible" }}</span><ul>{% for reason in trial.get("constraint_reasons", []) %}<li>{{ reason }}</li>{% else %}<li>No constraint reasons</li>{% endfor %}</ul></td><td><span class="mono">{{ trial.get("parameter_identity", "Pending") }}</span><details><summary>Parameters</summary><pre>{{ trial.get("parameters", {})|canonical_json }}</pre></details></td><td>{% for binding in trial.get("experiment_bindings", []) %}<div class="binding"><strong>{{ binding.get("role", "UNKNOWN") }}</strong><a class="mono" href="/experiments/{{ binding.get('experiment_id', '') }}">{{ binding.get("experiment_id", "Pending") }}</a><span>{{ binding.get("attempt_status", "No Attempt") }}</span>{% if binding.get("attempt_id") and binding.get("attempt_status") == "SUCCEEDED" and binding.get("is_canonical") is sameas true %}<a href="/reports/{{ binding.attempt_id }}">Verified report</a>{% endif %}</div>{% else %}No bindings{% endfor %}</td></tr>{% endfor %}
 </tbody></table></div>{% else %}<p class="empty">No Trials have been proposed. Ranking will appear from the public Study view as evidence becomes available.</p>{% endif %}
 </section>
 {% endif %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -38,7 +39,23 @@ from .strategy_runner import (
 
 SESSION_COOKIE = "quant_session"
 MAX_BODY_BYTES = 1_048_576
+MAX_JSON_DEPTH = 64
+MAX_JSON_CONTAINERS = 10_000
 PACKAGE_ROOT = Path(__file__).resolve().parent
+STUDY_ID = re.compile(r"^[0-9a-f]{64}$")
+STUDY_OUTCOMES = {
+    "ACTION_CONFLICT": "Action conflict: this action ID was already used differently.",
+    "ADVANCED": "Study advanced.",
+    "CANCELLED": "Study cancelled.",
+    "EFFECT_COMMITTED": "Study effect committed.",
+    "EXECUTION_IDENTITY_DRIFT": (
+        "Execution identity drift detected. New Study effects remain blocked."
+    ),
+    "INVALID_TRANSITION": "The requested Study transition is not valid.",
+    "LEASE_BUSY": "Another coordinator currently holds the Study lease.",
+    "PAUSED": "Study paused.",
+    "RESUMED": "Study resumed.",
+}
 
 
 def _canonical_json_text(value: Any) -> str:
@@ -83,20 +100,40 @@ def _strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _bounded_json_loads(value: str | bytes, path: str) -> Any:
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=_strict_pairs,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"{path} contains non-finite value {constant}")
+            ),
+        )
+    except RecursionError as exc:
+        raise ValueError(f"{path} exceeds the JSON nesting limit") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path} is not valid JSON") from exc
+    containers = 0
+    pending = [(parsed, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if not isinstance(item, (dict, list)):
+            continue
+        containers += 1
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError(f"{path} exceeds the JSON nesting limit")
+        if containers > MAX_JSON_CONTAINERS:
+            raise ValueError(f"{path} exceeds the JSON container limit")
+        children = item.values() if isinstance(item, dict) else item
+        pending.extend((child, depth + 1) for child in children)
+    return parsed
+
+
 async def _json_body(request: Request) -> Any:
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
         raise ValueError("request body exceeds the size limit")
-    try:
-        return json.loads(
-            body,
-            object_pairs_hook=_strict_pairs,
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value: {value}")
-            ),
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("request body is not valid JSON") from exc
+    return _bounded_json_loads(body, "request body")
 
 
 async def _form_body(request: Request) -> dict[str, str]:
@@ -127,16 +164,13 @@ def _safe_markdown(value: str) -> str:
 
 
 def _json_text(value: str, path: str) -> Any:
-    try:
-        return json.loads(
-            value,
-            object_pairs_hook=_strict_pairs,
-            parse_constant=lambda constant: (_ for _ in ()).throw(
-                ValueError(f"{path} contains non-finite value {constant}")
-            ),
-        )
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path} is not valid JSON") from exc
+    return _bounded_json_loads(value, path)
+
+
+def _study_id(value: str) -> str:
+    if STUDY_ID.fullmatch(value) is None:
+        raise StudyNotFoundError(f"unknown Parameter Study: {value}")
+    return value
 
 
 def _session(request: Request) -> SessionData:
@@ -390,25 +424,6 @@ def _study_from_form(
     return task
 
 
-def _study_preview_counts(preview: dict[str, Any]) -> dict[str, int]:
-    plan = preview["frozen_plan"]
-    search = plan["search"]
-    validation = plan["validation"]
-    unique_trials = min(
-        search["unique_trial_budget"],
-        search["candidate_capacity"],
-    )
-    outer_folds = len(validation["outer_rounds"])
-    inner_folds = len(validation["final_search_round"]["inner_folds"])
-    experiment_bindings = unique_trials * inner_folds * (outer_folds + 1)
-    experiment_bindings += outer_folds + 1
-    return {
-        "unique_trials": unique_trials,
-        "experiment_bindings": experiment_bindings,
-        "assumed_reuse": 0,
-    }
-
-
 def _verified_run_payloads(
     settings: Settings, attempt: dict[str, Any]
 ) -> dict[str, bytes]:
@@ -579,6 +594,22 @@ def create_app(
             "error.html",
             session=session,
             status_code=400,
+            message=str(exc),
+        )
+
+    @app.exception_handler(StudyNotFoundError)
+    async def study_not_found(request: Request, exc: StudyNotFoundError):
+        if request.url.path.startswith("/api/"):
+            return _json_error(404, "NOT_FOUND", str(exc))
+        try:
+            session = _session(request)
+        except AuthError:
+            return RedirectResponse("/login", status_code=303)
+        return _render(
+            request,
+            "error.html",
+            session=session,
+            status_code=404,
             message=str(exc),
         )
 
@@ -927,16 +958,13 @@ def create_app(
     @app.get("/api/studies/{study_id}")
     async def api_study(request: Request, study_id: str):
         _session(request)
-        try:
-            return {
-                "study": await run_in_threadpool(studies.detail, study_id)
-            }
-        except StudyNotFoundError as exc:
-            return _json_error(404, "NOT_FOUND", str(exc))
+        study_id = _study_id(study_id)
+        return {"study": await run_in_threadpool(studies.detail, study_id)}
 
     @app.post("/api/studies/{study_id}/advance")
     async def api_study_advance(request: Request, study_id: str):
         session = _session(request)
+        study_id = _study_id(study_id)
         _csrf(request, session)
         try:
             body = await _json_body(request)
@@ -944,15 +972,13 @@ def create_app(
             return _json_error(400, "INVALID_JSON", str(exc))
         if type(body) is not dict or body:
             return _json_error(400, "INVALID_REQUEST", "Expected an empty object")
-        try:
-            result = await run_in_threadpool(studies.advance, study_id)
-        except StudyNotFoundError as exc:
-            return _json_error(404, "NOT_FOUND", str(exc))
+        result = await run_in_threadpool(studies.advance, study_id)
         return JSONResponse(result)
 
     @app.post("/api/studies/{study_id}/control")
     async def api_study_control(request: Request, study_id: str):
         session = _session(request)
+        study_id = _study_id(study_id)
         _csrf(request, session)
         try:
             body = await _json_body(request)
@@ -964,15 +990,12 @@ def create_app(
                 "INVALID_REQUEST",
                 "Expected exactly operation and action_id",
             )
-        try:
-            result = await run_in_threadpool(
-                studies.control,
-                study_id,
-                body["operation"],
-                action_id=body["action_id"],
-            )
-        except StudyNotFoundError as exc:
-            return _json_error(404, "NOT_FOUND", str(exc))
+        result = await run_in_threadpool(
+            studies.control,
+            study_id,
+            body["operation"],
+            action_id=body["action_id"],
+        )
         return JSONResponse(result)
 
     @app.get("/")
@@ -1238,7 +1261,6 @@ def create_app(
             "study_preview.html",
             session=session,
             preview=preview,
-            preview_counts=_study_preview_counts(preview),
             study_json=_canonical_json_text(spec),
             action_id=form.get("action_id") or secrets.token_hex(16),
             stale=False,
@@ -1270,7 +1292,6 @@ def create_app(
                 "study_preview.html",
                 session=session,
                 preview=preview,
-                preview_counts=_study_preview_counts(preview),
                 study_json=_canonical_json_text(spec),
                 action_id=secrets.token_hex(16),
                 stale=True,
@@ -1287,21 +1308,21 @@ def create_app(
     @app.post("/studies/{study_id}/advance")
     async def study_advance_action(request: Request, study_id: str):
         session = _session(request)
+        study_id = _study_id(study_id)
         form = await _form_body(request)
         if set(form) != {"csrf_token"}:
             raise StudyValidationError("Study advance form fields are invalid")
         _csrf(request, session, form["csrf_token"])
         result = await run_in_threadpool(studies.advance, study_id)
-        location = (
-            f"/studies/{result['study_id']}"
-            if isinstance(result.get("study_id"), str)
-            else "/studies"
-        )
+        outcome = result.get("status", "")
+        query = urlencode({"outcome": outcome}) if outcome in STUDY_OUTCOMES else ""
+        location = f"/studies/{study_id}" + (f"?{query}" if query else "")
         return RedirectResponse(location, status_code=303)
 
     @app.post("/studies/{study_id}/control")
     async def study_control_action(request: Request, study_id: str):
         session = _session(request)
+        study_id = _study_id(study_id)
         form = await _form_body(request)
         if set(form) != {"csrf_token", "operation", "action_id"}:
             raise StudyValidationError("Study control form fields are invalid")
@@ -1312,20 +1333,16 @@ def create_app(
             form["operation"],
             action_id=form["action_id"],
         )
-        location = (
-            f"/studies/{result['study_id']}"
-            if isinstance(result.get("study_id"), str)
-            else "/studies"
-        )
+        outcome = result.get("status", "")
+        query = urlencode({"outcome": outcome}) if outcome in STUDY_OUTCOMES else ""
+        location = f"/studies/{study_id}" + (f"?{query}" if query else "")
         return RedirectResponse(location, status_code=303)
 
     @app.get("/studies/{study_id}/report")
     async def study_report(request: Request, study_id: str):
         session = _session(request)
-        try:
-            detail = await run_in_threadpool(studies.detail, study_id)
-        except StudyNotFoundError:
-            raise
+        study_id = _study_id(study_id)
+        detail = await run_in_threadpool(studies.detail, study_id)
         return _render(
             request,
             "study_report.html",
@@ -1336,16 +1353,16 @@ def create_app(
     @app.get("/studies/{study_id}")
     async def study_detail(request: Request, study_id: str):
         session = _session(request)
-        try:
-            detail = await run_in_threadpool(studies.detail, study_id)
-        except StudyNotFoundError:
-            raise
+        study_id = _study_id(study_id)
+        detail = await run_in_threadpool(studies.detail, study_id)
+        outcome = request.query_params.get("outcome", "")
         return _render(
             request,
             "study_detail.html",
             session=session,
             study=detail,
             control_action_id=secrets.token_hex(16),
+            outcome_message=STUDY_OUTCOMES.get(outcome),
         )
 
     @app.get("/experiments/{experiment_id}")
