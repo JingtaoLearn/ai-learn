@@ -1218,15 +1218,17 @@ def create_app(
             studies=await run_in_threadpool(studies.list),
         )
 
-    @app.get("/studies/new")
-    async def study_new(request: Request):
-        session = _session(request)
+    async def study_form_context(
+        form_values: dict[str, str] | None = None,
+        *,
+        validation_error: Exception | None = None,
+    ) -> dict[str, Any]:
         grouped = _operator_groups(operators)
         dataset_options = await run_in_threadpool(datasets.list_available)
         template = catalog.template_detail("single_stock_daily_causal", "1")
         default_search = None
         for slot in template["slots"]:
-            if slot in {"cost", "report"}:
+            if slot in {"cost", "report"} or not grouped.get(slot):
                 continue
             operator = grouped[slot][0]
             properties = operator["parameter_schema"]["properties"]
@@ -1238,15 +1240,39 @@ def create_app(
                     next(iter(properties)),
                 )
                 break
+        values = form_values or {}
+        errors: list[dict[str, str]] = []
+        if validation_error is not None:
+            message = str(validation_error)
+            field = next(
+                (
+                    name
+                    for name in values
+                    if message.startswith(name)
+                    or f".{name}" in message
+                ),
+                "study-form",
+            )
+            errors.append({"field": field, "message": message})
+        return {
+            "datasets": dataset_options,
+            "grouped": grouped,
+            "template": template,
+            "default_search": default_search,
+            "action_id": values.get("action_id") or secrets.token_hex(16),
+            "form_values": values,
+            "errors": errors,
+            "invalid_fields": {error["field"] for error in errors},
+        }
+
+    @app.get("/studies/new")
+    async def study_new(request: Request):
+        session = _session(request)
         return _render(
             request,
             "study_new.html",
             session=session,
-            datasets=dataset_options,
-            grouped=grouped,
-            template=template,
-            default_search=default_search,
-            action_id=secrets.token_hex(16),
+            **await study_form_context(),
         )
 
     @app.post("/studies/preview")
@@ -1254,8 +1280,17 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
-        spec = _study_from_form(form, catalog=catalog)
-        preview = await run_in_threadpool(studies.preview, spec)
+        try:
+            spec = _study_from_form(form, catalog=catalog)
+            preview = await run_in_threadpool(studies.preview, spec)
+        except (StudyValidationError, TaskValidationError, ValueError) as exc:
+            return _render(
+                request,
+                "study_new.html",
+                session=session,
+                status_code=400,
+                **await study_form_context(form, validation_error=exc),
+            )
         return _render(
             request,
             "study_preview.html",

@@ -474,3 +474,64 @@ def test_study_not_found_and_mutation_outcomes_are_visible(
     assert response.status_code == 200
     assert 'role="status"' in response.text
     assert "Execution identity drift" in response.text
+
+
+def test_invalid_wizard_preserves_values_and_links_accessible_errors(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot_id = snapshot(app)
+    form = _experiment_form(app, snapshot_id, issued.csrf_token)
+    form.update(
+        {
+            "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
+            "suggester": "GRID",
+            "seed": "17",
+            "unique_trial_budget": "not-a-number",
+            "max_suggestions": "2",
+            "outer_folds": "1",
+            "inner_folds": "1",
+            "scoring_sessions": "1",
+            "minimum_training_sessions": "2",
+            "purge_sessions": "0",
+            "holdout_sessions": "1",
+            "evaluation_version": "latest",
+            "parent_study_ids": "",
+            "prior_unique_candidate_count": "0",
+            "lineage_complete": "true",
+        }
+    )
+
+    response = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert 'role="alert"' in response.text
+    assert 'href="#unique_trial_budget"' in response.text
+    control = re.search(
+        r'<input\b[^>]*name="unique_trial_budget"[^>]*>',
+        response.text,
+    ).group(0)
+    assert 'value="not-a-number"' in control
+    assert 'aria-invalid="true"' in control
+    assert 'aria-describedby="unique_trial_budget-error"' in control
+    assert "prior_log_ols@1.0.0 parameters" in response.text
+
+
+def test_study_pages_include_skip_navigation_and_non_scripted_system_theme(
+    tmp_path: Path
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+
+    page = client.get("/studies/new")
+    css = client.get("/static/app.css").text
+
+    assert 'class="skip-link" href="#main-content"' in page.text
+    assert '<main id="main-content"' in page.text
+    assert ':root:not([data-theme])' in css
+    assert ".danger-button:hover" in css
+    assert ".button.quiet:hover" in css
+    assert "overflow-wrap: anywhere" in css

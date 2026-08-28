@@ -9,6 +9,7 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body data-page="{% block page %}base{% endblock %}">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="shell-header">
     <a class="wordmark" href="/">Quant Research</a>
     <nav aria-label="Primary" data-testid="primary-nav">
@@ -25,7 +26,7 @@
       <button class="quiet" type="submit">Log out</button>
     </form>
   </header>
-  <main class="shell" data-testid="main-content">
+  <main id="main-content" class="shell" data-testid="main-content" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
 </body>
