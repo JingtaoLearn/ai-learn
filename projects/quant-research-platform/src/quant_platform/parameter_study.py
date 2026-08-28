@@ -4898,6 +4898,71 @@ class ParameterStudy:
                 "binding_id": binding["binding_id"],
                 "experiment_id": binding["experiment_id"],
             }
+        if binding["state"] == "FAILED":
+            experiment = self.experiments.experiment_detail(
+                binding["experiment_id"]
+            )
+            if experiment["attempts"][-1]["attempt_id"] != binding["attempt_id"]:
+                return self._observe_binding(
+                    study_id=study_id,
+                    binding=binding,
+                    configuration=self._candidate_configuration(
+                        study_id,
+                        binding["candidate_digest"],
+                    ),
+                )
+            now = self._now()
+            with self.catalog.transaction(immediate=True) as connection:
+                existing = connection.execute(
+                    """
+                    SELECT 1 FROM parameter_study_events
+                    WHERE study_id = ?
+                      AND event_type = 'HOLDOUT_EXECUTION_FAILED'
+                    """,
+                    (study_id,),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        """
+                        INSERT INTO parameter_study_events(
+                            study_id, sequence, event_type, occurred_at, payload_json
+                        )
+                        SELECT ?, COALESCE(MAX(sequence), 0) + 1,
+                               'HOLDOUT_EXECUTION_FAILED', ?, ?
+                        FROM parameter_study_events WHERE study_id = ?
+                        """,
+                        (
+                            study_id,
+                            now,
+                            canonical_json_bytes(
+                                {
+                                    "binding_id": binding["binding_id"],
+                                    "experiment_id": binding["experiment_id"],
+                                    "attempt_id": binding["attempt_id"],
+                                    "access": "ACCESSED",
+                                    "outcome": "NOT_RUN",
+                                }
+                            ).decode(),
+                            study_id,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    UPDATE parameter_studies
+                    SET control_status = 'FAILED', updated_at = ?
+                    WHERE study_id = ?
+                    """,
+                    (now, study_id),
+                )
+            return {
+                "status": "HOLDOUT_EXECUTION_FAILED",
+                "study_id": study_id,
+                "binding_id": binding["binding_id"],
+                "experiment_id": binding["experiment_id"],
+                "attempt_id": binding["attempt_id"],
+                "access": "ACCESSED",
+                "outcome": "NOT_RUN",
+            }
         if binding["state"] == "SUBMITTED":
             return self._observe_binding(
                 study_id=study_id,

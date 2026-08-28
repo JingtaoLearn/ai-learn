@@ -1948,6 +1948,95 @@ def test_holdout_access_is_recorded_before_dataset_materialization(
     assert restarted.detail(submitted["study_id"])["control_status"] == "FAILED"
 
 
+def _interrupted_terminal_holdout(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-interrupted-terminal-holdout",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=_real_attempt_executor(
+            studies,
+            experiments,
+            studies.catalog.state_root / "study-runs",
+        ),
+    )
+    for _ in range(40):
+        coordinator.advance(submitted["study_id"])
+        if coordinator.detail(submitted["study_id"])["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail("selection did not reach HOLDOUT_READY")
+    assert coordinator.advance(submitted["study_id"])["status"] == "HOLDOUT_CLAIMED"
+    dispatched = coordinator.advance(submitted["study_id"])
+    assert dispatched["status"] == "ATTEMPT_SUBMITTED"
+    attempt = experiments.claim_next_attempt()
+    assert attempt is not None
+    assert attempt["attempt_id"] == dispatched["attempt_id"]
+    assert experiments.recover_abandoned_attempts(
+        container_reconciler=lambda cidfile: True
+    ) == 1
+    assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_FAILED"
+    return studies, experiments, coordinator, submitted["study_id"], attempt
+
+
+def test_failed_terminal_holdout_stays_accessed_without_research_outcome(
+    tmp_path: Path,
+):
+    studies, _, coordinator, study_id, attempt = _interrupted_terminal_holdout(
+        tmp_path
+    )
+
+    result = coordinator.advance(study_id)
+    detail = studies.detail(study_id)
+
+    assert result == {
+        "status": "HOLDOUT_EXECUTION_FAILED",
+        "study_id": study_id,
+        "binding_id": result["binding_id"],
+        "experiment_id": result["experiment_id"],
+        "attempt_id": attempt["attempt_id"],
+        "access": "ACCESSED",
+        "outcome": "NOT_RUN",
+    }
+    assert detail["control_status"] == "FAILED"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert detail["holdout"]["outcome"] == "NOT_RUN"
+    assert any(
+        event["event_type"] == "HOLDOUT_EXECUTION_FAILED"
+        for event in detail["events"]
+    )
+
+
+def test_failed_terminal_holdout_follows_a_replacement_attempt(tmp_path: Path):
+    studies, experiments, coordinator, study_id, attempt = (
+        _interrupted_terminal_holdout(tmp_path)
+    )
+    replacement = experiments.create_replacement_attempt(
+        attempt["attempt_id"],
+        action_id="replacement-terminal-holdout",
+    )
+
+    result = coordinator.advance(study_id)
+    detail = studies.detail(study_id)
+    binding = next(
+        item for item in detail["bindings"] if item["role"] == "TERMINAL_HOLDOUT"
+    )
+
+    assert result["status"] == "ATTEMPT_PENDING"
+    assert result["attempt_id"] == replacement["attempt_id"]
+    assert binding["attempt_id"] == replacement["attempt_id"]
+    assert binding["attempt"]["status"] == "PENDING"
+    assert binding["state"] == "SUBMITTED"
+
+
 def test_terminal_holdout_crash_after_access_never_redispatches(tmp_path: Path):
     studies, experiments = _study_service(tmp_path)
     spec = _minimal_orchestration_spec()
