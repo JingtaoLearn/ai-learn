@@ -40,6 +40,7 @@ PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
     "src/quant_platform/study_contracts.py": "study_contracts.py",
     "src/quant_platform/study_datasets.py": "study_datasets.py",
+    "src/quant_platform/study_evaluation.py": "study_evaluation.py",
     "src/quant_platform/worker.py": "worker.py",
 }
 REQUIRED_ARTIFACTS = {
@@ -202,6 +203,7 @@ def _derived_foundation(
     parameters = config["template"]["parameters"]
     parameters["evaluation_start"] = evaluation_start
     parameters["evaluation_end"] = evaluation_end
+    parameters["terminal_handling"] = "force_liquidate"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     parent_path = (
         state
@@ -221,6 +223,16 @@ def test_derived_run_rejects_an_evaluation_end_later_than_the_scoring_mask(
     )
 
     with pytest.raises(StrategyRunError, match="evaluation_end.*scoring_end"):
+        run_strategy_config(config_path)
+
+
+def test_derived_run_requires_force_flat_with_cost_terminal_handling(tmp_path: Path):
+    config_path, _, _ = _derived_foundation(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["template"]["parameters"]["terminal_handling"] = "mark_to_market"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(StrategyRunError, match="FORCE_FLAT_WITH_COST"):
         run_strategy_config(config_path)
 
 
