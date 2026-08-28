@@ -1135,3 +1135,30 @@ INSERT INTO missing_migration_target(value) VALUES ('fail');
         experiments=experiments,
         release_locator="/srv/quant/releases/154",
     )
+
+
+def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    first_spec = _spec()
+    first_preview = studies.preview(first_spec)
+    first = studies.submit(
+        first_spec,
+        expected_preview_digest=first_preview["preview_digest"],
+        action_id="list-first",
+    )
+    second_spec = _spec()
+    second_spec["search"]["unique_trial_budget"] = 3
+    second_preview = studies.preview(second_spec)
+    second = studies.submit(
+        second_spec,
+        expected_preview_digest=second_preview["preview_digest"],
+        action_id="list-second",
+    )
+
+    listed = studies.list()
+
+    assert [item["study_id"] for item in listed] == [
+        second["study_id"],
+        first["study_id"],
+    ]
+    assert all(item["phase"] == "FROZEN" for item in listed)

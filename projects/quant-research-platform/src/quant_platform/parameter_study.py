@@ -3155,6 +3155,20 @@ class ParameterStudy:
             )
             return response
 
+    def list(self) -> list[dict[str, Any]]:
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT study_id
+                FROM parameter_studies
+                ORDER BY created_at DESC, rowid DESC
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+        return [self.detail(row["study_id"]) for row in rows]
+
     def detail(self, study_id: str) -> dict[str, Any]:
         if not isinstance(study_id, str) or STUDY_ID.fullmatch(study_id) is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
