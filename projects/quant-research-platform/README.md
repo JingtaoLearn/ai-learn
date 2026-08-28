@@ -200,7 +200,9 @@ Studies. The server-rendered wizard supports catalog Dataset number/name selecti
 ranges, fixed operator parameters, finite JSON search ranges, deterministic Grid or
 Seeded Random budgets, chronological split controls, terminal holdout settings, and
 complete Study Lineage. Preview resolves the frozen plan, split windows, candidate
-capacity, and expected Experiment bindings before submission. If an identity changes,
+capacity, and minimum/conditional-maximum Experiment binding counts before submission.
+Selection-dependent bindings and canonical Experiment reuse are resolved only at dispatch.
+If an identity changes,
 submission creates nothing and returns a fresh preview for review.
 
 Study detail and report views keep outer OOS selection-process evidence visibly separate
