@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote, urlencode
 
 import bleach
 import markdown
@@ -1292,7 +1292,9 @@ def create_app(
             raise StudyValidationError("Study advance form fields are invalid")
         _csrf(request, session, form["csrf_token"])
         await run_in_threadpool(studies.advance, study_id)
-        return RedirectResponse(f"/studies/{study_id}", status_code=303)
+        return RedirectResponse(
+            f"/studies/{quote(study_id, safe='')}", status_code=303
+        )
 
     @app.post("/studies/{study_id}/control")
     async def study_control_action(request: Request, study_id: str):
@@ -1307,7 +1309,9 @@ def create_app(
             form["operation"],
             action_id=form["action_id"],
         )
-        return RedirectResponse(f"/studies/{study_id}", status_code=303)
+        return RedirectResponse(
+            f"/studies/{quote(study_id, safe='')}", status_code=303
+        )
 
     @app.get("/studies/{study_id}/report")
     async def study_report(request: Request, study_id: str):
