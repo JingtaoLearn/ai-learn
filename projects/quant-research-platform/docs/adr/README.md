@@ -9,5 +9,6 @@ These ADRs record the hard-to-reverse decisions behind trustworthy parameter stu
 5. Treat search-budget changes as Study forks.
 6. Fail closed on Study execution-identity drift.
 7. Force flat with cost at outer fold boundaries.
+8. Keep adaptive-search truth in the platform journal.
 
 Read the project [`CONTEXT.md`](../../CONTEXT.md) first so ADR terms retain their canonical meanings.
