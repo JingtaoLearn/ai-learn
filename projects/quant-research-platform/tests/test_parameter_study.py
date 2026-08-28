@@ -32,6 +32,11 @@ from quant_platform.schemas import canonical_json_bytes
 from quant_platform.seed import BUILTINS
 from quant_platform.study_contracts import FOLD_WINDOW_FIELDS, normalize_fold_window
 from quant_platform.study_datasets import ExecutionDatasetSliceFactory
+from quant_platform.study_suggesters import (
+    Exhausted,
+    GridParameterSuggester,
+    Suggestion,
+)
 
 
 WARMUP_SESSION = "2026-01-02"
@@ -250,6 +255,143 @@ def _minimal_orchestration_spec() -> dict:
     spec["evaluation"]["parameters"]["minimum_trades"] = 0
     spec["operators"]["fit"]["parameters"]["price_column"] = "Close"
     return spec
+
+
+class _ScriptedOptunaSuggester:
+    mode = "UNIQUE"
+    calls: list[tuple[str, list[dict]]] = []
+
+    @classmethod
+    def reset(cls, mode: str = "UNIQUE") -> None:
+        cls.mode = mode
+        cls.calls = []
+
+    def next_suggestion(
+        self,
+        frozen_plan: dict,
+        ordered_history: list[dict],
+    ) -> Suggestion | Exhausted:
+        round_identity = frozen_plan["round_identity"]
+        history = deepcopy(ordered_history)
+        type(self).calls.append((round_identity, history))
+        proposals = [
+            event
+            for event in history
+            if event["event_type"] in {"SUGGESTION_RECORDED", "DUPLICATE_SUGGESTION"}
+        ]
+        told = {
+            event["candidate_digest"]
+            for event in history
+            if event["event_type"] == "INNER_EVALUATION_RECORDED"
+        }
+        pending = [
+            event
+            for event in proposals
+            if event["disposition"] == "UNIQUE"
+            and event["candidate_digest"] not in told
+        ]
+        if pending:
+            raise AssertionError("a second Optuna Trial was asked before the first tell")
+
+        unique_count = sum(event["disposition"] == "UNIQUE" for event in proposals)
+        if unique_count >= frozen_plan["search"]["unique_trial_budget"]:
+            return Exhausted(
+                "UNIQUE_TRIAL_BUDGET",
+                len(proposals),
+                unique_count,
+            )
+        if len(proposals) >= frozen_plan["search"]["max_suggestions"]:
+            return Exhausted("RAW_SUGGESTION_BUDGET", len(proposals), unique_count)
+
+        grid_plan = deepcopy(frozen_plan)
+        grid_plan["search"]["suggester"] = "GRID"
+        baseline = GridParameterSuggester().next_suggestion(grid_plan, [])
+        assert isinstance(baseline, Suggestion)
+        sequence = len(proposals)
+        if sequence == 0:
+            return baseline
+        if self.mode == "DUPLICATE" and sequence == 1:
+            return Suggestion(
+                proposal_sequence=sequence,
+                candidate_digest=baseline.candidate_digest,
+                candidate=baseline.candidate,
+                classification=baseline.classification,
+                disposition="DUPLICATE",
+                duplicate_of_sequence=0,
+            )
+
+        candidate = baseline.candidate
+        candidate["operators"]["decision"]["parameters"][
+            "buy_threshold_pct_per_day"
+        ] = 0.3
+        return Suggestion(
+            proposal_sequence=sequence,
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
+            candidate=candidate,
+            classification="IN_RANGE",
+            disposition="UNIQUE",
+            duplicate_of_sequence=None,
+        )
+
+
+def _install_optuna_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: str = "UNIQUE",
+) -> None:
+    original_search = parameter_study_module._search
+
+    def freeze_test_optuna_search(value, template, operators):
+        if value["suggester"] != "OPTUNA_TPE":
+            return original_search(value, template, operators)
+        legacy = deepcopy(value)
+        legacy["suggester"] = "GRID"
+        frozen = original_search(legacy, template, operators)
+        frozen["suggester"] = "OPTUNA_TPE"
+        return frozen
+
+    _ScriptedOptunaSuggester.reset(mode)
+    monkeypatch.setattr(parameter_study_module, "_search", freeze_test_optuna_search)
+    monkeypatch.setattr(
+        parameter_study_module.study_suggesters,
+        "OptunaTPEParameterSuggester",
+        _ScriptedOptunaSuggester,
+        raising=False,
+    )
+
+
+def _optuna_spec(*, unique_trial_budget: int = 2, max_suggestions: int = 2) -> dict:
+    spec = _minimal_orchestration_spec()
+    spec["search"].update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "unique_trial_budget": unique_trial_budget,
+            "max_suggestions": max_suggestions,
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "values": [0.2, 0.3]
+                }
+            },
+        }
+    )
+    return spec
+
+
+def _restart_studies(
+    studies: ParameterStudy,
+    experiments: ExperimentService,
+    study_id: str,
+    *,
+    effect_executor=None,
+) -> ParameterStudy:
+    _expire_study_lease(studies, study_id)
+    return ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/171",
+        effect_executor=effect_executor,
+    )
 
 
 def _holdout_identity_digest(frozen_plan: dict) -> str:
@@ -1131,11 +1273,11 @@ def test_catalog_initialization_rejects_unknown_future_schema_versions(
         connection.execute(
             """
             INSERT INTO schema_migrations(version, applied_at)
-            VALUES (9, '2026-08-29T00:00:00Z')
+            VALUES (10, '2026-08-29T00:00:00Z')
             """
         )
 
-    with pytest.raises(CatalogVersionError, match="newer than supported: 9"):
+    with pytest.raises(CatalogVersionError, match="newer than supported: 10"):
         Catalog(root).initialize()
 
 
@@ -1212,7 +1354,7 @@ def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5, 6, 7, 8]
+        ] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 def test_parameter_study_migration_is_safe_under_concurrent_initialization(
@@ -1256,6 +1398,9 @@ def test_parameter_study_migration_is_safe_under_concurrent_initialization(
         ).fetchone()[0] == 1
         assert connection.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 8"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
         ).fetchone()[0] == 1
 
 
@@ -2298,6 +2443,397 @@ def test_selection_restarts_after_every_durable_round_step(tmp_path: Path):
             for binding in detail["bindings"]
         }
     ) == len(detail["bindings"])
+
+
+def test_legacy_study_detail_has_an_empty_suggestion_journal(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    preview = studies.preview(_minimal_orchestration_spec())
+    submitted = studies.submit(
+        _minimal_orchestration_spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-legacy-empty-journal",
+    )
+
+    assert studies.detail(submitted["study_id"])["suggestion_journal"] == []
+
+
+def test_optuna_ask_is_journaled_before_dispatch_and_replays_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch)
+    studies, experiments = _study_service(tmp_path)
+    spec = _optuna_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-ask-before-dispatch",
+    )
+    study_id = submitted["study_id"]
+
+    assert studies.advance(study_id)["status"] == "ADVANCED"
+    asked = studies.advance(study_id)
+    detail = studies.detail(study_id)
+
+    assert asked["status"] == "SUGGESTION_RECORDED"
+    assert len(detail["trials"]) == 1
+    assert detail["bindings"] == []
+    assert [
+        {
+            key: event[key]
+            for key in (
+                "search_round",
+                "sequence",
+                "event_type",
+                "candidate_digest",
+                "sampled_parameters",
+                "tell_state",
+                "objective",
+            )
+        }
+        for event in detail["suggestion_journal"]
+    ] == [
+        {
+            "search_round": "OUTER:1",
+            "sequence": 1,
+            "event_type": "SUGGESTION_RECORDED",
+            "candidate_digest": detail["trials"][0]["candidate_digest"],
+            "sampled_parameters": {
+                "/operators/decision/buy_threshold_pct_per_day": 0.2
+            },
+            "tell_state": None,
+            "objective": None,
+        }
+    ]
+
+    restarted = _restart_studies(studies, experiments, study_id)
+    original_materialize = restarted.dataset_slice_factory.materialize
+
+    def assert_ask_committed_before_materialize(*args, **kwargs):
+        committed = restarted.detail(study_id)["suggestion_journal"]
+        assert [event["event_type"] for event in committed] == ["SUGGESTION_RECORDED"]
+        return original_materialize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        restarted.dataset_slice_factory,
+        "materialize",
+        assert_ask_committed_before_materialize,
+    )
+    dispatched = restarted.advance(study_id)
+
+    assert dispatched["status"] == "ATTEMPT_SUBMITTED"
+    assert len(_ScriptedOptunaSuggester.calls) == 1
+    assert restarted.advance(study_id)["status"] == "ATTEMPT_PENDING"
+    assert len(_ScriptedOptunaSuggester.calls) == 1
+
+
+def test_optuna_restarts_between_persisted_evaluation_tell_and_next_ask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch)
+    studies, experiments = _study_service(tmp_path)
+    spec = _optuna_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-restart-boundaries",
+    )
+    study_id = submitted["study_id"]
+    effect_executor = _real_attempt_executor(
+        studies,
+        experiments,
+        studies.catalog.state_root / "study-runs",
+    )
+    assert studies.advance(study_id)["status"] == "ADVANCED"
+    assert studies.advance(study_id)["status"] == "SUGGESTION_RECORDED"
+
+    for _ in range(12):
+        studies = _restart_studies(
+            studies,
+            experiments,
+            study_id,
+            effect_executor=effect_executor,
+        )
+        studies.advance(study_id)
+        detail = studies.detail(study_id)
+        evaluated = next(
+            (
+                item
+                for item in detail["evidence"]
+                if item["evidence_type"] == "CANDIDATE_EVALUATED"
+                and item["payload"].get("search_round") == "OUTER:1"
+            ),
+            None,
+        )
+        if evaluated is not None:
+            break
+    else:
+        pytest.fail("the first Optuna candidate was not independently evaluated")
+
+    assert [item["event_type"] for item in detail["suggestion_journal"]] == [
+        "SUGGESTION_RECORDED"
+    ]
+    studies = _restart_studies(studies, experiments, study_id)
+    told = studies.advance(study_id)
+    detail = studies.detail(study_id)
+
+    assert told["status"] == "INNER_EVALUATION_RECORDED"
+    assert [item["event_type"] for item in detail["suggestion_journal"]] == [
+        "SUGGESTION_RECORDED",
+        "INNER_EVALUATION_RECORDED",
+    ]
+    assert detail["suggestion_journal"][1]["tell_state"] == "COMPLETE"
+    assert detail["suggestion_journal"][1]["objective"] == evaluated["payload"][
+        "evaluation"
+    ]["validation_score"]
+    assert detail["suggestion_journal"][1]["sampled_parameters"] == {
+        "/operators/decision/buy_threshold_pct_per_day": 0.2
+    }
+
+    studies = _restart_studies(studies, experiments, study_id)
+    second = studies.advance(study_id)
+    detail = studies.detail(study_id)
+
+    assert second["status"] == "SUGGESTION_RECORDED"
+    assert len(detail["trials"]) == 2
+    assert [item["event_type"] for item in detail["suggestion_journal"]] == [
+        "SUGGESTION_RECORDED",
+        "INNER_EVALUATION_RECORDED",
+        "SUGGESTION_RECORDED",
+    ]
+    _, replayed_history = _ScriptedOptunaSuggester.calls[-1]
+    assert replayed_history == [
+        item["event"]
+        for item in detail["suggestion_journal"][:2]
+    ]
+
+
+def test_optuna_failed_candidate_records_fail_without_score_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch)
+    studies, experiments = _study_service(tmp_path)
+    spec = _optuna_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-failure-continuation",
+    )
+    study_id = submitted["study_id"]
+    assert studies.advance(study_id)["status"] == "ADVANCED"
+    assert studies.advance(study_id)["status"] == "SUGGESTION_RECORDED"
+    dispatched = studies.advance(study_id)
+    attempt = experiments.claim_next_attempt()
+    assert attempt is not None
+    assert attempt["attempt_id"] == dispatched["attempt_id"]
+    experiments.finish_failure(attempt["attempt_id"], "synthetic Optuna candidate failure")
+    assert studies.advance(study_id)["status"] == "ATTEMPT_FAILED"
+
+    studies = _restart_studies(studies, experiments, study_id)
+    assert studies.advance(study_id)["status"] == "INNER_EVALUATION_RECORDED"
+    studies = _restart_studies(studies, experiments, study_id)
+    assert studies.advance(study_id)["status"] == "SUGGESTION_RECORDED"
+    detail = studies.detail(study_id)
+    failed_tell = detail["suggestion_journal"][1]
+
+    assert failed_tell["tell_state"] == "FAIL"
+    assert failed_tell["objective"] is None
+    assert len(detail["trials"]) == 2
+    with studies.catalog.connect() as connection:
+        raw_tell = connection.execute(
+            """
+            SELECT event_json
+            FROM parameter_study_suggestion_journal
+            WHERE study_id = ? AND search_round = 'OUTER:1' AND sequence = 2
+            """,
+            (study_id,),
+        ).fetchone()["event_json"]
+    assert "validation_score" not in raw_tell
+
+
+def test_optuna_duplicate_is_journaled_without_creating_a_duplicate_trial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch, mode="DUPLICATE")
+    studies, experiments = _study_service(tmp_path)
+    spec = _optuna_spec(unique_trial_budget=2, max_suggestions=3)
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-duplicate",
+    )
+    study_id = submitted["study_id"]
+    assert studies.advance(study_id)["status"] == "ADVANCED"
+    assert studies.advance(study_id)["status"] == "SUGGESTION_RECORDED"
+    dispatched = studies.advance(study_id)
+    attempt = experiments.claim_next_attempt()
+    assert attempt is not None
+    assert attempt["attempt_id"] == dispatched["attempt_id"]
+    experiments.finish_failure(attempt["attempt_id"], "synthetic duplicate setup")
+    assert studies.advance(study_id)["status"] == "ATTEMPT_FAILED"
+    assert studies.advance(study_id)["status"] == "INNER_EVALUATION_RECORDED"
+
+    duplicate = studies.advance(study_id)
+    after_duplicate = studies.detail(study_id)
+    unique = studies.advance(study_id)
+    detail = studies.detail(study_id)
+
+    assert duplicate["status"] == "DUPLICATE_SUGGESTION"
+    assert len(after_duplicate["trials"]) == 1
+    assert unique["status"] == "SUGGESTION_RECORDED"
+    assert len(detail["trials"]) == 2
+    assert [
+        item["event_type"] for item in detail["suggestion_journal"]
+    ] == [
+        "SUGGESTION_RECORDED",
+        "INNER_EVALUATION_RECORDED",
+        "DUPLICATE_SUGGESTION",
+        "SUGGESTION_RECORDED",
+    ]
+    assert detail["suggestion_journal"][0]["candidate_digest"] == detail[
+        "suggestion_journal"
+    ][2]["candidate_digest"]
+
+
+def test_optuna_histories_are_round_local_and_exclude_outer_and_holdout_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch)
+    studies, experiments = _study_service(tmp_path)
+    spec = _optuna_spec(unique_trial_budget=1, max_suggestions=1)
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-no-feedback-leakage",
+    )
+    study_id = submitted["study_id"]
+    studies.effect_executor = _real_attempt_executor(
+        studies,
+        experiments,
+        studies.catalog.state_root / "study-runs",
+    )
+
+    for _ in range(80):
+        studies.advance(study_id)
+        detail = studies.detail(study_id)
+        if detail["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail("Optuna selection did not reach HOLDOUT_READY")
+
+    call_count_before_holdout = len(_ScriptedOptunaSuggester.calls)
+    for _ in range(20):
+        studies.advance(study_id)
+        detail = studies.detail(study_id)
+        if detail["phase"] == "COMPLETED":
+            break
+    else:
+        pytest.fail("the governed holdout did not complete")
+
+    assert len(_ScriptedOptunaSuggester.calls) == call_count_before_holdout
+    assert [
+        (item["search_round"], item["sequence"], item["event_type"])
+        for item in detail["suggestion_journal"]
+    ] == [
+        ("OUTER:1", 1, "SUGGESTION_RECORDED"),
+        ("OUTER:1", 2, "INNER_EVALUATION_RECORDED"),
+        ("FINAL", 1, "SUGGESTION_RECORDED"),
+        ("FINAL", 2, "INNER_EVALUATION_RECORDED"),
+    ]
+    round_histories: dict[str, list[list[dict]]] = {}
+    for round_identity, history in _ScriptedOptunaSuggester.calls:
+        search_round = round_identity.rsplit("/", 1)[-1]
+        round_histories.setdefault(search_round, []).append(history)
+        assert all(
+            event["event_type"]
+            in {
+                "SUGGESTION_RECORDED",
+                "DUPLICATE_SUGGESTION",
+                "INNER_EVALUATION_RECORDED",
+            }
+            for event in history
+        )
+        assert all(
+            event.get("role", "INNER_SCORE") == "INNER_SCORE"
+            for event in history
+        )
+    assert set(round_histories) == {"OUTER:1", "FINAL"}
+    assert round_histories["OUTER:1"][0] == []
+    assert round_histories["FINAL"][0] == []
+
+
+def test_optuna_journal_is_append_only_bounded_and_rejects_non_inner_tells(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_optuna_contract(monkeypatch)
+    studies, _ = _study_service(tmp_path)
+    spec = _optuna_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-optuna-journal-validation",
+    )
+    study_id = submitted["study_id"]
+    assert studies.advance(study_id)["status"] == "ADVANCED"
+    assert studies.advance(study_id)["status"] == "SUGGESTION_RECORDED"
+    detail = studies.detail(study_id)
+    candidate_digest = detail["suggestion_journal"][0]["candidate_digest"]
+
+    with studies.catalog.connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                """
+                UPDATE parameter_study_suggestion_journal
+                SET event_type = 'DUPLICATE_SUGGESTION'
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM parameter_study_suggestion_journal WHERE study_id = ?",
+                (study_id,),
+            )
+
+        connection.execute("BEGIN")
+        invalid = {
+            "event_type": "INNER_EVALUATION_RECORDED",
+            "role": "OUTER_AUDIT",
+            "candidate_digest": candidate_digest,
+            "evaluation": {"validation_score": 999.0},
+        }
+        connection.execute(
+            """
+            INSERT INTO parameter_study_suggestion_journal(
+                study_id, search_round, sequence, event_type,
+                candidate_digest, event_json, occurred_at
+            ) VALUES (?, 'OUTER:1', 2, 'INNER_EVALUATION_RECORDED', ?, ?, ?)
+            """,
+            (
+                study_id,
+                candidate_digest,
+                canonical_json_bytes(invalid).decode(),
+                studies._now(),
+            ),
+        )
+        with pytest.raises(RuntimeError, match="Suggestion Journal"):
+            studies._validate_study_projection(connection, study_id)
+        connection.rollback()
+
+    monkeypatch.setattr(parameter_study_module, "MAX_STUDY_SUGGESTION_EVENTS", 0)
+    with pytest.raises(RuntimeError, match="Suggestion Journal"):
+        studies.detail(study_id)
 
 
 def test_public_study_enforces_session_and_detail_bounds(
