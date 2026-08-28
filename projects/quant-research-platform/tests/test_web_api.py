@@ -122,7 +122,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         ),
         (
             app.state.studies,
-            ("advance", "control", "detail"),
+            ("list", "preview", "submit", "advance", "control", "detail"),
         ),
         (
             app.state.catalog,
@@ -148,6 +148,10 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/operators/prior_log_ols/1.0.0",
         "/templates/single_stock_daily_causal/1",
         "/experiments/new",
+        "/studies",
+        "/studies/new",
+        "/studies/not-found",
+        "/studies/not-found/report",
         "/history?status=FAILED&search=x&drift=drifted",
         "/experiments/not-found",
         "/reports/not-found",
@@ -158,6 +162,10 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/operators/submit",
         "/experiments/preview",
         "/experiments/new",
+        "/studies/preview",
+        "/studies",
+        "/studies/not-found/advance",
+        "/studies/not-found/control",
         "/experiments/not-found/rerun",
     )
     api_gets = (
@@ -166,6 +174,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/api/operators/prior_log_ols",
         "/api/templates/single_stock_daily_causal/1",
         "/api/experiments",
+        "/api/studies",
         "/api/experiments/not-found",
         "/api/experiments/not-found/attempts",
         "/api/attempts/not-found",
@@ -176,6 +185,8 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/api/tasks/resolve",
         "/api/experiments/preview",
         "/api/experiments",
+        "/api/studies/preview",
+        "/api/studies",
         "/api/experiments/not-found/rerun",
         "/api/attempts/not-found/recover",
         "/api/studies/not-found/advance",

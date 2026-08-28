@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "_study_evidence.html" import study_evidence %}
+{% block title %}Study report · Quant Research{% endblock %}
+{% block page %}study-report{% endblock %}
+{% block content %}
+<section class="page-heading split"><div><p class="eyebrow">ISOLATED STUDY VIEW</p><h1>Parameter Study report</h1><p>{{ study.frozen_plan.dataset.name }} · <span class="mono">{{ study.study_id }}</span></p></div><a class="button quiet" href="/studies/{{ study.study_id }}">Back to controls</a></section>
+<div class="validation-summary" role="note">Experiment report links below remain checksum-verified and open in the existing opaque-origin sandbox. This view never reads Study backend tables.</div>
+{{ study_evidence(study) }}
+<section class="panel"><h2>Frozen protocol</h2><dl class="technical"><dt>Dataset</dt><dd>{{ study.frozen_plan.dataset.dataset_id }} · {{ study.frozen_plan.dataset.requested_start }} → {{ study.frozen_plan.dataset.requested_end }}</dd><dt>Search</dt><dd>{{ study.frozen_plan.search.suggester }} · {{ study.frozen_plan.search.unique_trial_budget }} unique Trials / {{ study.frozen_plan.search.max_suggestions }} suggestions</dd><dt>Preview digest</dt><dd>{{ study.preview_digest }}</dd></dl></section>
+{% endblock %}

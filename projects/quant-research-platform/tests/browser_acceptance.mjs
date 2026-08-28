@@ -186,6 +186,8 @@ try {
     "/operators": "operators",
     "/templates/single_stock_daily_causal/1": "template-detail",
     "/experiments/new": "experiment-new",
+    "/studies": "studies",
+    "/studies/new": "study-new",
     "/history": "history",
   };
   for (const scriptsDisabled of [false, true]) {
@@ -208,6 +210,8 @@ try {
               hasMain: Boolean(document.querySelector("main")),
               hasPrimaryAction: ${route === "/experiments/new"
                 ? 'Boolean(document.querySelector(\'form[data-testid="experiment-form"] button[type="submit"]\'))'
+                : route === "/studies/new"
+                ? 'Boolean(document.querySelector(\'form[data-testid="study-form"] button[type="submit"]\'))'
                 : "true"},
               hasThemeSelector: Boolean(document.querySelector("[data-theme-selector]")),
               documentWidth: document.documentElement.scrollWidth,

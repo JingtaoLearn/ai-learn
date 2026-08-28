@@ -25,7 +25,7 @@ from .dataset_service import DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
-from .parameter_study import ParameterStudy, StudyNotFoundError
+from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
 from .resolved_runner import effective_execution_identity
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
@@ -312,6 +312,103 @@ def _task_from_form(
     }
 
 
+def _study_from_form(
+    form: dict[str, str],
+    *,
+    catalog: Any,
+) -> dict[str, Any]:
+    task = _task_from_form(form, catalog=catalog)
+    search_space: dict[str, dict[str, list[Any]]] = {}
+    for slot, selector in task["operators"].items():
+        selected = catalog.operator_detail(
+            selector["operator_id"],
+            None if selector["version"] == "latest" else selector["version"],
+        )
+        for name, schema in selected["parameter_schema"]["properties"].items():
+            raw = form.get(
+                (
+                    f"search__{slot}__{selector['operator_id']}__"
+                    f"{selected['version']}__{name}"
+                ),
+                "",
+            ).strip()
+            if not raw:
+                continue
+            values = _json_text(raw, f"search range for {slot}.{name}")
+            if not isinstance(values, list) or not values:
+                raise StudyValidationError(
+                    f"search range for {slot}.{name} must be a non-empty JSON array"
+                )
+            search_space[f"/operators/{slot}/{name}"] = {"values": values}
+    if not search_space:
+        raise StudyValidationError("at least one finite search range is required")
+
+    def integer(name: str, default: str) -> int:
+        raw = form.get(name, default)
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise StudyValidationError(f"{name} must be an integer") from exc
+
+    task["search"] = {
+        "suggester": form.get("suggester", "GRID"),
+        "suggester_version": "1.0.0",
+        "seed": integer("seed", "17"),
+        "unique_trial_budget": integer("unique_trial_budget", "1"),
+        "max_suggestions": integer("max_suggestions", "1"),
+        "space": search_space,
+    }
+    task["validation"] = {
+        "outer_folds": integer("outer_folds", "1"),
+        "inner_folds": integer("inner_folds", "1"),
+        "scoring_sessions": integer("scoring_sessions", "1"),
+        "minimum_training_sessions": integer("minimum_training_sessions", "2"),
+        "purge_sessions": integer("purge_sessions", "0"),
+        "outer_account_policy": "FORCE_FLAT_WITH_COST",
+    }
+    task["evaluation"] = {
+        "policy_id": "robust_walk_forward",
+        "version": form.get("evaluation_version", "latest"),
+        "parameters": {},
+    }
+    task["holdout"] = {
+        "sessions": integer("holdout_sessions", "1"),
+        "pass_rule": "POLICY_CONSTRAINTS",
+    }
+    parents = [
+        value.strip()
+        for value in form.get("parent_study_ids", "").splitlines()
+        if value.strip()
+    ]
+    task["lineage"] = {
+        "parent_study_ids": parents,
+        "prior_unique_candidate_count": integer(
+            "prior_unique_candidate_count", "0"
+        ),
+        "is_complete": form.get("lineage_complete", "") == "true",
+    }
+    return task
+
+
+def _study_preview_counts(preview: dict[str, Any]) -> dict[str, int]:
+    plan = preview["frozen_plan"]
+    search = plan["search"]
+    validation = plan["validation"]
+    unique_trials = min(
+        search["unique_trial_budget"],
+        search["candidate_capacity"],
+    )
+    outer_folds = len(validation["outer_rounds"])
+    inner_folds = len(validation["final_search_round"]["inner_folds"])
+    experiment_bindings = unique_trials * inner_folds * (outer_folds + 1)
+    experiment_bindings += outer_folds + 1
+    return {
+        "unique_trials": unique_trials,
+        "experiment_bindings": experiment_bindings,
+        "assumed_reuse": 0,
+    }
+
+
 def _verified_run_payloads(
     settings: Settings, attempt: dict[str, Any]
 ) -> dict[str, bytes]:
@@ -468,6 +565,7 @@ def create_app(
         return response
 
     @app.exception_handler(TaskValidationError)
+    @app.exception_handler(StudyValidationError)
     @app.exception_handler(OperatorSubmissionError)
     async def domain_error(request: Request, exc: Exception):
         if request.url.path.startswith("/api/"):
@@ -778,6 +876,54 @@ def create_app(
             result, status_code=201 if result["status"] == "CREATED" else 200
         )
 
+    @app.get("/api/studies")
+    async def api_studies(request: Request):
+        _session(request)
+        return {"studies": await run_in_threadpool(studies.list)}
+
+    @app.post("/api/studies/preview")
+    async def api_study_preview(request: Request):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if type(body) is not dict or set(body) != {"study"}:
+            return _json_error(400, "INVALID_REQUEST", "Expected exactly study")
+        return {
+            "preview": await run_in_threadpool(studies.preview, body["study"])
+        }
+
+    @app.post("/api/studies")
+    async def api_study_submit(request: Request):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if type(body) is not dict or set(body) != {
+            "study",
+            "expected_preview_digest",
+            "action_id",
+        }:
+            return _json_error(
+                400,
+                "INVALID_REQUEST",
+                "Expected exactly study, expected_preview_digest, and action_id",
+            )
+        result = await run_in_threadpool(
+            studies.submit,
+            body["study"],
+            expected_preview_digest=body["expected_preview_digest"],
+            action_id=body["action_id"],
+        )
+        return JSONResponse(
+            result,
+            status_code=201 if result["status"] == "SUBMITTED" else 200,
+        )
+
     @app.get("/api/studies/{study_id}")
     async def api_study(request: Request, study_id: str):
         _session(request)
@@ -1037,6 +1183,159 @@ def create_app(
                 "drift": drift_filter,
                 "search": search,
             },
+        )
+
+    @app.get("/studies")
+    async def study_list(request: Request):
+        session = _session(request)
+        return _render(
+            request,
+            "studies.html",
+            session=session,
+            studies=await run_in_threadpool(studies.list),
+        )
+
+    @app.get("/studies/new")
+    async def study_new(request: Request):
+        session = _session(request)
+        grouped = _operator_groups(operators)
+        dataset_options = await run_in_threadpool(datasets.list_available)
+        template = catalog.template_detail("single_stock_daily_causal", "1")
+        default_search = None
+        for slot in template["slots"]:
+            if slot in {"cost", "report"}:
+                continue
+            operator = grouped[slot][0]
+            properties = operator["parameter_schema"]["properties"]
+            if properties:
+                default_search = (
+                    slot,
+                    operator["operator_id"],
+                    operator["version"],
+                    next(iter(properties)),
+                )
+                break
+        return _render(
+            request,
+            "study_new.html",
+            session=session,
+            datasets=dataset_options,
+            grouped=grouped,
+            template=template,
+            default_search=default_search,
+            action_id=secrets.token_hex(16),
+        )
+
+    @app.post("/studies/preview")
+    async def study_preview_action(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        _csrf(request, session, form.get("csrf_token"))
+        spec = _study_from_form(form, catalog=catalog)
+        preview = await run_in_threadpool(studies.preview, spec)
+        return _render(
+            request,
+            "study_preview.html",
+            session=session,
+            preview=preview,
+            preview_counts=_study_preview_counts(preview),
+            study_json=_canonical_json_text(spec),
+            action_id=form.get("action_id") or secrets.token_hex(16),
+            stale=False,
+        )
+
+    @app.post("/studies")
+    async def study_submit_action(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        _csrf(request, session, form.get("csrf_token"))
+        if set(form) != {
+            "csrf_token",
+            "action_id",
+            "expected_preview_digest",
+            "study_json",
+        }:
+            raise StudyValidationError("Study submission form fields are invalid")
+        spec = _json_text(form["study_json"], "study_json")
+        result = await run_in_threadpool(
+            studies.submit,
+            spec,
+            expected_preview_digest=form["expected_preview_digest"],
+            action_id=form["action_id"],
+        )
+        if result["status"] == "PREVIEW_STALE":
+            preview = await run_in_threadpool(studies.preview, spec)
+            return _render(
+                request,
+                "study_preview.html",
+                session=session,
+                preview=preview,
+                preview_counts=_study_preview_counts(preview),
+                study_json=_canonical_json_text(spec),
+                action_id=secrets.token_hex(16),
+                stale=True,
+                status_code=409,
+            )
+        if "study_id" not in result:
+            raise StudyValidationError(
+                f"Study submission was not accepted: {result['status']}"
+            )
+        return RedirectResponse(
+            f"/studies/{result['study_id']}", status_code=303
+        )
+
+    @app.post("/studies/{study_id}/advance")
+    async def study_advance_action(request: Request, study_id: str):
+        session = _session(request)
+        form = await _form_body(request)
+        if set(form) != {"csrf_token"}:
+            raise StudyValidationError("Study advance form fields are invalid")
+        _csrf(request, session, form["csrf_token"])
+        await run_in_threadpool(studies.advance, study_id)
+        return RedirectResponse(f"/studies/{study_id}", status_code=303)
+
+    @app.post("/studies/{study_id}/control")
+    async def study_control_action(request: Request, study_id: str):
+        session = _session(request)
+        form = await _form_body(request)
+        if set(form) != {"csrf_token", "operation", "action_id"}:
+            raise StudyValidationError("Study control form fields are invalid")
+        _csrf(request, session, form["csrf_token"])
+        await run_in_threadpool(
+            studies.control,
+            study_id,
+            form["operation"],
+            action_id=form["action_id"],
+        )
+        return RedirectResponse(f"/studies/{study_id}", status_code=303)
+
+    @app.get("/studies/{study_id}/report")
+    async def study_report(request: Request, study_id: str):
+        session = _session(request)
+        try:
+            detail = await run_in_threadpool(studies.detail, study_id)
+        except StudyNotFoundError:
+            raise
+        return _render(
+            request,
+            "study_report.html",
+            session=session,
+            study=detail,
+        )
+
+    @app.get("/studies/{study_id}")
+    async def study_detail(request: Request, study_id: str):
+        session = _session(request)
+        try:
+            detail = await run_in_threadpool(studies.detail, study_id)
+        except StudyNotFoundError:
+            raise
+        return _render(
+            request,
+            "study_detail.html",
+            session=session,
+            study=detail,
+            control_action_id=secrets.token_hex(16),
         )
 
     @app.get("/experiments/{experiment_id}")
