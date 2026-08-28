@@ -335,3 +335,71 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
 
     assert submitted.status_code == 303
     assert submitted.headers["location"].startswith("/studies/")
+
+
+def test_stale_study_submit_returns_a_fresh_reviewable_preview(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    fresh_digest = "b" * 64
+    preview = {
+        "preview_digest": fresh_digest,
+        "frozen_plan": {
+            "search": {
+                "unique_trial_budget": 1,
+                "candidate_capacity": 1,
+            },
+            "validation": {
+                "rules": {"outer_account_policy": "FORCE_FLAT_WITH_COST"},
+                "outer_rounds": [
+                    {
+                        "inner_folds": [{}],
+                        "outer_audit": {
+                            "scoring_start": "2026-01-03",
+                            "scoring_end": "2026-01-03",
+                        },
+                    }
+                ],
+                "final_search_round": {"inner_folds": [{}]},
+            },
+            "holdout": {
+                "fold_window": {
+                    "scoring_start": "2026-01-04",
+                    "scoring_end": "2026-01-04",
+                }
+            },
+            "dataset": {
+                "dataset_id": "SYNTH.SS",
+                "name": "Synthetic",
+                "snapshot_id": "c" * 64,
+            },
+            "execution": {"identity": {"source_sha256": "d" * 64}},
+        },
+    }
+    monkeypatch.setattr(
+        app.state.studies,
+        "submit",
+        lambda *args, **kwargs: {
+            "status": "PREVIEW_STALE",
+            "expected_preview_digest": STUDY_ID,
+            "current_preview_digest": fresh_digest,
+        },
+    )
+    monkeypatch.setattr(app.state.studies, "preview", lambda value: preview)
+
+    response = client.post(
+        "/studies",
+        data={
+            "csrf_token": issued.csrf_token,
+            "action_id": "stale-submit",
+            "expected_preview_digest": STUDY_ID,
+            "study_json": '{"schema_version":1}',
+        },
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 409
+    assert 'data-testid="stale-preview"' in response.text
+    assert fresh_digest in response.text
+    assert "Nothing was created" in response.text
