@@ -234,6 +234,24 @@ def _study_service(root: str) -> ParameterStudy:
     )
 
 
+def _advance_study_until_blocked(
+    studies: ParameterStudy,
+    study_id: str,
+) -> dict:
+    progress_statuses = {
+        "ADVANCED",
+        "METRIC_DOCUMENT_VERIFIED",
+        "OUTER_SELECTION_RECORDED",
+        "CHAMPION_FROZEN",
+        "HOLDOUT_CLAIMED",
+    }
+    for _ in range(1024):
+        result = studies.advance(study_id)
+        if result.get("status") not in progress_statuses:
+            return result
+    raise RuntimeError("bounded Study advance exceeded 1024 internal transitions")
+
+
 def _execute(args: argparse.Namespace) -> dict:
     if args.command == "data" and args.data_command in {"snapshot", "update"}:
         frame = pd.read_csv(Path(args.input))
@@ -354,7 +372,7 @@ def _execute(args: argparse.Namespace) -> dict:
         if args.study_command == "detail":
             return {"study": studies.detail(args.study_id)}
         if args.study_command == "advance":
-            return studies.advance(args.study_id)
+            return _advance_study_until_blocked(studies, args.study_id)
         if args.study_command == "control":
             return studies.control(
                 args.study_id,

@@ -201,7 +201,7 @@ DATASET_FIELDS = (
     "default_start",
     "created_at",
 )
-LATEST_SUPPORTED_SCHEMA_VERSION = 7
+LATEST_SUPPORTED_SCHEMA_VERSION = 8
 
 
 class CatalogVersionError(RuntimeError):

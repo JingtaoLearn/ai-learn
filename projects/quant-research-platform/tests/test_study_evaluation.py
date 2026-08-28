@@ -17,11 +17,18 @@ from quant_platform.study_evaluation import (
 from test_strategy_runner import _derived_foundation
 
 
-def _attempt_and_factory(tmp_path: Path) -> tuple[MetricDocumentFactory, dict, dict]:
+def _attempt_and_factory(
+    tmp_path: Path,
+    *,
+    outside_state_root: bool = False,
+) -> tuple[MetricDocumentFactory, dict, dict]:
     config_path, _, derived = _derived_foundation(tmp_path)
-    run = run_strategy_config(config_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     state = Path(config["dataset"]["root"])
+    if not outside_state_root:
+        config["output_root"] = str(state / "study-runs")
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+    run = run_strategy_config(config_path)
     manifest = json.loads(
         (
             state
@@ -251,4 +258,125 @@ def test_metric_factory_rejects_candidate_relabeling(tmp_path: Path):
             candidate_digest=candidate_digest,
             candidate_configuration=candidate,
             fold_window=fold_window,
+        )
+
+
+def test_metric_factory_rejects_artifacts_outside_state_root(tmp_path: Path):
+    factory, attempt, fold_window = _attempt_and_factory(
+        tmp_path,
+        outside_state_root=True,
+    )
+    candidate = attempt["candidate_configuration"]
+
+    with pytest.raises(RuntimeError, match="state root"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+def test_metric_factory_enforces_total_artifact_byte_bound(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import quant_platform.study_evaluation as evaluation_module
+
+    factory, attempt, fold_window = _attempt_and_factory(tmp_path)
+    candidate = attempt["candidate_configuration"]
+    monkeypatch.setattr(
+        evaluation_module,
+        "MAX_TOTAL_RESULT_BYTES",
+        1,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="total byte"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+def test_metric_factory_rejects_hardlinked_artifact(tmp_path: Path):
+    factory, attempt, fold_window = _attempt_and_factory(tmp_path)
+    candidate = attempt["candidate_configuration"]
+    result_root = Path(attempt["result_path"])
+    hardlink = factory.state_root / "hardlinked-metrics.json"
+    hardlink.hardlink_to(result_root / "metrics.json")
+
+    with pytest.raises(RuntimeError, match="immutable regular file"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+def test_metric_factory_detects_state_root_swap_while_reading(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import quant_platform.study_evaluation as evaluation_module
+
+    factory, attempt, fold_window = _attempt_and_factory(tmp_path)
+    candidate = attempt["candidate_configuration"]
+    original_stat = evaluation_module.os.stat
+    root_stats = 0
+
+    def swapped_stat(path, *args, **kwargs):
+        nonlocal root_stats
+        result = original_stat(path, *args, **kwargs)
+        if Path(path) == factory.state_root and kwargs.get("follow_symlinks") is False:
+            root_stats += 1
+            if root_stats == 2:
+                values = list(result)
+                values[1] += 1
+                return evaluation_module.os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(evaluation_module.os, "stat", swapped_stat)
+
+    with pytest.raises(RuntimeError, match="changed"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+def test_policy_enforces_metric_document_count_bound(tmp_path: Path, monkeypatch):
+    import quant_platform.study_evaluation as evaluation_module
+
+    document = _verified_document(tmp_path)
+    monkeypatch.setattr(
+        evaluation_module,
+        "MAX_METRIC_DOCUMENTS_PER_EVALUATION",
+        0,
+    )
+
+    with pytest.raises(EvaluationPolicyError, match="count"):
+        RobustWalkForwardPolicy().evaluate(
+            document["candidate_digest"],
+            [document],
+            {
+                "stability_weight": 0.5,
+                "turnover_weight": 0.05,
+                "minimum_trades": 0,
+                "maximum_drawdown": None,
+                "maximum_annual_turnover": None,
+            },
         )

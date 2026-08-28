@@ -102,6 +102,12 @@ ACTION_OPERATIONS = {
     "EFFECT_RECEIPT",
 }
 MAX_DATASET_RESOLUTION_ATTEMPTS = 2
+MAX_STUDY_SESSIONS = 100_000
+MAX_STUDY_EVENTS = 10_000
+MAX_STUDY_EVIDENCE = 10_000
+MAX_STUDY_BINDINGS = 10_000
+MAX_STUDY_DETAIL_BYTES = 64 * 1_048_576
+MAX_STUDY_DOCUMENT_BYTES = 4 * 1_048_576
 STUDY_MIGRATION = CatalogMigration(
     version=5,
     applied_at="2026-08-28T00:00:00Z",
@@ -407,6 +413,7 @@ CREATE TABLE parameter_study_bindings (
             json_valid(metric_document_json)
             AND json_type(metric_document_json) = 'object'
         )
+
     ),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -462,6 +469,51 @@ END;
 CREATE TRIGGER immutable_parameter_study_attempt_claims_delete
 BEFORE DELETE ON parameter_study_attempt_candidate_claims BEGIN
     SELECT RAISE(ABORT, 'Attempt candidate claims are immutable');
+END;
+""",
+)
+
+STUDY_HOLDOUT_MIGRATION = CatalogMigration(
+    version=8,
+    applied_at="2026-08-28T00:00:00Z",
+    sql="""
+CREATE TABLE parameter_study_holdout_claims (
+    study_id TEXT PRIMARY KEY REFERENCES parameter_studies(study_id),
+    holdout_identity_digest TEXT NOT NULL CHECK (
+        length(holdout_identity_digest) = 64
+        AND holdout_identity_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    candidate_digest TEXT NOT NULL CHECK (
+        length(candidate_digest) = 64
+        AND candidate_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    binding_id TEXT NOT NULL UNIQUE CHECK (
+        length(binding_id) = 64 AND binding_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    effect_action_id TEXT NOT NULL UNIQUE CHECK (
+        length(effect_action_id) = 86
+        AND substr(effect_action_id, 1, 22) = 'study-internal:effect:'
+        AND substr(effect_action_id, 23, 64) NOT GLOB '*[^0-9a-f]*'
+    ),
+    claimed_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX one_holdout_grant_per_study
+ON parameter_study_holdout_ledger(study_id)
+WHERE event_type = 'GRANTED';
+
+CREATE UNIQUE INDEX one_holdout_access_per_study
+ON parameter_study_holdout_ledger(study_id)
+WHERE event_type = 'ACCESSED';
+
+CREATE TRIGGER immutable_parameter_study_holdout_claims_update
+BEFORE UPDATE ON parameter_study_holdout_claims BEGIN
+    SELECT RAISE(ABORT, 'holdout claims are immutable');
+END;
+
+CREATE TRIGGER immutable_parameter_study_holdout_claims_delete
+BEFORE DELETE ON parameter_study_holdout_claims BEGIN
+    SELECT RAISE(ABORT, 'holdout claims are immutable');
 END;
 """,
 )
@@ -1281,6 +1333,7 @@ class ParameterStudy:
                 STUDY_MIGRATION,
                 STUDY_EVALUATION_MIGRATION,
                 STUDY_ORCHESTRATION_MIGRATION,
+                STUDY_HOLDOUT_MIGRATION,
             ]
         )
 
@@ -1367,6 +1420,10 @@ class ParameterStudy:
             raise StudyValidationError(f"study.dataset is invalid: {exc}") from exc
         if not sessions:
             raise StudyValidationError("study.dataset contains no trading sessions")
+        if len(sessions) > MAX_STUDY_SESSIONS:
+            raise StudyValidationError(
+                f"study.dataset exceeds {MAX_STUDY_SESSIONS} sessions"
+            )
 
         execution_identity = deepcopy(self.experiments.execution_identity)
         try:
@@ -2291,11 +2348,269 @@ class ParameterStudy:
             return None
         return response
 
+    def _validate_study_projection(
+        self,
+        connection: sqlite3.Connection,
+        study_id: str,
+    ) -> None:
+        study = connection.execute(
+            "SELECT * FROM parameter_studies WHERE study_id = ?",
+            (study_id,),
+        ).fetchone()
+        if study is None:
+            raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
+        frozen_plan = _strict_json_object(
+            study["frozen_plan_json"],
+            "Parameter Study frozen plan",
+        )
+        holdout_identity = _holdout_identity_digest(frozen_plan)
+
+        events = connection.execute(
+            """
+            SELECT sequence, event_type, payload_json, length(payload_json) AS bytes
+            FROM parameter_study_events
+            WHERE study_id = ? ORDER BY sequence
+            """,
+            (study_id,),
+        ).fetchall()
+        evidence = connection.execute(
+            """
+            SELECT sequence, evidence_type, candidate_digest, payload_json,
+                   length(payload_json) AS bytes
+            FROM parameter_study_evidence
+            WHERE study_id = ? ORDER BY sequence
+            """,
+            (study_id,),
+        ).fetchall()
+        holdout = connection.execute(
+            """
+            SELECT sequence, holdout_identity_digest, event_type, payload_json,
+                   length(payload_json) AS bytes
+            FROM parameter_study_holdout_ledger
+            WHERE study_id = ? ORDER BY sequence
+            """,
+            (study_id,),
+        ).fetchall()
+        bindings = connection.execute(
+            """
+            SELECT binding_id, search_round, candidate_digest, role,
+                   fold_sequence, state, metric_document_json,
+                   experiment_id, attempt_id
+            FROM parameter_study_bindings
+            WHERE study_id = ?
+            """,
+            (study_id,),
+        ).fetchall()
+        if (
+            not events
+            or len(events) > MAX_STUDY_EVENTS
+            or len(evidence) > MAX_STUDY_EVIDENCE
+            or len(bindings) > MAX_STUDY_BINDINGS
+            or len(holdout) > 16
+            or [row["sequence"] for row in events]
+            != list(range(1, len(events) + 1))
+            or [row["sequence"] for row in evidence]
+            != list(range(1, len(evidence) + 1))
+            or [row["sequence"] for row in holdout]
+            != list(range(1, len(holdout) + 1))
+            or events[0]["event_type"] != "STUDY_SUBMITTED"
+        ):
+            raise RuntimeError("Parameter Study event or evidence ledger is invalid")
+        documents = [*events, *evidence, *holdout]
+        if any(
+            row["bytes"] > MAX_STUDY_DOCUMENT_BYTES for row in documents
+        ) or sum(row["bytes"] for row in documents) > MAX_STUDY_DETAIL_BYTES:
+            raise RuntimeError("Parameter Study ledger exceeds bounded detail size")
+        for row in documents:
+            _strict_json_object(row["payload_json"], "Parameter Study ledger payload")
+        if any(
+            row["holdout_identity_digest"] != holdout_identity for row in holdout
+        ):
+            raise RuntimeError("holdout ledger identity does not match its Study")
+        granted = [row for row in holdout if row["event_type"] == "GRANTED"]
+        accessed = [row for row in holdout if row["event_type"] == "ACCESSED"]
+        if (
+            len(granted) > 1
+            or len(accessed) > 1
+            or (
+                accessed
+                and (
+                    not granted
+                    or granted[0]["sequence"] >= accessed[0]["sequence"]
+                )
+            )
+        ):
+            raise RuntimeError("holdout ledger has an illegal event order")
+
+        evidence_items = [
+            {
+                "sequence": row["sequence"],
+                "evidence_type": row["evidence_type"],
+                "candidate_digest": row["candidate_digest"],
+                "payload": _strict_json_object(
+                    row["payload_json"],
+                    "Parameter Study evidence",
+                ),
+            }
+            for row in evidence
+        ]
+        champions = [
+            item
+            for item in evidence_items
+            if item["evidence_type"] == "CHAMPION_FROZEN"
+        ]
+        holdout_outcomes = [
+            item
+            for item in evidence_items
+            if item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED"
+        ]
+        selection_outcome = study["selection_outcome"]
+        phase = study["phase"]
+        holdout_outcome = study["holdout_outcome"]
+        if selection_outcome == "NOT_DETERMINED":
+            legal = (
+                not champions
+                and phase in {"FROZEN", "VALIDATING_SELECTION_PROCESS"}
+                and holdout_outcome == "NOT_RUN"
+                and not granted
+                and not accessed
+            )
+        elif selection_outcome == "NO_ELIGIBLE_CANDIDATE":
+            legal = (
+                not champions
+                and phase == "COMPLETED"
+                and holdout_outcome == "NOT_RUN"
+                and not granted
+                and not accessed
+            )
+        else:
+            legal = (
+                len(champions) == 1
+                and phase in {"HOLDOUT_READY", "HOLDOUT_RUNNING", "COMPLETED"}
+                and len(granted) == 1
+                and champions[0]["candidate_digest"]
+                == champions[0]["payload"].get("candidate_digest")
+            )
+        if not legal:
+            raise RuntimeError(
+                "Parameter Study phase or selection projection disagrees with evidence"
+            )
+        if holdout_outcome == "NOT_RUN":
+            if holdout_outcomes:
+                raise RuntimeError(
+                    "Parameter Study holdout projection disagrees with evidence"
+                )
+        elif (
+            phase != "COMPLETED"
+            or len(holdout_outcomes) != 1
+            or len(accessed) != 1
+            or holdout_outcomes[0]["payload"].get("outcome")
+            != holdout_outcome
+        ):
+            raise RuntimeError(
+                "Parameter Study holdout projection disagrees with evidence"
+            )
+        if phase == "HOLDOUT_RUNNING" and len(accessed) != 1:
+            raise RuntimeError("HOLDOUT_RUNNING requires recorded access")
+
+        claim = connection.execute(
+            """
+            SELECT * FROM parameter_study_holdout_claims
+            WHERE study_id = ?
+            """,
+            (study_id,),
+        ).fetchone()
+        if claim is not None:
+            if (
+                len(champions) != 1
+                or not granted
+                or claim["holdout_identity_digest"] != holdout_identity
+                or claim["candidate_digest"]
+                != champions[0]["candidate_digest"]
+                or claim["effect_action_id"]
+                != self._effect_action_id(claim["binding_id"])
+            ):
+                raise RuntimeError("holdout claim disagrees with frozen authorization")
+        if accessed and claim is None:
+            raise RuntimeError("holdout access has no durable claim")
+
+        metric_evidence = {
+            item["payload"].get("binding_id"): item["payload"]
+            for item in evidence_items
+            if item["evidence_type"] == "METRIC_DOCUMENT_VERIFIED"
+        }
+        contested = {
+            item["payload"].get("experiment_id")
+            for item in evidence_items
+            if item["evidence_type"] == "EVIDENCE_CONTESTED"
+        }
+        for binding in bindings:
+            metric = metric_evidence.get(binding["binding_id"])
+            if binding["state"] == "VERIFIED":
+                if (
+                    metric is None
+                    or binding["metric_document_json"] is None
+                    or metric.get("attempt_id") != binding["attempt_id"]
+                ):
+                    raise RuntimeError(
+                        "verified binding projection disagrees with evidence"
+                    )
+            elif (
+                binding["state"] == "CONTESTED"
+                and binding["experiment_id"] not in contested
+            ) or (
+                binding["state"] == "SUBMITTED"
+                and binding["metric_document_json"] is not None
+            ):
+                raise RuntimeError(
+                    "Study binding projection disagrees with evidence"
+                )
+
+        outer_records = [
+            item["payload"]
+            for item in evidence_items
+            if item["evidence_type"] == "OUTER_SELECTION_RECORDED"
+        ]
+        for outer in outer_records:
+            search_round = outer.get("search_round")
+            round_bindings = [
+                binding
+                for binding in bindings
+                if binding["search_round"] == search_round
+            ]
+            inner = [
+                binding
+                for binding in round_bindings
+                if binding["role"] == "INNER_SCORE"
+            ]
+            if not inner or any(binding["state"] != "VERIFIED" for binding in inner):
+                raise RuntimeError("outer selection has partial inner-fold evidence")
+            selected = outer.get("selected_candidate_digest")
+            if selected is not None and not any(
+                binding["role"] == "OUTER_AUDIT"
+                and binding["candidate_digest"] == selected
+                and binding["state"] == "VERIFIED"
+                for binding in round_bindings
+            ):
+                raise RuntimeError("outer selection has no verified audit binding")
+        if champions:
+            expected_outer = len(frozen_plan["validation"]["outer_rounds"])
+            if (
+                len(outer_records) != expected_outer
+                or not any(
+                    item["payload"].get("search_round") == "FINAL"
+                    for item in evidence_items
+                    if item["evidence_type"] == "CANDIDATE_EVALUATED"
+                )
+            ):
+                raise RuntimeError("champion evidence is based on partial folds")
+
     def _classify_readiness(
         self,
         connection: sqlite3.Connection,
         study_id: str,
     ) -> _StudyReadiness:
+        self._validate_study_projection(connection, study_id)
         study = connection.execute(
             """
             SELECT study_id, phase, control_status, frozen_plan_json
@@ -3316,6 +3631,7 @@ class ParameterStudy:
         effect_action_id = self._effect_action_id(binding["binding_id"])
         receipt_action_id = self._receipt_action_id(binding["binding_id"])
         authorized_lease: dict[str, Any] | None = None
+        holdout_ambiguous = False
         with self.catalog.transaction(immediate=True) as connection:
             receipt = self._load_action(receipt_action_id, connection)
             if receipt is not None:
@@ -3341,6 +3657,32 @@ class ParameterStudy:
             if lease is None:
                 raise RuntimeError("Study execution dispatch has no coordinator lease")
             authorized_lease = deepcopy(lease)
+            if binding["role"] == "TERMINAL_HOLDOUT":
+                authorization = connection.execute(
+                    """
+                    SELECT c.effect_action_id
+                    FROM parameter_study_holdout_claims AS c
+                    JOIN parameter_study_holdout_ledger AS h
+                      ON h.study_id = c.study_id
+                     AND h.holdout_identity_digest =
+                         c.holdout_identity_digest
+                     AND h.event_type = 'ACCESSED'
+                    WHERE c.study_id = ? AND c.binding_id = ?
+                      AND c.candidate_digest = ?
+                    """,
+                    (
+                        binding["study_id"],
+                        binding["binding_id"],
+                        binding["candidate_digest"],
+                    ),
+                ).fetchone()
+                if (
+                    authorization is None
+                    or authorization["effect_action_id"] != effect_action_id
+                ):
+                    raise RuntimeError(
+                        "terminal holdout dispatch lacks durable accessed authorization"
+                    )
             intent = self._load_action(effect_action_id, connection)
             if intent is None:
                 intent_response = {
@@ -3377,6 +3719,12 @@ class ParameterStudy:
                     or stored_intent.get("effect") != effect
                 ):
                     raise RuntimeError("durable Study execution intent conflicts")
+                holdout_ambiguous = binding["role"] == "TERMINAL_HOLDOUT"
+        if holdout_ambiguous:
+            return self._record_holdout_ambiguous(
+                study_id=binding["study_id"],
+                binding_id=binding["binding_id"],
+            )
         result = self.effect_executor(deepcopy(effect), effect_action_id)
         if (
             not isinstance(result, dict)
@@ -3998,6 +4346,449 @@ class ParameterStudy:
             "outer_evidence_digest": outer_evidence_digest,
         }
 
+    def _holdout_claim(
+        self,
+        study_id: str,
+    ) -> dict[str, Any] | None:
+        connection = self.catalog.connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT * FROM parameter_study_holdout_claims
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        return None if row is None else dict(row)
+
+    def _ensure_holdout_claim(
+        self,
+        *,
+        study_id: str,
+        frozen_plan: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        connection = self.catalog.connect()
+        try:
+            champion = connection.execute(
+                """
+                SELECT candidate_digest, payload_json
+                FROM parameter_study_evidence
+                WHERE study_id = ? AND evidence_type = 'CHAMPION_FROZEN'
+                """,
+                (study_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if champion is None:
+            raise RuntimeError("terminal holdout requires one frozen champion")
+        candidate_digest = champion["candidate_digest"]
+        fold_window = deepcopy(frozen_plan["holdout"]["fold_window"])
+        binding_id = self._binding_id(
+            study_id=study_id,
+            search_round="HOLDOUT",
+            candidate_digest=candidate_digest,
+            role="TERMINAL_HOLDOUT",
+            fold_sequence=1,
+            fold_window=fold_window,
+        )
+        claim = {
+            "study_id": study_id,
+            "holdout_identity_digest": _holdout_identity_digest(frozen_plan),
+            "candidate_digest": candidate_digest,
+            "binding_id": binding_id,
+            "effect_action_id": self._effect_action_id(binding_id),
+        }
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM parameter_study_holdout_claims
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            ).fetchone()
+            if existing is not None:
+                stored = {
+                    key: existing[key]
+                    for key in claim
+                }
+                if stored != claim:
+                    raise RuntimeError("durable holdout claim conflicts")
+                return dict(existing), False
+            grant = connection.execute(
+                """
+                SELECT holdout_identity_digest, payload_json
+                FROM parameter_study_holdout_ledger
+                WHERE study_id = ? AND event_type = 'GRANTED'
+                """,
+                (study_id,),
+            ).fetchone()
+            champion_payload = _strict_json_object(
+                champion["payload_json"],
+                "frozen champion evidence",
+            )
+            if (
+                grant is None
+                or grant["holdout_identity_digest"]
+                != claim["holdout_identity_digest"]
+                or champion_payload.get("candidate_digest")
+                != candidate_digest
+            ):
+                raise RuntimeError("holdout authorization does not match champion")
+            connection.execute(
+                """
+                INSERT INTO parameter_study_holdout_claims(
+                    study_id, holdout_identity_digest, candidate_digest,
+                    binding_id, effect_action_id, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    claim["holdout_identity_digest"],
+                    candidate_digest,
+                    binding_id,
+                    claim["effect_action_id"],
+                    now,
+                ),
+            )
+        return {**claim, "claimed_at": now}, True
+
+    def _record_holdout_ambiguous(
+        self,
+        *,
+        study_id: str,
+        binding_id: str,
+    ) -> dict[str, Any]:
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT 1 FROM parameter_study_events
+                WHERE study_id = ?
+                  AND event_type = 'HOLDOUT_EXECUTION_AMBIGUOUS'
+                """,
+                (study_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO parameter_study_events(
+                        study_id, sequence, event_type, occurred_at, payload_json
+                    )
+                    SELECT ?, COALESCE(MAX(sequence), 0) + 1,
+                           'HOLDOUT_EXECUTION_AMBIGUOUS', ?, ?
+                    FROM parameter_study_events
+                    WHERE study_id = ?
+                    """,
+                    (
+                        study_id,
+                        now,
+                        canonical_json_bytes(
+                            {
+                                "binding_id": binding_id,
+                                "effect_action_id": self._effect_action_id(
+                                    binding_id
+                                ),
+                                "access": "ACCESSED",
+                                "redispatch_allowed": False,
+                            }
+                        ).decode(),
+                        study_id,
+                    ),
+                )
+            connection.execute(
+                """
+                UPDATE parameter_studies
+                SET control_status = 'FAILED', updated_at = ?
+                WHERE study_id = ?
+                """,
+                (now, study_id),
+            )
+        return {
+            "status": "HOLDOUT_EXECUTION_AMBIGUOUS",
+            "study_id": study_id,
+            "binding_id": binding_id,
+            "access": "ACCESSED",
+            "redispatch_allowed": False,
+        }
+
+    def _dispatch_holdout_binding(
+        self,
+        *,
+        study_id: str,
+        frozen_plan: dict[str, Any],
+        claim: dict[str, Any],
+    ) -> dict[str, Any]:
+        fold_window = deepcopy(frozen_plan["holdout"]["fold_window"])
+        configuration = self._candidate_configuration(
+            study_id,
+            claim["candidate_digest"],
+        )
+        dataset_slice = self.dataset_slice_factory.materialize(
+            frozen_plan["dataset"],
+            fold_window,
+        )
+        task = self._task_for_candidate(
+            candidate=configuration,
+            instrument=frozen_plan["dataset"]["instrument"],
+            snapshot_id=dataset_slice["snapshot_id"],
+            fold_window=fold_window,
+        )
+        preview = self.experiments.preview_task(task)
+        if preview["duplicate"]:
+            attempts = self.experiments.list_attempts(preview["experiment_id"])
+            if not attempts:
+                raise RuntimeError("duplicate holdout Experiment has no Attempt")
+            expected_attempt_id = attempts[0]["attempt_id"]
+        else:
+            expected_attempt_id = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "experiment_id": preview["experiment_id"],
+                        "action_id": claim["effect_action_id"],
+                        "sequence": 1,
+                    }
+                )
+            ).hexdigest()
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            access = connection.execute(
+                """
+                SELECT 1 FROM parameter_study_holdout_ledger
+                WHERE study_id = ? AND event_type = 'ACCESSED'
+                """,
+                (study_id,),
+            ).fetchone()
+            if access is not None:
+                raise RuntimeError(
+                    "holdout access already exists without a durable binding"
+                )
+            connection.execute(
+                """
+                INSERT INTO parameter_study_holdout_ledger(
+                    study_id, sequence, holdout_identity_digest,
+                    event_type, occurred_at, payload_json
+                )
+                SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?,
+                       'ACCESSED', ?, ?
+                FROM parameter_study_holdout_ledger
+                WHERE study_id = ?
+                """,
+                (
+                    study_id,
+                    claim["holdout_identity_digest"],
+                    now,
+                    canonical_json_bytes(
+                        {
+                            "candidate_digest": claim["candidate_digest"],
+                            "binding_id": claim["binding_id"],
+                            "effect_action_id": claim["effect_action_id"],
+                            "experiment_id": preview["experiment_id"],
+                            "attempt_id": expected_attempt_id,
+                            "dataset_snapshot_id": dataset_slice["snapshot_id"],
+                            "task_digest": _digest(task),
+                        }
+                    ).decode(),
+                    study_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE parameter_studies
+                SET phase = 'HOLDOUT_RUNNING', updated_at = ?
+                WHERE study_id = ? AND phase = 'HOLDOUT_READY'
+                """,
+                (now, study_id),
+            )
+        submission = self.experiments.submit_study_effect(
+            task,
+            action_id=claim["effect_action_id"],
+        )
+        if (
+            submission["experiment_id"] != preview["experiment_id"]
+            or submission["attempt_id"] != expected_attempt_id
+        ):
+            raise RuntimeError("holdout Experiment identity changed after access")
+        with self.catalog.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO parameter_study_bindings(
+                    binding_id, study_id, search_round, candidate_digest,
+                    role, fold_sequence, fold_window_json, task_json,
+                    task_digest, dataset_snapshot_id, experiment_id,
+                    submitted_attempt_id, attempt_id, state,
+                    metric_document_json, created_at, updated_at
+                ) VALUES (
+                    ?, ?, 'HOLDOUT', ?, 'TERMINAL_HOLDOUT', 1, ?, ?, ?, ?,
+                    ?, ?, ?, 'SUBMITTED', NULL, ?, ?
+                )
+                """,
+                (
+                    claim["binding_id"],
+                    study_id,
+                    claim["candidate_digest"],
+                    canonical_json_bytes(fold_window).decode(),
+                    canonical_json_bytes(task).decode(),
+                    _digest(task),
+                    dataset_slice["snapshot_id"],
+                    submission["experiment_id"],
+                    submission["attempt_id"],
+                    submission["attempt_id"],
+                    now,
+                    now,
+                ),
+            )
+        return {
+            "status": "ATTEMPT_SUBMITTED",
+            "study_id": study_id,
+            "binding_id": claim["binding_id"],
+            "candidate_digest": claim["candidate_digest"],
+            "role": "TERMINAL_HOLDOUT",
+            "experiment_id": submission["experiment_id"],
+            "attempt_id": submission["attempt_id"],
+        }
+
+    def _record_holdout_outcome(
+        self,
+        *,
+        study_id: str,
+        frozen_plan: dict[str, Any],
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        configuration = self._candidate_configuration(
+            study_id,
+            binding["candidate_digest"],
+        )
+        document = self._factory_document_for_binding(binding, configuration)
+        if document is None:
+            raise RuntimeError("verified holdout binding lost canonical evidence")
+        evaluation = self.evaluation_policy.evaluate(
+            binding["candidate_digest"],
+            [document],
+            frozen_plan["evaluation"]["parameters"],
+        )
+        outcome = "PASSED" if evaluation["eligible"] else "FAILED"
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT payload_json FROM parameter_study_evidence
+                WHERE study_id = ?
+                  AND evidence_type = 'HOLDOUT_OUTCOME_RECORDED'
+                """,
+                (study_id,),
+            ).fetchone()
+            payload = {
+                "candidate_digest": binding["candidate_digest"],
+                "binding_id": binding["binding_id"],
+                "experiment_id": binding["experiment_id"],
+                "attempt_id": document["attempt_id"],
+                "metric_document": dict(document),
+                "metric_document_digest": document["document_digest"],
+                "evaluation": evaluation,
+                "evaluation_digest": evaluation["evaluation_digest"],
+                "constraints": evaluation["constraints"],
+                "outcome": outcome,
+            }
+            if existing is None:
+                self._append_evaluation_evidence(
+                    connection,
+                    study_id=study_id,
+                    evidence_type="HOLDOUT_OUTCOME_RECORDED",
+                    candidate_digest=binding["candidate_digest"],
+                    payload=payload,
+                    occurred_at=now,
+                )
+                connection.execute(
+                    """
+                    UPDATE parameter_studies
+                    SET phase = 'COMPLETED', holdout_outcome = ?, updated_at = ?
+                    WHERE study_id = ? AND phase = 'HOLDOUT_RUNNING'
+                      AND holdout_outcome = 'NOT_RUN'
+                    """,
+                    (outcome, now, study_id),
+                )
+            elif _strict_json_object(
+                existing["payload_json"],
+                "holdout outcome evidence",
+            ) != payload:
+                raise RuntimeError("holdout outcome evidence conflicts")
+        return {
+            "status": f"HOLDOUT_{outcome}",
+            "study_id": study_id,
+            "candidate_digest": binding["candidate_digest"],
+            "binding_id": binding["binding_id"],
+            "experiment_id": binding["experiment_id"],
+            "attempt_id": document["attempt_id"],
+            "metric_document_digest": document["document_digest"],
+            "evaluation_digest": evaluation["evaluation_digest"],
+        }
+
+    def _advance_holdout(
+        self,
+        study_id: str,
+        frozen_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        claim, created = self._ensure_holdout_claim(
+            study_id=study_id,
+            frozen_plan=frozen_plan,
+        )
+        if created:
+            return {
+                "status": "HOLDOUT_CLAIMED",
+                "study_id": study_id,
+                "binding_id": claim["binding_id"],
+                "candidate_digest": claim["candidate_digest"],
+                "holdout_identity_digest": claim["holdout_identity_digest"],
+                "effect_action_id": claim["effect_action_id"],
+            }
+        binding = self._binding(claim["binding_id"])
+        if binding is None:
+            connection = self.catalog.connect()
+            try:
+                accessed = connection.execute(
+                    """
+                    SELECT 1 FROM parameter_study_holdout_ledger
+                    WHERE study_id = ? AND event_type = 'ACCESSED'
+                    """,
+                    (study_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+            if accessed is not None:
+                return self._record_holdout_ambiguous(
+                    study_id=study_id,
+                    binding_id=claim["binding_id"],
+                )
+            return self._dispatch_holdout_binding(
+                study_id=study_id,
+                frozen_plan=frozen_plan,
+                claim=claim,
+            )
+        if binding["state"] == "CONTESTED":
+            return {
+                "status": "EVIDENCE_CONTESTED",
+                "study_id": study_id,
+                "binding_id": binding["binding_id"],
+                "experiment_id": binding["experiment_id"],
+            }
+        if binding["state"] == "SUBMITTED":
+            return self._observe_binding(
+                study_id=study_id,
+                binding=binding,
+                configuration=self._candidate_configuration(
+                    study_id,
+                    binding["candidate_digest"],
+                ),
+            )
+        return self._record_holdout_outcome(
+            study_id=study_id,
+            frozen_plan=frozen_plan,
+            binding=binding,
+        )
+
     def _advance_selection(
         self,
         study_id: str,
@@ -4223,12 +5014,40 @@ class ParameterStudy:
                 if drift is not None:
                     return drift
             return self._advance_selection(study_id, frozen_plan)
-        if study["phase"] == "HOLDOUT_READY":
-            return {
-                "status": "HOLDOUT_READY",
-                "study_id": study_id,
-                "phase": "HOLDOUT_READY",
-            }
+        if (
+            study["phase"] in {"HOLDOUT_READY", "HOLDOUT_RUNNING"}
+            and (
+                study["control_status"] == "ACTIVE"
+                or binding_reconciliation
+            )
+        ):
+            frozen_plan = _strict_json_object(
+                study["frozen_plan_json"],
+                "Parameter Study frozen plan",
+            )
+            if study["phase"] == "HOLDOUT_READY":
+                with self.catalog.transaction(immediate=True) as connection:
+                    lease_is_current, now_value, current = self._lease_is_current(
+                        connection,
+                        study_id,
+                        lease,
+                    )
+                    if not lease_is_current:
+                        return {
+                            "status": "LEASE_BUSY",
+                            "study_id": study_id,
+                            "lease": current,
+                        }
+                    drift = self._record_execution_identity_drift(
+                        connection,
+                        study_id=study_id,
+                        frozen_plan=frozen_plan,
+                        lease=lease,
+                        now=_utc_text(now_value),
+                    )
+                    if drift is not None:
+                        return drift
+            return self._advance_holdout(study_id, frozen_plan)
 
         with self.catalog.transaction(immediate=True) as connection:
             lease_is_current, now_value, current = self._lease_is_current(
@@ -4683,6 +5502,7 @@ class ParameterStudy:
         ).hexdigest()
 
         with self.catalog.transaction(immediate=True) as connection:
+            self._validate_study_projection(connection, study_id)
             existing_action = self._load_action(action_id, connection)
             if existing_action is not None:
                 if (
@@ -4869,6 +5689,7 @@ class ParameterStudy:
         connection = self.catalog.connect()
         try:
             connection.execute("BEGIN")
+            self._validate_study_projection(connection, study_id)
             study = connection.execute(
                 "SELECT * FROM parameter_studies WHERE study_id = ?",
                 (study_id,),
@@ -4891,13 +5712,21 @@ class ParameterStudy:
             ).fetchall()
             holdout_ledger = connection.execute(
                 """
-                SELECT holdout_identity_digest, event_type
+                SELECT sequence, holdout_identity_digest, event_type,
+                       occurred_at, payload_json
                 FROM parameter_study_holdout_ledger
                 WHERE study_id = ?
                 ORDER BY sequence
                 """,
                 (study_id,),
             ).fetchall()
+            holdout_claim = connection.execute(
+                """
+                SELECT * FROM parameter_study_holdout_claims
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            ).fetchone()
             prior_exposure = connection.execute(
                 """
                 SELECT 1
@@ -5031,6 +5860,14 @@ class ParameterStudy:
                 item["payload"]
                 for item in evidence_items
                 if item["evidence_type"] == "CHAMPION_FROZEN"
+            ),
+            None,
+        )
+        holdout_evidence = next(
+            (
+                item["payload"]
+                for item in evidence_items
+                if item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED"
             ),
             None,
         )
@@ -5206,7 +6043,7 @@ class ParameterStudy:
             raise RuntimeError(
                 "Study holdout projection disagrees with canonical evidence"
             )
-        return {
+        result = {
             "study_id": study["study_id"],
             "preview_digest": study["preview_digest"],
             "created_at": study["created_at"],
@@ -5219,6 +6056,24 @@ class ParameterStudy:
                 "outcome": study["holdout_outcome"],
                 "freshness": holdout_freshness,
             },
+            "holdout_claim": (
+                None if holdout_claim is None else dict(holdout_claim)
+            ),
+            "holdout_ledger": [
+                {
+                    "sequence": item["sequence"],
+                    "holdout_identity_digest": item[
+                        "holdout_identity_digest"
+                    ],
+                    "event_type": item["event_type"],
+                    "occurred_at": item["occurred_at"],
+                    "payload": _strict_json_object(
+                        item["payload_json"],
+                        "holdout ledger payload",
+                    ),
+                }
+                for item in holdout_ledger
+            ],
             "operational_metadata": _strict_json_object(
                 study["operational_metadata_json"],
                 "Parameter Study operational metadata",
@@ -5249,6 +6104,8 @@ class ParameterStudy:
                 if binding["metric_document"] is not None
             ],
             "evaluations": final_evaluations,
+            "champion_evidence": champion_evidence,
+            "holdout_evidence": holdout_evidence,
             "outer_evidence": (
                 champion_evidence["outer_evidence"]
                 if champion_evidence is not None
@@ -5256,3 +6113,6 @@ class ParameterStudy:
             ),
             "evidence": evidence_items,
         }
+        if len(canonical_json_bytes(result)) > MAX_STUDY_DETAIL_BYTES:
+            raise RuntimeError("Parameter Study detail exceeds bounded size")
+        return result

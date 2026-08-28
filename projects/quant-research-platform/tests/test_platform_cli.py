@@ -473,3 +473,43 @@ def test_study_cli_delegates_to_the_deep_service(tmp_path: Path, capsys, monkeyp
         assert _json_output(capsys)["ok"] is True
 
     assert [call[0] for call in calls] == ["preview", "submit", "list", "detail"]
+
+
+def test_study_advance_cli_progresses_real_bounded_orchestration(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    from test_parameter_study import _minimal_orchestration_spec, _study_service
+
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-real-cli-advance",
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_domain_services",
+        lambda root: (studies.catalog, experiments),
+    )
+
+    assert main(
+        [
+            "study",
+            "advance",
+            "--root",
+            str(studies.catalog.state_root),
+            "--study-id",
+            submitted["study_id"],
+        ]
+    ) == 0
+
+    output = _json_output(capsys)
+    assert output["ok"] is True
+    assert output["status"] == "ATTEMPT_SUBMITTED"
+    assert experiments.list_experiments()[0]["dataset"]["lineage"]["kind"] == (
+        "derived_view"
+    )

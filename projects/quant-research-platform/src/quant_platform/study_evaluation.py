@@ -7,6 +7,7 @@ import os
 import re
 import stat
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
@@ -42,8 +43,10 @@ MAX_ARTIFACT_BYTES = {
     "report.html": 16 * 1_048_576,
 }
 MAX_ATTEMPT_AUDIT_BYTES = 4 * 1_048_576
+MAX_TOTAL_RESULT_BYTES = 128 * 1_048_576
 MAX_SCORED_SESSIONS = 100_000
 MAX_LEDGER_ROWS = 200_000
+MAX_METRIC_DOCUMENTS_PER_EVALUATION = 256
 EVALUATION_PARAMETER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -166,49 +169,122 @@ def _strict_json(payload: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def _immutable_file(
-    path: Path,
-    root: Path,
+@contextmanager
+def _root_relative_directory(
+    state_root: Path,
+    target: Path,
+    label: str,
+) -> Any:
+    state_root = state_root.absolute()
+    target = target.absolute()
+    try:
+        relative = target.relative_to(state_root)
+    except ValueError as exc:
+        raise MetricDocumentValidationError(
+            f"{label} is outside the state root"
+        ) from exc
+    if not relative.parts:
+        raise MetricDocumentValidationError(f"{label} cannot be the state root")
+    descriptors: list[int] = []
+    try:
+        root_before = os.stat(state_root, follow_symlinks=False)
+        if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(
+            root_before.st_mode
+        ):
+            raise MetricDocumentValidationError("state root is not an immutable locator")
+        root_descriptor = os.open(
+            state_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        descriptors.append(root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if (
+            opened_root.st_dev,
+            opened_root.st_ino,
+        ) != (
+            root_before.st_dev,
+            root_before.st_ino,
+        ):
+            raise MetricDocumentValidationError("state root changed while opening")
+        parent_descriptor = root_descriptor
+        for component in relative.parts:
+            if component in {"", ".", ".."}:
+                raise MetricDocumentValidationError(
+                    f"{label} contains an unsafe path component"
+                )
+            descriptor = os.open(
+                component,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+            descriptors.append(descriptor)
+            parent_descriptor = descriptor
+        metadata = os.fstat(parent_descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise MetricDocumentValidationError(f"{label} is not a directory")
+        yield parent_descriptor
+        root_after = os.stat(state_root, follow_symlinks=False)
+        if (
+            root_after.st_dev,
+            root_after.st_ino,
+        ) != (
+            opened_root.st_dev,
+            opened_root.st_ino,
+        ):
+            raise MetricDocumentValidationError("state root changed while reading")
+    except MetricDocumentValidationError:
+        raise
+    except OSError as exc:
+        raise MetricDocumentValidationError(
+            f"{label} cannot be opened relative to the state root"
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _immutable_file_at(
+    directory_descriptor: int,
+    name: str,
     label: str,
     *,
     maximum_bytes: int,
 ) -> bytes:
+    if "/" in name or name in {"", ".", ".."}:
+        raise MetricDocumentValidationError(f"{label} has an unsafe name")
+    descriptor: int | None = None
     try:
-        before = os.stat(path, follow_symlinks=False)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+        before = os.fstat(descriptor)
         if (
             not stat.S_ISREG(before.st_mode)
             or stat.S_IMODE(before.st_mode) & 0o222
             or before.st_nlink != 1
             or before.st_size > maximum_bytes
         ):
-            raise MetricDocumentValidationError(f"{label} is not an immutable regular file")
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            opened = os.fstat(descriptor)
-            if (
-                opened.st_dev,
-                opened.st_ino,
-                opened.st_size,
-                opened.st_mtime_ns,
-            ) != (
-                before.st_dev,
-                before.st_ino,
-                before.st_size,
-                before.st_mtime_ns,
-            ):
-                raise MetricDocumentValidationError(f"{label} changed while opening")
-            chunks: list[bytes] = []
-            while True:
-                chunk = os.read(descriptor, 1024 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            after = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
+            raise MetricDocumentValidationError(
+                f"{label} is not a bounded immutable regular file"
+            )
+        payload = bytearray()
+        while chunk := os.read(descriptor, min(1024 * 1024, maximum_bytes + 1)):
+            payload.extend(chunk)
+            if len(payload) > maximum_bytes:
+                raise MetricDocumentValidationError(
+                    f"{label} exceeds its byte bound"
+                )
+        after = os.fstat(descriptor)
         if (
             after.st_dev,
             after.st_ino,
@@ -221,13 +297,14 @@ def _immutable_file(
             before.st_mtime_ns,
         ):
             raise MetricDocumentValidationError(f"{label} changed while reading")
-        if path.parent != root:
-            raise MetricDocumentValidationError(f"{label} is outside the result directory")
-        return b"".join(chunks)
+        return bytes(payload)
     except MetricDocumentValidationError:
         raise
     except OSError as exc:
         raise MetricDocumentValidationError(f"{label} cannot be read safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _finite(value: Any, path: str) -> None:
@@ -501,48 +578,54 @@ class MetricDocumentFactory:
         if fold_window is not None and dict(fold_window) != expected_window:
             raise MetricDocumentValidationError("fold window does not match dataset scoring identity")
 
-        root = Path(result_path).absolute() if isinstance(result_path, (str, Path)) else None
-        try:
-            root_metadata = os.stat(root, follow_symlinks=False) if root is not None else None
-        except OSError as exc:
-            raise MetricDocumentValidationError("result directory is unavailable") from exc
-        if (
-            root is None
-            or root_metadata is None
-            or not stat.S_ISDIR(root_metadata.st_mode)
-            or stat.S_IMODE(root_metadata.st_mode) & 0o222
-        ):
-            raise MetricDocumentValidationError("result directory is not immutable")
-        if any(
-            component.is_symlink()
-            for component in (root, *root.parents)
-            if component.exists()
-        ):
-            raise MetricDocumentValidationError("result directory contains a symlink")
-        names = {entry.name for entry in os.scandir(root)}
+        if not isinstance(result_path, (str, Path)):
+            raise MetricDocumentValidationError("result directory is unavailable")
+        root = Path(result_path).absolute()
         required = {*RESULT_ARTIFACTS, "run_manifest.json", "config.json", "report.html"}
-        if names != required:
-            raise MetricDocumentValidationError("result artifact set is incomplete or unexpected")
-        payloads = {
-            name: _immutable_file(
-                root / name,
-                root,
-                f"result artifact {name}",
-                maximum_bytes=MAX_ARTIFACT_BYTES[name],
+        with _root_relative_directory(
+            self.state_root,
+            root,
+            "result directory",
+        ) as result_descriptor:
+            root_metadata = os.fstat(result_descriptor)
+            if stat.S_IMODE(root_metadata.st_mode) & 0o222:
+                raise MetricDocumentValidationError(
+                    "result directory is not immutable"
+                )
+            names = set(os.listdir(result_descriptor))
+            if names != required:
+                raise MetricDocumentValidationError(
+                    "result artifact set is incomplete or unexpected"
+                )
+            payloads = {
+                name: _immutable_file_at(
+                    result_descriptor,
+                    name,
+                    f"result artifact {name}",
+                    maximum_bytes=MAX_ARTIFACT_BYTES[name],
+                )
+                for name in sorted(required)
+            }
+        if sum(len(payload) for payload in payloads.values()) > MAX_TOTAL_RESULT_BYTES:
+            raise MetricDocumentValidationError(
+                "result artifacts exceed the total byte bound"
             )
-            for name in sorted(required)
-        }
         if _result_digest(payloads) != result_digest:
             raise MetricDocumentValidationError("Attempt result digest does not match artifacts")
 
         run_manifest = _strict_json(payloads["run_manifest.json"], "run manifest")
         audit_root = self.state_root / "attempt-audit"
-        audit_payload = _immutable_file(
-            audit_root / f"{attempt_id}.json",
+        with _root_relative_directory(
+            self.state_root,
             audit_root,
-            "Attempt audit",
-            maximum_bytes=MAX_ATTEMPT_AUDIT_BYTES,
-        )
+            "Attempt audit directory",
+        ) as audit_descriptor:
+            audit_payload = _immutable_file_at(
+                audit_descriptor,
+                f"{attempt_id}.json",
+                "Attempt audit",
+                maximum_bytes=MAX_ATTEMPT_AUDIT_BYTES,
+            )
         attempt_audit = _strict_json(audit_payload, "Attempt audit")
         expected_audit_fields = {
             "schema_version",
@@ -1065,6 +1148,10 @@ class RobustWalkForwardPolicy:
             raise EvaluationPolicyError("candidate_digest must be a lowercase SHA-256 digest")
         if not metric_documents:
             raise EvaluationPolicyError("at least one Metric Document is required")
+        if len(metric_documents) > MAX_METRIC_DOCUMENTS_PER_EVALUATION:
+            raise EvaluationPolicyError(
+                "Metric Document count exceeds the evaluation bound"
+            )
         required_parameters = {
             "stability_weight",
             "turnover_weight",
@@ -1232,6 +1319,10 @@ class RobustWalkForwardPolicy:
         fold_median = float(median(fold_sharpes))
         fold_mad = float(median(abs(value - fold_median) for value in fold_sharpes))
         total_sessions = sum(len(document["scored_dates"]) for document in ordered)
+        if total_sessions > MAX_SCORED_SESSIONS:
+            raise EvaluationPolicyError(
+                "Metric Document sessions exceed the evaluation bound"
+            )
         annual_turnover = sum(
             float(document["metrics"]["annual_turnover"]) * len(document["scored_dates"])
             for document in ordered
