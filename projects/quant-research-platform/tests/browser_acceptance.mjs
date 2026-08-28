@@ -5,12 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium, reportExperimentId] = process.argv.slice(2);
-if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId) {
+const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson] =
+  process.argv.slice(2);
+if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId || !studyFormJson) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON",
   );
 }
+const studyFormValues = JSON.parse(studyFormJson);
 
 const profile = await mkdtemp(join(tmpdir(), "quant-browser-"));
 const browser = spawn(
@@ -181,11 +183,282 @@ try {
     }
   }
 
+  async function assertLayout(label, width) {
+    const layout = await evaluate(`(() => {
+      const clipped = Array.from(document.querySelectorAll("main *")).filter((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          !element.closest(".table-wrap") &&
+          (rect.left < -1 || rect.right > window.innerWidth + 1);
+      }).slice(0, 5).map((element) => ({
+        tag: element.tagName,
+        className: element.className,
+        text: element.textContent.trim().slice(0, 60),
+        rect: element.getBoundingClientRect().toJSON(),
+      }));
+      const shortTargets = ${width === 390
+        ? `Array.from(document.querySelectorAll(
+            "main button, main .button, main input:not([type=hidden]), main select, main textarea"
+          )).filter((element) => {
+            const rect = element.getBoundingClientRect();
+            return getComputedStyle(element).display !== "none" &&
+              rect.width > 0 && rect.height > 0 && rect.height < 43;
+          }).slice(0, 5).map((element) => ({
+            tag: element.tagName,
+            name: element.getAttribute("name"),
+            height: element.getBoundingClientRect().height,
+          }))`
+        : "[]"};
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        clipped,
+        shortTargets,
+      };
+    })()`);
+    if (
+      layout.documentWidth > layout.viewportWidth ||
+      layout.clipped.length ||
+      layout.shortTargets.length
+    ) {
+      throw new Error(`Layout failure for ${label} at ${width}px: ${JSON.stringify(layout)}`);
+    }
+  }
+
+  async function assertDangerContrast(width) {
+    for (const [theme, preference] of [
+      ["dark", "dark"],
+      ["light", "light"],
+      ["system", "light"],
+      ["system", "dark"],
+    ]) {
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-color-scheme", value: preference }] },
+        sessionId,
+      );
+      await evaluate(
+        `document.documentElement.dataset.theme = ${JSON.stringify(theme)}`,
+      );
+      const point = await evaluate(`(() => {
+        const button = document.querySelector(".danger-button");
+        const box = button.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })()`);
+      const ratio = async () => evaluate(`(() => {
+        const parse = (value) => value.match(/[\\d.]+/g).slice(0, 3).map(Number);
+        const luminance = (color) => {
+          const channels = parse(color).map((value) => {
+            const normalized = value / 255;
+            return normalized <= 0.04045
+              ? normalized / 12.92
+              : ((normalized + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+        };
+        const style = getComputedStyle(document.querySelector(".danger-button"));
+        const foreground = luminance(style.color);
+        const background = luminance(style.backgroundColor);
+        return (Math.max(foreground, background) + 0.05) /
+          (Math.min(foreground, background) + 0.05);
+      })()`);
+      const normal = await ratio();
+      await send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: point.x, y: point.y },
+        sessionId,
+      );
+      const hover = await ratio();
+      await send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: 0, y: 0 },
+        sessionId,
+      );
+      if (normal < 4.5 || hover < 4.5) {
+        throw new Error(
+          `Cancel contrast failed for ${theme}/${preference} at ${width}px: ` +
+          `${JSON.stringify({ normal, hover })}`,
+        );
+      }
+    }
+  }
+
+  async function runStudyLifecycle(width, scriptsDisabled) {
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
+      sessionId,
+    );
+    await navigate("/studies/new");
+    if (scriptsDisabled) {
+      const fieldsetsAreExplicit = await evaluate(`(() => {
+        const controls = Array.from(document.querySelectorAll(
+          '[name^="operator_"][name*="_param__"], [name^="search__"]',
+        ));
+        return controls.length > 0 && controls.every((control) => {
+          const fieldset = control.closest("fieldset.parameter-set");
+          return fieldset && getComputedStyle(fieldset).display !== "none" &&
+            fieldset.getClientRects().length > 0;
+        });
+      })()`);
+      if (!fieldsetsAreExplicit) {
+        throw new Error("No-JS Study controls escaped a visible operator-version fieldset");
+      }
+    }
+    const invalidLoaded = once("Page.loadEventFired", sessionId);
+    await evaluate(`(() => {
+      const form = document.querySelector('[data-testid="study-form"]');
+      Object.assign(form.elements, {});
+      const values = ${JSON.stringify(studyFormValues)};
+      for (const [name, value] of Object.entries(values)) {
+        if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value;
+      }
+      form.elements.namedItem(
+        "search__fit__prior_log_ols__1.0.0__window_sessions",
+      ).value = "[2,";
+      form.submit();
+    })()`);
+    await invalidLoaded;
+    await expectPage("study-new");
+    const invalidField = await evaluate(`(() => {
+      const name = "search__fit__prior_log_ols__1.0.0__window_sessions";
+      const field = document.getElementById(name);
+      const link = document.querySelector('.validation-summary a[href="#' + name + '"]');
+      return {
+        invalid: field?.getAttribute("aria-invalid"),
+        describedBy: field?.getAttribute("aria-describedby"),
+        linked: Boolean(link),
+        focused: document.activeElement === field,
+      };
+    })()`);
+    if (
+      invalidField.invalid !== "true" ||
+      invalidField.describedBy !==
+        "search__fit__prior_log_ols__1.0.0__window_sessions-error" ||
+      !invalidField.linked ||
+      !invalidField.focused
+    ) {
+      throw new Error(
+        `Finite-range error is not field-accessible at ${width}px: ${JSON.stringify(invalidField)}`,
+      );
+    }
+    const loaded = once("Page.loadEventFired", sessionId);
+    await evaluate(`(() => {
+      const values = Object.fromEntries(new FormData(
+        document.querySelector('[data-testid="study-form"]')
+      ));
+      Object.assign(values, ${JSON.stringify(studyFormValues)}, {
+        seed: String(
+          ${JSON.stringify(`${scriptsDisabled ? "nojs" : "js"}-${width}`)}
+            .split("").reduce((total, character) => total + character.charCodeAt(0), 0)
+        ),
+        unique_trial_budget: "1", max_suggestions: "1",
+        outer_folds: "1", inner_folds: "1", scoring_sessions: "1",
+        minimum_training_sessions: "2", purge_sessions: "0",
+        holdout_sessions: "1", evaluation_version: "1.0.0",
+        parent_study_ids: "", prior_unique_candidate_count: "0",
+        lineage_complete: "true",
+        "search__fit__prior_log_ols__1.0.0__window_sessions": "[2,3]",
+      });
+      const submission = document.createElement("form");
+      submission.method = "post";
+      submission.action = "/studies/preview";
+      for (const [name, value] of Object.entries(values)) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        submission.append(input);
+      }
+      document.body.append(submission);
+      submission.submit();
+    })()`);
+    await loaded;
+    await expectPage("study-preview");
+    const previewIsPlan = await evaluate(
+      `(() => {
+        const text = document.body.textContent;
+        return text.includes("Planned outer OOS") &&
+          text.includes("Minimum Experiment bindings") &&
+          text.includes("Conditional maximum bindings") &&
+          text.includes("Complete frozen Study plan") &&
+          !text.includes("Assumed reuse") &&
+          !text.includes("Observed outer OOS evidence");
+      })()`,
+    );
+    if (!previewIsPlan) throw new Error("Study preview did not render the frozen protocol and canonical estimate");
+    await assertLayout("study preview", width);
+    await keyboardActivate('form[action="/studies/edit"] button[type="submit"]');
+    await expectPage("study-new");
+    const restored = await evaluate(`(() => {
+      const form = document.querySelector('[data-testid="study-form"]');
+      return {
+        range: form.elements.namedItem(
+          "search__fit__prior_log_ols__1.0.0__window_sessions",
+        ).value,
+        seed: form.elements.namedItem("seed").value,
+        start: form.elements.namedItem("start_date").value,
+        end: form.elements.namedItem("end_date").value,
+        lineage: form.elements.namedItem("lineage_complete").value,
+      };
+    })()`);
+    if (
+      restored.range !== "[2,3]" ||
+      restored.seed !== String(
+        `${scriptsDisabled ? "nojs" : "js"}-${width}`
+          .split("").reduce((total, character) => total + character.charCodeAt(0), 0)
+      ) ||
+      !restored.start ||
+      !restored.end ||
+      restored.lineage !== "true"
+    ) {
+      throw new Error(`Edit plan lost wizard values at ${width}px: ${JSON.stringify(restored)}`);
+    }
+    await keyboardActivate('[data-testid="preview-study"]');
+    await expectPage("study-preview");
+    await keyboardActivate('form[action="/studies"] button[type="submit"]');
+    await expectPage("study-preview");
+    if (!(await evaluate('Boolean(document.querySelector(\'[data-testid="stale-preview"]\'))'))) {
+      throw new Error("Study stale-preview recovery was not rendered");
+    }
+    await keyboardActivate('form[action="/studies"] button[type="submit"]');
+    await expectPage("study-detail");
+    const studyPath = await evaluate("location.pathname");
+    await assertLayout("study detail", width);
+    await assertDangerContrast(width);
+    await keyboardActivate('form[action$="/advance"] button[type="submit"]');
+    await expectPage("study-detail");
+    const advanceOutcome = await evaluate(
+      'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent',
+    );
+    if (!advanceOutcome) throw new Error("Study advance outcome is missing");
+    await keyboardActivate('form[action$="/control"] input[value="PAUSE"] + input + button');
+    await expectPage("study-detail");
+    const outcome = await evaluate(
+      'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent',
+    );
+    if (!outcome?.includes("paused") || (await evaluate("location.pathname")) !== studyPath) {
+      throw new Error(`Study control outcome is missing: ${outcome}`);
+    }
+    await keyboardActivate('a[href$="/report"]');
+    await expectPage("study-report");
+    const reportIsPlan = await evaluate(
+      'document.body.textContent.includes("Planned outer OOS windows") && !document.body.textContent.includes("Verified report")',
+    );
+    if (!reportIsPlan) throw new Error("Study report evidence semantics are invalid");
+    await assertLayout("study report", width);
+  }
+
   const routes = {
     "/": "dashboard",
     "/operators": "operators",
     "/templates/single_stock_daily_causal/1": "template-detail",
     "/experiments/new": "experiment-new",
+    "/studies": "studies",
+    "/studies/new": "study-new",
     "/history": "history",
   };
   for (const scriptsDisabled of [false, true]) {
@@ -208,6 +481,8 @@ try {
               hasMain: Boolean(document.querySelector("main")),
               hasPrimaryAction: ${route === "/experiments/new"
                 ? 'Boolean(document.querySelector(\'form[data-testid="experiment-form"] button[type="submit"]\'))'
+                : route === "/studies/new"
+                ? 'Boolean(document.querySelector(\'form[data-testid="study-form"] button[type="submit"]\'))'
                 : "true"},
               hasThemeSelector: Boolean(document.querySelector("[data-theme-selector]")),
               documentWidth: document.documentElement.scrollWidth,
@@ -225,6 +500,7 @@ try {
           throw new Error(`Horizontal page overflow for ${route} at ${width}px`);
         }
       }
+
     }
 
     await navigate("/operators/submit");
@@ -508,9 +784,16 @@ try {
       }
       console.error("stage theme-persistence");
     }
+    for (const width of [390, 1280]) {
+      await runStudyLifecycle(width, scriptsDisabled);
+    }
   }
 } finally {
   socket.close();
-  browser.kill("SIGTERM");
-  await rm(profile, { recursive: true, force: true });
+  if (browser.exitCode === null) {
+    const exited = new Promise((resolve) => browser.once("exit", resolve));
+    browser.kill("SIGTERM");
+    await exited;
+  }
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

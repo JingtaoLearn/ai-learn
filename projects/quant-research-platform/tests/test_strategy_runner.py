@@ -202,6 +202,7 @@ def _derived_foundation(
     parameters = config["template"]["parameters"]
     parameters["evaluation_start"] = evaluation_start
     parameters["evaluation_end"] = evaluation_end
+    parameters["terminal_handling"] = "force_liquidate"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     parent_path = (
         state
@@ -221,6 +222,16 @@ def test_derived_run_rejects_an_evaluation_end_later_than_the_scoring_mask(
     )
 
     with pytest.raises(StrategyRunError, match="evaluation_end.*scoring_end"):
+        run_strategy_config(config_path)
+
+
+def test_derived_run_requires_force_flat_with_cost_terminal_handling(tmp_path: Path):
+    config_path, _, _ = _derived_foundation(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["template"]["parameters"]["terminal_handling"] = "mark_to_market"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(StrategyRunError, match="FORCE_FLAT_WITH_COST"):
         run_strategy_config(config_path)
 
 
@@ -432,6 +443,38 @@ def test_effective_source_identity_hashes_loaded_wheel_package_with_stable_label
         assert files[label] == sha256((package_root / filename).read_bytes()).hexdigest()
         assert files[label] != sha256((project_root / label).read_bytes()).hexdigest()
     assert git == {"available": False, "commit": None, "dirty": None}
+
+
+def test_evaluation_policy_source_does_not_change_strategy_runner_identity(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    evaluation_source = package_root / "study_evaluation.py"
+    evaluation_source.write_text("POLICY_VERSION = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    font = {
+        "path": "/verified/font.ttc",
+        "family": "Verified CJK",
+        "sha256": "a" * 64,
+    }
+
+    first, _, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+    evaluation_source.write_text("POLICY_VERSION = 2\n", encoding="utf-8")
+    second, files, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+
+    assert first == second
+    assert "src/quant_platform/study_evaluation.py" not in files
 
 
 def test_project_root_discovery_supports_editable_layout_and_explicit_override(

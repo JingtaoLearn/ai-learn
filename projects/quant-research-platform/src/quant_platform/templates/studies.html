@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Parameter Studies · Quant Research{% endblock %}
+{% block page %}studies{% endblock %}
+{% block content %}
+<section class="page-heading split">
+  <div><p class="eyebrow">PRE-REGISTERED RESEARCH</p><h1>Parameter Studies</h1><p>Search immutable strategy configurations with chronological validation and one separately governed terminal holdout.</p></div>
+  <a class="button" href="/studies/new" data-testid="new-study">New Study</a>
+</section>
+{% if studies %}
+<div class="rows" data-testid="study-list">
+  {% for study in studies %}
+  <a class="row study-row" href="/studies/{{ study.study_id }}">
+    <span><strong>{{ study.frozen_plan.dataset.name }}</strong><small class="mono">{{ study.study_id[:12] }} · {{ study.frozen_plan.dataset.requested_start }} to {{ study.frozen_plan.dataset.requested_end }}</small></span>
+    <span class="chips"><span class="badge">{{ study.phase }}</span><span class="badge">{{ study.control_status }}</span><span class="badge">Holdout {{ study.holdout.access }}</span></span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty" data-testid="study-empty">No Parameter Studies have been submitted.</div>
+{% endif %}
+{% endblock %}

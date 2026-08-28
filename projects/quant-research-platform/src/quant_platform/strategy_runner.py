@@ -540,6 +540,14 @@ def _bound_snapshot(
                 "template evaluation_end must exactly match derived "
                 "lineage scoring_end"
             )
+        if (
+            manifest["lineage"]["view_spec"]["account_policy"]
+            == "FORCE_FLAT_WITH_COST"
+            and parameters["terminal_handling"] != "force_liquidate"
+        ):
+            raise StrategyRunError(
+                "FORCE_FLAT_WITH_COST requires force_liquidate terminal handling"
+            )
     return target, manifest, frame
 
 
