@@ -1624,15 +1624,18 @@ class ParameterStudy:
         with self.catalog.transaction() as connection:
             preview = self._freeze_resolved_plan(resolved, connection)
         minimum_bindings = 0
+        conditional_maximum_inner_bindings = 0
         selection_dependent_bindings = 1  # One terminal holdout, if authorized.
         round_counts = []
         for search_round, inner_folds, outer_audit in self._selection_rounds(
             preview["frozen_plan"]
         ):
             if preview["frozen_plan"]["search"]["suggester"] == "OPTUNA_TPE":
-                candidate_count = preview["frozen_plan"]["search"][
+                minimum_candidate_count = 1
+                maximum_candidate_count = preview["frozen_plan"]["search"][
                     "unique_trial_budget"
                 ]
+                candidate_count = maximum_candidate_count
             else:
                 candidate_count = len(
                     self._round_candidates(
@@ -1641,24 +1644,35 @@ class ParameterStudy:
                         search_round,
                     )
                 )
-            minimum_round_bindings = candidate_count * len(inner_folds)
-            conditional_round_bindings = minimum_round_bindings
+                minimum_candidate_count = candidate_count
+                maximum_candidate_count = candidate_count
+            minimum_round_bindings = minimum_candidate_count * len(inner_folds)
+            maximum_inner_round_bindings = maximum_candidate_count * len(inner_folds)
+            conditional_round_bindings = maximum_inner_round_bindings
             if outer_audit is not None:
                 conditional_round_bindings += 1
                 selection_dependent_bindings += 1
             minimum_bindings += minimum_round_bindings
-            round_counts.append(
-                {
-                    "search_round": search_round,
-                    "candidate_count": candidate_count,
-                    "minimum_binding_count": minimum_round_bindings,
-                    "conditional_maximum_binding_count": conditional_round_bindings,
-                }
-            )
+            conditional_maximum_inner_bindings += maximum_inner_round_bindings
+            round_count = {
+                "search_round": search_round,
+                "candidate_count": candidate_count,
+                "minimum_binding_count": minimum_round_bindings,
+                "conditional_maximum_binding_count": conditional_round_bindings,
+            }
+            if preview["frozen_plan"]["search"]["suggester"] == "OPTUNA_TPE":
+                round_count.update(
+                    {
+                        "minimum_candidate_count": minimum_candidate_count,
+                        "conditional_maximum_candidate_count": maximum_candidate_count,
+                        "candidate_count_semantics": "ADAPTIVE_UPPER_BOUND",
+                    }
+                )
+            round_counts.append(round_count)
         preview["execution_estimate"] = {
             "minimum_experiment_bindings": minimum_bindings,
             "conditional_maximum_experiment_bindings": (
-                minimum_bindings + selection_dependent_bindings
+                conditional_maximum_inner_bindings + selection_dependent_bindings
             ),
             "selection_dependent_bindings": selection_dependent_bindings,
             "rounds": round_counts,

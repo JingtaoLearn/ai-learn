@@ -588,6 +588,14 @@ def test_public_preview_freezes_typed_optuna_search_and_adapter_identity(tmp_pat
         3,
         3,
     ]
+    assert preview["execution_estimate"]["minimum_experiment_bindings"] == 2
+    assert preview["execution_estimate"]["conditional_maximum_experiment_bindings"] == 8
+    assert all(
+        item["minimum_candidate_count"] == 1
+        and item["conditional_maximum_candidate_count"] == 3
+        and item["candidate_count_semantics"] == "ADAPTIVE_UPPER_BOUND"
+        for item in preview["execution_estimate"]["rounds"]
+    )
 
 
 def test_public_preview_rejects_invalid_optuna_distribution(tmp_path: Path):
