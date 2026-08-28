@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, urlencode
 
 import bleach
 import markdown
@@ -1291,10 +1291,13 @@ def create_app(
         if set(form) != {"csrf_token"}:
             raise StudyValidationError("Study advance form fields are invalid")
         _csrf(request, session, form["csrf_token"])
-        await run_in_threadpool(studies.advance, study_id)
-        return RedirectResponse(
-            f"/studies/{quote(study_id, safe='')}", status_code=303
+        result = await run_in_threadpool(studies.advance, study_id)
+        location = (
+            f"/studies/{result['study_id']}"
+            if isinstance(result.get("study_id"), str)
+            else "/studies"
         )
+        return RedirectResponse(location, status_code=303)
 
     @app.post("/studies/{study_id}/control")
     async def study_control_action(request: Request, study_id: str):
@@ -1303,15 +1306,18 @@ def create_app(
         if set(form) != {"csrf_token", "operation", "action_id"}:
             raise StudyValidationError("Study control form fields are invalid")
         _csrf(request, session, form["csrf_token"])
-        await run_in_threadpool(
+        result = await run_in_threadpool(
             studies.control,
             study_id,
             form["operation"],
             action_id=form["action_id"],
         )
-        return RedirectResponse(
-            f"/studies/{quote(study_id, safe='')}", status_code=303
+        location = (
+            f"/studies/{result['study_id']}"
+            if isinstance(result.get("study_id"), str)
+            else "/studies"
         )
+        return RedirectResponse(location, status_code=303)
 
     @app.get("/studies/{study_id}/report")
     async def study_report(request: Request, study_id: str):
