@@ -53,9 +53,15 @@ The holdout freshness was correctly reported as `PREVIOUSLY_EXPOSED`; the platfo
 
 ## Production readback
 
+- Final production hotfix merge: `e7632696d1b8281d356374c77170ab9a2ebe2904`
+- Final production release: `/home/feng/quant-platform/releases/e763269`
+- Final release manifest: 171 expected files, 171 actual files, no missing, extra, or mismatched files
+- Final release manifest SHA-256: `8dc6a4fb4f2b203ad5d814e42ec3b35d1e931102f4797bf00fff3ccdee6a9b05`
+- Final full isolated suite: 803 passed, 3 skipped
+- The production loop now runs both `SerialStudyWorker` and `SerialAttemptWorker`; each worker has an independent logged exception boundary, so one failed Study cannot stop Attempt processing while health remains green.
 - Service state: active/running
 - Restart count after deployment: 0
-- Working directory: `/home/feng/quant-platform/releases/47d478a`
+- Working directory: `/home/feng/quant-platform/releases/e763269`
 - Public health: HTTP 200
 - Anonymous UI: redirects to `/login`
 - Anonymous API: HTTP 401
@@ -68,4 +74,4 @@ The holdout freshness was correctly reported as `PREVIOUSLY_EXPOSED`; the platfo
 
 ## Rollback
 
-The pre-release application state, systemd unit, and environment file are stored on Feng under `/home/feng/quant-platform/backups/pre-47d478a`. Rollback restores those files, reloads the user systemd manager, restarts the old explicit release, and moves `current` back to `3b50398`.
+The original pre-release rollback point remains under `/home/feng/quant-platform/backups/pre-47d478a`. The post-hotfix rollback point is `/home/feng/quant-platform/backups/pre-e763269`; it restores release `47d478a`. Both contain the application state, systemd unit, and environment file needed for an explicit rollback.
