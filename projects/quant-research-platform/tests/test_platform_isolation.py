@@ -5,8 +5,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_platform.isolation as isolation_module
 from quant_platform.datasets import publish_snapshot
-from quant_platform.isolation import IsolationError, build_docker_command
+from quant_platform.isolation import (
+    IsolationError,
+    build_composed_execution_command,
+    build_docker_command,
+)
 from quant_platform.submissions import publish_submission
 
 
@@ -60,6 +65,88 @@ def _foundation(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     artifacts.mkdir(parents=True)
     (artifacts / "payload").mkdir()
     return root, Path(submission["path"]), Path(dataset["path"]), artifacts
+
+
+def test_path_overlap_predicate_is_symmetric_and_excludes_siblings(tmp_path: Path):
+    store = tmp_path / "datasets"
+    child = store / "SYNTH.SS"
+    sibling = tmp_path / "artifacts"
+
+    assert isolation_module._paths_overlap(store, store)
+    assert isolation_module._paths_overlap(store, child)
+    assert isolation_module._paths_overlap(child, store)
+    assert not isolation_module._paths_overlap(store, sibling)
+
+
+@pytest.mark.parametrize(
+    ("protected_kind", "relationship", "message"),
+    [
+        ("dataset", "output-contains", "dataset"),
+        ("dataset", "protected-contains", "dataset"),
+        ("operator", "output-contains", "operator bundle"),
+        ("operator", "protected-contains", "operator bundle"),
+        ("composition", "output-contains", "composition contract"),
+        ("config", "output-contains", "config contract"),
+        ("control", "output-contains", "control evidence"),
+    ],
+)
+def test_composed_execution_rejects_writable_output_path_overlap(
+    tmp_path: Path,
+    monkeypatch,
+    protected_kind: str,
+    relationship: str,
+    message: str,
+):
+    root = tmp_path / "case"
+    dataset = root / "dataset-store" / "SYNTH.SS" / ("a" * 64)
+    output = root / "output"
+    composition = root / "composition-contract" / "composition.json"
+    config = root / "config-contract" / "config.json"
+    control = root / "attempt-control"
+    bundle = root / "operator-bundles" / "fit"
+
+    if relationship == "output-contains":
+        output = root / f"{protected_kind}-output"
+        if protected_kind == "dataset":
+            dataset = output / "datasets" / "SYNTH.SS" / ("a" * 64)
+        elif protected_kind == "operator":
+            bundle = output / "operator-bundle"
+        elif protected_kind == "composition":
+            composition = output / "composition.json"
+        elif protected_kind == "config":
+            config = output / "config.json"
+        else:
+            control = output / "attempt-control"
+    elif protected_kind == "dataset":
+        output = dataset / "output"
+    elif protected_kind == "operator":
+        output = bundle / "output"
+    else:
+        output = control / "output"
+
+    for directory in (
+        dataset,
+        output,
+        composition.parent,
+        config.parent,
+        control,
+        bundle,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    composition.write_text("{}", encoding="utf-8")
+    config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(isolation_module, "_verify_snapshot", lambda *args, **kwargs: {})
+
+    with pytest.raises(IsolationError, match=message):
+        build_composed_execution_command(
+            dataset_dir=dataset,
+            output_root=output,
+            composition_file=composition,
+            config_file=config,
+            cidfile=control / "container.cid",
+            operator_bundles={"fit": bundle},
+            runner_image="sha256:" + "b" * 64,
+        )
 
 
 def test_docker_command_enforces_fixed_research_sandbox(tmp_path: Path):

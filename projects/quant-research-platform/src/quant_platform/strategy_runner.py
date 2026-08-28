@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from .datasets import _verify_snapshot
+from .datasets import _verified_scoring_bounds, _verify_snapshot
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
 from .strategy_replay import replay_strategy
 from .strategy_report import render_report, verified_cjk_font_identity
@@ -60,6 +60,8 @@ PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/strategy_replay.py", "strategy_replay.py"),
     ("src/quant_platform/strategy_report.py", "strategy_report.py"),
     ("src/quant_platform/strategy_runner.py", "strategy_runner.py"),
+    ("src/quant_platform/study_contracts.py", "study_contracts.py"),
+    ("src/quant_platform/study_datasets.py", "study_datasets.py"),
     ("src/quant_platform/worker.py", "worker.py"),
 )
 PROJECT_SOURCE_PATHS = (
@@ -501,7 +503,12 @@ def _bound_snapshot(
             f"dataset snapshot is not available for instrument {instrument}: {snapshot_id}"
         )
     try:
-        verified = _verify_snapshot(target, snapshot_id, include_frame=True)
+        verified = _verify_snapshot(
+            target,
+            snapshot_id,
+            include_frame=True,
+            verify_parent=False,
+        )
     except RuntimeError as exc:
         raise StrategyRunError(f"dataset snapshot verification failed: {exc}") from exc
     if not isinstance(verified, tuple):
@@ -511,6 +518,28 @@ def _bound_snapshot(
         raise StrategyRunError(
             "configured dataset instrument does not match snapshot metadata"
         )
+    if manifest["schema_version"] == 3:
+        try:
+            scoring_start, scoring_end = _verified_scoring_bounds(
+                target,
+                manifest,
+                frame,
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise StrategyRunError(
+                f"dataset scoring mask verification failed: {exc}"
+            ) from exc
+        parameters = config.template_parameters
+        if parameters["evaluation_start"] != scoring_start:
+            raise StrategyRunError(
+                "template evaluation_start must exactly match derived "
+                "lineage scoring_start"
+            )
+        if parameters["evaluation_end"] != scoring_end:
+            raise StrategyRunError(
+                "template evaluation_end must exactly match derived "
+                "lineage scoring_end"
+            )
     return target, manifest, frame
 
 
@@ -817,7 +846,11 @@ def _verify_run(
             payload = artifact_payloads[name]
             if expected != {"sha256": _sha256(payload), "size": len(payload)}:
                 raise ValueError(f"artifact checksum or size mismatch: {name}")
-        _verify_snapshot(dataset_path, dataset_manifest["snapshot_id"])
+        _verify_snapshot(
+            dataset_path,
+            dataset_manifest["snapshot_id"],
+            verify_parent=False,
+        )
         return manifest
     except StrategyRunError:
         raise

@@ -29,6 +29,14 @@ RUNNER_CONTROL_FILENAMES = {
 }
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return (
+        first == second
+        or first.is_relative_to(second)
+        or second.is_relative_to(first)
+    )
+
+
 def build_operator_validation_command(
     candidate_dir: Path | str,
     cidfile: Path | str,
@@ -129,6 +137,43 @@ def build_composed_execution_command(
         raise IsolationError("composed execution contracts must be regular files")
     if paths[4].exists():
         raise IsolationError("composed execution cidfile must not already exist")
+    dataset_store = paths[0].parents[1]
+    resolved_bundles = {
+        slot: _resolved(bundle) for slot, bundle in operator_bundles.items()
+    }
+    for slot, bundle in resolved_bundles.items():
+        if _paths_overlap(bundle, dataset_store):
+            raise IsolationError(
+                f"operator bundle for slot {slot} must not overlap the dataset store"
+            )
+        if not bundle.is_dir():
+            raise IsolationError(f"operator bundle does not exist for slot {slot}")
+    output_protected_paths = [
+        ("the dataset store", dataset_store),
+        ("the dataset", paths[0]),
+        ("the composition contract", paths[2]),
+        ("the config contract", paths[3]),
+        ("runner CID/control evidence", paths[4]),
+        *(
+            (f"operator bundle for slot {slot}", bundle)
+            for slot, bundle in resolved_bundles.items()
+        ),
+    ]
+    for label, protected_path in output_protected_paths:
+        if _paths_overlap(paths[1], protected_path):
+            raise IsolationError(
+                f"composed writable output mount must not overlap {label}"
+            )
+    try:
+        _verify_snapshot(
+            paths[0],
+            paths[0].name,
+            verify_parent=False,
+        )
+    except RuntimeError as exc:
+        raise IsolationError(
+            f"composed dataset binding integrity check failed: {exc}"
+        ) from exc
     if not is_immutable_runner_image(runner_image):
         raise IsolationError("composed runner image must be pinned by SHA-256")
     container_name = (
@@ -179,9 +224,7 @@ def build_composed_execution_command(
         f"type=bind,src={paths[3]},dst=/run-contract/config.json,readonly",
     ]
     for slot in sorted(operator_bundles):
-        bundle = _resolved(operator_bundles[slot])
-        if not bundle.is_dir():
-            raise IsolationError(f"operator bundle does not exist for slot {slot}")
+        bundle = resolved_bundles[slot]
         command.extend(
             [
                 "--mount",
@@ -360,7 +403,11 @@ def build_docker_command(
             f"dataset binding mismatch: expected {expected_snapshot_id}, got {dataset_dir.name}"
         )
     try:
-        _verify_snapshot(dataset_dir, expected_snapshot_id)
+        _verify_snapshot(
+            dataset_dir,
+            expected_snapshot_id,
+            verify_parent=False,
+        )
     except RuntimeError as exc:
         raise IsolationError(f"dataset binding integrity check failed: {exc}") from exc
     if manifest.get("execution_envelope") != EXECUTION_ENVELOPE:

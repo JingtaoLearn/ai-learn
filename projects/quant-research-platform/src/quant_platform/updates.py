@@ -3,27 +3,31 @@ from __future__ import annotations
 import errno
 import json
 import os
-import re
 import secrets
-import shutil
 import stat
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
 
-from .datasets import (
+from .dataset_lineage import (
     DatasetValidationError,
-    SAFE_INSTRUMENT,
-    _atomic_json,
     _canonical_json,
-    _fsync_directory,
     _InstrumentLock,
-    _normalize_frame,
+    _open_absolute_directory,
+    _open_directory_at,
+    _read_update_record,
+    _require_pinned_entry,
+    _same_inode,
     _sha256,
     _validate_metadata,
+    load_update_record as load_update_record,
+    snapshot_update_lineage,
+)
+from .datasets import (
+    _atomic_json,
+    _normalize_frame,
     _verify_snapshot,
     publish_snapshot,
     snapshot_status,
@@ -33,21 +37,6 @@ from .schemas import SchemaValidationError, canonical_json_bytes
 
 class ConcurrentUpdateError(RuntimeError):
     """Raised when latest changes before a reconciled update can commit."""
-
-
-UPDATE_ID = re.compile(r"^[0-9a-f]{64}$")
-MAX_UPDATE_RECORD_BYTES = 1_048_576
-UPDATE_IDENTITY_FIELDS = {
-    "schema_version",
-    "metadata",
-    "request",
-    "expected_sessions_sha256",
-    "expected_session_count",
-    "fetched",
-    "prior_snapshot_id",
-    "result_snapshot_id",
-    "revision_count",
-}
 
 
 def _session_date(value: Any, label: str) -> pd.Timestamp:
@@ -118,90 +107,6 @@ def _validate_update_store_path(path: Path, root: Path) -> None:
         raise RuntimeError(f"update provenance path escapes configured root: {path}")
 
 
-def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
-    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
-
-
-def _immutable_state(metadata: os.stat_result) -> tuple[int, ...]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_nlink,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-    )
-
-
-def _open_absolute_directory(path: Path) -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    descriptor = os.open("/", flags)
-    try:
-        for component in path.parts[1:]:
-            child = os.open(component, flags, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-        return descriptor
-    except OSError:
-        os.close(descriptor)
-        raise
-
-
-def _open_directory_at(
-    parent_fd: int,
-    name: str,
-    label: str,
-    *,
-    create: bool = False,
-    mode: int = 0o755,
-) -> tuple[int | None, bool]:
-    created = False
-    if create:
-        try:
-            os.mkdir(name, mode=mode, dir_fd=parent_fd)
-            created = True
-        except FileExistsError:
-            pass
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    try:
-        return os.open(name, flags, dir_fd=parent_fd), created
-    except FileNotFoundError:
-        if not create:
-            return None, False
-        raise
-    except OSError as exc:
-        try:
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        except OSError:
-            metadata = None
-        if metadata is not None and stat.S_ISLNK(metadata.st_mode):
-            raise RuntimeError(
-                f"update provenance {label} cannot be a symlink: {name}"
-            ) from exc
-        raise RuntimeError(
-            f"update provenance {label} is not a safe directory: {name}: {exc}"
-        ) from exc
-
-
-def _require_pinned_entry(
-    parent_fd: int,
-    name: str,
-    pinned_fd: int,
-    label: str,
-    *,
-    directory: bool,
-) -> None:
-    try:
-        entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        pinned = os.fstat(pinned_fd)
-    except OSError as exc:
-        raise RuntimeError(f"update provenance {label} changed during use: {name}") from exc
-    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
-    if not expected_type(entry.st_mode) or not _same_inode(entry, pinned):
-        raise RuntimeError(f"update provenance {label} changed during use: {name}")
-
-
 def _create_staging_directory(updates_fd: int, update_id: str) -> tuple[str, int]:
     for _ in range(100):
         name = f".{update_id}.{secrets.token_hex(8)}"
@@ -234,54 +139,6 @@ def _write_update_record(directory_fd: int, record: dict[str, Any]) -> int:
         os.fchmod(descriptor, 0o444)
         os.fsync(descriptor)
         return os.dup(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _read_update_record(directory_fd: int) -> tuple[dict[str, Any], int]:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
-    try:
-        descriptor = os.open("update.json", flags, dir_fd=directory_fd)
-    except OSError as exc:
-        try:
-            metadata = os.stat(
-                "update.json", dir_fd=directory_fd, follow_symlinks=False
-            )
-        except OSError:
-            metadata = None
-        if metadata is not None and stat.S_ISLNK(metadata.st_mode):
-            raise RuntimeError(
-                "update provenance update.json cannot be a symlink"
-            ) from exc
-        raise
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("update.json is not a regular file")
-        if metadata.st_mode & 0o222:
-            raise ValueError("update.json is writable")
-        if metadata.st_nlink != 1:
-            raise ValueError("update.json has an unsafe hard link count")
-        if metadata.st_size > MAX_UPDATE_RECORD_BYTES:
-            raise ValueError("update.json exceeds the size limit")
-        chunks = []
-        while chunk := os.read(descriptor, 64 * 1024):
-            chunks.append(chunk)
-        payload = b"".join(chunks)
-        if len(payload) != metadata.st_size:
-            raise ValueError("update.json changed while reading")
-        if _immutable_state(os.fstat(descriptor)) != _immutable_state(metadata):
-            raise ValueError("update.json changed while reading")
-        return (
-            json.loads(
-                payload.decode("utf-8"),
-                object_pairs_hook=_strict_json_pairs,
-                parse_constant=lambda value: (_ for _ in ()).throw(
-                    ValueError(f"non-finite JSON value: {value}")
-                ),
-            ),
-            os.dup(descriptor),
-        )
     finally:
         os.close(descriptor)
 
@@ -498,367 +355,6 @@ def _publish_update_record(
     finally:
         os.close(root_fd)
     return update_id, record_path
-
-
-def _strict_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError(f"duplicate update provenance field: {key}")
-        value[key] = item
-    return value
-
-
-def _validate_stored_update_record(
-    stored: Any, update_id: str
-) -> dict[str, Any]:
-    if not isinstance(stored, dict):
-        raise ValueError("record must be a JSON object")
-    identity_fields = set(stored) - {"update_id", "created_at"}
-    allowed = (
-        UPDATE_IDENTITY_FIELDS,
-        UPDATE_IDENTITY_FIELDS | {"source", "expected_sessions_source"},
-    )
-    if identity_fields not in allowed:
-        raise ValueError("unexpected or missing record fields")
-    if stored.get("update_id") != update_id:
-        raise ValueError("record update ID mismatch")
-    identity = {
-        key: value
-        for key, value in stored.items()
-        if key not in {"update_id", "created_at"}
-    }
-    if _sha256(_canonical_json(identity)) != update_id:
-        raise ValueError("record identity hash mismatch")
-    datetime.fromisoformat(stored["created_at"])
-    if stored.get("schema_version") != 1:
-        raise ValueError("record schema version is invalid")
-    metadata = _validate_metadata(stored["metadata"])
-    if metadata != stored["metadata"]:
-        raise ValueError("record metadata is not canonical")
-    if "source" in stored:
-        if (
-            not isinstance(stored["source"], dict)
-            or stored["source"].get("provider") != metadata["provider"]
-            or stored["source"].get("instrument") != metadata["instrument"]
-        ):
-            raise ValueError("record source identity does not match metadata")
-        if not isinstance(stored["expected_sessions_source"], dict):
-            raise ValueError("record expected-session source is invalid")
-    if (
-        not isinstance(stored.get("expected_sessions_sha256"), str)
-        or UPDATE_ID.fullmatch(stored["expected_sessions_sha256"]) is None
-    ):
-        raise ValueError("record expected-session hash is invalid")
-    if (
-        not isinstance(stored.get("result_snapshot_id"), str)
-        or UPDATE_ID.fullmatch(stored["result_snapshot_id"]) is None
-    ):
-        raise ValueError("record result snapshot ID is invalid")
-    return stored
-
-
-def load_update_record(
-    root: Path | str, instrument: str, update_id: str
-) -> dict[str, Any]:
-    """Load one sealed content-addressed update record after topology verification."""
-
-    if not SAFE_INSTRUMENT.fullmatch(instrument):
-        raise DatasetValidationError(f"unsafe instrument: {instrument!r}")
-    if not isinstance(update_id, str) or UPDATE_ID.fullmatch(update_id) is None:
-        raise DatasetValidationError("invalid update ID")
-    root = Path(root).resolve()
-    target = root / "updates" / instrument / update_id
-    root_fd = _open_absolute_directory(root)
-    store_fd: int | None = None
-    updates_fd: int | None = None
-    target_fd: int | None = None
-    record_fd: int | None = None
-    try:
-        store_fd, _ = _open_directory_at(root_fd, "updates", "store root")
-        if store_fd is None:
-            raise FileNotFoundError("update provenance store does not exist")
-        updates_fd, _ = _open_directory_at(
-            store_fd, instrument, "instrument directory"
-        )
-        if updates_fd is None:
-            raise FileNotFoundError(
-                f"update provenance does not exist for {instrument}"
-            )
-        target_fd, _ = _open_directory_at(
-            updates_fd, update_id, "target directory"
-        )
-        if target_fd is None:
-            raise FileNotFoundError(f"update provenance does not exist: {update_id}")
-        try:
-            target_metadata = os.fstat(target_fd)
-            if set(os.listdir(target_fd)) != {"update.json"}:
-                raise ValueError("target directory has unexpected entries")
-            stored, record_fd = _read_update_record(target_fd)
-            if target_metadata.st_mode & 0o222:
-                raise ValueError("target directory is writable")
-            stored = _validate_stored_update_record(stored, update_id)
-            _require_pinned_entry(
-                root_fd, "updates", store_fd, "store root", directory=True
-            )
-            _require_pinned_entry(
-                store_fd,
-                instrument,
-                updates_fd,
-                "instrument directory",
-                directory=True,
-            )
-            _require_pinned_entry(
-                updates_fd,
-                update_id,
-                target_fd,
-                "target directory",
-                directory=True,
-            )
-            _require_pinned_entry(
-                target_fd,
-                "update.json",
-                record_fd,
-                "record",
-                directory=False,
-            )
-            if _immutable_state(os.fstat(target_fd)) != _immutable_state(
-                target_metadata
-            ):
-                raise ValueError("target directory changed while reading")
-            if stored["metadata"]["instrument"] != instrument:
-                raise ValueError(
-                    "record instrument does not match provenance directory"
-                )
-            return stored
-        except (KeyError, OSError, TypeError, ValueError) as exc:
-            raise RuntimeError(f"corrupt update provenance {target}: {exc}") from exc
-    finally:
-        if record_fd is not None:
-            os.close(record_fd)
-        if target_fd is not None:
-            os.close(target_fd)
-        if updates_fd is not None:
-            os.close(updates_fd)
-        if store_fd is not None:
-            os.close(store_fd)
-        os.close(root_fd)
-
-
-def snapshot_update_lineage(
-    root: Path | str, instrument: str, snapshot_id: str
-) -> dict[str, Any]:
-    """Return the immutable first lineage claim for a snapshot."""
-
-    if not SAFE_INSTRUMENT.fullmatch(instrument):
-        raise DatasetValidationError(f"unsafe instrument: {instrument!r}")
-    if not isinstance(snapshot_id, str) or UPDATE_ID.fullmatch(snapshot_id) is None:
-        raise DatasetValidationError("invalid snapshot ID")
-    root = Path(root).resolve()
-    with _InstrumentLock(root, f"lineage-{instrument}"):
-        claimed = _load_snapshot_lineage_claim(root, instrument, snapshot_id)
-        if claimed is not None:
-            return claimed
-        lineage = _candidate_snapshot_lineage(root, instrument, snapshot_id)
-        _publish_snapshot_lineage_claim(root, instrument, snapshot_id, lineage)
-        claimed = _load_snapshot_lineage_claim(root, instrument, snapshot_id)
-        if claimed is None:
-            raise RuntimeError("snapshot lineage claim disappeared after publication")
-        return claimed
-
-
-def _candidate_snapshot_lineage(
-    root: Path, instrument: str, snapshot_id: str
-) -> dict[str, Any]:
-    instrument_root = root / "updates" / instrument
-    if not instrument_root.exists():
-        return {"kind": "legacy_snapshot"}
-    if instrument_root.is_symlink() or not instrument_root.is_dir():
-        raise RuntimeError(
-            f"update provenance instrument directory is unsafe: {instrument_root}"
-        )
-    candidates: list[dict[str, Any]] = []
-    for entry in sorted(instrument_root.iterdir(), key=lambda path: path.name):
-        if entry.name.startswith("."):
-            continue
-        if UPDATE_ID.fullmatch(entry.name) is None:
-            raise RuntimeError(f"unexpected update provenance entry: {entry}")
-        record = load_update_record(root, instrument, entry.name)
-        if (
-            record["result_snapshot_id"] == snapshot_id
-            and record["prior_snapshot_id"] != snapshot_id
-            and "source" in record
-        ):
-            candidates.append(record)
-    if not candidates:
-        return {"kind": "legacy_snapshot"}
-    record = min(candidates, key=lambda value: value["update_id"])
-    return {
-        "kind": "verified_update",
-        "update_id": record["update_id"],
-        "source": record["source"],
-        "expected_sessions_source": record["expected_sessions_source"],
-        "expected_sessions_sha256": record["expected_sessions_sha256"],
-        "expected_session_count": record["expected_session_count"],
-    }
-
-
-def _lineage_claim_identity(
-    instrument: str, snapshot_id: str, lineage: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "instrument": instrument,
-        "snapshot_id": snapshot_id,
-        "lineage": lineage,
-    }
-
-
-def _validate_lineage(lineage: Any) -> dict[str, Any]:
-    if lineage == {"kind": "legacy_snapshot"}:
-        return lineage
-    expected = {
-        "kind",
-        "update_id",
-        "source",
-        "expected_sessions_source",
-        "expected_sessions_sha256",
-        "expected_session_count",
-    }
-    if not isinstance(lineage, dict) or set(lineage) != expected:
-        raise ValueError("snapshot lineage fields are invalid")
-    if lineage["kind"] != "verified_update":
-        raise ValueError("snapshot lineage kind is invalid")
-    if UPDATE_ID.fullmatch(str(lineage["update_id"])) is None:
-        raise ValueError("snapshot lineage update ID is invalid")
-    canonical_json_bytes(lineage)
-    return lineage
-
-
-def _load_snapshot_lineage_claim(
-    root: Path, instrument: str, snapshot_id: str
-) -> dict[str, Any] | None:
-    target = root / "snapshot-lineage" / instrument / snapshot_id
-    if not target.exists():
-        return None
-    if target.is_symlink() or not target.is_dir():
-        raise RuntimeError(f"snapshot lineage claim is unsafe: {target}")
-    target_metadata = target.stat()
-    if target_metadata.st_mode & 0o222:
-        raise RuntimeError(f"snapshot lineage claim directory is writable: {target}")
-    if {path.name for path in target.iterdir()} != {"lineage.json"}:
-        raise RuntimeError(f"snapshot lineage claim topology is invalid: {target}")
-    claim_path = target / "lineage.json"
-    descriptor = os.open(
-        claim_path,
-        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-    )
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("lineage.json is not a regular file")
-        if metadata.st_mode & 0o222:
-            raise ValueError("lineage.json is writable")
-        if metadata.st_nlink != 1:
-            raise ValueError("lineage.json has an unsafe hard link count")
-        if metadata.st_size > MAX_UPDATE_RECORD_BYTES:
-            raise ValueError("lineage.json exceeds the size limit")
-        payload = b""
-        while chunk := os.read(descriptor, 64 * 1024):
-            payload += chunk
-        if len(payload) != metadata.st_size:
-            raise ValueError("lineage.json changed while reading")
-        if _immutable_state(os.fstat(descriptor)) != _immutable_state(metadata):
-            raise ValueError("lineage.json changed while reading")
-        claim = json.loads(
-            payload.decode("utf-8"),
-            object_pairs_hook=_strict_json_pairs,
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                ValueError(f"non-finite JSON value: {value}")
-            ),
-        )
-    except (OSError, TypeError, UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeError(f"corrupt snapshot lineage claim {target}: {exc}") from exc
-    finally:
-        os.close(descriptor)
-    if not isinstance(claim, dict) or set(claim) != {
-        "schema_version",
-        "instrument",
-        "snapshot_id",
-        "lineage",
-        "claim_sha256",
-    }:
-        raise RuntimeError(f"snapshot lineage claim fields are invalid: {target}")
-    identity = _lineage_claim_identity(instrument, snapshot_id, claim["lineage"])
-    if (
-        claim["schema_version"] != 1
-        or claim["instrument"] != instrument
-        or claim["snapshot_id"] != snapshot_id
-        or claim["claim_sha256"] != _sha256(_canonical_json(identity))
-    ):
-        raise RuntimeError(f"snapshot lineage claim identity is invalid: {target}")
-    try:
-        lineage = _validate_lineage(claim["lineage"])
-    except (SchemaValidationError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"snapshot lineage claim is invalid: {target}: {exc}") from exc
-    if _immutable_state(target.stat()) != _immutable_state(target_metadata):
-        raise RuntimeError(f"snapshot lineage claim changed while reading: {target}")
-    return lineage
-
-
-def _publish_snapshot_lineage_claim(
-    root: Path,
-    instrument: str,
-    snapshot_id: str,
-    lineage: dict[str, Any],
-) -> None:
-    lineage = _validate_lineage(lineage)
-    instrument_root = root / "snapshot-lineage" / instrument
-    for directory in (root / "snapshot-lineage", instrument_root):
-        if directory.exists() and (directory.is_symlink() or not directory.is_dir()):
-            raise RuntimeError(f"snapshot lineage store is unsafe: {directory}")
-        directory.mkdir(parents=True, exist_ok=True)
-        directory.chmod(0o755)
-    target = instrument_root / snapshot_id
-    if target.exists():
-        return
-    identity = _lineage_claim_identity(instrument, snapshot_id, lineage)
-    claim = identity | {"claim_sha256": _sha256(_canonical_json(identity))}
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{snapshot_id}.", dir=instrument_root)
-    )
-    try:
-        claim_path = temporary / "lineage.json"
-        with claim_path.open("xb") as stream:
-            stream.write(
-                json.dumps(
-                    claim,
-                    indent=2,
-                    sort_keys=True,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ).encode()
-                + b"\n"
-            )
-            stream.flush()
-            os.fsync(stream.fileno())
-        claim_path.chmod(0o444)
-        temporary.chmod(0o555)
-        _fsync_directory(temporary)
-        try:
-            os.rename(temporary, target)
-        except OSError as exc:
-            if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
-                raise
-        else:
-            _fsync_directory(instrument_root)
-    finally:
-        if temporary.exists():
-            temporary.chmod(0o755)
-            claim_path = temporary / "lineage.json"
-            if claim_path.exists() and not claim_path.is_symlink():
-                claim_path.chmod(0o644)
-            shutil.rmtree(temporary)
 
 
 def _commit_latest(

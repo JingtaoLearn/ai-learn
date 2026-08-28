@@ -194,22 +194,29 @@ class ExperimentService:
                 f"unknown immutable dataset snapshot: {instrument}@{snapshot_id}"
             )
         try:
-            snapshot_manifest = _verify_snapshot(snapshot_path, snapshot_id)
+            snapshot_manifest = _verify_snapshot(
+                snapshot_path,
+                snapshot_id,
+                verify_parent=True,
+            )
         except RuntimeError as exc:
             raise TaskValidationError(f"dataset snapshot failed verification: {exc}") from exc
         if snapshot_manifest["metadata"]["instrument"] != instrument:
             raise TaskValidationError("dataset snapshot instrument does not match")
         if resolved_dataset is None:
-            try:
-                lineage = snapshot_update_lineage(
-                    self.catalog.state_root,
-                    instrument,
-                    snapshot_id,
-                )
-            except (DatasetValidationError, OSError, RuntimeError) as exc:
-                raise TaskValidationError(
-                    f"dataset update lineage failed verification: {exc}"
-                ) from exc
+            if snapshot_manifest["schema_version"] == 3:
+                lineage = snapshot_manifest["lineage"]
+            else:
+                try:
+                    lineage = snapshot_update_lineage(
+                        self.catalog.state_root,
+                        instrument,
+                        snapshot_id,
+                    )
+                except (DatasetValidationError, OSError, RuntimeError) as exc:
+                    raise TaskValidationError(
+                        f"dataset update lineage failed verification: {exc}"
+                    ) from exc
             resolved_dataset = {
                 "instrument": instrument,
                 "snapshot_id": snapshot_id,
@@ -246,6 +253,19 @@ class ExperimentService:
             < template_parameters["evaluation_start"]
         ):
             raise TaskValidationError("evaluation_end cannot precede evaluation_start")
+        if snapshot_manifest["schema_version"] == 3:
+            view_spec = snapshot_manifest["lineage"]["view_spec"]
+            scoring_start = view_spec["scoring_start"]
+            if template_parameters["evaluation_start"] != scoring_start:
+                raise TaskValidationError(
+                    "template evaluation_start must exactly match derived "
+                    "lineage scoring_start"
+                )
+            if template_parameters["evaluation_end"] != view_spec["scoring_end"]:
+                raise TaskValidationError(
+                    "template evaluation_end must exactly match derived "
+                    "lineage scoring_end"
+                )
         if set(dataset_value) == CATALOG_DATASET_FIELDS and (
             template_parameters["evaluation_start"]
             != resolved_dataset["requested_start"]
@@ -502,6 +522,72 @@ class ExperimentService:
             "duplicate": existing is not None,
             "resolved": resolved,
         }
+
+    def require_validated_study_dataset(
+        self, experiment_id: str
+    ) -> dict[str, Any]:
+        """Return a currently verified access-bounded dataset or fail closed."""
+
+        if (
+            not isinstance(experiment_id, str)
+            or SHA256.fullmatch(experiment_id) is None
+        ):
+            raise TaskValidationError(f"unknown experiment: {experiment_id}")
+        connection = self.catalog.connect()
+        try:
+            row = connection.execute(
+                "SELECT identity_json FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise TaskValidationError(f"unknown experiment: {experiment_id}")
+        identity = json.loads(row["identity_json"])
+        dataset = identity.get("dataset")
+        lineage = dataset.get("lineage") if isinstance(dataset, dict) else None
+        if (
+            not isinstance(lineage, dict)
+            or lineage.get("kind") != "derived_view"
+            or not isinstance(lineage.get("access_boundary_digest"), str)
+            or SHA256.fullmatch(lineage["access_boundary_digest"]) is None
+        ):
+            raise TaskValidationError(
+                "Experiment dataset lacks access-boundary evidence and cannot "
+                "serve as validated Study evidence"
+            )
+        instrument = dataset.get("instrument")
+        snapshot_id = dataset.get("snapshot_id")
+        if (
+            not isinstance(instrument, str)
+            or SAFE_INSTRUMENT.fullmatch(instrument) is None
+            or not isinstance(snapshot_id, str)
+            or SHA256.fullmatch(snapshot_id) is None
+        ):
+            raise TaskValidationError("Experiment dataset identity is invalid")
+        snapshot_path = (
+            self.catalog.state_root / "datasets" / instrument / snapshot_id
+        )
+        try:
+            manifest = _verify_snapshot(
+                snapshot_path,
+                snapshot_id,
+                verify_parent=True,
+            )
+        except RuntimeError as exc:
+            raise TaskValidationError(
+                f"validated Study dataset failed verification: {exc}"
+            ) from exc
+        if (
+            manifest["schema_version"] != 3
+            or manifest["canonical_sha256"]
+            != dataset.get("canonical_sha256")
+            or manifest["lineage"] != lineage
+        ):
+            raise TaskValidationError(
+                "validated Study dataset does not match Experiment identity"
+            )
+        return dataset
 
     def rerun(self, experiment_id: str, *, action_id: str) -> dict[str, Any]:
         action_id = _validate_public_action_id(action_id)

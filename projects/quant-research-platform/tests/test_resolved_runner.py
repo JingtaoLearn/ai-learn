@@ -1,19 +1,26 @@
 import json
 import hashlib
+import shutil
 import stat
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import quant_platform.resolved_runner as resolved_runner_module
 from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
 from quant_platform.operator_service import OperatorService
 from quant_platform.operator_worker import load_published_operator
-from quant_platform.resolved_runner import ResolvedAttemptExecutor, build_legacy_config
+from quant_platform.resolved_runner import (
+    ResolvedAttemptExecutor,
+    ResolvedExecutionError,
+    build_legacy_config,
+)
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.strategy_runner import run_strategy_config
 from quant_platform.strategy_runner import StrategyRunError
+from quant_platform.study_datasets import ExecutionDatasetSliceFactory
 
 from test_experiment_service import FIXTURE, _task
 from test_operator_submission import IMAGE, _passing_validator, _submission
@@ -46,6 +53,146 @@ def _attempt(tmp_path: Path):
     service = ExperimentService(catalog, execution_identity=TEST_EXECUTION_IDENTITY)
     created = service.submit(_task(snapshot["snapshot_id"]), action_id="create")
     return catalog, service.attempt_detail(created["attempt_id"])
+
+
+def _derived_attempt(tmp_path: Path, *, custom: bool):
+    root = tmp_path / "state"
+    catalog = initialize_catalog(root)
+    frame = pd.read_csv(FIXTURE)
+    frame["Date"] = pd.to_datetime(frame["Date"])
+    parent = publish_snapshot(
+        frame,
+        root,
+        {
+            "instrument": "SYNTH.SS",
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "mixed",
+        },
+    )
+    parent_manifest = json.loads(
+        (Path(parent["path"]) / "manifest.json").read_text(encoding="utf-8")
+    )
+    derived = ExecutionDatasetSliceFactory(root).materialize(
+        {
+            "instrument": "SYNTH.SS",
+            "snapshot_id": parent["snapshot_id"],
+            "canonical_sha256": parent_manifest["canonical_sha256"],
+            "lineage": {"kind": "legacy_snapshot"},
+        },
+        {
+            "allowed_start": "2026-01-01",
+            "training_through": "2026-01-05",
+            "available_through": "2026-01-12",
+            "scoring_start": "2026-01-06",
+            "scoring_end": "2026-01-12",
+            "role": "INNER_SCORE",
+            "information_interval": {
+                "signal_time": "SESSION_CLOSE",
+                "earliest_execution_time": "NEXT_SESSION_OPEN",
+                "return_or_label_end_time": "EXECUTION_SESSION_CLOSE",
+            },
+            "account_policy": "FORCE_FLAT_WITH_COST",
+        },
+    )
+    task = _task(derived["snapshot_id"])
+    service = ExperimentService(catalog, execution_identity=TEST_EXECUTION_IDENTITY)
+    if custom:
+        operators = OperatorService(
+            catalog,
+            validator=_passing_validator,
+            runner_image=IMAGE,
+        )
+        operators.submit(_submission(slot="fit"))
+        task["operators"]["fit"] = {
+            "operator_id": "fixture_fit",
+            "version": "1.0.0",
+            "parameters": {"window": 2},
+        }
+    service.submit(task, action_id="derived-custom" if custom else "derived-builtin")
+    return catalog, service, service.claim_next_attempt(), Path(parent["path"])
+
+
+def _remove_snapshot(path: Path) -> None:
+    path.chmod(0o755)
+    for child in path.iterdir():
+        child.chmod(0o644)
+    shutil.rmtree(path)
+
+
+def _tamper_snapshot_data(path: Path) -> None:
+    parquet_path = path / "data.parquet"
+    path.chmod(0o755)
+    parquet_path.chmod(0o644)
+    parquet_path.write_bytes(parquet_path.read_bytes() + b"tampered")
+    parquet_path.chmod(0o444)
+    path.chmod(0o555)
+
+
+def test_builtin_study_attempt_reverifies_tampered_parent_before_runner_launch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    catalog, service, attempt, parent_path = _derived_attempt(tmp_path, custom=False)
+    _tamper_snapshot_data(parent_path)
+    launches = []
+
+    def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        raise AssertionError("built-in runner launched before parent preflight")
+
+    monkeypatch.setattr(resolved_runner_module, "run_strategy_config", launch)
+    executor = ResolvedAttemptExecutor(
+        catalog,
+        output_root=tmp_path / "runs",
+        project_root=PROJECT_ROOT,
+        attempt_controller=service,
+        identity_provider=_test_identity_provider,
+    )
+
+    with pytest.raises(
+        ResolvedExecutionError,
+        match="validated Study dataset preflight",
+    ):
+        executor(attempt)
+
+    assert launches == []
+
+
+def test_custom_study_attempt_reverifies_missing_parent_before_docker_launch(
+    tmp_path: Path,
+):
+    catalog, service, attempt, parent_path = _derived_attempt(tmp_path, custom=True)
+    _remove_snapshot(parent_path)
+    launches = []
+
+    def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        raise AssertionError("Docker launched before parent preflight")
+
+    executor = ResolvedAttemptExecutor(
+        catalog,
+        output_root=tmp_path / "runs",
+        project_root=PROJECT_ROOT,
+        runner_image=IMAGE,
+        attempt_controller=service,
+        process_launcher=launch,
+        identity_provider=_test_identity_provider,
+    )
+
+    with pytest.raises(
+        ResolvedExecutionError,
+        match="validated Study dataset preflight",
+    ):
+        executor(attempt)
+
+    assert launches == []
+    detail = service.attempt_detail(attempt["attempt_id"])
+    assert json.loads(detail["control_json"])["state"] == "CLAIMED"
+    assert {
+        path.name for path in (catalog.state_root / detail["control_path"]).iterdir()
+    } == {"control.json"}
 
 
 def test_resolved_builtins_adapt_to_legacy_registry_without_semantic_change(tmp_path: Path):
