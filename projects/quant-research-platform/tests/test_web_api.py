@@ -4,11 +4,18 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from quant_platform.datasets import publish_snapshot, snapshot_status
+from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
-from quant_platform.web import MAX_BODY_BYTES, create_app
+from quant_platform.web import MAX_BODY_BYTES, _run_workers_once, create_app
+from quant_platform.worker import SerialAttemptWorker, SerialStudyWorker
 
 from test_auth import AUDIENCE, NOW, SESSION, SHARED, _claims, _token
 from test_experiment_service import FIXTURE, _task
+from test_parameter_study import (
+    EXECUTION_IDENTITY,
+    _minimal_orchestration_spec,
+    _study_service,
+)
 
 
 def make_app(tmp_path: Path):
@@ -36,6 +43,78 @@ def make_app(tmp_path: Path):
         headers={"host": "quant.ai.jingtao.fun"},
     )
     return app, client
+
+
+def test_production_worker_tick_advances_study_before_attempt():
+    calls = []
+
+    class Worker:
+        def __init__(self, name: str, progressed: bool):
+            self.name = name
+            self.progressed = progressed
+
+        def run_once(self) -> bool:
+            calls.append(self.name)
+            return self.progressed
+
+    assert _run_workers_once(Worker("study", True), Worker("attempt", False)) is True
+    assert calls == ["study", "attempt"]
+
+    calls.clear()
+    assert _run_workers_once(Worker("study", False), Worker("attempt", False)) is False
+    assert calls == ["study", "attempt"]
+
+
+def test_production_worker_tick_isolates_each_worker_failure(caplog):
+    calls = []
+
+    class FailingStudyWorker:
+        def run_once(self) -> bool:
+            calls.append("study")
+            raise RuntimeError("synthetic Study failure")
+
+    class AttemptWorker:
+        def run_once(self) -> bool:
+            calls.append("attempt")
+            return True
+
+    assert _run_workers_once(FailingStudyWorker(), AttemptWorker()) is True
+    assert calls == ["study", "attempt"]
+    assert "Study worker tick failed" in caplog.text
+    assert "synthetic Study failure" in caplog.text
+
+
+def test_production_worker_loop_completes_a_real_parameter_study(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="production-worker-loop-study",
+    )
+    executor = ResolvedAttemptExecutor(
+        studies.catalog,
+        output_root=studies.catalog.state_root / "experiment-runs",
+        project_root=Path(__file__).parents[1],
+        attempt_controller=experiments,
+        identity_provider=lambda project_root, runner_image: EXECUTION_IDENTITY,
+    )
+    study_worker = SerialStudyWorker(studies)
+    attempt_worker = SerialAttemptWorker(experiments, executor=executor)
+
+    for _ in range(128):
+        _run_workers_once(study_worker, attempt_worker)
+        detail = studies.detail(submitted["study_id"])
+        if detail["phase"] == "COMPLETED":
+            break
+    else:
+        raise AssertionError("production worker loop did not complete the Study")
+
+    assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert detail["holdout"]["outcome"] == "PASSED"
+    assert all(binding["state"] == "VERIFIED" for binding in detail["bindings"])
 
 
 def authenticate(app, client):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -44,6 +45,7 @@ MAX_JSON_DEPTH = 64
 MAX_JSON_CONTAINERS = 10_000
 MAX_JSON_NODES = 20_000
 PACKAGE_ROOT = Path(__file__).resolve().parent
+LOGGER = logging.getLogger(__name__)
 STUDY_ID = re.compile(r"^[0-9a-f]{64}$")
 STUDY_OUTCOMES = {
     "ACTION_CONFLICT": "Action conflict: this action ID was already used differently.",
@@ -1706,11 +1708,21 @@ def create_app(
     return app
 
 
+def _run_workers_once(study_worker: Any, attempt_worker: Any) -> bool:
+    progressed = False
+    for name, worker in (("Study", study_worker), ("Attempt", attempt_worker)):
+        try:
+            progressed = worker.run_once() or progressed
+        except Exception:
+            LOGGER.exception("%s worker tick failed", name)
+    return progressed
+
+
 def main() -> None:
     import uvicorn
 
     from .resolved_runner import ResolvedAttemptExecutor
-    from .worker import SerialAttemptWorker
+    from .worker import SerialAttemptWorker, SerialStudyWorker
 
     settings = Settings.from_environment()
     application = create_app(settings)
@@ -1721,16 +1733,20 @@ def main() -> None:
         runner_image=settings.runner_image,
         attempt_controller=application.state.experiments,
     )
-    worker = SerialAttemptWorker(application.state.experiments, executor=executor)
+    study_worker = SerialStudyWorker(application.state.studies)
+    attempt_worker = SerialAttemptWorker(
+        application.state.experiments,
+        executor=executor,
+    )
 
     def run_worker() -> None:
         while True:
-            if not worker.run_once():
+            if not _run_workers_once(study_worker, attempt_worker):
                 time.sleep(1)
 
     threading.Thread(
         target=run_worker,
-        name="quant-attempt-worker",
+        name="quant-platform-worker",
         daemon=True,
     ).start()
     uvicorn.run(
