@@ -253,8 +253,10 @@ def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
     )
 
     assert paused.status_code == advanced.status_code == 303
-    assert paused.headers["location"] == f"/studies/{STUDY_ID}?outcome=PAUSED"
-    assert advanced.headers["location"] == f"/studies/{STUDY_ID}?outcome=ADVANCED"
+    assert paused.headers["location"].startswith(f"/studies/{STUDY_ID}?status=PAUSED.")
+    assert advanced.headers["location"].startswith(
+        f"/studies/{STUDY_ID}?status=ADVANCED."
+    )
     assert calls == [(STUDY_ID, "PAUSE", "pause-web"), (STUDY_ID, "ADVANCE")]
 
 
@@ -482,6 +484,13 @@ def test_study_json_rejects_excessive_container_counts():
         _json_text(f"[{containers}]", "study_json")
 
 
+def test_study_json_rejects_excessive_scalar_counts():
+    values = ",".join("0" for _ in range(20_000))
+
+    with pytest.raises(ValueError, match="value limit"):
+        _json_text(f"[{values}]", "study_json")
+
+
 def test_study_not_found_and_mutation_outcomes_are_visible(
     tmp_path: Path, monkeypatch
 ):
@@ -515,6 +524,8 @@ def test_study_not_found_and_mutation_outcomes_are_visible(
     assert response.status_code == 200
     assert 'role="status"' in response.text
     assert "Execution identity drift" in response.text
+    forged = client.get(f"/studies/{STUDY_ID}?outcome=EFFECT_COMMITTED")
+    assert "Study effect committed." not in forged.text
 
 
 def test_invalid_wizard_preserves_values_and_links_accessible_errors(tmp_path: Path):

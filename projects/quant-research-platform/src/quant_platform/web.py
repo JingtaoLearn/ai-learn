@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -41,6 +42,7 @@ SESSION_COOKIE = "quant_session"
 MAX_BODY_BYTES = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_CONTAINERS = 10_000
+MAX_JSON_NODES = 20_000
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STUDY_ID = re.compile(r"^[0-9a-f]{64}$")
 STUDY_OUTCOMES = {
@@ -117,6 +119,7 @@ def _bounded_json_loads(value: str | bytes, path: str) -> Any:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{path} is not valid JSON") from exc
     containers = 0
+    nodes = 1
     pending = [(parsed, 0)]
     while pending:
         item, depth = pending.pop()
@@ -128,8 +131,36 @@ def _bounded_json_loads(value: str | bytes, path: str) -> Any:
         if containers > MAX_JSON_CONTAINERS:
             raise ValueError(f"{path} exceeds the JSON container limit")
         children = item.values() if isinstance(item, dict) else item
+        children = list(children)
+        nodes += len(children)
+        if nodes > MAX_JSON_NODES:
+            raise ValueError(f"{path} exceeds the JSON value limit")
         pending.extend((child, depth + 1) for child in children)
     return parsed
+
+
+def _study_outcome_token(
+    secret: str,
+    session: SessionData,
+    study_id: str,
+    outcome: str,
+) -> str:
+    payload = f"{session.csrf_token}\0{study_id}\0{outcome}".encode()
+    signature = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return f"{outcome}.{signature}"
+
+
+def _study_outcome(
+    secret: str,
+    session: SessionData,
+    study_id: str,
+    token: str,
+) -> str | None:
+    outcome, separator, signature = token.partition(".")
+    if not separator or outcome not in STUDY_OUTCOMES:
+        return None
+    expected = _study_outcome_token(secret, session, study_id, outcome)
+    return outcome if hmac.compare_digest(token, expected) else None
 
 
 async def _json_body(request: Request) -> Any:
@@ -1364,7 +1395,17 @@ def create_app(
         _csrf(request, session, form["csrf_token"])
         result = await run_in_threadpool(studies.advance, study_id)
         outcome = result.get("status", "")
-        query = urlencode({"outcome": outcome}) if outcome in STUDY_OUTCOMES else ""
+        query = (
+            urlencode(
+                {
+                    "status": _study_outcome_token(
+                        settings.session_secret, session, study_id, outcome
+                    )
+                }
+            )
+            if outcome in STUDY_OUTCOMES
+            else ""
+        )
         location = f"/studies/{study_id}" + (f"?{query}" if query else "")
         return RedirectResponse(location, status_code=303)
 
@@ -1383,7 +1424,17 @@ def create_app(
             action_id=form["action_id"],
         )
         outcome = result.get("status", "")
-        query = urlencode({"outcome": outcome}) if outcome in STUDY_OUTCOMES else ""
+        query = (
+            urlencode(
+                {
+                    "status": _study_outcome_token(
+                        settings.session_secret, session, study_id, outcome
+                    )
+                }
+            )
+            if outcome in STUDY_OUTCOMES
+            else ""
+        )
         location = f"/studies/{study_id}" + (f"?{query}" if query else "")
         return RedirectResponse(location, status_code=303)
 
@@ -1404,7 +1455,12 @@ def create_app(
         session = _session(request)
         study_id = _study_id(study_id)
         detail = await run_in_threadpool(studies.detail, study_id)
-        outcome = request.query_params.get("outcome", "")
+        outcome = _study_outcome(
+            settings.session_secret,
+            session,
+            study_id,
+            request.query_params.get("status", ""),
+        )
         return _render(
             request,
             "study_detail.html",
