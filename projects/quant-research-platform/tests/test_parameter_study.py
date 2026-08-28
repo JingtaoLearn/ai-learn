@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
@@ -26,6 +27,7 @@ from quant_platform.parameter_study import (
     StudyNotFoundError,
     StudyValidationError,
 )
+from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.seed import BUILTINS
 from quant_platform.study_contracts import FOLD_WINDOW_FIELDS, normalize_fold_window
@@ -227,6 +229,26 @@ def _explicit_spec() -> dict:
         "maximum_drawdown": None,
         "maximum_annual_turnover": None,
     }
+    return spec
+
+
+def _minimal_orchestration_spec() -> dict:
+    spec = _explicit_spec()
+    spec["operators"]["fit"]["parameters"]["window_sessions"] = 2
+    spec["search"].update(
+        {
+            "unique_trial_budget": 1,
+            "max_suggestions": 1,
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "values": [0.2]
+                }
+            },
+        }
+    )
+    spec["validation"].update({"outer_folds": 1, "inner_folds": 1})
+    spec["evaluation"]["parameters"]["minimum_trades"] = 0
+    spec["operators"]["fit"]["parameters"]["price_column"] = "Close"
     return spec
 
 
@@ -974,11 +996,11 @@ def test_catalog_initialization_rejects_unknown_future_schema_versions(
         connection.execute(
             """
             INSERT INTO schema_migrations(version, applied_at)
-            VALUES (7, '2026-08-29T00:00:00Z')
+            VALUES (8, '2026-08-29T00:00:00Z')
             """
         )
 
-    with pytest.raises(CatalogVersionError, match="newer than supported: 7"):
+    with pytest.raises(CatalogVersionError, match="newer than supported: 8"):
         Catalog(root).initialize()
 
 
@@ -1055,7 +1077,7 @@ def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5, 6]
+        ] == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_parameter_study_migration_is_safe_under_concurrent_initialization(
@@ -1093,6 +1115,9 @@ def test_parameter_study_migration_is_safe_under_concurrent_initialization(
         ).fetchone()[0] == 1
         assert connection.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
         ).fetchone()[0] == 1
 
 
@@ -1167,7 +1192,7 @@ def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
     assert all(item["phase"] == "FROZEN" for item in listed)
 
 
-def test_all_ineligible_candidates_complete_without_holdout(tmp_path: Path):
+def test_executor_cannot_fabricate_all_ineligible_conclusion(tmp_path: Path):
     studies, experiments = _study_service(tmp_path)
     preview = studies.preview(_spec())
     submitted = studies.submit(
@@ -1187,12 +1212,13 @@ def test_all_ineligible_candidates_complete_without_holdout(tmp_path: Path):
     )
 
     coordinator.advance(submitted["study_id"])
-    coordinator.advance(submitted["study_id"])
-    coordinator.advance(submitted["study_id"])
+    assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_SUBMITTED"
+    with pytest.raises(RuntimeError, match="Experiment/Attempt identifiers"):
+        coordinator.advance(submitted["study_id"])
     detail = coordinator.detail(submitted["study_id"])
 
-    assert detail["phase"] == "COMPLETED"
-    assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert detail["phase"] == "VALIDATING_SELECTION_PROCESS"
+    assert detail["selection_outcome"] == "NOT_DETERMINED"
     assert detail["holdout"] == {
         "access": "SEALED",
         "outcome": "NOT_RUN",
@@ -1205,6 +1231,11 @@ def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
 ):
     studies, experiments = _study_service(tmp_path)
     preview = studies.preview(_spec())
+    candidate = studies._round_candidates(
+        preview["preview_digest"],
+        preview["frozen_plan"],
+        "OUTER:1",
+    )[0]["configuration"]
     task = {
         key: preview["frozen_plan"]["normalized_request"][key]
         for key in ("schema_version", "dataset", "template", "operators")
@@ -1216,7 +1247,10 @@ def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
     assert (
         studies._canonical_verified_metric_document(
             experiment_id=created["experiment_id"],
-            candidate_digest="c" * 64,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
             fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
                 "inner_folds"
             ][0],
@@ -1260,14 +1294,17 @@ def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
     with pytest.raises(RuntimeError, match="CONTESTED"):
         studies._canonical_verified_metric_document(
             experiment_id=created["experiment_id"],
-            candidate_digest="c" * 64,
+            candidate_digest=hashlib.sha256(
+                canonical_json_bytes(candidate)
+            ).hexdigest(),
+            candidate_configuration=candidate,
             fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
                 "inner_folds"
             ][0],
         )
 
 
-def test_failed_holdout_never_authorizes_a_runner_up(tmp_path: Path):
+def test_executor_cannot_fabricate_champion_or_holdout_outcome(tmp_path: Path):
     studies, experiments = _study_service(tmp_path)
     preview = studies.preview(_spec())
     submitted = studies.submit(
@@ -1278,24 +1315,15 @@ def test_failed_holdout_never_authorizes_a_runner_up(tmp_path: Path):
     champion = "c" * 64
 
     def execute(effect: dict, action_id: str) -> dict:
-        if effect["effect_type"] == "REQUEST_TRIAL_PROPOSAL":
-            return {
-                "status": "CHAMPION_SELECTED",
-                "candidate_digest": champion,
-                "outer_evidence_digest": "d" * 64,
-                "evaluation": {
-                    "candidate_digest": champion,
-                    "eligible": True,
-                    "evaluation_digest": "e" * 64,
-                },
-            }
-        assert effect["effect_type"] == "REQUEST_TERMINAL_HOLDOUT"
-        assert effect["candidate_digest"] == champion
         return {
-            "status": "HOLDOUT_FAILED",
+            "status": "CHAMPION_SELECTED",
             "candidate_digest": champion,
-            "metric_document_digest": "f" * 64,
-            "constraints": {"minimum_trades": {"passed": False}},
+            "outer_evidence_digest": "d" * 64,
+            "evaluation": {
+                "candidate_digest": champion,
+                "eligible": True,
+                "evaluation_digest": "e" * 64,
+            },
         }
 
     coordinator = ParameterStudy(
@@ -1305,16 +1333,283 @@ def test_failed_holdout_never_authorizes_a_runner_up(tmp_path: Path):
         release_locator="/srv/quant/releases/158",
         effect_executor=execute,
     )
-    for _ in range(5):
+    coordinator.advance(submitted["study_id"])
+    assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_SUBMITTED"
+    with pytest.raises(RuntimeError, match="Experiment/Attempt identifiers"):
         coordinator.advance(submitted["study_id"])
     detail = coordinator.detail(submitted["study_id"])
 
-    assert detail["phase"] == "COMPLETED"
-    assert detail["selection_outcome"] == "CHAMPION_SELECTED"
-    assert detail["holdout"]["access"] == "ACCESSED"
-    assert detail["holdout"]["outcome"] == "FAILED"
-    assert [
-        item["candidate_digest"]
+    assert detail["phase"] == "VALIDATING_SELECTION_PROCESS"
+    assert detail["selection_outcome"] == "NOT_DETERMINED"
+    assert detail["holdout"]["access"] == "SEALED"
+    assert detail["holdout"]["outcome"] == "NOT_RUN"
+    assert not any(
+        item["evidence_type"] == "CHAMPION_FROZEN"
         for item in detail["evidence"]
-        if item["evidence_type"] == "CHAMPION_FROZEN"
-    ] == [champion]
+    )
+
+
+def test_public_study_rejects_arbitrary_executor_conclusions(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-no-executor-conclusions",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=lambda effect, action_id: {
+            "status": "CHAMPION_SELECTED",
+            "candidate_digest": "c" * 64,
+            "evaluation": {"eligible": True},
+        },
+    )
+
+    assert coordinator.advance(submitted["study_id"])["status"] == "ADVANCED"
+    assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_SUBMITTED"
+    with pytest.raises(RuntimeError, match="Experiment/Attempt identifiers"):
+        coordinator.advance(submitted["study_id"])
+
+    detail = coordinator.detail(submitted["study_id"])
+    assert detail["selection_outcome"] == "NOT_DETERMINED"
+    assert not any(
+        item["evidence_type"] == "CHAMPION_FROZEN"
+        for item in detail["evidence"]
+    )
+
+
+def test_public_study_owns_tasks_bindings_metrics_policy_and_outer_evidence(
+    tmp_path: Path,
+):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-public-orchestration",
+    )
+    output_root = tmp_path / "study-runs"
+    runner = ResolvedAttemptExecutor(
+        studies.catalog,
+        output_root=output_root,
+        project_root=Path(__file__).parents[1],
+        attempt_controller=experiments,
+        identity_provider=lambda project_root, runner_image: EXECUTION_IDENTITY,
+    )
+
+    def execute(effect: dict, action_id: str) -> dict:
+        assert set(effect) >= {
+            "candidate_digest",
+            "experiment_id",
+            "attempt_id",
+            "fold_window",
+            "role",
+        }
+        assert "task" not in effect
+        attempt = experiments.claim_next_attempt()
+        assert attempt is not None
+        assert attempt["attempt_id"] == effect["attempt_id"]
+        experiments.record_physical_launch(
+            attempt["attempt_id"],
+            container_name=f"study-{attempt['attempt_id'][:12]}",
+        )
+        result = runner(attempt)
+        experiments.record_termination(
+            attempt["attempt_id"],
+            exit_status=0,
+            outcome="SUCCEEDED",
+        )
+        experiments.finish_success(
+            attempt["attempt_id"],
+            result_path=result["result_path"],
+            result_digest=result["result_digest"],
+            logs=result["logs"],
+        )
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
+
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=execute,
+    )
+    for _ in range(40):
+        result = coordinator.advance(submitted["study_id"])
+        if coordinator.detail(submitted["study_id"])["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail(f"selection orchestration did not complete: {result}")
+
+    detail = coordinator.detail(submitted["study_id"])
+    assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    candidate = next(
+        trial for trial in detail["trials"] if trial["classification"] == "IN_RANGE"
+    )
+    assert candidate["candidate_digest"] == hashlib.sha256(
+        canonical_json_bytes(candidate["configuration"])
+    ).hexdigest()
+    assert {binding["role"] for binding in detail["bindings"]} == {
+        "INNER_SCORE",
+        "OUTER_AUDIT",
+    }
+    assert all(binding["state"] == "VERIFIED" for binding in detail["bindings"])
+    assert all(binding["experiment_id"] for binding in detail["bindings"])
+    assert all(binding["attempt_id"] for binding in detail["bindings"])
+    assert all(
+        binding["candidate_digest"] == candidate["candidate_digest"]
+        for binding in detail["bindings"]
+    )
+    assert detail["rankings"][0]["candidate_digest"] == candidate["candidate_digest"]
+    assert detail["outer_evidence"]["account_policy"] == "FORCE_FLAT_WITH_COST"
+    assert detail["outer_evidence"]["ordered_net_daily_returns"]
+    assert {
+        "METRIC_DOCUMENT_VERIFIED",
+        "CANDIDATE_EVALUATED",
+        "OUTER_SELECTION_RECORDED",
+        "CHAMPION_FROZEN",
+    } <= {item["evidence_type"] for item in detail["evidence"]}
+    for experiment in experiments.list_experiments():
+        assert experiment["dataset"]["lineage"]["kind"] == "derived_view"
+        assert "evaluation" not in experiment
+        assert "robust_walk_forward" not in json.dumps(experiment, sort_keys=True)
+
+
+def test_public_study_rejects_mismatched_executor_attempt_identity(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-mismatched-effect-identity",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=lambda effect, action_id: {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": "f" * 64,
+        },
+    )
+
+    assert coordinator.advance(submitted["study_id"])["status"] == "ADVANCED"
+    assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_SUBMITTED"
+    with pytest.raises(RuntimeError, match="does not match the authorized binding"):
+        coordinator.advance(submitted["study_id"])
+
+    detail = coordinator.detail(submitted["study_id"])
+    assert detail["selection_outcome"] == "NOT_DETERMINED"
+    assert detail["bindings"][0]["state"] == "SUBMITTED"
+
+
+def test_public_study_records_divergent_attempts_as_contested(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-contested-public-study",
+    )
+    assert studies.advance(submitted["study_id"])["status"] == "ADVANCED"
+    created = studies.advance(submitted["study_id"])
+    assert created["status"] == "ATTEMPT_SUBMITTED"
+
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            UPDATE experiments
+            SET canonical_attempt_id = ?, canonical_result_digest = ?
+            WHERE experiment_id = ?
+            """,
+            (created["attempt_id"], "a" * 64, created["experiment_id"]),
+        )
+        connection.execute(
+            """
+            UPDATE attempts
+            SET status = 'SUCCEEDED', result_path = 'canonical',
+                result_digest = ?, comparison = 'CANONICAL'
+            WHERE attempt_id = ?
+            """,
+            ("a" * 64, created["attempt_id"]),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts(
+                attempt_id, experiment_id, action_id, sequence, status,
+                requested_json, resolved_json, created_at, result_path,
+                result_digest, comparison
+            )
+            SELECT ?, experiment_id, ?, 2, 'SUCCEEDED',
+                   requested_json, resolved_json, created_at, 'divergent',
+                   ?, 'DIVERGENT'
+            FROM attempts WHERE attempt_id = ?
+            """,
+            ("d" * 64, "public-divergent-attempt", "b" * 64, created["attempt_id"]),
+        )
+
+    contested = studies.advance(submitted["study_id"])
+
+    assert contested["status"] == "EVIDENCE_CONTESTED"
+    detail = studies.detail(submitted["study_id"])
+    assert detail["control_status"] == "FAILED"
+    assert detail["bindings"][0]["state"] == "CONTESTED"
+    assert [
+        item["evidence_type"] for item in detail["evidence"]
+    ] == ["EVIDENCE_CONTESTED"]
+
+
+def test_public_study_does_not_evaluate_partial_inner_folds(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    spec["validation"]["inner_folds"] = 2
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-partial-fold-study",
+    )
+
+    assert studies.advance(submitted["study_id"])["status"] == "ADVANCED"
+    assert studies.advance(submitted["study_id"])["status"] == "ATTEMPT_SUBMITTED"
+
+    detail = studies.detail(submitted["study_id"])
+    assert len(detail["bindings"]) == 1
+    assert detail["evaluations"] == []
+    assert detail["rankings"] == []
+    assert detail["outer_evidence"] is None
+    assert detail["selection_outcome"] == "NOT_DETERMINED"
+
+
+def test_public_detail_rejects_projection_only_holdout_pass(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    preview = studies.preview(_minimal_orchestration_spec())
+    submitted = studies.submit(
+        _minimal_orchestration_spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-projection-only-pass",
+    )
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            UPDATE parameter_studies
+            SET holdout_outcome = 'PASSED'
+            WHERE study_id = ?
+            """,
+            (submitted["study_id"],),
+        )
+
+    with pytest.raises(RuntimeError, match="holdout projection"):
+        studies.detail(submitted["study_id"])

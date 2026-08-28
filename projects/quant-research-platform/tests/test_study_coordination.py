@@ -191,7 +191,10 @@ def test_same_coordinator_label_uses_instance_nonce_to_dispatch_once(
         dispatched.append(effect)
         dispatch_started.set()
         assert release_dispatch.wait(timeout=10)
-        return {"status": "ACKNOWLEDGED", "action_id": action_id}
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
 
     first = ParameterStudy(
         studies.catalog,
@@ -210,7 +213,7 @@ def test_same_coordinator_label_uses_instance_nonce_to_dispatch_once(
         effect_executor=execute,
     )
     assert first.advance(submitted["study_id"])["status"] == "ADVANCED"
-    intent = first.advance(submitted["study_id"])
+    submitted_attempt = first.advance(submitted["study_id"])
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         committed_future = executor.submit(first.advance, submitted["study_id"])
@@ -220,13 +223,11 @@ def test_same_coordinator_label_uses_instance_nonce_to_dispatch_once(
         committed = committed_future.result(timeout=10)
 
     assert busy["status"] == "LEASE_BUSY"
-    assert committed["status"] == "EFFECT_COMMITTED"
+    assert committed["status"] == "ATTEMPT_DISPATCHED"
     assert len(dispatched) == 1
-    coordination = dispatched[0]["coordination"]
-    assert coordination["action_id"] == intent["action_id"]
-    assert coordination["fencing_token"] == committed["fencing_token"]
-    assert coordination["owner_nonce"] == committed["owner_nonce"]
-    assert coordination["owner"] == "shared-human-coordinator"
+    assert dispatched[0]["binding_id"] == submitted_attempt["binding_id"]
+    assert dispatched[0]["experiment_id"] == submitted_attempt["experiment_id"]
+    assert dispatched[0]["attempt_id"] == submitted_attempt["attempt_id"]
 
 
 def test_lease_uses_locked_database_time_with_subsecond_precision(
@@ -326,7 +327,10 @@ def test_effect_intent_survives_restart_and_replays_one_deterministic_action(
         dispatched.append((action_id, effect))
         if len(dispatched) == 1:
             raise RuntimeError("coordinator stopped after dispatch")
-        return {"status": "ACKNOWLEDGED", "effect_type": effect["effect_type"]}
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
 
     coordinator = ParameterStudy(
         studies.catalog,
@@ -338,10 +342,9 @@ def test_effect_intent_survives_restart_and_replays_one_deterministic_action(
         effect_executor=crash_then_acknowledge,
     )
     assert coordinator.advance(submitted["study_id"])["status"] == "ADVANCED"
-    intent = coordinator.advance(submitted["study_id"])
+    submitted_attempt = coordinator.advance(submitted["study_id"])
 
-    assert intent["status"] == "EFFECT_PENDING"
-    assert intent["effect"]["effect_type"] == "REQUEST_TRIAL_PROPOSAL"
+    assert submitted_attempt["status"] == "ATTEMPT_SUBMITTED"
     with pytest.raises(RuntimeError, match="stopped after dispatch"):
         coordinator.advance(submitted["study_id"])
     assert _insert_expired_lease(studies, submitted["study_id"]) == 2
@@ -357,34 +360,22 @@ def test_effect_intent_survives_restart_and_replays_one_deterministic_action(
     )
     committed = restarted.advance(submitted["study_id"])
 
-    assert committed["status"] == "EFFECT_COMMITTED"
+    assert committed["status"] == "ATTEMPT_DISPATCHED"
+    expected_action_id = (
+        f"study-internal:effect:{submitted_attempt['binding_id']}"
+    )
     assert [action_id for action_id, _ in dispatched] == [
-        intent["action_id"],
-        intent["action_id"],
+        expected_action_id,
+        expected_action_id,
     ]
-    assert [
-        {
-            key: value
-            for key, value in effect.items()
-            if key != "coordination"
-        }
-        for _, effect in dispatched
-    ] == [intent["effect"], intent["effect"]]
-    assert [
-        effect["coordination"]["fencing_token"] for _, effect in dispatched
-    ] == [1, 3]
-    assert committed["fencing_token"] == 3
-    assert experiments.list_experiments() == []
+    assert dispatched[0][1] == dispatched[1][1]
+    assert len(experiments.list_experiments()) == 1
     assert [
         event["event_type"]
         for event in studies.detail(submitted["study_id"])["events"]
     ] == [
         "STUDY_SUBMITTED",
         "STUDY_PHASE_ADVANCED",
-        "STUDY_EFFECT_INTENT_RECORDED",
-        "STUDY_EFFECT_DISPATCH_AUTHORIZED",
-        "STUDY_EFFECT_DISPATCH_AUTHORIZED",
-        "STUDY_EFFECT_COMMITTED",
     ]
 
 
@@ -409,7 +400,10 @@ def test_expired_owner_cannot_commit_after_fenced_takeover(tmp_path: Path):
             call_number = dispatch_count
             result = external_effects.setdefault(
                 action_id,
-                {"status": "ACKNOWLEDGED", "effect_type": effect["effect_type"]},
+                {
+                    "experiment_id": effect["experiment_id"],
+                    "attempt_id": effect["attempt_id"],
+                },
             )
         if call_number == 1:
             first_dispatch_started.set()
@@ -445,19 +439,20 @@ def test_expired_owner_cannot_commit_after_fenced_takeover(tmp_path: Path):
         allow_first_dispatch_to_return.set()
         stale = stale_commit.result(timeout=10)
 
-    assert takeover["status"] == "EFFECT_COMMITTED"
-    assert takeover["fencing_token"] == 3
+    assert takeover["status"] == "ATTEMPT_DISPATCHED"
     assert stale["status"] == "LEASE_BUSY"
     assert len(external_effects) == 1
     detail = studies.detail(submitted["study_id"])
     assert detail["coordination"]["lease"]["owner"] == "takeover-owner"
     assert detail["coordination"]["lease"]["fencing_token"] == 3
-    assert (
-        [event["event_type"] for event in detail["events"]].count(
-            "STUDY_EFFECT_COMMITTED"
-        )
-        == 1
-    )
+    with studies.catalog.connect() as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM parameter_study_actions
+            WHERE study_id = ? AND operation = 'EFFECT_RECEIPT'
+            """,
+            (submitted["study_id"],),
+        ).fetchone()[0] == 1
 
 
 def test_outer_worker_discovers_a_runnable_study_after_restart(tmp_path: Path):
@@ -546,11 +541,6 @@ def test_control_is_busy_until_an_authorized_dispatch_submits_its_attempt(
         expected_preview_digest=preview["preview_digest"],
         action_id=f"submit-{operation.lower()}-dispatch-gap-study",
     )
-    normalized = preview["frozen_plan"]["normalized_request"]
-    task = {
-        key: normalized[key]
-        for key in ("schema_version", "dataset", "template", "operators")
-    }
     executor_started = Event()
     allow_submit = Event()
 
@@ -558,7 +548,10 @@ def test_control_is_busy_until_an_authorized_dispatch_submits_its_attempt(
         executor_started.set()
         if not allow_submit.wait(timeout=5):
             raise RuntimeError("timed out waiting for concurrent control")
-        return experiments.submit_study_effect(task, action_id=action_id)
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
 
     coordinator = ParameterStudy(
         studies.catalog,
@@ -576,29 +569,27 @@ def test_control_is_busy_until_an_authorized_dispatch_submits_its_attempt(
         dispatched = executor.submit(coordinator.advance, submitted["study_id"])
         assert executor_started.wait(timeout=5)
         try:
-            blocked = studies.control(
+            controlled = studies.control(
                 submitted["study_id"],
                 operation,
                 action_id=action_id,
             )
-            assert blocked == {
-                "status": "LEASE_BUSY",
-                "study_id": submitted["study_id"],
-                "reason": "DISPATCH_IN_FLIGHT",
-            }
-            assert studies.detail(submitted["study_id"])["control_status"] == "ACTIVE"
+            assert controlled["status"] == expected_status
+            assert (
+                studies.detail(submitted["study_id"])["control_status"]
+                == expected_status
+            )
         finally:
             allow_submit.set()
         committed = dispatched.result(timeout=5)
 
-    assert committed["status"] == "EFFECT_COMMITTED"
-    assert committed["result"]["status"] == "CREATED"
+    assert committed["status"] == "ATTEMPT_DISPATCHED"
     transitioned = studies.control(
         submitted["study_id"],
         operation,
         action_id=action_id,
     )
-    assert transitioned["status"] == expected_status
+    assert transitioned == controlled
     assert studies.detail(submitted["study_id"])["control_status"] == expected_status
 
 
@@ -618,16 +609,10 @@ def test_control_after_attempt_submission_allows_only_effect_reconciliation(
         expected_preview_digest=preview["preview_digest"],
         action_id=f"submit-{operation.lower()}-attempt-gap-study",
     )
-    normalized = preview["frozen_plan"]["normalized_request"]
-    task = {
-        key: normalized[key]
-        for key in ("schema_version", "dataset", "template", "operators")
-    }
     attempt_submitted = Event()
     allow_crash = Event()
 
     def submit_then_crash(effect: dict, action_id: str) -> dict:
-        experiments.submit_study_effect(task, action_id=action_id)
         attempt_submitted.set()
         if not allow_crash.wait(timeout=5):
             raise RuntimeError("timed out waiting for concurrent control")
@@ -664,7 +649,10 @@ def test_control_after_attempt_submission_allows_only_effect_reconciliation(
 
     def reconcile(effect: dict, action_id: str) -> dict:
         reconciliations.append(action_id)
-        return experiments.submit_study_effect(task, action_id=action_id)
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
 
     restarted = ParameterStudy(
         studies.catalog,
@@ -677,8 +665,7 @@ def test_control_after_attempt_submission_allows_only_effect_reconciliation(
 
     result = restarted.advance(submitted["study_id"])
 
-    assert result["status"] == "EFFECT_COMMITTED"
-    assert result["result"]["status"] == "DUPLICATE"
+    assert result["status"] == "ATTEMPT_DISPATCHED"
     assert restarted.advance(submitted["study_id"])["status"] == expected_status
     assert len(reconciliations) == 1
     experiment = experiments.list_experiments()[0]
@@ -715,7 +702,7 @@ def test_drift_after_intent_is_checked_before_dispatch(tmp_path: Path):
 
     assert drift["status"] == "EXECUTION_IDENTITY_DRIFT"
     assert dispatched == []
-    assert experiments.list_experiments() == []
+    assert len(experiments.list_experiments()) == 1
     assert [
         event["event_type"]
         for event in studies.detail(submitted["study_id"])["events"]
@@ -732,17 +719,10 @@ def test_cancelled_study_reconciles_an_attempt_submitted_before_receipt(
         expected_preview_digest=preview["preview_digest"],
         action_id="submit-cancel-recovery-study",
     )
-    normalized = preview["frozen_plan"]["normalized_request"]
-    task = {
-        key: normalized[key]
-        for key in ("schema_version", "dataset", "template", "operators")
-    }
     dispatched: list[dict] = []
 
     def submit_then_stop(effect: dict, action_id: str) -> dict:
-        dispatched.append(
-            experiments.submit_study_effect(task, action_id=action_id)
-        )
+        dispatched.append(effect)
         raise RuntimeError("stopped before Study receipt")
 
     coordinator = ParameterStudy(
@@ -771,26 +751,29 @@ def test_cancelled_study_reconciles_an_attempt_submitted_before_receipt(
         release_locator="/srv/quant/releases/155",
         coordinator_id="owner-after-cancel",
         lease_duration_seconds=10,
-        effect_executor=lambda effect, action_id: experiments.submit_study_effect(
-            task,
-            action_id=action_id,
-        ),
+        effect_executor=lambda effect, action_id: {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        },
     )
 
     reconciled = restarted.advance(submitted["study_id"])
 
-    assert reconciled["status"] == "EFFECT_COMMITTED"
-    assert reconciled["result"]["status"] == "DUPLICATE"
-    assert dispatched[0]["status"] == "CREATED"
+    assert reconciled["status"] == "ATTEMPT_DISPATCHED"
     assert len(experiments.list_attempts(dispatched[0]["experiment_id"])) == 1
     detail = studies.detail(submitted["study_id"])
     assert detail["control_status"] == "CANCELLED"
-    assert [event["event_type"] for event in detail["events"]].count(
-        "STUDY_EFFECT_COMMITTED"
-    ) == 1
+    with studies.catalog.connect() as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM parameter_study_actions
+            WHERE study_id = ? AND operation = 'EFFECT_RECEIPT'
+            """,
+            (submitted["study_id"],),
+        ).fetchone()[0] == 1
 
 
-def test_unrelated_internal_attempt_preclaim_fails_closed_during_reconciliation(
+def test_restart_rejects_unrelated_attempt_identity_during_reconciliation(
     tmp_path: Path,
 ):
     studies, experiments = _study_service(tmp_path)
@@ -811,37 +794,10 @@ def test_unrelated_internal_attempt_preclaim_fails_closed_during_reconciliation(
         ),
     )
     coordinator.advance(submitted["study_id"])
-    intent = coordinator.advance(submitted["study_id"])
+    submitted_attempt = coordinator.advance(submitted["study_id"])
     with pytest.raises(RuntimeError, match="before attempt submission"):
         coordinator.advance(submitted["study_id"])
 
-    unrelated_task = {
-        key: preview["frozen_plan"]["normalized_request"][key]
-        for key in ("schema_version", "dataset", "template", "operators")
-    }
-    unrelated_task["template"]["parameters"]["initial_capital_cny"] = 200000.0
-    unrelated = experiments.submit(
-        unrelated_task,
-        action_id="unrelated-public-attempt",
-    )
-    forged_attempt_id = hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "experiment_id": unrelated["experiment_id"],
-                "action_id": intent["action_id"],
-                "sequence": 1,
-            }
-        )
-    ).hexdigest()
-    with studies.catalog.transaction(immediate=True) as connection:
-        connection.execute(
-            """
-            UPDATE attempts
-            SET attempt_id = ?, action_id = ?
-            WHERE attempt_id = ?
-            """,
-            (forged_attempt_id, intent["action_id"], unrelated["attempt_id"]),
-        )
     assert _insert_expired_lease(studies, submitted["study_id"]) == 2
     reconciliations: list[str] = []
     restarted = ParameterStudy(
@@ -851,17 +807,19 @@ def test_unrelated_internal_attempt_preclaim_fails_closed_during_reconciliation(
         release_locator="/srv/quant/releases/155",
         coordinator_id="unrelated-preclaim-restart",
         effect_executor=lambda effect, action_id: (
-            reconciliations.append(action_id) or {"status": "UNREACHABLE"}
+            reconciliations.append(action_id)
+            or {
+                "experiment_id": effect["experiment_id"],
+                "attempt_id": "f" * 64,
+            }
         ),
     )
 
-    result = restarted.advance(submitted["study_id"])
-
-    assert result == {
-        "status": "ACTION_CONFLICT",
-        "action_id": intent["action_id"],
-    }
-    assert reconciliations == []
+    with pytest.raises(RuntimeError, match="authorized binding"):
+        restarted.advance(submitted["study_id"])
+    assert reconciliations == [
+        f"study-internal:effect:{submitted_attempt['binding_id']}"
+    ]
 
 
 def test_internal_attempt_receipt_must_match_experiment_and_attempt_identity(
@@ -874,14 +832,11 @@ def test_internal_attempt_receipt_must_match_experiment_and_attempt_identity(
         expected_preview_digest=preview["preview_digest"],
         action_id="submit-mismatched-receipt-study",
     )
-    task = {
-        key: preview["frozen_plan"]["normalized_request"][key]
-        for key in ("schema_version", "dataset", "template", "operators")
-    }
-
     def submit_with_mismatched_receipt(effect: dict, action_id: str) -> dict:
-        result = experiments.submit_study_effect(task, action_id=action_id)
-        return {**result, "attempt_id": "f" * 64}
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": "f" * 64,
+        }
 
     coordinator = ParameterStudy(
         studies.catalog,
@@ -892,18 +847,18 @@ def test_internal_attempt_receipt_must_match_experiment_and_attempt_identity(
         effect_executor=submit_with_mismatched_receipt,
     )
     coordinator.advance(submitted["study_id"])
-    intent = coordinator.advance(submitted["study_id"])
+    coordinator.advance(submitted["study_id"])
 
-    result = coordinator.advance(submitted["study_id"])
-
-    assert result == {
-        "status": "ACTION_CONFLICT",
-        "action_id": intent["action_id"],
-    }
-    assert [
-        event["event_type"]
-        for event in studies.detail(submitted["study_id"])["events"]
-    ].count("STUDY_EFFECT_COMMITTED") == 0
+    with pytest.raises(RuntimeError, match="authorized binding"):
+        coordinator.advance(submitted["study_id"])
+    with studies.catalog.connect() as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM parameter_study_actions
+            WHERE study_id = ? AND operation = 'EFFECT_RECEIPT'
+            """,
+            (submitted["study_id"],),
+        ).fetchone()[0] == 0
 
 
 def test_public_action_cannot_claim_the_internal_coordination_namespace(
@@ -921,7 +876,7 @@ def test_public_action_cannot_claim_the_internal_coordination_namespace(
 
 
 @pytest.mark.parametrize("malformed_kind", ["forged", "duplicate-key"])
-def test_malformed_receipt_never_suppresses_executor(
+def test_malformed_binding_receipt_fails_closed(
     tmp_path: Path,
     malformed_kind: str,
 ):
@@ -938,7 +893,10 @@ def test_malformed_receipt_never_suppresses_executor(
         dispatched.append(effect)
         if len(dispatched) == 1:
             raise RuntimeError("stop after external dispatch")
-        return {"status": "ACKNOWLEDGED", "action_id": action_id}
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
 
     coordinator = ParameterStudy(
         studies.catalog,
@@ -949,25 +907,20 @@ def test_malformed_receipt_never_suppresses_executor(
         effect_executor=stop_then_acknowledge,
     )
     coordinator.advance(submitted["study_id"])
-    intent = coordinator.advance(submitted["study_id"])
+    submitted_attempt = coordinator.advance(submitted["study_id"])
     with pytest.raises(RuntimeError, match="external dispatch"):
         coordinator.advance(submitted["study_id"])
 
-    effect_digest = intent["action_id"].rsplit(":", 1)[1]
+    effect_digest = submitted_attempt["binding_id"]
     receipt_action_id = f"study-internal:receipt:{effect_digest}"
-    coordination = dispatched[0]["coordination"]
     if malformed_kind == "forged":
         response_json = json.dumps(
             {
                 "status": "EFFECT_COMMITTED",
                 "study_id": submitted["study_id"],
                 "action_id": f"study-internal:effect:{'f' * 64}",
-                "dispatch_action_id": coordination["dispatch_action_id"],
-                "effect": intent["effect"],
+                "effect": dispatched[0],
                 "result": {"status": "FORGED"},
-                "fencing_token": coordination["fencing_token"],
-                "owner": coordination["owner"],
-                "owner_nonce": coordination["owner_nonce"],
             }
         )
     else:
@@ -991,14 +944,9 @@ def test_malformed_receipt_never_suppresses_executor(
             ),
         )
 
-    result = coordinator.advance(submitted["study_id"])
-
-    assert result == {
-        "status": "ACTION_CONFLICT",
-        "action_id": receipt_action_id,
-    }
-    assert len(dispatched) == 2
-    assert dispatched[0]["coordination"] == dispatched[1]["coordination"]
+    with pytest.raises(RuntimeError, match="receipt|strict JSON"):
+        coordinator.advance(submitted["study_id"])
+    assert len(dispatched) == 1
 
 
 def test_action_ledger_constraints_reject_invalid_operations_namespaces_and_digests(

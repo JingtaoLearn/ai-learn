@@ -31,9 +31,63 @@ RESULT_ARTIFACTS = (
     "metrics.json",
     "cost_breakdown.json",
 )
-POLICY_IDENTITY = {
+MAX_ARTIFACT_BYTES = {
+    "config.json": 1_048_576,
+    "run_manifest.json": 1_048_576,
+    "daily_replay.csv": 64 * 1_048_576,
+    "events.csv": 64 * 1_048_576,
+    "trades.csv": 64 * 1_048_576,
+    "metrics.json": 1_048_576,
+    "cost_breakdown.json": 1_048_576,
+    "report.html": 16 * 1_048_576,
+}
+MAX_ATTEMPT_AUDIT_BYTES = 4 * 1_048_576
+MAX_SCORED_SESSIONS = 100_000
+MAX_LEDGER_ROWS = 200_000
+EVALUATION_PARAMETER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "stability_weight": {"type": "number", "minimum": 0},
+        "turnover_weight": {"type": "number", "minimum": 0},
+        "minimum_trades": {"type": "integer", "minimum": 0},
+        "maximum_drawdown": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "nullable": True,
+        },
+        "maximum_annual_turnover": {
+            "type": "number",
+            "minimum": 0,
+            "nullable": True,
+        },
+    },
+    "required": [
+        "maximum_annual_turnover",
+        "maximum_drawdown",
+        "minimum_trades",
+        "stability_weight",
+        "turnover_weight",
+    ],
+    "additionalProperties": False,
+}
+EVALUATION_DEFAULTS = {
+    "stability_weight": 0.5,
+    "turnover_weight": 0.05,
+    "minimum_trades": 1,
+    "maximum_drawdown": None,
+    "maximum_annual_turnover": None,
+}
+METRIC_ENGINE_IDENTITY = {
+    "name": "account_daily_equity",
+    "version": "1.0.0",
+    "semantics": "net-account-daily-equity-force-terminal-policy",
+}
+EVALUATION_POLICY_SOURCE_DIGEST = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+EVALUATION_POLICY_IDENTITY = {
     "policy_id": "robust_walk_forward",
     "version": "1.0.0",
+    "source_digest": EVALUATION_POLICY_SOURCE_DIGEST,
     "direction": "MAXIMIZE",
     "validation_score": (
         "median(fold_net_sharpe)"
@@ -45,7 +99,13 @@ POLICY_IDENTITY = {
         "lower_annual_turnover",
         "strategy_configuration_digest",
     ],
+    "parameter_schema": EVALUATION_PARAMETER_SCHEMA,
+    "defaults": EVALUATION_DEFAULTS,
+    "metric_engine": METRIC_ENGINE_IDENTITY,
 }
+EVALUATION_POLICY_DIGEST = hashlib.sha256(
+    canonical_json_bytes(EVALUATION_POLICY_IDENTITY)
+).hexdigest()
 
 
 class MetricDocumentValidationError(RuntimeError):
@@ -54,6 +114,26 @@ class MetricDocumentValidationError(RuntimeError):
 
 class EvaluationPolicyError(ValueError):
     """Raised when evaluation evidence or policy parameters are invalid."""
+
+
+_METRIC_DOCUMENT_FACTORY_TOKEN = object()
+
+
+class VerifiedMetricDocument(dict[str, Any]):
+    """Factory-issued evidence capability accepted by evaluation policies."""
+
+    __slots__ = ("_factory_token",)
+
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        *,
+        _factory_token: object,
+    ) -> None:
+        if _factory_token is not _METRIC_DOCUMENT_FACTORY_TOKEN:
+            raise TypeError("VerifiedMetricDocument is factory-issued")
+        super().__init__(value)
+        self._factory_token = _factory_token
 
 
 def _sha256(payload: bytes) -> str:
@@ -86,13 +166,20 @@ def _strict_json(payload: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def _immutable_file(path: Path, root: Path, label: str) -> bytes:
+def _immutable_file(
+    path: Path,
+    root: Path,
+    label: str,
+    *,
+    maximum_bytes: int,
+) -> bytes:
     try:
         before = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(before.st_mode)
             or stat.S_IMODE(before.st_mode) & 0o222
             or before.st_nlink != 1
+            or before.st_size > maximum_bytes
         ):
             raise MetricDocumentValidationError(f"{label} is not an immutable regular file")
         descriptor = os.open(
@@ -198,6 +285,114 @@ def _result_digest(payloads: Mapping[str, bytes]) -> str:
     return digest.hexdigest()
 
 
+def _candidate_attempt_binding(
+    candidate: Mapping[str, Any],
+    resolved: Mapping[str, Any],
+    *,
+    candidate_digest: str,
+    experiment_id: str,
+    attempt_id: str,
+    result_digest: str,
+    attempt_audit_digest: str,
+) -> dict[str, Any]:
+    if not isinstance(candidate, Mapping) or set(candidate) != {
+        "schema_version",
+        "template",
+        "operators",
+    }:
+        raise MetricDocumentValidationError("candidate configuration shape is invalid")
+    if candidate.get("schema_version") != 1:
+        raise MetricDocumentValidationError("candidate configuration schema is invalid")
+    canonical_candidate = deepcopy(dict(candidate))
+    if _sha256(canonical_json_bytes(canonical_candidate)) != candidate_digest:
+        raise MetricDocumentValidationError(
+            "candidate_digest does not match the canonical candidate configuration"
+        )
+    resolved_template = resolved.get("template")
+    candidate_template = candidate.get("template")
+    resolved_operators = resolved.get("operators")
+    candidate_operators = candidate.get("operators")
+    if (
+        not isinstance(resolved_template, Mapping)
+        or not isinstance(candidate_template, Mapping)
+        or set(candidate_template)
+        != {"name", "version", "content_digest", "parameters"}
+        or not isinstance(resolved_operators, Mapping)
+        or not isinstance(candidate_operators, Mapping)
+        or set(resolved_operators) != set(candidate_operators)
+    ):
+        raise MetricDocumentValidationError(
+            "candidate configuration does not match Attempt configuration"
+        )
+    if any(
+        candidate_template.get(field) != resolved_template.get(field)
+        for field in ("name", "version", "content_digest")
+    ):
+        raise MetricDocumentValidationError(
+            "candidate template identity does not match the Attempt"
+        )
+    candidate_parameters = candidate_template.get("parameters")
+    resolved_parameters = resolved_template.get("parameters")
+    if not isinstance(candidate_parameters, Mapping) or not isinstance(
+        resolved_parameters, Mapping
+    ):
+        raise MetricDocumentValidationError("candidate template parameters are invalid")
+    protocol_parameters = {
+        key: value
+        for key, value in resolved_parameters.items()
+        if key not in {"evaluation_start", "evaluation_end", "terminal_handling"}
+    }
+    candidate_protocol_parameters = {
+        key: value
+        for key, value in candidate_parameters.items()
+        if key != "terminal_handling"
+    }
+    fold_window = resolved.get("dataset", {}).get("lineage", {}).get("view_spec", {})
+    if (
+        protocol_parameters != candidate_protocol_parameters
+        or resolved_parameters.get("evaluation_start") != fold_window.get("scoring_start")
+        or resolved_parameters.get("evaluation_end") != fold_window.get("scoring_end")
+        or (
+            fold_window.get("account_policy") == "FORCE_FLAT_WITH_COST"
+            and resolved_parameters.get("terminal_handling") != "force_liquidate"
+        )
+    ):
+        raise MetricDocumentValidationError(
+            "candidate template parameters do not match the Attempt protocol"
+        )
+    for slot, candidate_operator_value in candidate_operators.items():
+        resolved_operator = resolved_operators[slot]
+        if (
+            not isinstance(candidate_operator_value, Mapping)
+            or not isinstance(resolved_operator, Mapping)
+            or set(candidate_operator_value)
+            != {"operator_id", "version", "content_digest", "parameters"}
+            or candidate_operator_value.get("operator_id")
+            != resolved_operator.get("operator_id")
+            or candidate_operator_value.get("version")
+            != resolved_operator.get("resolved_version")
+            or candidate_operator_value.get("content_digest")
+            != resolved_operator.get("content_digest")
+            or candidate_operator_value.get("parameters")
+            != resolved_operator.get("parameters")
+        ):
+            raise MetricDocumentValidationError(
+                f"candidate operator {slot} does not match the Attempt"
+            )
+    experiment_configuration = {
+        key: deepcopy(resolved[key])
+        for key in ("schema_version", "dataset", "template", "operators", "execution_identity")
+    }
+    return {
+        "strategy_configuration": canonical_candidate,
+        "strategy_configuration_digest": candidate_digest,
+        "experiment_configuration_digest": _sha256(
+            canonical_json_bytes(experiment_configuration)
+        ),
+        "attempt_audit_digest": attempt_audit_digest,
+    }
+
+
 class MetricDocumentFactory:
     """Verify immutable run artifacts and derive policy-safe account metrics."""
 
@@ -209,6 +404,7 @@ class MetricDocumentFactory:
         attempt: Mapping[str, Any],
         *,
         candidate_digest: str,
+        candidate_configuration: Mapping[str, Any],
         fold_window: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(attempt, Mapping):
@@ -227,7 +423,10 @@ class MetricDocumentFactory:
             experiment_id=attempt.get("experiment_id"),
             attempt_id=attempt.get("attempt_id"),
             candidate_digest=candidate_digest,
+            candidate_configuration=candidate_configuration,
             dataset=dataset,
+            resolved=resolved,
+            requested=attempt.get("requested"),
             fold_window=fold_window,
         )
 
@@ -239,7 +438,10 @@ class MetricDocumentFactory:
         experiment_id: str,
         attempt_id: str,
         candidate_digest: str,
+        candidate_configuration: Mapping[str, Any],
         dataset: Mapping[str, Any],
+        resolved: Mapping[str, Any],
+        requested: Mapping[str, Any],
         fold_window: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         identities = {
@@ -253,6 +455,10 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError(f"{label} must be a lowercase SHA-256 digest")
         if not isinstance(dataset, Mapping):
             raise MetricDocumentValidationError("dataset must be an object")
+        if not isinstance(resolved, Mapping):
+            raise MetricDocumentValidationError("resolved Attempt must be an object")
+        if not isinstance(requested, Mapping):
+            raise MetricDocumentValidationError("requested Attempt must be an object")
         instrument = dataset.get("instrument")
         snapshot_id = dataset.get("snapshot_id")
         lineage = dataset.get("lineage")
@@ -318,13 +524,66 @@ class MetricDocumentFactory:
         if names != required:
             raise MetricDocumentValidationError("result artifact set is incomplete or unexpected")
         payloads = {
-            name: _immutable_file(root / name, root, f"result artifact {name}")
+            name: _immutable_file(
+                root / name,
+                root,
+                f"result artifact {name}",
+                maximum_bytes=MAX_ARTIFACT_BYTES[name],
+            )
             for name in sorted(required)
         }
         if _result_digest(payloads) != result_digest:
             raise MetricDocumentValidationError("Attempt result digest does not match artifacts")
 
         run_manifest = _strict_json(payloads["run_manifest.json"], "run manifest")
+        audit_root = self.state_root / "attempt-audit"
+        audit_payload = _immutable_file(
+            audit_root / f"{attempt_id}.json",
+            audit_root,
+            "Attempt audit",
+            maximum_bytes=MAX_ATTEMPT_AUDIT_BYTES,
+        )
+        attempt_audit = _strict_json(audit_payload, "Attempt audit")
+        expected_audit_fields = {
+            "schema_version",
+            "attempt_id",
+            "experiment_id",
+            "requested",
+            "template",
+            "dataset",
+            "operators",
+            "execution_identity",
+            "run_id",
+            "result_path",
+            "result_digest",
+        }
+        if (
+            set(attempt_audit) != expected_audit_fields
+            or attempt_audit["schema_version"] != 1
+            or attempt_audit["attempt_id"] != attempt_id
+            or attempt_audit["experiment_id"] != experiment_id
+            or attempt_audit["requested"] != dict(requested)
+            or attempt_audit["template"] != resolved.get("template")
+            or attempt_audit["dataset"] != resolved.get("dataset")
+            or attempt_audit["operators"] != resolved.get("operators")
+            or attempt_audit["execution_identity"]
+            != resolved.get("execution_identity")
+            or attempt_audit["run_id"] != root.name
+            or Path(attempt_audit["result_path"]).absolute() != root
+            or attempt_audit["result_digest"] != result_digest
+        ):
+            raise MetricDocumentValidationError(
+                "Attempt audit does not match canonical execution identity"
+            )
+        candidate_binding = _candidate_attempt_binding(
+            candidate_configuration,
+            resolved,
+            candidate_digest=candidate_digest,
+            experiment_id=experiment_id,
+            attempt_id=attempt_id,
+            result_digest=result_digest,
+            attempt_audit_digest=_sha256(audit_payload),
+        )
         files = run_manifest.get("files")
         if not isinstance(files, dict) or set(files) != required - {"run_manifest.json"}:
             raise MetricDocumentValidationError("run manifest artifact digest map is invalid")
@@ -361,6 +620,12 @@ class MetricDocumentFactory:
             raise MetricDocumentValidationError("account CSV artifacts are invalid") from exc
         if daily.empty:
             raise MetricDocumentValidationError("daily replay cannot be empty")
+        if (
+            len(daily) > MAX_SCORED_SESSIONS
+            or len(events) > MAX_LEDGER_ROWS
+            or len(trades) > MAX_LEDGER_ROWS
+        ):
+            raise MetricDocumentValidationError("account evidence exceeds bounded row limits")
         daily_dates = _date_series(daily, "Date", "daily replay")
         if not daily_dates.is_monotonic_increasing or daily_dates.duplicated().any():
             raise MetricDocumentValidationError("daily replay dates must be unique and ordered")
@@ -386,8 +651,14 @@ class MetricDocumentFactory:
                 "holdings",
                 "market_value",
                 "equity",
+                "price",
+                "close",
+                "quantity",
+                "position_before",
+                "position_after",
+                "gross_pnl",
                 "net_pnl",
-                "total_cost_cny",
+                *COST_FIELDS,
             ),
             "daily replay",
         )
@@ -454,8 +725,26 @@ class MetricDocumentFactory:
         initial = float(metrics["initial_capital_cny"])
         final = float(daily["equity"].iloc[-1])
         total_cost = float(events["total_cost_cny"].sum())
+        scored_market = dataset_frame.loc[
+            dataset_frame["Date"].dt.strftime("%Y-%m-%d").isin(scored_dates),
+            ["Date", "Open", "Close"],
+        ].copy()
+        scored_market["Date"] = scored_market["Date"].dt.strftime("%Y-%m-%d")
+        scored_market = scored_market.set_index("Date")
         if (
             initial <= 0
+            or not np.allclose(
+                daily["price"],
+                scored_market.loc[daily["Date"], "Open"].to_numpy(dtype=float),
+                rtol=1e-12,
+                atol=1e-8,
+            )
+            or not np.allclose(
+                daily["close"],
+                scored_market.loc[daily["Date"], "Close"].to_numpy(dtype=float),
+                rtol=1e-12,
+                atol=1e-8,
+            )
             or not np.allclose(
                 daily["cash"] + daily["market_value"],
                 daily["equity"],
@@ -505,36 +794,120 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError("event cost components do not reconcile")
         expected_cash = initial
         expected_holdings = 0
-        for event in events.itertuples(index=False):
+        cumulative_cost = 0.0
+        for daily_row in daily.itertuples(index=False):
+            date = daily_row.Date
+            day_events = events.loc[events["Date"] == date]
             if (
-                not _close(float(event.cash_before_cny), expected_cash, scale=initial)
-                or int(event.holdings_before) != expected_holdings
+                int(daily_row.position_before) != int(expected_holdings > 0)
+                or not _close(
+                    float(daily_row.price),
+                    float(scored_market.loc[date, "Open"]),
+                )
+                or not _close(
+                    float(daily_row.close),
+                    float(scored_market.loc[date, "Close"]),
+                )
             ):
                 raise MetricDocumentValidationError(
-                    "event ledger opening state does not reconcile"
+                    "daily opening state or prices do not reconcile"
                 )
-            if event.side == "BUY":
-                expected_cash -= float(event.notional_cny) + float(event.total_cost_cny)
-                expected_holdings += int(event.quantity)
-            elif event.side == "SELL":
-                expected_cash += float(event.notional_cny) - float(event.total_cost_cny)
-                expected_holdings -= int(event.quantity)
-            else:
-                raise MetricDocumentValidationError("event ledger side is invalid")
+            signed_quantity = 0
+            day_cost = 0.0
+            for event in day_events.itertuples(index=False):
+                quantity = int(event.quantity)
+                if (
+                    quantity <= 0
+                    or float(event.quantity) != quantity
+                    or not _close(float(event.price), float(daily_row.price))
+                    or not _close(
+                        float(event.notional_cny),
+                        float(event.price) * quantity,
+                        scale=initial,
+                    )
+                    or not _close(
+                        float(event.cash_before_cny),
+                        expected_cash,
+                        scale=initial,
+                    )
+                    or int(event.holdings_before) != expected_holdings
+                ):
+                    raise MetricDocumentValidationError(
+                        "event ledger opening state, price, or notional does not reconcile"
+                    )
+                if event.side == "BUY":
+                    expected_cash -= float(event.notional_cny) + float(
+                        event.total_cost_cny
+                    )
+                    expected_holdings += quantity
+                    signed_quantity += quantity
+                elif event.side == "SELL":
+                    expected_cash += float(event.notional_cny) - float(
+                        event.total_cost_cny
+                    )
+                    expected_holdings -= quantity
+                    signed_quantity -= quantity
+                else:
+                    raise MetricDocumentValidationError("event ledger side is invalid")
+                day_cost += float(event.total_cost_cny)
+                if (
+                    not _close(
+                        float(event.cash_after_cny),
+                        expected_cash,
+                        scale=initial,
+                    )
+                    or int(event.holdings_after) != expected_holdings
+                    or expected_holdings < 0
+                ):
+                    raise MetricDocumentValidationError(
+                        "event ledger closing state does not reconcile"
+                    )
+            cumulative_cost += day_cost
+            close = float(daily_row.close)
+            expected_market_value = expected_holdings * close
+            expected_equity = expected_cash + expected_market_value
             if (
-                not _close(float(event.cash_after_cny), expected_cash, scale=initial)
-                or int(event.holdings_after) != expected_holdings
+                float(daily_row.holdings) != expected_holdings
+                or int(daily_row.position_after) != int(expected_holdings > 0)
+                or float(daily_row.quantity) != signed_quantity
+                or not _close(float(daily_row.cash), expected_cash, scale=initial)
+                or not _close(
+                    float(daily_row.market_value),
+                    expected_market_value,
+                    scale=initial,
+                )
+                or not _close(
+                    float(daily_row.equity),
+                    expected_equity,
+                    scale=initial,
+                )
+                or not _close(
+                    float(daily_row.total_cost_cny),
+                    day_cost,
+                    scale=initial,
+                )
+                or not _close(
+                    float(daily_row.net_pnl),
+                    expected_equity - initial,
+                    scale=initial,
+                )
+                or not _close(
+                    float(daily_row.gross_pnl),
+                    expected_equity - initial + cumulative_cost,
+                    scale=initial,
+                )
+                or any(
+                    not _close(
+                        float(getattr(daily_row, field)),
+                        float(day_events[field].sum()),
+                        scale=initial,
+                    )
+                    for field in COST_FIELDS
+                )
             ):
                 raise MetricDocumentValidationError(
-                    "event ledger closing state does not reconcile"
+                    "daily holdings, cash, equity, costs, or PnL do not reconcile"
                 )
-        if (
-            not _close(expected_cash, float(daily["cash"].iloc[-1]), scale=initial)
-            or expected_holdings != int(daily["holdings"].iloc[-1])
-        ):
-            raise MetricDocumentValidationError(
-                "event ledger terminal state does not match daily equity"
-            )
         for field in COST_FIELDS:
             if not _close(
                 float(costs.get(field, math.nan)),
@@ -561,6 +934,52 @@ class MetricDocumentFactory:
                 or not _close(net / basis, float(trade["return"]))
             ):
                 raise MetricDocumentValidationError("trade ledger does not reconcile")
+        expected_trades: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        open_event: dict[str, Any] | None = None
+        for event in events.to_dict("records"):
+            if event["side"] == "BUY":
+                if open_event is not None:
+                    raise MetricDocumentValidationError(
+                        "event ledger opens overlapping positions"
+                    )
+                open_event = event
+            else:
+                if open_event is None:
+                    raise MetricDocumentValidationError(
+                        "event ledger closes a position that is not open"
+                    )
+                expected_trades.append((open_event, event))
+                open_event = None
+        if open_event is not None or len(expected_trades) != len(trades):
+            raise MetricDocumentValidationError(
+                "trade ledger does not match ordered execution events"
+            )
+        for trade, (entry, exit_) in zip(
+            trades.to_dict("records"),
+            expected_trades,
+            strict=True,
+        ):
+            if (
+                trade["entry_date"] != entry["Date"]
+                or trade["exit_date"] != exit_["Date"]
+                or not _close(float(trade["entry_price"]), float(entry["price"]))
+                or not _close(float(trade["exit_price"]), float(exit_["price"]))
+                or int(trade["quantity"]) != int(entry["quantity"])
+                or int(trade["quantity"]) != int(exit_["quantity"])
+                or not _close(
+                    float(trade["entry_cost_cny"]),
+                    float(entry["total_cost_cny"]),
+                    scale=initial,
+                )
+                or not _close(
+                    float(trade["exit_cost_cny"]),
+                    float(exit_["total_cost_cny"]),
+                    scale=initial,
+                )
+            ):
+                raise MetricDocumentValidationError(
+                    "trade ledger identity does not reconcile with events"
+                )
 
         equity = daily["equity"].to_numpy(dtype=float)
         returns = np.diff(np.concatenate(([initial], equity))) / np.concatenate(
@@ -596,36 +1015,37 @@ class MetricDocumentFactory:
                 "reported drawdown or trade metrics do not reconcile"
             )
         _finite(independent, "independent_metrics")
-        document = {
-            "schema_version": 1,
-            "metric_engine": {
-                "name": "account_daily_equity",
-                "version": "1.0.0",
-                "semantics": "net-account-daily-equity-force-terminal-policy",
+        document = VerifiedMetricDocument(
+            {
+                "schema_version": 1,
+                "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
+                "candidate_digest": candidate_digest,
+                "candidate_binding": candidate_binding,
+                "experiment_id": experiment_id,
+                "attempt_id": attempt_id,
+                "result_digest": result_digest,
+                "dataset_snapshot_id": snapshot_id,
+                "scoring_mask_sha256": manifest["scoring_mask_sha256"],
+                "fold_window": expected_window,
+                "artifact_digests": dict(sorted(artifact_digests.items())),
+                "scored_dates": scored_dates,
+                "net_daily_returns": [
+                    {"date": date, "return": float(value)}
+                    for date, value in zip(scored_dates, returns, strict=True)
+                ],
+                "metrics": independent,
+                "reported_metrics": metrics,
+                "reconciliation": {
+                    "immutable_artifacts": True,
+                    "scoring_mask": True,
+                    "finite_values": True,
+                    "dates": True,
+                    "ledger_equity_cost": True,
+                    "force_flat_with_cost": True,
+                },
             },
-            "candidate_digest": candidate_digest,
-            "experiment_id": experiment_id,
-            "attempt_id": attempt_id,
-            "result_digest": result_digest,
-            "dataset_snapshot_id": snapshot_id,
-            "scoring_mask_sha256": manifest["scoring_mask_sha256"],
-            "fold_window": expected_window,
-            "artifact_digests": dict(sorted(artifact_digests.items())),
-            "scored_dates": scored_dates,
-            "net_daily_returns": [
-                {"date": date, "return": float(value)}
-                for date, value in zip(scored_dates, returns, strict=True)
-            ],
-            "metrics": independent,
-            "reconciliation": {
-                "immutable_artifacts": True,
-                "scoring_mask": True,
-                "finite_values": True,
-                "dates": True,
-                "ledger_equity_cost": True,
-                "force_flat_with_cost": True,
-            },
-        }
+            _factory_token=_METRIC_DOCUMENT_FACTORY_TOKEN,
+        )
         document["document_digest"] = _sha256(canonical_json_bytes(document))
         return document
 
@@ -633,7 +1053,7 @@ class MetricDocumentFactory:
 class RobustWalkForwardPolicy:
     """Built-in transparent, deterministic robust walk-forward policy."""
 
-    identity = deepcopy(POLICY_IDENTITY)
+    identity = deepcopy(EVALUATION_POLICY_IDENTITY)
 
     def evaluate(
         self,
@@ -666,19 +1086,135 @@ class RobustWalkForwardPolicy:
             parameters["maximum_annual_turnover"], "maximum_annual_turnover"
         )
 
-        documents = [dict(document) for document in metric_documents]
-        for index, document in enumerate(documents):
+        required_document_fields = {
+            "schema_version",
+            "metric_engine",
+            "candidate_digest",
+            "candidate_binding",
+            "experiment_id",
+            "attempt_id",
+            "result_digest",
+            "dataset_snapshot_id",
+            "scoring_mask_sha256",
+            "fold_window",
+            "artifact_digests",
+            "scored_dates",
+            "net_daily_returns",
+            "metrics",
+            "reported_metrics",
+            "reconciliation",
+            "document_digest",
+        }
+        documents: list[dict[str, Any]] = []
+        for index, factory_document in enumerate(metric_documents):
+            if (
+                not isinstance(factory_document, VerifiedMetricDocument)
+                or factory_document._factory_token
+                is not _METRIC_DOCUMENT_FACTORY_TOKEN
+            ):
+                raise EvaluationPolicyError(
+                    f"metric_documents[{index}] was not issued by MetricDocumentFactory"
+                )
+            document = dict(factory_document)
+            if (
+                set(document) != required_document_fields
+                or document.get("schema_version") != 1
+                or document.get("metric_engine") != METRIC_ENGINE_IDENTITY
+                or not isinstance(document.get("document_digest"), str)
+                or _sha256(
+                    canonical_json_bytes(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "document_digest"
+                        }
+                    )
+                )
+                != document["document_digest"]
+            ):
+                raise EvaluationPolicyError(
+                    f"metric_documents[{index}] schema or digest is invalid"
+                )
             if document.get("candidate_digest") != candidate_digest:
                 raise EvaluationPolicyError(
                     f"metric_documents[{index}] belongs to another candidate"
                 )
-            if set(document.get("reconciliation", {}).values()) != {True}:
+            candidate_binding = document.get("candidate_binding")
+            if (
+                not isinstance(candidate_binding, Mapping)
+                or set(candidate_binding)
+                != {
+                    "strategy_configuration",
+                    "strategy_configuration_digest",
+                    "experiment_configuration_digest",
+                    "attempt_audit_digest",
+                }
+                or candidate_binding.get("strategy_configuration_digest")
+                != candidate_digest
+                or _sha256(
+                    canonical_json_bytes(candidate_binding.get("strategy_configuration"))
+                )
+                != candidate_digest
+                or any(
+                    not isinstance(candidate_binding.get(key), str)
+                    or SHA256.fullmatch(candidate_binding[key]) is None
+                    for key in (
+                        "experiment_configuration_digest",
+                        "attempt_audit_digest",
+                    )
+                )
+            ):
+                raise EvaluationPolicyError(
+                    f"metric_documents[{index}] candidate binding is invalid"
+                )
+            reconciliation = document.get("reconciliation")
+            if (
+                not isinstance(reconciliation, Mapping)
+                or set(reconciliation)
+                != {
+                    "immutable_artifacts",
+                    "scoring_mask",
+                    "finite_values",
+                    "dates",
+                    "ledger_equity_cost",
+                    "force_flat_with_cost",
+                }
+                or any(value is not True for value in reconciliation.values())
+            ):
                 raise EvaluationPolicyError(
                     f"metric_documents[{index}] is not verified evidence"
+                )
+            expected_metrics = {
+                "net_return",
+                "net_sharpe",
+                "maximum_drawdown",
+                "annual_turnover",
+                "closed_trades",
+                "total_cost_cny",
+                "final_equity_cny",
+            }
+            if (
+                not isinstance(document.get("metrics"), Mapping)
+                or set(document["metrics"]) != expected_metrics
+                or not isinstance(document.get("scored_dates"), list)
+                or not document["scored_dates"]
+                or not isinstance(document.get("net_daily_returns"), list)
+                or len(document["net_daily_returns"]) != len(document["scored_dates"])
+                or [
+                    item.get("date") if isinstance(item, Mapping) else None
+                    for item in document["net_daily_returns"]
+                ]
+                != document["scored_dates"]
+            ):
+                raise EvaluationPolicyError(
+                    f"metric_documents[{index}] metric evidence is invalid"
                 )
             role = document.get("fold_window", {}).get("role")
             if role not in {"INNER_SCORE", "OUTER_AUDIT", "TERMINAL_HOLDOUT"}:
                 raise EvaluationPolicyError(f"metric_documents[{index}] has an invalid role")
+            documents.append(document)
+        if len({document["attempt_id"] for document in documents}) != len(documents):
+            raise EvaluationPolicyError("one Attempt cannot supply multiple Metric Documents")
         roles = {document["fold_window"]["role"] for document in documents}
         if len(roles) != 1:
             raise EvaluationPolicyError("one policy evaluation cannot mix evidence roles")
@@ -731,8 +1267,10 @@ class RobustWalkForwardPolicy:
         }
         eligible = all(item["passed"] for item in constraints.values())
         result = {
-            "policy_id": "robust_walk_forward",
-            "version": "1.0.0",
+            "policy_identity": deepcopy(EVALUATION_POLICY_IDENTITY),
+            "policy_digest": EVALUATION_POLICY_DIGEST,
+            "policy_id": EVALUATION_POLICY_IDENTITY["policy_id"],
+            "version": EVALUATION_POLICY_IDENTITY["version"],
             "candidate_digest": candidate_digest,
             "evidence_role": next(iter(roles)),
             "eligibility": "ELIGIBLE" if eligible else "INELIGIBLE",
@@ -756,7 +1294,7 @@ class RobustWalkForwardPolicy:
                 "strategy_configuration_digest": candidate_digest,
             },
             "explanation": {
-                "formula": POLICY_IDENTITY["validation_score"],
+                "formula": EVALUATION_POLICY_IDENTITY["validation_score"],
                 "components": {
                     "median_fold_net_sharpe": fold_median,
                     "stability_weight": stability_weight,
