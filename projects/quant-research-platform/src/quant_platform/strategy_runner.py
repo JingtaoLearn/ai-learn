@@ -62,6 +62,7 @@ PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/strategy_runner.py", "strategy_runner.py"),
     ("src/quant_platform/study_contracts.py", "study_contracts.py"),
     ("src/quant_platform/study_datasets.py", "study_datasets.py"),
+    ("src/quant_platform/study_evaluation.py", "study_evaluation.py"),
     ("src/quant_platform/worker.py", "worker.py"),
 )
 PROJECT_SOURCE_PATHS = (
@@ -539,6 +540,14 @@ def _bound_snapshot(
             raise StrategyRunError(
                 "template evaluation_end must exactly match derived "
                 "lineage scoring_end"
+            )
+        if (
+            manifest["lineage"]["view_spec"]["account_policy"]
+            == "FORCE_FLAT_WITH_COST"
+            and parameters["terminal_handling"] != "force_liquidate"
+        ):
+            raise StrategyRunError(
+                "FORCE_FLAT_WITH_COST requires force_liquidate terminal handling"
             )
     return target, manifest, frame
 

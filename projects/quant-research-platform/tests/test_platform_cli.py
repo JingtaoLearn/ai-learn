@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import quant_platform.cli as cli_module
 from quant_platform.cli import main
 
 
@@ -417,3 +418,58 @@ def test_strategy_run_cli_failure_is_one_strict_json_object(tmp_path: Path, caps
     assert code == 2
     assert result["ok"] is False
     assert "missing.json" in result["error"]
+
+
+def test_study_cli_delegates_to_the_deep_service(tmp_path: Path, capsys, monkeypatch):
+    calls = []
+
+    class Studies:
+        def preview(self, spec):
+            calls.append(("preview", spec))
+            return {"preview_digest": "a" * 64}
+
+        def submit(self, spec, *, expected_preview_digest, action_id):
+            calls.append(("submit", spec, expected_preview_digest, action_id))
+            return {"status": "SUBMITTED", "study_id": "a" * 64}
+
+        def list(self):
+            calls.append(("list",))
+            return []
+
+        def detail(self, study_id):
+            calls.append(("detail", study_id))
+            return {"study_id": study_id}
+
+    monkeypatch.setattr(cli_module, "_study_service", lambda root: Studies())
+    spec_path = tmp_path / "study.json"
+    spec_path.write_text('{"schema_version":1}', encoding="utf-8")
+
+    commands = [
+        ["study", "preview", "--root", str(tmp_path), "--spec", str(spec_path)],
+        [
+            "study",
+            "submit",
+            "--root",
+            str(tmp_path),
+            "--spec",
+            str(spec_path),
+            "--expected-preview-digest",
+            "a" * 64,
+            "--action-id",
+            "submit-study",
+        ],
+        ["study", "list", "--root", str(tmp_path)],
+        [
+            "study",
+            "detail",
+            "--root",
+            str(tmp_path),
+            "--study-id",
+            "a" * 64,
+        ],
+    ]
+    for command in commands:
+        assert main(command) == 0
+        assert _json_output(capsys)["ok"] is True
+
+    assert [call[0] for call in calls] == ["preview", "submit", "list", "detail"]

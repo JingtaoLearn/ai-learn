@@ -974,11 +974,11 @@ def test_catalog_initialization_rejects_unknown_future_schema_versions(
         connection.execute(
             """
             INSERT INTO schema_migrations(version, applied_at)
-            VALUES (6, '2026-08-29T00:00:00Z')
+            VALUES (7, '2026-08-29T00:00:00Z')
             """
         )
 
-    with pytest.raises(CatalogVersionError, match="newer than supported: 6"):
+    with pytest.raises(CatalogVersionError, match="newer than supported: 7"):
         Catalog(root).initialize()
 
 
@@ -1055,7 +1055,7 @@ def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5]
+        ] == [1, 2, 3, 4, 5, 6]
 
 
 def test_parameter_study_migration_is_safe_under_concurrent_initialization(
@@ -1090,6 +1090,9 @@ def test_parameter_study_migration_is_safe_under_concurrent_initialization(
     with Catalog(root).connect() as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 5"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
         ).fetchone()[0] == 1
 
 
@@ -1162,3 +1165,156 @@ def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
         first["study_id"],
     ]
     assert all(item["phase"] == "FROZEN" for item in listed)
+
+
+def test_all_ineligible_candidates_complete_without_holdout(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    submitted = studies.submit(
+        _spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-no-eligible-study",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/158",
+        effect_executor=lambda effect, action_id: {
+            "status": "NO_ELIGIBLE_CANDIDATE",
+            "explanation": "Every candidate failed its declared constraints.",
+        },
+    )
+
+    coordinator.advance(submitted["study_id"])
+    coordinator.advance(submitted["study_id"])
+    coordinator.advance(submitted["study_id"])
+    detail = coordinator.detail(submitted["study_id"])
+
+    assert detail["phase"] == "COMPLETED"
+    assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert detail["holdout"] == {
+        "access": "SEALED",
+        "outcome": "NOT_RUN",
+        "freshness": "LEGACY_UNKNOWN",
+    }
+
+
+def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
+    tmp_path: Path,
+):
+    studies, experiments = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    task = {
+        key: preview["frozen_plan"]["normalized_request"][key]
+        for key in ("schema_version", "dataset", "template", "operators")
+    }
+    created = experiments.submit(task, action_id="canonical-observation")
+    duplicate = experiments.submit(task, action_id="duplicate-observation")
+
+    assert duplicate["status"] == "DUPLICATE"
+    assert (
+        studies._canonical_verified_metric_document(
+            experiment_id=created["experiment_id"],
+            candidate_digest="c" * 64,
+            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
+                "inner_folds"
+            ][0],
+        )
+        is None
+    )
+
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            UPDATE experiments
+            SET canonical_attempt_id = ?, canonical_result_digest = ?
+            WHERE experiment_id = ?
+            """,
+            (created["attempt_id"], "a" * 64, created["experiment_id"]),
+        )
+        connection.execute(
+            """
+            UPDATE attempts
+            SET status = 'SUCCEEDED', result_path = 'canonical',
+                result_digest = ?, comparison = 'CANONICAL'
+            WHERE attempt_id = ?
+            """,
+            ("a" * 64, created["attempt_id"]),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts(
+                attempt_id, experiment_id, action_id, sequence, status,
+                requested_json, resolved_json, created_at, result_path,
+                result_digest, comparison
+            )
+            SELECT ?, experiment_id, ?, 2, 'SUCCEEDED',
+                   requested_json, resolved_json, created_at, 'divergent',
+                   ?, 'DIVERGENT'
+            FROM attempts WHERE attempt_id = ?
+            """,
+            ("d" * 64, "divergent-observation", "b" * 64, created["attempt_id"]),
+        )
+
+    with pytest.raises(RuntimeError, match="CONTESTED"):
+        studies._canonical_verified_metric_document(
+            experiment_id=created["experiment_id"],
+            candidate_digest="c" * 64,
+            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
+                "inner_folds"
+            ][0],
+        )
+
+
+def test_failed_holdout_never_authorizes_a_runner_up(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    submitted = studies.submit(
+        _spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-one-champion-study",
+    )
+    champion = "c" * 64
+
+    def execute(effect: dict, action_id: str) -> dict:
+        if effect["effect_type"] == "REQUEST_TRIAL_PROPOSAL":
+            return {
+                "status": "CHAMPION_SELECTED",
+                "candidate_digest": champion,
+                "outer_evidence_digest": "d" * 64,
+                "evaluation": {
+                    "candidate_digest": champion,
+                    "eligible": True,
+                    "evaluation_digest": "e" * 64,
+                },
+            }
+        assert effect["effect_type"] == "REQUEST_TERMINAL_HOLDOUT"
+        assert effect["candidate_digest"] == champion
+        return {
+            "status": "HOLDOUT_FAILED",
+            "candidate_digest": champion,
+            "metric_document_digest": "f" * 64,
+            "constraints": {"minimum_trades": {"passed": False}},
+        }
+
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/158",
+        effect_executor=execute,
+    )
+    for _ in range(5):
+        coordinator.advance(submitted["study_id"])
+    detail = coordinator.detail(submitted["study_id"])
+
+    assert detail["phase"] == "COMPLETED"
+    assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert detail["holdout"]["outcome"] == "FAILED"
+    assert [
+        item["candidate_digest"]
+        for item in detail["evidence"]
+        if item["evidence_type"] == "CHAMPION_FROZEN"
+    ] == [champion]

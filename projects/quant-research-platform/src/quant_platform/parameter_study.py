@@ -23,6 +23,7 @@ from .schemas import (
 )
 from .study_contracts import INFORMATION_INTERVAL, normalize_fold_window
 from .study_datasets import ExecutionDatasetSliceFactory
+from .study_evaluation import MetricDocumentFactory, RobustWalkForwardPolicy
 
 
 class StudyValidationError(ValueError):
@@ -348,6 +349,49 @@ END;
 CREATE TRIGGER append_only_parameter_study_holdout_ledger_delete
 BEFORE DELETE ON parameter_study_holdout_ledger BEGIN
     SELECT RAISE(ABORT, 'holdout ledger is append-only');
+END;
+""",
+)
+
+STUDY_EVALUATION_MIGRATION = CatalogMigration(
+    version=6,
+    applied_at="2026-08-28T00:00:00Z",
+    sql="""
+CREATE TABLE parameter_study_evidence (
+    study_id TEXT NOT NULL REFERENCES parameter_studies(study_id),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    evidence_type TEXT NOT NULL CHECK (
+        evidence_type IN (
+            'METRIC_DOCUMENT_VERIFIED', 'CANDIDATE_EVALUATED',
+            'OUTER_SELECTION_RECORDED', 'CHAMPION_FROZEN',
+            'HOLDOUT_OUTCOME_RECORDED', 'EVIDENCE_CONTESTED'
+        )
+    ),
+    candidate_digest TEXT CHECK (
+        candidate_digest IS NULL OR (
+            length(candidate_digest) = 64
+            AND candidate_digest NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    payload_json TEXT NOT NULL CHECK (
+        json_valid(payload_json) AND json_type(payload_json) = 'object'
+    ),
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (study_id, sequence)
+);
+
+CREATE UNIQUE INDEX one_frozen_champion_per_study
+ON parameter_study_evidence(study_id)
+WHERE evidence_type = 'CHAMPION_FROZEN';
+
+CREATE TRIGGER append_only_parameter_study_evidence_update
+BEFORE UPDATE ON parameter_study_evidence BEGIN
+    SELECT RAISE(ABORT, 'Study evidence is append-only');
+END;
+
+CREATE TRIGGER append_only_parameter_study_evidence_delete
+BEFORE DELETE ON parameter_study_evidence BEGIN
+    SELECT RAISE(ABORT, 'Study evidence is append-only');
 END;
 """,
 )
@@ -1158,9 +1202,13 @@ class ParameterStudy:
             raise ValueError("effect_executor must be callable")
         self.lease_duration_seconds = lease_duration_seconds
         self.effect_executor = effect_executor
+        self.metric_documents = MetricDocumentFactory(catalog.state_root)
+        self.evaluation_policy = RobustWalkForwardPolicy()
         self._instance_nonce = uuid.uuid4().hex
         self._advance_lock = threading.Lock()
-        self.catalog.apply_migrations([STUDY_MIGRATION])
+        self.catalog.apply_migrations(
+            [STUDY_MIGRATION, STUDY_EVALUATION_MIGRATION]
+        )
 
     @classmethod
     def from_experiments(
@@ -1647,6 +1695,33 @@ class ParameterStudy:
             raise RuntimeError("Parameter Study frozen plan is invalid") from exc
         return self.experiments.preview_task(task)["experiment_id"]
 
+    def _canonical_verified_metric_document(
+        self,
+        *,
+        experiment_id: str,
+        candidate_digest: str,
+        fold_window: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Observe one Experiment without treating identity reuse as success."""
+
+        detail = self.experiments.experiment_detail(experiment_id)
+        if detail["has_divergent_attempt"]:
+            raise RuntimeError(
+                f"CONTESTED Experiment evidence cannot be evaluated: {experiment_id}"
+            )
+        canonical_attempt_id = detail["canonical_attempt_id"]
+        if canonical_attempt_id is None:
+            return None
+        canonical = self.experiments.attempt_detail(canonical_attempt_id)
+        if canonical["status"] != "SUCCEEDED":
+            return None
+        self.experiments.require_validated_study_dataset(experiment_id)
+        return self.metric_documents.from_attempt(
+            canonical,
+            candidate_digest=candidate_digest,
+            fold_window=fold_window,
+        )
+
     def _valid_effect_attempt(
         self,
         connection: sqlite3.Connection,
@@ -1770,6 +1845,22 @@ class ParameterStudy:
                 "kind": "OUTER",
                 "round": round_number,
             },
+        }
+
+    @staticmethod
+    def _holdout_effect(
+        study_id: str,
+        frozen_plan: dict[str, Any],
+        candidate_digest: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "effect_type": "REQUEST_TERMINAL_HOLDOUT",
+            "study_id": study_id,
+            "frozen_plan_digest": study_id,
+            "candidate_digest": candidate_digest,
+            "fold_window": deepcopy(frozen_plan["holdout"]["fold_window"]),
+            "authorization": "ONE_FROZEN_CHAMPION",
         }
 
     def _valid_intent_action(
@@ -2129,8 +2220,29 @@ class ParameterStudy:
         has_authorized_dispatch = False
         dispatch_in_flight = False
 
-        if phase == "VALIDATING_SELECTION_PROCESS":
-            effect = self._trial_proposal_effect(study_id, frozen_plan)
+        if phase in {
+            "VALIDATING_SELECTION_PROCESS",
+            "HOLDOUT_READY",
+            "HOLDOUT_RUNNING",
+        }:
+            if phase == "VALIDATING_SELECTION_PROCESS":
+                effect = self._trial_proposal_effect(study_id, frozen_plan)
+            else:
+                champion = connection.execute(
+                    """
+                    SELECT candidate_digest
+                    FROM parameter_study_evidence
+                    WHERE study_id = ? AND evidence_type = 'CHAMPION_FROZEN'
+                    """,
+                    (study_id,),
+                ).fetchone()
+                if champion is None:
+                    raise RuntimeError("holdout phase has no frozen champion")
+                effect = self._holdout_effect(
+                    study_id,
+                    frozen_plan,
+                    champion["candidate_digest"],
+                )
             effect_digest = _digest(effect)
             intent_action = self._load_action(
                 self._effect_action_id(effect_digest),
@@ -2277,7 +2389,11 @@ class ParameterStudy:
                 requires_lease=True,
                 discoverable=True,
             )
-        if phase != "VALIDATING_SELECTION_PROCESS":
+        if phase not in {
+            "VALIDATING_SELECTION_PROCESS",
+            "HOLDOUT_READY",
+            "HOLDOUT_RUNNING",
+        }:
             return _StudyReadiness(
                 "TERMINAL",
                 {
@@ -2539,6 +2655,244 @@ class ParameterStudy:
         )
         return response
 
+    def _apply_evaluation_result(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        study_id: str,
+        result: dict[str, Any],
+        occurred_at: str,
+    ) -> None:
+        status = result.get("status")
+        if status not in {
+            "NO_ELIGIBLE_CANDIDATE",
+            "CHAMPION_SELECTED",
+            "HOLDOUT_PASSED",
+            "HOLDOUT_FAILED",
+        }:
+            return
+        study = connection.execute(
+            """
+            SELECT phase, selection_outcome, holdout_outcome, frozen_plan_json
+            FROM parameter_studies WHERE study_id = ?
+            """,
+            (study_id,),
+        ).fetchone()
+        if study is None:
+            raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
+        frozen_plan = _strict_json_object(
+            study["frozen_plan_json"], "Parameter Study frozen plan"
+        )
+
+        if status == "NO_ELIGIBLE_CANDIDATE":
+            if study["selection_outcome"] != "NOT_DETERMINED":
+                raise RuntimeError("Parameter Study selection is already frozen")
+            payload = {
+                "selection_outcome": "NO_ELIGIBLE_CANDIDATE",
+                "holdout_outcome": "NOT_RUN",
+                "explanation": result.get(
+                    "explanation", "Every completed candidate was ineligible or failed."
+                ),
+            }
+            connection.execute(
+                """
+                UPDATE parameter_studies
+                SET phase = 'COMPLETED',
+                    selection_outcome = 'NO_ELIGIBLE_CANDIDATE',
+                    holdout_outcome = 'NOT_RUN', updated_at = ?
+                WHERE study_id = ?
+                """,
+                (occurred_at, study_id),
+            )
+            self._append_evaluation_evidence(
+                connection,
+                study_id=study_id,
+                evidence_type="CANDIDATE_EVALUATED",
+                candidate_digest=None,
+                payload=payload,
+                occurred_at=occurred_at,
+            )
+            return
+
+        candidate_digest = result.get("candidate_digest")
+        if not isinstance(candidate_digest, str) or STUDY_ID.fullmatch(candidate_digest) is None:
+            raise RuntimeError("evaluation result candidate_digest is invalid")
+        if status == "CHAMPION_SELECTED":
+            evaluation = result.get("evaluation")
+            evaluation_digest = (
+                evaluation.get("evaluation_digest")
+                if isinstance(evaluation, dict)
+                else None
+            )
+            outer_evidence_digest = result.get("outer_evidence_digest")
+            if (
+                not isinstance(evaluation, dict)
+                or evaluation.get("candidate_digest") != candidate_digest
+                or evaluation.get("eligible") is not True
+                or not isinstance(evaluation_digest, str)
+                or STUDY_ID.fullmatch(evaluation_digest) is None
+                or not isinstance(outer_evidence_digest, str)
+                or STUDY_ID.fullmatch(outer_evidence_digest) is None
+            ):
+                raise RuntimeError("champion must have one eligible verified evaluation")
+            if study["selection_outcome"] != "NOT_DETERMINED":
+                raise RuntimeError("Parameter Study selection is already frozen")
+            holdout_identity = _holdout_identity_digest(frozen_plan)
+            payload = {
+                "candidate_digest": candidate_digest,
+                "evaluation_digest": evaluation_digest,
+                "outer_evidence_digest": outer_evidence_digest,
+                "holdout_identity_digest": holdout_identity,
+            }
+            self._append_evaluation_evidence(
+                connection,
+                study_id=study_id,
+                evidence_type="CHAMPION_FROZEN",
+                candidate_digest=candidate_digest,
+                payload=payload,
+                occurred_at=occurred_at,
+            )
+            connection.execute(
+                """
+                INSERT INTO parameter_study_holdout_ledger(
+                    study_id, sequence, holdout_identity_digest,
+                    event_type, occurred_at, payload_json
+                )
+                SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?,
+                       'GRANTED', ?, ?
+                FROM parameter_study_holdout_ledger
+                WHERE study_id = ?
+                """,
+                (
+                    study_id,
+                    holdout_identity,
+                    occurred_at,
+                    canonical_json_bytes(
+                        {
+                            "candidate_digest": candidate_digest,
+                            "authorization": "ONE_FROZEN_CHAMPION",
+                        }
+                    ).decode(),
+                    study_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE parameter_studies
+                SET phase = 'HOLDOUT_READY',
+                    selection_outcome = 'CHAMPION_SELECTED', updated_at = ?
+                WHERE study_id = ?
+                """,
+                (occurred_at, study_id),
+            )
+            return
+
+        champion = connection.execute(
+            """
+            SELECT candidate_digest
+            FROM parameter_study_evidence
+            WHERE study_id = ? AND evidence_type = 'CHAMPION_FROZEN'
+            """,
+            (study_id,),
+        ).fetchone()
+        if (
+            champion is None
+            or champion["candidate_digest"] != candidate_digest
+            or study["selection_outcome"] != "CHAMPION_SELECTED"
+            or study["holdout_outcome"] != "NOT_RUN"
+        ):
+            raise RuntimeError("holdout result does not belong to the frozen champion")
+        holdout_identity = _holdout_identity_digest(frozen_plan)
+        existing_access = connection.execute(
+            """
+            SELECT 1 FROM parameter_study_holdout_ledger
+            WHERE study_id = ? AND event_type = 'ACCESSED'
+            """,
+            (study_id,),
+        ).fetchone()
+        if existing_access is None:
+            connection.execute(
+                """
+                INSERT INTO parameter_study_holdout_ledger(
+                    study_id, sequence, holdout_identity_digest,
+                    event_type, occurred_at, payload_json
+                )
+                SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?,
+                       'ACCESSED', ?, ?
+                FROM parameter_study_holdout_ledger
+                WHERE study_id = ?
+                """,
+                (
+                    study_id,
+                    holdout_identity,
+                    occurred_at,
+                    canonical_json_bytes(
+                        {"candidate_digest": candidate_digest}
+                    ).decode(),
+                    study_id,
+                ),
+            )
+        outcome = "PASSED" if status == "HOLDOUT_PASSED" else "FAILED"
+        metric_document_digest = result.get("metric_document_digest")
+        constraints = result.get("constraints")
+        if (
+            not isinstance(metric_document_digest, str)
+            or STUDY_ID.fullmatch(metric_document_digest) is None
+            or not isinstance(constraints, dict)
+        ):
+            raise RuntimeError("holdout result evidence is invalid")
+        self._append_evaluation_evidence(
+            connection,
+            study_id=study_id,
+            evidence_type="HOLDOUT_OUTCOME_RECORDED",
+            candidate_digest=candidate_digest,
+            payload={
+                "candidate_digest": candidate_digest,
+                "outcome": outcome,
+                "metric_document_digest": metric_document_digest,
+                "constraints": constraints,
+            },
+            occurred_at=occurred_at,
+        )
+        connection.execute(
+            """
+            UPDATE parameter_studies
+            SET phase = 'COMPLETED', holdout_outcome = ?, updated_at = ?
+            WHERE study_id = ?
+            """,
+            (outcome, occurred_at, study_id),
+        )
+
+    @staticmethod
+    def _append_evaluation_evidence(
+        connection: sqlite3.Connection,
+        *,
+        study_id: str,
+        evidence_type: str,
+        candidate_digest: str | None,
+        payload: dict[str, Any],
+        occurred_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO parameter_study_evidence(
+                study_id, sequence, evidence_type, candidate_digest,
+                payload_json, occurred_at
+            )
+            SELECT ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?
+            FROM parameter_study_evidence
+            WHERE study_id = ?
+            """,
+            (
+                study_id,
+                evidence_type,
+                candidate_digest,
+                canonical_json_bytes(payload).decode(),
+                occurred_at,
+                study_id,
+            ),
+        )
+
     def advance(self, study_id: str) -> dict[str, Any]:
         if not isinstance(study_id, str) or STUDY_ID.fullmatch(study_id) is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
@@ -2682,6 +3036,15 @@ class ParameterStudy:
                         study_id,
                     ),
                 )
+                if effect_to_execute["effect_type"] == "REQUEST_TERMINAL_HOLDOUT":
+                    connection.execute(
+                        """
+                        UPDATE parameter_studies
+                        SET phase = 'HOLDOUT_RUNNING'
+                        WHERE study_id = ? AND phase = 'HOLDOUT_READY'
+                        """,
+                        (study_id,),
+                    )
                 connection.execute(
                     """
                     UPDATE parameter_studies
@@ -2916,6 +3279,12 @@ class ParameterStudy:
                     ).decode(),
                     study_id,
                 ),
+            )
+            self._apply_evaluation_result(
+                connection,
+                study_id=study_id,
+                result=result,
+                occurred_at=receipt_now,
             )
             connection.execute(
                 """
@@ -3221,6 +3590,16 @@ class ParameterStudy:
                 WHERE singleton = 1
                 """
             ).fetchone()
+            evidence = connection.execute(
+                """
+                SELECT sequence, evidence_type, candidate_digest,
+                       payload_json, occurred_at
+                FROM parameter_study_evidence
+                WHERE study_id = ?
+                ORDER BY sequence
+                """,
+                (study_id,),
+            ).fetchall()
             lease = self._latest_lease(connection, study_id)
         finally:
             connection.rollback()
@@ -3300,5 +3679,18 @@ class ParameterStudy:
                     ),
                 }
                 for event in events
+            ],
+            "evidence": [
+                {
+                    "sequence": item["sequence"],
+                    "evidence_type": item["evidence_type"],
+                    "candidate_digest": item["candidate_digest"],
+                    "occurred_at": item["occurred_at"],
+                    "payload": _strict_json_object(
+                        item["payload_json"],
+                        "Parameter Study evidence payload",
+                    ),
+                }
+                for item in evidence
             ],
         }
