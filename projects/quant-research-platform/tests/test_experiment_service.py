@@ -150,6 +150,19 @@ def test_task_fails_closed_on_source_unknown_versions_slots_and_params(
         service.resolve_task(task)
 
 
+@pytest.mark.parametrize("field", ["study_id", "fold", "optimizer"])
+def test_experiment_task_schema_rejects_parameter_study_metadata(
+    tmp_path: Path,
+    field: str,
+):
+    service, snapshot_id = _service(tmp_path)
+    task = _task(snapshot_id)
+    task[field] = "must-remain-private"
+
+    with pytest.raises(TaskValidationError, match="unknown"):
+        service.resolve_task(task)
+
+
 def test_exact_duplicate_returns_existing_experiment_without_new_attempt(tmp_path: Path):
     service, snapshot_id = _service(tmp_path)
     task = _task(snapshot_id)
@@ -166,6 +179,48 @@ def test_exact_duplicate_returns_existing_experiment_without_new_attempt(tmp_pat
         "attempt_id": first["attempt_id"],
     }
     assert len(service.list_attempts(first["experiment_id"])) == 1
+
+
+@pytest.mark.parametrize("operation", ["submit", "rerun", "recovery"])
+def test_public_experiment_actions_reserve_the_entire_study_internal_namespace(
+    tmp_path: Path,
+    operation: str,
+):
+    service, snapshot_id = _service(tmp_path)
+    action_id = "study-internal:future:public-preclaim"
+
+    with pytest.raises(TaskValidationError, match="reserved internal namespace"):
+        if operation == "submit":
+            service.submit(_task(snapshot_id), action_id=action_id)
+        elif operation == "rerun":
+            service.rerun("0" * 64, action_id=action_id)
+        else:
+            service.create_replacement_attempt("0" * 64, action_id=action_id)
+
+    assert service.list_experiments() == []
+
+
+def test_trusted_study_effect_submission_succeeds_and_replays(tmp_path: Path):
+    service, snapshot_id = _service(tmp_path)
+    action_id = f"study-internal:effect:{'a' * 64}"
+
+    created = service.submit_study_effect(
+        _task(snapshot_id),
+        action_id=action_id,
+    )
+    replay = service.submit_study_effect(
+        _task(snapshot_id),
+        action_id=action_id,
+    )
+
+    assert created["status"] == "CREATED"
+    assert replay == {
+        "status": "DUPLICATE",
+        "experiment_id": created["experiment_id"],
+        "attempt_created": False,
+        "attempt_id": created["attempt_id"],
+    }
+    assert service.attempt_detail(created["attempt_id"])["action_id"] == action_id
 
 
 def test_duplicate_preview_resolves_without_creating_history(tmp_path: Path):

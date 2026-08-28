@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import fcntl
-import hashlib
+import ctypes
+import errno
 import io
 import json
 import os
@@ -12,65 +12,36 @@ import struct
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+
+from .dataset_lineage import (
+    SAFE_INSTRUMENT,
+    DatasetValidationError,
+    _canonical_json,
+    _directory_identity,
+    _file_identity,
+    _InstrumentLock,
+    _sha256,
+    _validate_metadata,
+    snapshot_update_lineage,
+)
+from .study_contracts import normalize_fold_window as _validated_fold_window
 
 
 REQUIRED_COLUMNS = ("Date", "Open", "High", "Low", "Close", "Volume")
 OPTIONAL_COLUMNS = ("AdjustedClose",)
 LEGACY_COLUMN_ALIASES = {"Adj Close": "AdjustedClose"}
-METADATA_FIELDS = {"instrument", "provider", "market", "currency", "adjustment"}
-SAFE_INSTRUMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=-]{0,63}$")
-
-
-class DatasetValidationError(ValueError):
-    """Raised when data or metadata cannot form a trustworthy snapshot."""
-
-
-class _InstrumentLock:
-    def __init__(self, root: Path, instrument: str):
-        lock_root = root / ".locks" / "latest"
-        lock_root.mkdir(parents=True, exist_ok=True)
-        self.path = lock_root / f"{instrument}.lock"
-        self.stream = None
-
-    def __enter__(self) -> None:
-        self.stream = self.path.open("a+b")
-        self.path.chmod(0o600)
-        fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX)
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        assert self.stream is not None
-        fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
-        self.stream.close()
-
-
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-
-
-def _sha256(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _validate_metadata(metadata: dict[str, str]) -> dict[str, str]:
-    fields = set(metadata)
-    if fields != METADATA_FIELDS:
-        missing = sorted(METADATA_FIELDS - fields)
-        unknown = sorted(fields - METADATA_FIELDS)
-        raise DatasetValidationError(
-            f"metadata fields must be exactly {sorted(METADATA_FIELDS)}; "
-            f"missing={missing}, unknown={unknown}"
-        )
-    normalized = {key: str(metadata[key]).strip() for key in sorted(metadata)}
-    if any(not value for value in normalized.values()):
-        raise DatasetValidationError("metadata fields cannot be empty")
-    instrument = normalized["instrument"]
-    if not SAFE_INSTRUMENT.fullmatch(instrument):
-        raise DatasetValidationError(f"unsafe instrument: {instrument!r}")
-    return normalized
+PROJECTION_IDENTITY = {
+    "name": "daily_market_data_prefix",
+    "version": "1.0.0",
+    "date_column": "Date",
+    "boundary": "inclusive",
+    "serialization": "parquet",
+}
+PARENT_VERIFICATION_PROTOCOL = "recursive_snapshot_verification"
 
 
 def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -135,6 +106,27 @@ def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return clean.sort_values("Date").reset_index(drop=True)
 
 
+def _scoring_mask(
+    frame: pd.DataFrame, fold_window: Mapping[str, Any]
+) -> dict[str, Any]:
+    dates = frame["Date"].dt.strftime("%Y-%m-%d").tolist()
+    return {
+        "schema_version": 1,
+        "date_column": "Date",
+        "rows": [
+            {
+                "date": date,
+                "scored": (
+                    fold_window["scoring_start"]
+                    <= date
+                    <= fold_window["scoring_end"]
+                ),
+            }
+            for date in dates
+        ],
+    }
+
+
 def _canonical_data_bytes(frame: pd.DataFrame) -> bytes:
     dates = frame["Date"].astype("int64").to_numpy(dtype=">i8")
     numeric_columns = list(frame.columns[1:])
@@ -156,13 +148,122 @@ def _canonical_data_bytes(frame: pd.DataFrame) -> bytes:
     )
 
 
-def _seal_snapshot(directory: Path) -> None:
-    for name in ("manifest.json", "data.parquet"):
-        path = directory / name
-        if path.is_symlink() or not path.is_file():
+def _write_new(path: Path, payload: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _seal_snapshot(
+    directory: Path,
+    expected_files: frozenset[str] = frozenset(
+        {"manifest.json", "data.parquet"}
+    ),
+) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    directory_before = os.stat(directory, follow_symlinks=False)
+    if not stat.S_ISDIR(directory_before.st_mode):
+        raise DatasetValidationError("snapshot staging path is unsafe")
+    directory_fd = os.open(directory, flags)
+    try:
+        directory_opened = os.fstat(directory_fd)
+        if (
+            directory_before.st_dev,
+            directory_before.st_ino,
+        ) != (
+            directory_opened.st_dev,
+            directory_opened.st_ino,
+        ):
+            raise DatasetValidationError(
+                "snapshot staging directory changed while opening"
+            )
+        if set(os.listdir(directory_fd)) != expected_files:
+            raise DatasetValidationError("snapshot file set is incomplete")
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        for name in sorted(expected_files):
+            descriptor = os.open(name, file_flags, dir_fd=directory_fd)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise DatasetValidationError(
+                        f"snapshot file is unsafe: {name}"
+                    )
+                if metadata.st_nlink != 1:
+                    raise DatasetValidationError(
+                        f"snapshot file has an unsafe hard link count: {name}"
+                    )
+                os.fchmod(descriptor, 0o444)
+                os.fsync(descriptor)
+                sealed = os.fstat(descriptor)
+                current = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    _file_identity(current) != _file_identity(sealed)
+                    or stat.S_IMODE(sealed.st_mode) != 0o444
+                    or sealed.st_nlink != 1
+                ):
+                    raise DatasetValidationError(
+                        f"snapshot file changed while sealing: {name}"
+                    )
+            finally:
+                os.close(descriptor)
+        os.fchmod(directory_fd, 0o555)
+        os.fsync(directory_fd)
+        directory_sealed = os.fstat(directory_fd)
+        directory_current = os.stat(directory, follow_symlinks=False)
+        if (
+            _directory_identity(directory_current)
+            != _directory_identity(directory_sealed)
+            or stat.S_IMODE(directory_sealed.st_mode) != 0o555
+        ):
+            raise DatasetValidationError(
+                "snapshot staging directory changed while sealing"
+            )
+    finally:
+        os.close(directory_fd)
+    _verify_snapshot_seal(directory, expected_files)
+
+
+def _verify_snapshot_seal(
+    directory: Path, expected_files: frozenset[str]
+) -> None:
+    directory_metadata = os.stat(directory, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(directory_metadata.st_mode)
+        or stat.S_IMODE(directory_metadata.st_mode) != 0o555
+    ):
+        raise DatasetValidationError("snapshot directory seal is unsafe")
+    entries = {
+        entry.name: entry.stat(follow_symlinks=False)
+        for entry in os.scandir(directory)
+    }
+    if set(entries) != expected_files:
+        raise DatasetValidationError("snapshot file set is incomplete")
+    for name, metadata in entries.items():
+        if not stat.S_ISREG(metadata.st_mode):
             raise DatasetValidationError(f"snapshot file is unsafe: {name}")
-        path.chmod(0o444)
-    directory.chmod(0o555)
+        if metadata.st_nlink != 1:
+            raise DatasetValidationError(
+                f"snapshot file has an unsafe hard link count: {name}"
+            )
+        if stat.S_IMODE(metadata.st_mode) != 0o444:
+            raise DatasetValidationError(
+                f"snapshot file has unsafe permissions: {name}"
+            )
 
 
 def _make_snapshot_removable(directory: Path) -> None:
@@ -174,24 +275,14 @@ def _make_snapshot_removable(directory: Path) -> None:
             path.chmod(0o644)
 
 
-def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_nlink,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-    )
-
-
 def _read_snapshot_file(path: Path, label: str) -> bytes:
     before = os.stat(path, follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise ValueError(f"snapshot {label} is not a regular file")
     if before.st_mode & 0o222:
         raise ValueError(f"snapshot {label} is writable")
+    if stat.S_IMODE(before.st_mode) != 0o444:
+        raise ValueError(f"snapshot {label} has unsafe permissions")
     if before.st_nlink != 1:
         raise ValueError(f"snapshot {label} has an unsafe hard link count")
     descriptor = os.open(
@@ -238,64 +329,209 @@ def _load_manifest(payload: bytes) -> dict[str, Any]:
     return value
 
 
+def _snapshot_manifest_fields(schema_version: int) -> frozenset[str]:
+    common = {
+        "schema_version",
+        "metadata",
+        "canonical_sha256",
+        "snapshot_id",
+        "rows",
+        "data_start",
+        "data_end",
+        "parquet_sha256",
+        "files",
+    }
+    if schema_version == 1:
+        return frozenset(common | {"created_at"})
+    if schema_version == 2:
+        return frozenset(common | {"created_at", "columns"})
+    if schema_version == 3:
+        return frozenset(common | {"columns", "lineage", "scoring_mask_sha256"})
+    raise ValueError("unsupported snapshot schema")
+
+
+def _parent_verification_attestation(
+    parent_identity: dict[str, Any],
+    parent_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    verified_manifest = json.loads(_canonical_json(parent_manifest))
+    return {
+        "schema_version": 1,
+        "protocol": PARENT_VERIFICATION_PROTOCOL,
+        "parent_identity_sha256": _sha256(_canonical_json(parent_identity)),
+        "parent_manifest_sha256": _sha256(_canonical_json(verified_manifest)),
+        "verified_manifest": verified_manifest,
+    }
+
+
+def _validate_parent_verification_attestation(
+    value: Any,
+    parent_identity: dict[str, Any],
+    metadata: dict[str, str],
+) -> dict[str, Any]:
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "parent_identity_sha256",
+        "parent_manifest_sha256",
+        "verified_manifest",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise ValueError("derived-view parent verification attestation is invalid")
+    if value["schema_version"] != 1 or value["protocol"] != PARENT_VERIFICATION_PROTOCOL:
+        raise ValueError("derived-view parent verification protocol is invalid")
+    for field in ("parent_identity_sha256", "parent_manifest_sha256"):
+        if not isinstance(value[field], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", value[field]
+        ):
+            raise ValueError(f"derived-view parent verification {field} is invalid")
+    if value["parent_identity_sha256"] != _sha256(
+        _canonical_json(parent_identity)
+    ):
+        raise ValueError("derived-view parent verification identity digest is invalid")
+    verified_manifest = value["verified_manifest"]
+    if not isinstance(verified_manifest, dict):
+        raise ValueError("derived-view verified parent manifest is invalid")
+    if value["parent_manifest_sha256"] != _sha256(
+        _canonical_json(verified_manifest)
+    ):
+        raise ValueError("derived-view parent manifest attestation digest is invalid")
+    schema_version = verified_manifest.get("schema_version")
+    if type(schema_version) is not int or schema_version not in {1, 2, 3}:
+        raise ValueError("derived-view verified parent schema is invalid")
+    if set(verified_manifest) != _snapshot_manifest_fields(schema_version):
+        raise ValueError("derived-view verified parent manifest fields are invalid")
+    if (
+        verified_manifest.get("snapshot_id") != parent_identity["snapshot_id"]
+        or verified_manifest.get("canonical_sha256")
+        != parent_identity["canonical_sha256"]
+        or verified_manifest.get("metadata") != metadata
+    ):
+        raise ValueError("derived-view verified parent identity does not match")
+    manifest_identity = {
+        "schema_version": schema_version,
+        "metadata": verified_manifest["metadata"],
+        "canonical_sha256": verified_manifest["canonical_sha256"],
+    }
+    if schema_version == 3:
+        if verified_manifest.get("lineage") != parent_identity["lineage"]:
+            raise ValueError("derived-view verified parent lineage does not match")
+        manifest_identity["lineage"] = verified_manifest["lineage"]
+    if _sha256(_canonical_json(manifest_identity)) != parent_identity["snapshot_id"]:
+        raise ValueError("derived-view verified parent snapshot ID is invalid")
+    return verified_manifest
+
+
+def _verified_scoring_bounds(
+    target: Path,
+    manifest: dict[str, Any],
+    frame: pd.DataFrame,
+) -> tuple[str, str]:
+    if manifest.get("schema_version") != 3:
+        raise ValueError("snapshot does not have a committed scoring mask")
+    lineage = manifest["lineage"]
+    dates = frame["Date"].dt.strftime("%Y-%m-%d").tolist()
+    view_spec = _validated_fold_window(lineage["view_spec"], dates)
+    mask_payload = _read_snapshot_file(
+        target / "scoring_mask.json",
+        "scoring mask",
+    )
+    if _sha256(mask_payload) != manifest["scoring_mask_sha256"]:
+        raise ValueError("scoring mask checksum mismatch")
+    mask = _load_manifest(mask_payload)
+    expected_mask = _scoring_mask(frame, view_spec)
+    if mask != expected_mask:
+        raise ValueError("derived-view scoring mask does not match projected rows")
+    scored_dates = [
+        row["date"]
+        for row in mask["rows"]
+        if row["scored"]
+    ]
+    if not scored_dates:
+        raise ValueError("derived-view scoring mask has no scored sessions")
+    expected_scoring = {
+        "path": "scoring_mask.json",
+        "sha256": manifest["scoring_mask_sha256"],
+        "rows": len(frame),
+        "scored_rows": len(scored_dates),
+    }
+    if lineage["scoring_mask"] != expected_scoring:
+        raise ValueError("derived-view scoring mask identity is invalid")
+    if (
+        scored_dates[0] != view_spec["scoring_start"]
+        or scored_dates[-1] != view_spec["scoring_end"]
+    ):
+        raise ValueError("derived-view scoring mask bounds are invalid")
+    return scored_dates[0], scored_dates[-1]
+
+
 def _verify_snapshot(
     target: Path,
     expected_snapshot_id: str,
     *,
     include_frame: bool = False,
+    require_name: bool = True,
+    verify_parent: bool = True,
+    _ancestors: frozenset[str] = frozenset(),
 ) -> dict[str, Any] | tuple[dict[str, Any], pd.DataFrame]:
     try:
         target = Path(target)
         if not re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_id):
             raise ValueError("expected snapshot ID is invalid")
-        for path, label in (
+        if expected_snapshot_id in _ancestors:
+            raise ValueError("derived-view parent lineage contains a cycle")
+        ancestors = _ancestors | {expected_snapshot_id}
+        topology = (
             (target.parent.parent, "dataset store"),
             (target.parent, "instrument directory"),
             (target, "snapshot directory"),
-        ):
+        )
+        topology_identities: list[tuple[Path, tuple[int, ...]]] = []
+        for path, label in topology:
             metadata = os.stat(path, follow_symlinks=False)
             if not stat.S_ISDIR(metadata.st_mode):
                 raise ValueError(f"unsafe snapshot topology: {label} is not a directory")
             if stat.S_ISLNK(metadata.st_mode):
                 raise ValueError(f"unsafe snapshot topology: {label} is a symlink")
+            topology_identities.append((path, _directory_identity(metadata)))
         if not SAFE_INSTRUMENT.fullmatch(target.parent.name):
             raise ValueError("unsafe snapshot instrument directory")
         target_metadata = os.stat(target, follow_symlinks=False)
         if target_metadata.st_mode & 0o222:
             raise ValueError("snapshot directory is writable")
+        if stat.S_IMODE(target_metadata.st_mode) != 0o555:
+            raise ValueError("snapshot directory has unsafe permissions")
         entries = {entry.name for entry in os.scandir(target)}
-        if entries != {"manifest.json", "data.parquet"}:
+        supported_file_sets = (
+            {"manifest.json", "data.parquet"},
+            {"manifest.json", "data.parquet", "scoring_mask.json"},
+        )
+        if entries not in supported_file_sets:
             raise ValueError(
-                "snapshot file set is invalid: "
-                f"expected=['data.parquet', 'manifest.json'], actual={sorted(entries)}"
+                f"snapshot file set is invalid: actual={sorted(entries)}"
             )
         manifest = _load_manifest(
             _read_snapshot_file(target / "manifest.json", "manifest")
         )
+        schema_version = manifest.get("schema_version")
+        if type(schema_version) is not int or schema_version not in {1, 2, 3}:
+            raise ValueError("unsupported snapshot schema")
+        expected_files = (
+            {"manifest.json", "data.parquet", "scoring_mask.json"}
+            if schema_version == 3
+            else {"manifest.json", "data.parquet"}
+        )
+        if entries != expected_files:
+            raise ValueError("snapshot file set does not match its schema")
         parquet_path = target / "data.parquet"
         parquet_payload = _read_snapshot_file(parquet_path, "Parquet data")
-        common_manifest_fields = {
-            "schema_version",
-            "metadata",
-            "canonical_sha256",
-            "snapshot_id",
-            "created_at",
-            "rows",
-            "data_start",
-            "data_end",
-            "parquet_sha256",
-            "files",
-        }
-        schema_version = manifest.get("schema_version")
-        expected_manifest_fields = common_manifest_fields | (
-            {"columns"} if schema_version == 2 else set()
-        )
-        if set(manifest) != expected_manifest_fields:
+        if set(manifest) != _snapshot_manifest_fields(schema_version):
             raise ValueError("unexpected or missing manifest fields")
-        if manifest.get("snapshot_id") != expected_snapshot_id or target.name != expected_snapshot_id:
+        if (
+            manifest.get("snapshot_id") != expected_snapshot_id
+            or (require_name and target.name != expected_snapshot_id)
+        ):
             raise ValueError("snapshot identity mismatch")
-        if type(schema_version) is not int or schema_version not in {1, 2}:
-            raise ValueError("unsupported snapshot schema")
         metadata = manifest["metadata"]
         if not isinstance(metadata, dict):
             raise ValueError("snapshot metadata must be an object")
@@ -305,12 +541,21 @@ def _verify_snapshot(
             raise ValueError("instrument directory does not match snapshot metadata")
         if not isinstance(manifest["files"], dict):
             raise ValueError("snapshot file map must be an object")
-        if manifest["files"] != {"data": "data.parquet"}:
+        expected_file_map = (
+            {"data": "data.parquet", "scoring_mask": "scoring_mask.json"}
+            if schema_version == 3
+            else {"data": "data.parquet"}
+        )
+        if manifest["files"] != expected_file_map:
             raise ValueError("snapshot file map is invalid")
-        if not isinstance(manifest["created_at"], str):
-            raise ValueError("created_at must be a string")
-        datetime.fromisoformat(manifest["created_at"])
-        for field in ("canonical_sha256", "parquet_sha256"):
+        if schema_version in {1, 2}:
+            if not isinstance(manifest["created_at"], str):
+                raise ValueError("created_at must be a string")
+            datetime.fromisoformat(manifest["created_at"])
+        digest_fields = ["canonical_sha256", "parquet_sha256"]
+        if schema_version == 3:
+            digest_fields.append("scoring_mask_sha256")
+        for field in digest_fields:
             if not isinstance(manifest[field], str) or not re.fullmatch(
                 r"[0-9a-f]{64}", manifest[field]
             ):
@@ -326,6 +571,8 @@ def _verify_snapshot(
             "metadata": manifest["metadata"],
             "canonical_sha256": manifest["canonical_sha256"],
         }
+        if schema_version == 3:
+            identity["lineage"] = manifest["lineage"]
         if _sha256(_canonical_json(identity)) != expected_snapshot_id:
             raise ValueError("snapshot ID does not match its identity inputs")
         if _sha256(parquet_payload) != manifest["parquet_sha256"]:
@@ -333,13 +580,147 @@ def _verify_snapshot(
         normalized = _normalize_frame(pd.read_parquet(io.BytesIO(parquet_payload)))
         if schema_version == 1 and tuple(normalized.columns) != REQUIRED_COLUMNS:
             raise ValueError("v1 snapshot must contain exactly the legacy OHLCV schema")
-        if schema_version == 2:
+        if schema_version in {2, 3}:
             if not isinstance(manifest["columns"], list) or not all(
                 isinstance(column, str) for column in manifest["columns"]
             ):
                 raise ValueError("snapshot columns must be a string array")
             if manifest["columns"] != list(normalized.columns):
                 raise ValueError("snapshot column schema mismatch")
+        if schema_version == 3:
+            lineage = manifest["lineage"]
+            expected_lineage_fields = {
+                "kind",
+                "parent",
+                "parent_verification",
+                "view_spec",
+                "readable_range",
+                "scoring_mask",
+                "projection_identity",
+                "projected_bytes_sha256",
+                "access_boundary_digest",
+            }
+            if (
+                not isinstance(lineage, dict)
+                or set(lineage) != expected_lineage_fields
+            ):
+                raise ValueError("derived-view lineage fields are invalid")
+            if lineage["kind"] != "derived_view":
+                raise ValueError("derived snapshot lineage kind is invalid")
+            parent = lineage["parent"]
+            if not isinstance(parent, dict) or set(parent) != {
+                "instrument",
+                "snapshot_id",
+                "canonical_sha256",
+                "lineage",
+            }:
+                raise ValueError("derived-view parent identity is invalid")
+            if parent["instrument"] != metadata["instrument"]:
+                raise ValueError("derived-view parent instrument is invalid")
+            for field in ("snapshot_id", "canonical_sha256"):
+                if not isinstance(parent[field], str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", parent[field]
+                ):
+                    raise ValueError(f"derived-view parent {field} is invalid")
+            if not isinstance(parent["lineage"], dict):
+                raise ValueError("derived-view parent lineage is invalid")
+            attested_parent_manifest = _validate_parent_verification_attestation(
+                lineage["parent_verification"],
+                parent,
+                metadata,
+            )
+            verified_parent_frame: pd.DataFrame | None = None
+            if verify_parent:
+                parent_target = target.parent / parent["snapshot_id"]
+                parent_verification = _verify_snapshot(
+                    parent_target,
+                    parent["snapshot_id"],
+                    include_frame=True,
+                    verify_parent=True,
+                    _ancestors=ancestors,
+                )
+                if not isinstance(parent_verification, tuple):
+                    raise ValueError(
+                        "parent snapshot verifier did not return market data"
+                    )
+                parent_manifest, verified_parent_frame = parent_verification
+                if parent_manifest != attested_parent_manifest:
+                    raise ValueError(
+                        "derived-view parent manifest does not match its attestation"
+                    )
+                if (
+                    parent_manifest["metadata"] != metadata
+                    or parent_manifest["canonical_sha256"]
+                    != parent["canonical_sha256"]
+                ):
+                    raise ValueError(
+                        "derived-view parent snapshot identity does not match"
+                    )
+                if parent_manifest["schema_version"] == 3:
+                    parent_lineage = parent_manifest["lineage"]
+                else:
+                    parent_lineage = snapshot_update_lineage(
+                        target.parent.parent.parent,
+                        metadata["instrument"],
+                        parent["snapshot_id"],
+                    )
+                if parent_lineage != parent["lineage"]:
+                    raise ValueError("derived-view parent lineage does not match")
+            dates = normalized["Date"].dt.strftime("%Y-%m-%d").tolist()
+            view_spec = _validated_fold_window(lineage["view_spec"], dates)
+            readable_range = {
+                "start": view_spec["allowed_start"],
+                "end": view_spec["available_through"],
+            }
+            if lineage["readable_range"] != readable_range:
+                raise ValueError("derived-view readable range is invalid")
+            if (
+                dates[0] != readable_range["start"]
+                or dates[-1] != readable_range["end"]
+            ):
+                raise ValueError("derived-view bytes exceed their readable range")
+            if verified_parent_frame is not None:
+                expected_projection = verified_parent_frame.loc[
+                    (
+                        verified_parent_frame["Date"]
+                        >= pd.Timestamp(view_spec["allowed_start"])
+                    )
+                    & (
+                        verified_parent_frame["Date"]
+                        <= pd.Timestamp(view_spec["available_through"])
+                    )
+                ].reset_index(drop=True)
+                if (
+                    list(expected_projection.columns) != list(normalized.columns)
+                    or _canonical_data_bytes(expected_projection)
+                    != _canonical_data_bytes(normalized)
+                ):
+                    raise ValueError(
+                        "derived-view bytes do not match the verified parent projection"
+                    )
+            if lineage["projection_identity"] != PROJECTION_IDENTITY:
+                raise ValueError("derived-view projection identity is invalid")
+            if (
+                lineage["projected_bytes_sha256"]
+                != manifest["parquet_sha256"]
+            ):
+                raise ValueError("derived-view projected bytes digest is invalid")
+            _verified_scoring_bounds(target, manifest, normalized)
+            access_boundary = {
+                "schema_version": 1,
+                "parent": parent,
+                "parent_verification": lineage["parent_verification"],
+                "view_spec": view_spec,
+                "projection_identity": PROJECTION_IDENTITY,
+                "projected_bytes_sha256": manifest["parquet_sha256"],
+                "scoring_mask_sha256": manifest["scoring_mask_sha256"],
+            }
+            if lineage["access_boundary_digest"] != _sha256(
+                _canonical_json(access_boundary)
+            ):
+                raise ValueError(
+                    "derived-view access-boundary digest is invalid"
+                )
         if _sha256(_canonical_data_bytes(normalized)) != manifest["canonical_sha256"]:
             raise ValueError("canonical data checksum mismatch")
         if manifest["rows"] != len(normalized):
@@ -348,6 +729,12 @@ def _verify_snapshot(
             raise ValueError("data_start mismatch")
         if manifest["data_end"] != str(normalized["Date"].max().date()):
             raise ValueError("data_end mismatch")
+        for path, identity in topology_identities:
+            current = os.stat(path, follow_symlinks=False)
+            if _directory_identity(current) != identity:
+                raise ValueError(
+                    f"snapshot topology changed while verifying: {path}"
+                )
         if include_frame:
             return manifest, normalized
         return manifest
@@ -379,6 +766,34 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _rename_noreplace(source: Path, target: Path) -> None:
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise OSError(
+            errno.ENOSYS,
+            "atomic no-replace rename is unavailable",
+            str(target),
+        )
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(target),
+        1,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
 
 
 def publish_snapshot(
@@ -437,12 +852,18 @@ def publish_snapshot(
                 stream.flush()
                 os.fsync(stream.fileno())
             _seal_snapshot(temporary)
+            _verify_snapshot_seal(
+                temporary, frozenset({"manifest.json", "data.parquet"})
+            )
             _fsync_directory(temporary)
+            _verify_snapshot(
+                temporary,
+                snapshot_id,
+                require_name=False,
+            )
             try:
-                os.rename(temporary, target)
-            except OSError:
-                if not target.exists():
-                    raise
+                _rename_noreplace(temporary, target)
+            except FileExistsError:
                 status = "NO_CHANGE"
             else:
                 _fsync_directory(instrument_root)
@@ -456,6 +877,7 @@ def publish_snapshot(
         latest = {"snapshot_id": snapshot_id, "path": snapshot_id}
         with _InstrumentLock(root, normalized_metadata["instrument"]):
             _atomic_json(instrument_root / "latest.json", latest)
+    _verify_snapshot(target, snapshot_id)
     return {"status": status, "snapshot_id": snapshot_id, "path": str(target)}
 
 

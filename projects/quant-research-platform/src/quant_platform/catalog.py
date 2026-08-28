@@ -6,8 +6,9 @@ import os
 import sqlite3
 import stat
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from .schemas import parse_semantic_version
 
@@ -200,6 +201,67 @@ DATASET_FIELDS = (
     "default_start",
     "created_at",
 )
+LATEST_SUPPORTED_SCHEMA_VERSION = 8
+
+
+class CatalogVersionError(RuntimeError):
+    """Raised when a catalog cannot be migrated without guessing."""
+
+
+@dataclass(frozen=True)
+class CatalogMigration:
+    version: int
+    sql: str
+    applied_at: str
+
+
+def _migration_statements(script: str) -> Iterator[str]:
+    pending = ""
+    for line in script.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statement = pending.strip()
+            if statement:
+                yield statement
+            pending = ""
+    if pending.strip():
+        raise CatalogVersionError("catalog migration contains incomplete SQL")
+
+
+def _recorded_migration_versions(connection: sqlite3.Connection) -> set[int]:
+    migration_table = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'schema_migrations'
+        """
+    ).fetchone()
+    if migration_table is None:
+        return set()
+    return {
+        row["version"]
+        for row in connection.execute(
+            "SELECT version FROM schema_migrations"
+        ).fetchall()
+    }
+
+
+def _validate_migration_history(recorded: set[int]) -> None:
+    future = sorted(
+        version
+        for version in recorded
+        if version > LATEST_SUPPORTED_SCHEMA_VERSION
+    )
+    if future:
+        raise CatalogVersionError(
+            f"catalog schema version is newer than supported: {future[-1]}"
+        )
+    if recorded:
+        expected = set(range(1, max(recorded) + 1))
+        if recorded != expected:
+            missing = sorted(expected - recorded)
+            raise CatalogVersionError(
+                f"catalog migration history is not contiguous: missing {missing}"
+            )
 
 
 class Catalog:
@@ -260,11 +322,63 @@ class Catalog:
         finally:
             connection.close()
 
+    def apply_migrations(self, migrations: Iterable[CatalogMigration]) -> None:
+        ordered = sorted(migrations, key=lambda migration: migration.version)
+        if not ordered:
+            return
+        if len({migration.version for migration in ordered}) != len(ordered):
+            raise ValueError("catalog migration versions must be unique")
+        if any(
+            migration.version < 1
+            or migration.version > LATEST_SUPPORTED_SCHEMA_VERSION
+            for migration in ordered
+        ):
+            raise ValueError("catalog migration version is unsupported")
+
+        with self._initialization_lock():
+            connection = self.connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                recorded = _recorded_migration_versions(connection)
+                if not recorded:
+                    raise CatalogVersionError(
+                        "catalog base schema must be initialized before extensions"
+                    )
+                _validate_migration_history(recorded)
+                for migration in ordered:
+                    if migration.version in recorded:
+                        continue
+                    expected = max(recorded, default=0) + 1
+                    if migration.version != expected:
+                        raise CatalogVersionError(
+                            "catalog migration history is not contiguous: "
+                            f"expected {expected}, got {migration.version}"
+                        )
+                    for statement in _migration_statements(migration.sql):
+                        connection.execute(statement)
+                    connection.execute(
+                        """
+                        INSERT INTO schema_migrations(version, applied_at)
+                        VALUES (?, ?)
+                        """,
+                        (migration.version, migration.applied_at),
+                    )
+                    recorded.add(migration.version)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
     def initialize(self) -> Catalog:
         with self._initialization_lock():
             connection = self.connect()
             try:
                 connection.execute("PRAGMA journal_mode = WAL")
+                _validate_migration_history(
+                    _recorded_migration_versions(connection)
+                )
                 connection.executescript(MIGRATION_1)
                 connection.execute(
                     """

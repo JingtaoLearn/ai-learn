@@ -4,11 +4,12 @@ import hashlib
 import json
 import math
 import re
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from .catalog import Catalog
 from .datasets import (
     DatasetValidationError,
     SAFE_INSTRUMENT,
+    _InstrumentLock,
     _normalize_frame,
     _validate_metadata,
     _verify_snapshot,
@@ -552,6 +554,62 @@ class DatasetService:
             )
         return options
 
+    def sessions(self, dataset_id: str, start: str, end: str) -> list[str]:
+        start = _date(start, "dataset range start")
+        end = _date(end, "dataset range end")
+        if start > end:
+            raise DatasetResolutionError(
+                "dataset range start must not be after range end"
+            )
+        item = self._item(dataset_id)
+        return [
+            _date(session, "expected trading session")
+            for session in self._calendar(item).sessions(start, end)
+        ]
+
+    @contextmanager
+    def guard_latest_resolution(
+        self,
+        resolved: dict[str, Any],
+    ) -> Iterator[bool]:
+        if not isinstance(resolved, dict):
+            raise DatasetResolutionError("resolved dataset must be an object")
+        instrument = resolved.get("instrument")
+        snapshot_id = resolved.get("snapshot_id")
+        canonical_sha256 = resolved.get("canonical_sha256")
+        if not isinstance(instrument, str) or SAFE_INSTRUMENT.fullmatch(instrument) is None:
+            raise DatasetResolutionError("resolved dataset instrument has invalid syntax")
+        if not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None:
+            raise DatasetResolutionError("resolved dataset snapshot_id must be a SHA-256 value")
+        if (
+            not isinstance(canonical_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", canonical_sha256) is None
+        ):
+            raise DatasetResolutionError(
+                "resolved dataset canonical_sha256 must be a SHA-256 value"
+            )
+
+        root = self.catalog.state_root.resolve()
+        with _InstrumentLock(root, instrument):
+            pointer = root / "datasets" / instrument / "latest.json"
+            if not pointer.exists():
+                yield False
+                return
+            try:
+                status = snapshot_status(root, instrument)
+                manifest = _verify_snapshot(
+                    Path(status["path"]),
+                    status["snapshot_id"],
+                )
+            except (DatasetValidationError, OSError, RuntimeError) as exc:
+                raise DatasetResolutionError(
+                    f"latest dataset resolution failed verification: {exc}"
+                ) from exc
+            yield (
+                status["snapshot_id"] == snapshot_id
+                and manifest["canonical_sha256"] == canonical_sha256
+            )
+
     def resolve(self, dataset_id: str, start: str, end: str) -> dict[str, Any]:
         start = _date(start, "dataset range start")
         end = _date(end, "dataset range end")
@@ -705,6 +763,8 @@ class DatasetService:
             "effective_end": effective_end,
             "snapshot_id": manifest["snapshot_id"],
             "canonical_sha256": manifest["canonical_sha256"],
+            "snapshot_data_start": manifest["data_start"],
+            "snapshot_data_end": manifest["data_end"],
             "lineage": lineage,
             "update_id": update["update_id"] if update else None,
             "update_path": update["update_path"] if update else None,

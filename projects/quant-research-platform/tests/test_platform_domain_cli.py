@@ -152,6 +152,37 @@ def test_domain_cli_errors_are_single_json_objects(tmp_path: Path, capsys):
     assert "unknown" in result["error"]
 
 
+def test_domain_cli_cannot_preclaim_a_study_internal_experiment_action(
+    tmp_path: Path,
+    capsys,
+):
+    root, snapshot_id = _state(tmp_path)
+    spec = tmp_path / "task.json"
+    spec.write_text(json.dumps(_task(snapshot_id)), encoding="utf-8")
+
+    status, rejected = _invoke(
+        capsys,
+        [
+            "task",
+            "submit",
+            "--root",
+            str(root),
+            "--spec",
+            str(spec),
+            "--action-id",
+            f"study-internal:effect:{'a' * 64}",
+        ],
+    )
+    _, experiments = _invoke(
+        capsys,
+        ["experiment", "list", "--root", str(root)],
+    )
+
+    assert status == 2
+    assert "reserved internal namespace" in rejected["error"]
+    assert experiments["experiments"] == []
+
+
 def test_domain_cli_recovery_creates_a_distinct_attempt(tmp_path: Path, capsys):
     root, snapshot_id = _state(tmp_path)
     spec = tmp_path / "task.json"
@@ -190,3 +221,84 @@ def test_domain_cli_recovery_creates_a_distinct_attempt(tmp_path: Path, capsys):
 
     assert replacement["status"] == "CREATED"
     assert replacement["attempt_id"] != created["attempt_id"]
+
+
+def test_study_cli_uses_shared_composition_and_preserves_domain_statuses(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    root, _ = _state(tmp_path)
+    from quant_platform.cli import _study_service
+
+    composed = _study_service(str(root))
+    assert composed.catalog is composed.experiments.catalog
+    assert composed.datasets is composed.experiments.datasets
+
+    class FakeStudies:
+        def detail(self, study_id):
+            return {"study_id": study_id, "phase": "FROZEN"}
+
+        def advance(self, study_id):
+            return {"status": study_id, "study_id": study_id}
+
+        def control(self, study_id, operation, *, action_id):
+            return {
+                "status": operation,
+                "study_id": study_id,
+                "action_id": action_id,
+            }
+
+    monkeypatch.setattr(
+        "quant_platform.cli._study_service",
+        lambda root: FakeStudies(),
+    )
+    _, detail = _invoke(
+        capsys,
+        [
+            "study",
+            "detail",
+            "--root",
+            str(root),
+            "--study-id",
+            "detail-study",
+        ],
+    )
+    assert detail["study"] == {
+        "study_id": "detail-study",
+        "phase": "FROZEN",
+    }
+
+    for status in ("LEASE_BUSY", "EXECUTION_IDENTITY_DRIFT"):
+        exit_code, response = _invoke(
+            capsys,
+            [
+                "study",
+                "advance",
+                "--root",
+                str(root),
+                "--study-id",
+                status,
+            ],
+        )
+        assert exit_code == 0
+        assert response["status"] == status
+
+    for status in ("ACTION_CONFLICT", "INVALID_TRANSITION"):
+        exit_code, response = _invoke(
+            capsys,
+            [
+                "study",
+                "control",
+                "--root",
+                str(root),
+                "--study-id",
+                "controlled-study",
+                "--operation",
+                status,
+                "--action-id",
+                "control-action",
+            ],
+        )
+        assert exit_code == 0
+        assert response["status"] == status

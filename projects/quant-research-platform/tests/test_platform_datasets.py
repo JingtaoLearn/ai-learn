@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import shutil
@@ -6,12 +7,32 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_platform.datasets as datasets_module
 from quant_platform.datasets import (
     DatasetValidationError,
     _verify_snapshot,
     publish_snapshot,
     snapshot_status,
 )
+
+
+def test_dataset_lineage_import_graph_is_acyclic():
+    package = Path(datasets_module.__file__).parent
+
+    def relative_imports(module: str) -> set[str]:
+        tree = ast.parse((package / f"{module}.py").read_text(encoding="utf-8"))
+        return {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.level == 1
+            and node.module is not None
+        }
+
+    assert "updates" not in relative_imports("datasets")
+    assert {"datasets", "updates"}.isdisjoint(relative_imports("dataset_lineage"))
+    assert "dataset_lineage" in relative_imports("datasets")
+    assert "dataset_lineage" in relative_imports("updates")
 
 
 def _daily_frame() -> pd.DataFrame:
@@ -64,6 +85,79 @@ def test_publish_snapshot_is_content_addressed_atomic_and_idempotent(tmp_path: P
     status = snapshot_status(tmp_path, "601288.SS")
     assert status["snapshot_id"] == first["snapshot_id"]
     assert status["path"] == first["path"]
+
+
+def test_publish_rejects_a_post_seal_hardlink_before_rename(
+    tmp_path: Path,
+    monkeypatch,
+):
+    original_seal = datasets_module._seal_snapshot
+
+    def hardlink_after_seal(directory: Path, *args, **kwargs):
+        original_seal(directory, *args, **kwargs)
+        os.link(directory / "data.parquet", tmp_path / "escaped.parquet")
+
+    monkeypatch.setattr(datasets_module, "_seal_snapshot", hardlink_after_seal)
+
+    with pytest.raises((DatasetValidationError, RuntimeError), match="hard link"):
+        publish_snapshot(_daily_frame(), tmp_path, _metadata())
+
+    instrument_root = tmp_path / "datasets" / _metadata()["instrument"]
+    assert not any(
+        len(path.name) == 64 for path in instrument_root.iterdir()
+    )
+
+
+def test_publish_rejects_post_seal_mutation_before_rename(
+    tmp_path: Path,
+    monkeypatch,
+):
+    original_seal = datasets_module._seal_snapshot
+
+    def mutate_after_seal(directory: Path, *args, **kwargs):
+        original_seal(directory, *args, **kwargs)
+        parquet = directory / "data.parquet"
+        parquet.chmod(0o644)
+        parquet.write_bytes(parquet.read_bytes() + b"post-seal mutation")
+        parquet.chmod(0o444)
+
+    monkeypatch.setattr(datasets_module, "_seal_snapshot", mutate_after_seal)
+
+    with pytest.raises(RuntimeError, match="checksum"):
+        publish_snapshot(_daily_frame(), tmp_path, _metadata())
+
+    instrument_root = tmp_path / "datasets" / _metadata()["instrument"]
+    assert not any(
+        len(path.name) == 64 for path in instrument_root.iterdir()
+    )
+
+
+def test_publish_never_replaces_a_racing_identity_directory(
+    tmp_path: Path,
+    monkeypatch,
+):
+    original_fsync = datasets_module._fsync_directory
+    raced_target: Path | None = None
+
+    def inject_empty_target(directory: Path):
+        nonlocal raced_target
+        original_fsync(directory)
+        manifest_path = directory / "manifest.json"
+        if directory.name.startswith(".") and manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            target = directory.parent / manifest["snapshot_id"]
+            if not target.exists():
+                target.mkdir()
+                raced_target = target
+
+    monkeypatch.setattr(datasets_module, "_fsync_directory", inject_empty_target)
+
+    with pytest.raises(RuntimeError, match="snapshot|directory|file set"):
+        publish_snapshot(_daily_frame(), tmp_path, _metadata())
+
+    assert raced_target is not None
+    assert raced_target.is_dir()
+    assert not any(raced_target.iterdir())
 
 
 def test_historical_revision_creates_new_snapshot_without_overwriting_old(tmp_path: Path):
@@ -126,6 +220,37 @@ def test_latest_pointer_cannot_redirect_outside_instrument_store(tmp_path: Path)
 
     with pytest.raises(RuntimeError, match="latest snapshot pointer"):
         snapshot_status(tmp_path, "601288.SS")
+
+
+def test_latest_lock_rejects_a_symlinked_descendant_without_path_escape(
+    tmp_path: Path,
+):
+    state = tmp_path / "state"
+    locks = state / ".locks"
+    locks.mkdir(parents=True)
+    locks.chmod(0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (locks / "latest").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DatasetValidationError, match="lock.*symlink|symlink.*lock"):
+        publish_snapshot(_daily_frame(), state, _metadata())
+
+    assert not (outside / "601288.SS.lock").exists()
+
+
+def test_latest_lock_rejects_a_hardlinked_lock_file(tmp_path: Path):
+    latest = tmp_path / "state" / ".locks" / "latest"
+    latest.mkdir(parents=True)
+    latest.parent.chmod(0o700)
+    latest.chmod(0o700)
+    outside = tmp_path / "outside.lock"
+    outside.write_bytes(b"shared lock identity")
+    outside.chmod(0o600)
+    os.link(outside, latest / "601288.SS.lock")
+
+    with pytest.raises(DatasetValidationError, match="hard link"):
+        publish_snapshot(_daily_frame(), tmp_path / "state", _metadata())
 
 
 def test_snapshot_pointer_survives_restore_under_a_different_root(tmp_path: Path):

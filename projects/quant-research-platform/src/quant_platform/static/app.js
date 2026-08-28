@@ -284,3 +284,18 @@ if (experimentForm) {
   experimentForm.addEventListener("change", schedulePreview);
   schedulePreview();
 }
+
+const studyForm = document.querySelector('form[data-testid="study-form"]');
+if (studyForm) {
+  const datasetSelector = studyForm.querySelector("[data-dataset-selector]");
+  datasetSelector.addEventListener("change", () => {
+    const option = datasetSelector.selectedOptions[0];
+    if (!option) return;
+    const start = studyForm.querySelector("[data-start-date]");
+    const end = studyForm.querySelector("[data-end-date]");
+    start.max = option.dataset.latestClose;
+    end.max = option.dataset.latestClose;
+    start.value = option.dataset.defaultStart;
+    end.value = option.dataset.latestClose;
+  });
+}

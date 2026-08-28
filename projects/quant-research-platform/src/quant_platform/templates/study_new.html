@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% from "_parameter_control.html" import parameter_control %}
+{% block title %}New Parameter Study · Quant Research{% endblock %}
+{% block page %}study-new{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">FROZEN STUDY PLAN</p><h1>New Parameter Study</h1><p>Define the dataset, fixed defaults, finite search space, budgets, chronological splits, and complete Study Lineage before any Trial is proposed.</p></section>
+{% if errors %}<section class="validation-summary danger" role="alert" aria-labelledby="study-errors-heading" tabindex="-1"><h2 id="study-errors-heading">Correct the following error</h2><ul>{% for error in errors %}<li><a href="#{{ error.field }}">{{ error.message }}</a></li>{% endfor %}</ul></section>{% endif %}
+<form id="study-form" class="study-wizard" method="post" action="/studies/preview" data-testid="study-form" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="action_id" value="{{ action_id }}">
+  <input type="hidden" name="template_name" value="{{ template.name }}">
+  <input type="hidden" name="template_version" value="{{ template.version }}">
+  <section class="wizard-step" aria-labelledby="study-data-heading">
+    <div class="step-number" aria-hidden="true">1</div>
+    <div><h2 id="study-data-heading">Dataset and date range</h2><p class="muted">Catalog numbers and names are stable selectors. Snapshot identity is resolved only during preview.</p>
+      <div class="form-grid">
+        <label class="wide">Dataset number and name<select id="dataset_id" name="dataset_id" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.dataset_id }}"{% if form_values.get("dataset_id", datasets[0].dataset_id) == dataset.dataset_id %} selected{% endif %} data-default-start="{{ dataset.default_start }}" data-latest-close="{{ dataset.latest_available_close }}">{{ dataset.dataset_id }} · {{ dataset.name }}</option>{% endfor %}</select></label>
+        <label>Start date<input id="start_date" name="start_date" type="date" required value="{{ form_values.get('start_date', datasets[0].default_start if datasets else '') }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-start-date></label>
+        <label>End date<input id="end_date" name="end_date" type="date" required value="{{ form_values.get('end_date', datasets[0].latest_available_close if datasets else '') }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-end-date></label>
+      </div>
+      {% if not datasets %}<div class="empty" data-testid="dataset-empty">No verified dataset catalog items are available.</div>{% endif %}
+    </div>
+  </section>
+  <section class="wizard-step" aria-labelledby="study-fixed-heading">
+    <div class="step-number" aria-hidden="true">2</div>
+    <div><h2 id="study-fixed-heading">Fixed parameters and finite ranges</h2><p class="muted">Every parameter keeps its displayed fixed default unless its finite JSON range supplies a Trial value. Cost and report parameters cannot be searched.</p>
+      <fieldset class="slot-field"><legend>Template defaults</legend>
+      {% for name, schema in template.parameter_schema.properties.items() %}{% if name not in ("evaluation_start", "evaluation_end") %}
+        {% set field_name = "template_" ~ name %}<label>{{ name }}{{ parameter_control(field_name, template.defaults[name], schema, "template-parameter", name, form_values.get(field_name), field_name in form_values, field_name in invalid_fields) }}</label>
+      {% endif %}{% endfor %}
+      </fieldset>
+      {% for slot, items in grouped.items() %}
+      <fieldset class="slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
+        {% set selector_name = "operator_" ~ slot ~ "_selector" %}<label>Published selector<select id="{{ selector_name }}" name="{{ selector_name }}" data-operator-selector="{{ slot }}">{% for operator in items %}<option value="{{ operator.operator_id }}@latest"{% if form_values.get(selector_name, items[0].operator_id ~ "@latest") == operator.operator_id ~ "@latest" %} selected{% endif %} data-resolved-version="{{ operator.latest_version }}" data-resolved-digest="{{ operator.content_digest }}">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}"{% if form_values.get(selector_name) == operator.operator_id ~ "@" ~ version.version %} selected{% endif %} data-resolved-version="{{ version.version }}" data-resolved-digest="{{ version.content_digest }}">{{ operator.operator_id }} · Explicit {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
+        {% for operator in items %}{% for version in operator.versions %}
+        <fieldset class="parameter-set" data-parameter-set="{{ slot }}" data-selector="{{ operator.operator_id }}@{{ version.version }}"><legend>{{ operator.operator_id }}@{{ version.version }} parameters</legend><p class="muted">Used when this exact published version is selected.</p>
+          {% if version.parameter_schema.properties %}
+          {% for name, schema in version.parameter_schema.properties.items() %}
+          <div class="parameter-range">
+            {% set field_name = "operator_" ~ slot ~ "_param__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name %}<label>Fixed {{ name }}{{ parameter_control(field_name, version.defaults[name], schema, "parameter-name", name, form_values.get(field_name), field_name in form_values, field_name in invalid_fields) }}</label>
+            {% if slot not in ("cost", "report") %}{% set search_name = "search__" ~ slot ~ "__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name %}<label>Finite search values for {{ name }} <span class="optional">(JSON array; blank keeps fixed)</span><input id="{{ search_name }}" class="mono" name="{{ search_name }}" value="{{ form_values.get(search_name, [version.defaults[name]]|canonical_json if default_search and default_search[0] == slot and default_search[1] == operator.operator_id and default_search[2] == version.version and default_search[3] == name else '') }}" placeholder='[20,40,60]'{% if search_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ search_name }}-error" autofocus{% endif %}>{% if search_name in invalid_fields %}<span id="{{ search_name }}-error" class="field-error">{{ error_messages[search_name] }}</span>{% endif %}</label>{% endif %}
+          </div>
+          {% endfor %}
+          {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
+        </fieldset>
+        {% endfor %}{% endfor %}
+      </fieldset>
+      {% endfor %}
+    </div>
+  </section>
+  <section class="wizard-step" aria-labelledby="study-budget-heading">
+    <div class="step-number" aria-hidden="true">3</div>
+    <div><h2 id="study-budget-heading">Search and validation budgets</h2><p class="muted">Preview validates that these finite budgets fit the available sessions and shows the exact split windows.</p>
+      <div class="form-grid">
+        <label>Suggester<select id="suggester" name="suggester"><option value="GRID"{% if form_values.get("suggester", "GRID") == "GRID" %} selected{% endif %}>Deterministic Grid</option><option value="SEEDED_RANDOM"{% if form_values.get("suggester") == "SEEDED_RANDOM" %} selected{% endif %}>Seeded Random</option></select></label>
+        {% for name, label, default, minimum in (("seed", "Seed", "17", none), ("unique_trial_budget", "Unique Trial budget", "1", 1), ("max_suggestions", "Raw suggestion budget", "1", 1), ("outer_folds", "Outer folds", "1", 1), ("inner_folds", "Inner folds", "1", 1), ("scoring_sessions", "Scoring sessions per fold", "1", 1), ("minimum_training_sessions", "Minimum training sessions", "2", 1), ("purge_sessions", "Purge sessions", "0", 0), ("holdout_sessions", "Terminal holdout sessions", "1", 1)) %}
+        <label>{{ label }}<input id="{{ name }}" name="{{ name }}" type="number"{% if minimum is not none %} min="{{ minimum }}"{% endif %} value="{{ form_values.get(name, default) }}" required{% if name in invalid_fields %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>{% if name in invalid_fields %}<span id="{{ name }}-error" class="field-error">{{ errors[0].message }}</span>{% endif %}</label>
+        {% endfor %}
+        <label>Evaluation policy<select id="evaluation_version" name="evaluation_version"><option value="latest"{% if form_values.get("evaluation_version", "latest") == "latest" %} selected{% endif %}>robust_walk_forward · latest</option><option value="1.0.0"{% if form_values.get("evaluation_version") == "1.0.0" %} selected{% endif %}>robust_walk_forward · 1.0.0</option></select></label>
+        <label>Outer account policy<input value="FORCE_FLAT_WITH_COST" readonly></label>
+      </div>
+    </div>
+  </section>
+  <section class="wizard-step" aria-labelledby="study-lineage-heading">
+    <div class="step-number" aria-hidden="true">4</div>
+    <div><h2 id="study-lineage-heading">Study Lineage</h2><p class="muted">Record every prior Study that influenced this protocol. One parent digest per line.</p>
+      <div class="form-grid">
+        <label class="wide">Parent Study IDs<textarea id="parent_study_ids" class="mono" name="parent_study_ids" placeholder="SHA-256 Study digest">{{ form_values.get("parent_study_ids", "") }}</textarea></label>
+        <label>Prior unique candidates inspected<input id="prior_unique_candidate_count" name="prior_unique_candidate_count" type="number" min="0" value="{{ form_values.get('prior_unique_candidate_count', '0') }}" required></label>
+        <label>Lineage record complete<select id="lineage_complete" name="lineage_complete" required><option value="true"{% if form_values.get("lineage_complete", "true") == "true" %} selected{% endif %}>Yes — complete</option><option value="false"{% if form_values.get("lineage_complete") == "false" %} selected{% endif %}>No — incomplete</option></select></label>
+      </div>
+    </div>
+  </section>
+  <div class="validation-summary" role="note" aria-labelledby="validation-summary-heading"><strong id="validation-summary-heading">Before submission</strong><p>Preview resolves immutable identities, validates every range and split, and estimates Trial and Experiment counts. Submission rejects a stale preview without creating a Study.</p></div>
+  <noscript><p class="notice">JavaScript is disabled. Preview and submission remain complete server-rendered flows.</p></noscript>
+  <div class="actions"><a class="button quiet" href="/studies">Cancel</a><button type="submit" data-testid="preview-study" {% if not datasets %}disabled{% endif %}>Preview Study</button></div>
+</form>
+{% endblock %}

@@ -16,6 +16,8 @@ import quant_platform.strategy_runner as runner_module
 from quant_platform.cli import main
 from quant_platform.datasets import publish_snapshot
 from quant_platform.strategy_runner import StrategyRunError, run_strategy_config
+from quant_platform.study_contracts import INFORMATION_INTERVAL
+from quant_platform.study_datasets import ExecutionDatasetSliceFactory
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
@@ -36,6 +38,8 @@ PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/strategy_replay.py": "strategy_replay.py",
     "src/quant_platform/strategy_report.py": "strategy_report.py",
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
+    "src/quant_platform/study_contracts.py": "study_contracts.py",
+    "src/quant_platform/study_datasets.py": "study_datasets.py",
     "src/quant_platform/worker.py": "worker.py",
 }
 REQUIRED_ARTIFACTS = {
@@ -168,6 +172,88 @@ def _foundation(tmp_path: Path) -> Path:
     return path
 
 
+def _derived_foundation(
+    tmp_path: Path,
+    *,
+    evaluation_start: str = "2026-01-06",
+    evaluation_end: str = "2026-01-07",
+) -> tuple[Path, Path, dict[str, str]]:
+    config_path = _foundation(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    state = Path(config["dataset"]["root"])
+    parent_id = config["dataset"]["snapshot_id"]
+    derived = ExecutionDatasetSliceFactory(state).materialize(
+        {
+            "instrument": config["dataset"]["instrument"],
+            "snapshot_id": parent_id,
+        },
+        {
+            "allowed_start": "2026-01-01",
+            "training_through": "2026-01-05",
+            "available_through": "2026-01-07",
+            "scoring_start": "2026-01-06",
+            "scoring_end": "2026-01-07",
+            "role": "INNER_SCORE",
+            "information_interval": INFORMATION_INTERVAL,
+            "account_policy": "FORCE_FLAT_WITH_COST",
+        },
+    )
+    config["dataset"]["snapshot_id"] = derived["snapshot_id"]
+    parameters = config["template"]["parameters"]
+    parameters["evaluation_start"] = evaluation_start
+    parameters["evaluation_end"] = evaluation_end
+    parameters["terminal_handling"] = "force_liquidate"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    parent_path = (
+        state
+        / "datasets"
+        / config["dataset"]["instrument"]
+        / parent_id
+    )
+    return config_path, parent_path, derived
+
+
+def test_derived_run_rejects_an_evaluation_end_later_than_the_scoring_mask(
+    tmp_path: Path,
+):
+    config_path, _, _ = _derived_foundation(
+        tmp_path,
+        evaluation_end="2026-01-08",
+    )
+
+    with pytest.raises(StrategyRunError, match="evaluation_end.*scoring_end"):
+        run_strategy_config(config_path)
+
+
+def test_derived_run_requires_force_flat_with_cost_terminal_handling(tmp_path: Path):
+    config_path, _, _ = _derived_foundation(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["template"]["parameters"]["terminal_handling"] = "mark_to_market"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(StrategyRunError, match="FORCE_FLAT_WITH_COST"):
+        run_strategy_config(config_path)
+
+
+def test_valid_derived_run_uses_warmup_but_scores_only_the_mask_without_parent(
+    tmp_path: Path,
+):
+    config_path, parent_path, _ = _derived_foundation(tmp_path)
+    parent_path.chmod(0o755)
+    for path in parent_path.iterdir():
+        path.chmod(0o644)
+    shutil.rmtree(parent_path)
+
+    published = run_strategy_config(config_path)
+
+    target = Path(published["path"])
+    daily = pd.read_csv(target / "daily_replay.csv")
+    metrics = json.loads((target / "metrics.json").read_text(encoding="utf-8"))
+    assert daily["Date"].tolist() == ["2026-01-06", "2026-01-07"]
+    assert metrics["period_start"] == "2026-01-06"
+    assert metrics["period_end"] == "2026-01-07"
+
+
 def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
     config_path = _foundation(tmp_path)
 
@@ -207,6 +293,7 @@ def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
         "profit_identity": True,
         "trade_net_pnl": True,
     }
+    assert "src/quant_platform/study_contracts.py" in manifest["source_files"]
     assert set(manifest["files"]) == REQUIRED_ARTIFACTS - {"run_manifest.json"}
     assert stat.S_IMODE(target.stat().st_mode) == 0o555
     assert all(
@@ -356,6 +443,38 @@ def test_effective_source_identity_hashes_loaded_wheel_package_with_stable_label
         assert files[label] == sha256((package_root / filename).read_bytes()).hexdigest()
         assert files[label] != sha256((project_root / label).read_bytes()).hexdigest()
     assert git == {"available": False, "commit": None, "dirty": None}
+
+
+def test_evaluation_policy_source_does_not_change_strategy_runner_identity(
+    tmp_path: Path, monkeypatch
+):
+    project_root = _synthetic_project_root(tmp_path / "checkout")
+    package_root = _synthetic_package(
+        tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
+    )
+    evaluation_source = package_root / "study_evaluation.py"
+    evaluation_source.write_text("POLICY_VERSION = 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner_module, "__file__", str(package_root / "strategy_runner.py")
+    )
+    font = {
+        "path": "/verified/font.ttc",
+        "family": "Verified CJK",
+        "sha256": "a" * 64,
+    }
+
+    first, _, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+    evaluation_source.write_text("POLICY_VERSION = 2\n", encoding="utf-8")
+    second, files, _, _ = runner_module._effective_source_identity(
+        project_root=project_root,
+        font_identity=font,
+    )
+
+    assert first == second
+    assert "src/quant_platform/study_evaluation.py" not in files
 
 
 def test_project_root_discovery_supports_editable_layout_and_explicit_override(
@@ -677,9 +796,14 @@ def test_effective_source_identity_detects_project_root_swap_while_hashing(
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["src/quant_platform/datasets.py", "requirements.lock"],
+    [
+        "src/quant_platform/datasets.py",
+        "src/quant_platform/study_contracts.py",
+        "src/quant_platform/study_datasets.py",
+        "requirements.lock",
+    ],
 )
-def test_effective_source_hash_binds_dataset_and_lock_bytes(
+def test_effective_source_hash_binds_dataset_study_and_lock_bytes(
     tmp_path: Path, monkeypatch, relative_path: str
 ):
     config_path = _foundation(tmp_path)

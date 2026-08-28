@@ -193,6 +193,26 @@ The FastAPI/Jinja2 application is started with:
 python -m quant_platform.web
 ```
 
+### Parameter Study UI
+
+Authenticated researchers can open `/studies` to create and inspect immutable Parameter
+Studies. The server-rendered wizard supports catalog Dataset number/name selection, date
+ranges, fixed operator parameters, finite JSON search ranges, deterministic Grid or
+Seeded Random budgets, chronological split controls, terminal holdout settings, and
+complete Study Lineage. Preview resolves the frozen plan, split windows, candidate
+capacity, and minimum/conditional-maximum Experiment binding counts before submission.
+Selection-dependent bindings and canonical Experiment reuse are resolved only at dispatch.
+If an identity changes,
+submission creates nothing and returns a fresh preview for review.
+
+Study detail and report views keep outer OOS selection-process evidence visibly separate
+from terminal holdout access, outcome, and freshness. Trial rankings display eligibility,
+constraint reasons, independent metrics, parameter identity, and Experiment bindings
+when those fields are available from `ParameterStudy.detail()`. Linked Experiment
+reports continue through the checksum-verified opaque-origin sandbox. Every creation,
+preview, submit, control, and detail action has a plain HTML form path and remains usable
+without JavaScript.
+
 Production settings fail closed unless Microsoft SSO, session signing, allowed emails, the exact
 `https://quant.ai.jingtao.fun/auth/callback`, the same exact callback as JWT audience, secure cookies, and a
 digest-pinned runner image are configured. The app binds only `127.0.0.1:8090`. Reports are served

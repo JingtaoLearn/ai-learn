@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .catalog import Catalog
-from .isolation import build_composed_execution_command
+from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService
+from .isolation import build_composed_execution_command
 from .runner import RunnerTerminationError, _terminate_container, reconcile_container
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
@@ -180,6 +181,36 @@ class ResolvedAttemptExecutor:
                     f"resolved operator digest mismatch for {operator['operator_id']}"
                 )
 
+    def _verify_study_dataset_for_launch(self, resolved: dict[str, Any]) -> None:
+        dataset = resolved["dataset"]
+        lineage = dataset.get("lineage")
+        if not isinstance(lineage, dict) or lineage.get("kind") != "derived_view":
+            return
+        dataset_path = (
+            self.catalog.state_root
+            / "datasets"
+            / dataset["instrument"]
+            / dataset["snapshot_id"]
+        )
+        try:
+            manifest = _verify_snapshot(
+                dataset_path,
+                dataset["snapshot_id"],
+                verify_parent=True,
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ResolvedExecutionError(
+                f"validated Study dataset preflight failed: {exc}"
+            ) from exc
+        if (
+            manifest["schema_version"] != 3
+            or manifest["canonical_sha256"] != dataset.get("canonical_sha256")
+            or manifest["lineage"] != lineage
+        ):
+            raise ResolvedExecutionError(
+                "validated Study dataset preflight does not match resolved identity"
+            )
+
     def _publish_audit(
         self, attempt: dict[str, Any], run: dict[str, Any], result_digest: str
     ) -> None:
@@ -260,6 +291,7 @@ class ResolvedAttemptExecutor:
                 stream.write(canonical_json_bytes(legacy))
                 stream.flush()
                 os.fsync(stream.fileno())
+            self._verify_study_dataset_for_launch(resolved)
             run = run_strategy_config(config_path, project_root=self.project_root)
         finally:
             config_path.unlink(missing_ok=True)
@@ -360,6 +392,7 @@ class ResolvedAttemptExecutor:
                 operator_bundles=operator_bundles,
                 runner_image=self.runner_image,
             )
+            self._verify_study_dataset_for_launch(resolved)
             container_name = command[command.index("--name") + 1]
             self.attempt_controller.record_physical_launch(
                 attempt["attempt_id"], container_name=container_name

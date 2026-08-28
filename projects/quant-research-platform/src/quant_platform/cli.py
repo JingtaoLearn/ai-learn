@@ -10,8 +10,10 @@ import pandas as pd
 
 from .datasets import publish_snapshot, snapshot_status
 from .catalog import initialize_catalog
+from .dataset_service import DatasetService
 from .experiment_service import ExperimentService
 from .operator_service import OperatorService
+from .parameter_study import ParameterStudy, StudyNotFoundError
 from .resolved_runner import effective_execution_identity
 from .runner import run_submission
 from .strategy_runner import run_strategy_config
@@ -151,6 +153,30 @@ def _parser() -> argparse.ArgumentParser:
     attempt_recover.add_argument("--root", required=True)
     attempt_recover.add_argument("--attempt-id", required=True)
     attempt_recover.add_argument("--action-id", required=True)
+
+    study = commands.add_parser("study")
+    study_commands = study.add_subparsers(
+        dest="study_command", required=True, parser_class=JSONArgumentParser
+    )
+    study_preview = study_commands.add_parser("preview")
+    study_preview.add_argument("--root", required=True)
+    study_preview.add_argument("--spec", required=True)
+    study_submit = study_commands.add_parser("submit")
+    study_submit.add_argument("--root", required=True)
+    study_submit.add_argument("--spec", required=True)
+    study_submit.add_argument("--expected-preview-digest", required=True)
+    study_submit.add_argument("--action-id", required=True)
+    study_list = study_commands.add_parser("list")
+    study_list.add_argument("--root", required=True)
+    for name in ("advance", "detail"):
+        study_parser = study_commands.add_parser(name)
+        study_parser.add_argument("--root", required=True)
+        study_parser.add_argument("--study-id", required=True)
+    study_control = study_commands.add_parser("control")
+    study_control.add_argument("--root", required=True)
+    study_control.add_argument("--study-id", required=True)
+    study_control.add_argument("--operation", required=True)
+    study_control.add_argument("--action-id", required=True)
     return parser
 
 
@@ -185,13 +211,45 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _domain_services(root: str) -> tuple:
     catalog = initialize_catalog(Path(root))
+    datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
         execution_identity=effective_execution_identity(
             None, os.environ.get("QUANT_RUNNER_IMAGE")
         ),
+        datasets=datasets,
     )
     return catalog, experiments
+
+
+def _study_service(root: str) -> ParameterStudy:
+    catalog, experiments = _domain_services(root)
+    return ParameterStudy.from_experiments(
+        catalog,
+        experiments=experiments,
+        release_locator=(
+            os.environ.get("QUANT_RELEASE_LOCATOR")
+            or str(Path(root).resolve())
+        ),
+    )
+
+
+def _advance_study_until_blocked(
+    studies: ParameterStudy,
+    study_id: str,
+) -> dict:
+    progress_statuses = {
+        "ADVANCED",
+        "METRIC_DOCUMENT_VERIFIED",
+        "OUTER_SELECTION_RECORDED",
+        "CHAMPION_FROZEN",
+        "HOLDOUT_CLAIMED",
+    }
+    for _ in range(1024):
+        result = studies.advance(study_id)
+        if result.get("status") not in progress_statuses:
+            return result
+    raise RuntimeError("bounded Study advance exceeded 1024 internal transitions")
 
 
 def _execute(args: argparse.Namespace) -> dict:
@@ -299,6 +357,28 @@ def _execute(args: argparse.Namespace) -> dict:
             return experiments.create_replacement_attempt(
                 args.attempt_id, action_id=args.action_id
             )
+    if args.command == "study":
+        studies = _study_service(args.root)
+        if args.study_command == "preview":
+            return studies.preview(_strict_json_file(args.spec))
+        if args.study_command == "submit":
+            return studies.submit(
+                _strict_json_file(args.spec),
+                expected_preview_digest=args.expected_preview_digest,
+                action_id=args.action_id,
+            )
+        if args.study_command == "list":
+            return {"studies": studies.list()}
+        if args.study_command == "detail":
+            return {"study": studies.detail(args.study_id)}
+        if args.study_command == "advance":
+            return _advance_study_until_blocked(studies, args.study_id)
+        if args.study_command == "control":
+            return studies.control(
+                args.study_id,
+                args.operation,
+                action_id=args.action_id,
+            )
     raise CLIUsageError("unsupported command")
 
 
@@ -313,7 +393,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _execute(args)
         print(json.dumps({"ok": True, **result}, sort_keys=True, allow_nan=False))
         return 0
-    except (CLIUsageError, OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+    except (
+        CLIUsageError,
+        OSError,
+        ValueError,
+        RuntimeError,
+        StudyNotFoundError,
+        json.JSONDecodeError,
+    ) as exc:
         print(
             json.dumps(
                 {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
