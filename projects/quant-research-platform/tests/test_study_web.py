@@ -1,5 +1,6 @@
 import html
 import re
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -247,6 +248,9 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
+    incomplete_trial = deepcopy(detail["trials"][0])
+    incomplete_trial["candidate_digest"] = "9" * 64
+    detail["trials"].append(incomplete_trial)
     monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
     monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
 
@@ -259,6 +263,8 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert study.status_code == 200
     assert 'data-page="study-detail"' in study.text
     assert "Trial ranking" in study.text
+    assert 'class="study-ranking-table"' in study.text
+    assert "1 Trial is not ranked because complete canonical fold evidence is unavailable" in study.text
     assert all(
         label in study.text
         for label in (
