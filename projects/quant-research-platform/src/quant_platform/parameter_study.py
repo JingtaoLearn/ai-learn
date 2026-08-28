@@ -21,6 +21,8 @@ from .schemas import (
     canonical_json_bytes,
     validate_parameters,
 )
+from .study_contracts import INFORMATION_INTERVAL, normalize_fold_window
+from .study_datasets import ExecutionDatasetSliceFactory
 
 
 class StudyValidationError(ValueError):
@@ -85,11 +87,6 @@ ACTION_OPERATIONS = {
     "EFFECT_RECEIPT",
 }
 MAX_DATASET_RESOLUTION_ATTEMPTS = 2
-INFORMATION_INTERVAL = {
-    "signal_time": "SESSION_CLOSE",
-    "earliest_execution_time": "NEXT_SESSION_OPEN",
-    "return_or_label_end_time": "EXECUTION_SESSION_CLOSE",
-}
 EVALUATION_PARAMETER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -432,16 +429,22 @@ def _fold_window(
     account_policy: str,
 ) -> dict[str, Any]:
     training_end = scoring_start - purge_sessions - 1
-    return {
-        "allowed_start": allowed_start,
-        "training_through": sessions[training_end],
-        "available_through": sessions[scoring_end],
-        "scoring_start": sessions[scoring_start],
-        "scoring_end": sessions[scoring_end],
-        "role": role,
-        "information_interval": deepcopy(INFORMATION_INTERVAL),
-        "account_policy": account_policy,
-    }
+    contract_sessions = (
+        sessions if sessions[0] == allowed_start else [allowed_start, *sessions]
+    )
+    return normalize_fold_window(
+        {
+            "allowed_start": allowed_start,
+            "training_through": sessions[training_end],
+            "available_through": sessions[scoring_end],
+            "scoring_start": sessions[scoring_start],
+            "scoring_end": sessions[scoring_end],
+            "role": role,
+            "information_interval": INFORMATION_INTERVAL,
+            "account_policy": account_policy,
+        },
+        contract_sessions,
+    )
 
 
 def _inner_folds(
@@ -1118,6 +1121,7 @@ class ParameterStudy:
         clock: Callable[[], datetime] | None = None,
         coordinator_id: str | None = None,
         lease_duration_seconds: int = 30,
+        dataset_slice_factory: ExecutionDatasetSliceFactory | None = None,
         effect_executor: (
             Callable[[dict[str, Any], str], dict[str, Any]] | None
         ) = None,
@@ -1131,6 +1135,11 @@ class ParameterStudy:
         self.catalog = catalog
         self.datasets = datasets
         self.experiments = experiments
+        self.dataset_slice_factory = (
+            ExecutionDatasetSliceFactory(catalog.state_root)
+            if dataset_slice_factory is None
+            else dataset_slice_factory
+        )
         self.release_locator = _string(release_locator, "release_locator")
         self.clock = clock or (lambda: datetime.now(UTC))
         self.coordinator_id = (
@@ -1163,6 +1172,7 @@ class ParameterStudy:
         clock: Callable[[], datetime] | None = None,
         coordinator_id: str | None = None,
         lease_duration_seconds: int = 30,
+        dataset_slice_factory: ExecutionDatasetSliceFactory | None = None,
         effect_executor: (
             Callable[[dict[str, Any], str], dict[str, Any]] | None
         ) = None,
@@ -1181,6 +1191,7 @@ class ParameterStudy:
             clock=clock,
             coordinator_id=coordinator_id,
             lease_duration_seconds=lease_duration_seconds,
+            dataset_slice_factory=dataset_slice_factory,
             effect_executor=effect_executor,
         )
 

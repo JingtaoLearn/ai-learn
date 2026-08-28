@@ -11,6 +11,7 @@ from threading import Event
 import pandas as pd
 import pytest
 
+import quant_platform.parameter_study as parameter_study_module
 from quant_platform.catalog import (
     Catalog,
     CatalogMigration,
@@ -27,6 +28,8 @@ from quant_platform.parameter_study import (
 )
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.seed import BUILTINS
+from quant_platform.study_contracts import FOLD_WINDOW_FIELDS, normalize_fold_window
+from quant_platform.study_datasets import ExecutionDatasetSliceFactory
 
 
 WARMUP_SESSION = "2026-01-02"
@@ -382,6 +385,81 @@ def test_preview_fold_windows_keep_the_parent_snapshot_warmup_boundary(
         "allowed_start"
     ] == WARMUP_SESSION
     assert plan["holdout"]["fold_window"]["allowed_start"] == WARMUP_SESSION
+
+
+def test_preview_fold_windows_are_the_unchanged_shared_contract_shape(
+    tmp_path: Path,
+    monkeypatch,
+):
+    studies, _ = _study_service(tmp_path)
+    normalized_windows: list[dict] = []
+
+    def record_normalized_window(value, sessions):
+        normalized = normalize_fold_window(value, sessions)
+        normalized_windows.append(normalized)
+        return normalized
+
+    monkeypatch.setattr(
+        parameter_study_module,
+        "normalize_fold_window",
+        record_normalized_window,
+    )
+
+    plan = studies.preview(_spec())["frozen_plan"]
+    windows = [
+        fold
+        for outer_round in plan["validation"]["outer_rounds"]
+        for fold in [*outer_round["inner_folds"], outer_round["outer_audit"]]
+    ]
+    windows.extend(plan["validation"]["final_search_round"]["inner_folds"])
+    windows.append(plan["holdout"]["fold_window"])
+
+    assert windows
+    assert normalized_windows == windows
+    for window in windows:
+        assert set(window) == FOLD_WINDOW_FIELDS
+        assert normalize_fold_window(window, ALL_SESSIONS) == window
+
+
+def test_parameter_study_composes_one_dataset_slice_factory_without_materializing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    studies, experiments = _study_service(tmp_path)
+    factory = ExecutionDatasetSliceFactory(studies.catalog.state_root)
+    materialized = False
+
+    def unexpected_materialize(*args, **kwargs):
+        nonlocal materialized
+        materialized = True
+        raise AssertionError("preview must not materialize Execution Dataset Slices")
+
+    monkeypatch.setattr(factory, "materialize", unexpected_materialize)
+    composed = ParameterStudy.from_experiments(
+        studies.catalog,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/158",
+        dataset_slice_factory=factory,
+    )
+
+    composed.preview(_spec())
+
+    assert composed.dataset_slice_factory is factory
+    assert materialized is False
+    assert not any(
+        name.startswith(("dataset_view", "execution_dataset_slice"))
+        for name in vars(composed)
+        if name != "dataset_slice_factory"
+    )
+
+
+def test_parameter_study_defaults_dataset_slice_factory_to_catalog_state_root(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+
+    assert isinstance(studies.dataset_slice_factory, ExecutionDatasetSliceFactory)
+    assert studies.dataset_slice_factory.state_root == studies.catalog.state_root
 
 
 def test_submit_persists_the_frozen_projection_and_initial_event_for_detail(
