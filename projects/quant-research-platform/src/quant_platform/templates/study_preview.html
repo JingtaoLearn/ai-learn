@@ -8,9 +8,10 @@
   <div><span>Unique Trial budget</span><strong>{{ preview.frozen_plan.search.unique_trial_budget }}</strong></div>
   <div><span>Raw suggestion budget</span><strong>{{ preview.frozen_plan.search.max_suggestions }}</strong></div>
   <div><span>Candidate capacity</span><strong>{{ preview.frozen_plan.search.candidate_capacity }}</strong></div>
-  <div><span>Expected Experiment bindings</span><strong>{{ preview.execution_estimate.expected_experiment_bindings }}</strong></div>
+  <div><span>Minimum Experiment bindings</span><strong>{{ preview.execution_estimate.minimum_experiment_bindings }}</strong></div>
+  <div><span>Conditional maximum bindings</span><strong>{{ preview.execution_estimate.conditional_maximum_experiment_bindings }}</strong></div>
 </section>
-<p class="notice">Existing Experiments are reused only when their canonical identity matches at dispatch. This preview never assumes a reuse count.</p>
+<p class="notice">{{ preview.execution_estimate.selection_dependent_bindings }} bindings depend on an eligible selection. Existing Experiments are reused only when their canonical identity matches at dispatch; this preview never assumes a reuse count.</p>
 <section class="panel" data-testid="split-preview"><div class="section-heading"><div><p class="eyebrow">CHRONOLOGICAL WINDOWS</p><h2>Split preview</h2></div><span class="badge">{{ preview.frozen_plan.validation.rules.outer_account_policy }}</span></div>
   {% for round in preview.frozen_plan.validation.outer_rounds %}<div class="evidence-window"><strong>Planned outer OOS {{ loop.index }}</strong><span>{{ round.outer_audit.scoring_start }} → {{ round.outer_audit.scoring_end }}</span><small>{{ round.inner_folds|length }} inner validation folds</small></div>{% endfor %}
   <div class="evidence-window holdout-window"><strong>Terminal holdout</strong><span>{{ preview.frozen_plan.holdout.fold_window.scoring_start }} → {{ preview.frozen_plan.holdout.fold_window.scoring_end }}</span><small>Remains sealed until one final candidate is frozen.</small></div>

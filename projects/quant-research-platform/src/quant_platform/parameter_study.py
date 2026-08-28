@@ -406,7 +406,7 @@ CREATE TABLE parameter_study_bindings (
     submitted_attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
     attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
     state TEXT NOT NULL CHECK (
-        state IN ('SUBMITTED', 'VERIFIED', 'CONTESTED')
+        state IN ('SUBMITTED', 'VERIFIED', 'FAILED', 'CONTESTED')
     ),
     metric_document_json TEXT CHECK (
         metric_document_json IS NULL OR (
@@ -1531,7 +1531,8 @@ class ParameterStudy:
         resolved = self._resolve_external_inputs(spec)
         with self.catalog.transaction() as connection:
             preview = self._freeze_resolved_plan(resolved, connection)
-        expected_bindings = 1  # One separately governed terminal holdout.
+        minimum_bindings = 0
+        selection_dependent_bindings = 1  # One terminal holdout, if authorized.
         round_counts = []
         for search_round, inner_folds, outer_audit in self._selection_rounds(
             preview["frozen_plan"]
@@ -1543,19 +1544,26 @@ class ParameterStudy:
                     search_round,
                 )
             )
-            binding_count = candidate_count * len(inner_folds)
+            minimum_round_bindings = candidate_count * len(inner_folds)
+            conditional_round_bindings = minimum_round_bindings
             if outer_audit is not None:
-                binding_count += 1
-            expected_bindings += binding_count
+                conditional_round_bindings += 1
+                selection_dependent_bindings += 1
+            minimum_bindings += minimum_round_bindings
             round_counts.append(
                 {
                     "search_round": search_round,
                     "candidate_count": candidate_count,
-                    "binding_count": binding_count,
+                    "minimum_binding_count": minimum_round_bindings,
+                    "conditional_maximum_binding_count": conditional_round_bindings,
                 }
             )
         preview["execution_estimate"] = {
-            "expected_experiment_bindings": expected_bindings,
+            "minimum_experiment_bindings": minimum_bindings,
+            "conditional_maximum_experiment_bindings": (
+                minimum_bindings + selection_dependent_bindings
+            ),
+            "selection_dependent_bindings": selection_dependent_bindings,
             "rounds": round_counts,
             "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
         }
@@ -2641,14 +2649,20 @@ class ParameterStudy:
                 for binding in round_bindings
                 if binding["role"] == "INNER_SCORE"
             ]
-            if not inner or any(binding["state"] != "VERIFIED" for binding in inner):
-                raise RuntimeError("outer selection has partial inner-fold evidence")
             selected = outer.get("selected_candidate_digest")
-            if selected is not None and not any(
-                binding["role"] == "OUTER_AUDIT"
-                and binding["candidate_digest"] == selected
-                and binding["state"] == "VERIFIED"
-                for binding in round_bindings
+            if not inner or any(
+                binding["state"] not in {"VERIFIED", "FAILED"}
+                for binding in inner
+            ):
+                raise RuntimeError("outer selection has partial inner-fold evidence")
+            if selected is not None and (
+                any(binding["state"] != "VERIFIED" for binding in inner)
+                or not any(
+                    binding["role"] == "OUTER_AUDIT"
+                    and binding["candidate_digest"] == selected
+                    and binding["state"] == "VERIFIED"
+                    for binding in round_bindings
+                )
             ):
                 raise RuntimeError("outer selection has no verified audit binding")
         if champions:
@@ -3987,11 +4001,52 @@ class ParameterStudy:
                 binding=binding,
                 experiment=experiment,
             )
+        latest_attempt = experiment["attempts"][-1]
+        if (
+            binding["state"] != "VERIFIED"
+            and latest_attempt["attempt_id"] != binding["attempt_id"]
+        ):
+            now = self._now()
+            with self.catalog.transaction(immediate=True) as connection:
+                connection.execute(
+                    """
+                    UPDATE parameter_study_bindings
+                    SET attempt_id = ?, state = 'SUBMITTED',
+                        metric_document_json = NULL, updated_at = ?
+                    WHERE binding_id = ?
+                    """,
+                    (latest_attempt["attempt_id"], now, binding["binding_id"]),
+                )
+            binding = self._binding(binding["binding_id"])
+            if binding is None:
+                raise RuntimeError("Study binding disappeared during Attempt refresh")
         document = self._factory_document_for_binding(binding, configuration)
         if document is None:
-            if self.effect_executor is not None:
-                return self._dispatch_authorized_binding(binding=binding)
             attempt = self.experiments.attempt_detail(binding["attempt_id"])
+            if attempt["status"] in {"FAILED", "INTERRUPTED"}:
+                with self.catalog.transaction(immediate=True) as connection:
+                    connection.execute(
+                        """
+                        UPDATE parameter_study_bindings
+                        SET state = 'FAILED', updated_at = ?
+                        WHERE binding_id = ? AND state != 'VERIFIED'
+                        """,
+                        (self._now(), binding["binding_id"]),
+                    )
+                return {
+                    "status": "ATTEMPT_FAILED",
+                    "study_id": study_id,
+                    "binding_id": binding["binding_id"],
+                    "experiment_id": binding["experiment_id"],
+                    "attempt_id": binding["attempt_id"],
+                    "attempt_status": attempt["status"],
+                }
+            if (
+                self.effect_executor is not None
+                and binding["attempt_id"] == binding["submitted_attempt_id"]
+                and attempt["status"] == "PENDING"
+            ):
+                return self._dispatch_authorized_binding(binding=binding)
             return {
                 "status": "ATTEMPT_PENDING",
                 "study_id": study_id,
@@ -4119,7 +4174,7 @@ class ParameterStudy:
         inner = [binding for binding in bindings if binding["role"] == "INNER_SCORE"]
         expected_count = len(candidates) * len(inner_folds)
         if len(inner) != expected_count or any(
-            binding["state"] != "VERIFIED" for binding in inner
+            binding["state"] not in {"VERIFIED", "FAILED"} for binding in inner
         ):
             return None
         evaluations: list[dict[str, Any]] = []
@@ -4131,6 +4186,8 @@ class ParameterStudy:
             ]
             if len(candidate_bindings) != len(inner_folds):
                 raise RuntimeError("partial inner-fold evidence cannot be evaluated")
+            if any(binding["state"] == "FAILED" for binding in candidate_bindings):
+                continue
             candidate_bindings.sort(key=lambda item: item["fold_sequence"])
             if [
                 _strict_json_object(item["fold_window_json"], "Study binding fold")
@@ -4188,8 +4245,16 @@ class ParameterStudy:
             == search_round
         }
         now = self._now()
+        evaluations_by_candidate = {
+            item["candidate_digest"]: item for item in evaluations
+        }
         with self.catalog.transaction(immediate=True) as connection:
-            for candidate, evaluation in zip(candidates, evaluations, strict=True):
+            for candidate in candidates:
+                evaluation = evaluations_by_candidate.get(
+                    candidate["candidate_digest"]
+                )
+                if evaluation is None:
+                    continue
                 payload = {
                     "search_round": search_round,
                     "candidate_digest": candidate["candidate_digest"],
@@ -4889,6 +4954,27 @@ class ParameterStudy:
             )
             candidates = proposed_candidates
             bindings = self._bindings(study_id, search_round=search_round)
+            refreshed = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding["state"] == "FAILED"
+                    and self.experiments.experiment_detail(
+                        binding["experiment_id"]
+                    )["attempts"][-1]["attempt_id"]
+                    != binding["attempt_id"]
+                ),
+                None,
+            )
+            if refreshed is not None:
+                return self._observe_binding(
+                    study_id=study_id,
+                    binding=refreshed,
+                    configuration=self._candidate_configuration(
+                        study_id,
+                        refreshed["candidate_digest"],
+                    ),
+                )
             submitted = next(
                 (
                     binding
@@ -5040,6 +5126,18 @@ class ParameterStudy:
             connection.close()
         if study is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
+        for binding in self._bindings(study_id):
+            if binding["state"] == "CONTESTED":
+                continue
+            experiment = self.experiments.experiment_detail(
+                binding["experiment_id"]
+            )
+            if experiment["has_divergent_attempt"]:
+                return self._record_contested_binding(
+                    study_id=study_id,
+                    binding=binding,
+                    experiment=experiment,
+                )
         if (
             study["phase"] == "VALIDATING_SELECTION_PROCESS"
             and (
@@ -5910,8 +6008,7 @@ class ParameterStudy:
             key=lambda item: (
                 not item["champion_eligible"],
                 not item["eligible"],
-                -float(item["validation_score"]),
-                item["candidate_digest"],
+                *self.evaluation_policy.ranking_key(item),
             ),
         )
         champion_evidence = next(

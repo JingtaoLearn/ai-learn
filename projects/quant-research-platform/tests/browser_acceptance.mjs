@@ -382,7 +382,8 @@ try {
       `(() => {
         const text = document.body.textContent;
         return text.includes("Planned outer OOS") &&
-          text.includes("Expected Experiment bindings") &&
+          text.includes("Minimum Experiment bindings") &&
+          text.includes("Conditional maximum bindings") &&
           text.includes("Complete frozen Study plan") &&
           !text.includes("Assumed reuse") &&
           !text.includes("Observed outer OOS evidence");

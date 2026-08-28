@@ -6,6 +6,7 @@ import math
 import os
 import re
 import stat
+import weakref
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
@@ -119,28 +120,44 @@ class EvaluationPolicyError(ValueError):
     """Raised when evaluation evidence or policy parameters are invalid."""
 
 
-_METRIC_DOCUMENT_FACTORY_TOKEN = object()
+def _metric_document_capability():
+    issued: dict[int, tuple[weakref.ReferenceType, bytes]] = {}
+
+    class VerifiedMetricDocument(dict[str, Any]):
+        """Opaque evidence capability issued only by MetricDocumentFactory."""
+
+        __slots__ = ("__weakref__",)
+
+    def issue(value: Mapping[str, Any]) -> VerifiedMetricDocument:
+        document = VerifiedMetricDocument(deepcopy(dict(value)))
+        identifier = id(document)
+
+        def discard(reference: weakref.ReferenceType) -> None:
+            current = issued.get(identifier)
+            if current is not None and current[0] is reference:
+                issued.pop(identifier, None)
+
+        reference = weakref.ref(document, discard)
+        issued[identifier] = (reference, canonical_json_bytes(document))
+        return document
+
+    def is_pristine(value: Any) -> bool:
+        record = issued.get(id(value))
+        if record is None or record[0]() is not value:
+            return False
+        try:
+            return canonical_json_bytes(value) == record[1]
+        except (TypeError, ValueError):
+            return False
+
+    return VerifiedMetricDocument, issue, is_pristine
 
 
-class VerifiedMetricDocument(dict[str, Any]):
-    """Factory-issued evidence capability accepted by evaluation policies."""
-
-    __slots__ = ("_factory_token", "_issued_canonical_bytes")
-
-    def __init__(
-        self,
-        value: Mapping[str, Any],
-        *,
-        _factory_token: object,
-    ) -> None:
-        if _factory_token is not _METRIC_DOCUMENT_FACTORY_TOKEN:
-            raise TypeError("VerifiedMetricDocument is factory-issued")
-        super().__init__(value)
-        self._factory_token = _factory_token
-        self._issued_canonical_bytes = canonical_json_bytes(self)
-
-    def is_pristine(self) -> bool:
-        return canonical_json_bytes(self) == self._issued_canonical_bytes
+(
+    VerifiedMetricDocument,
+    _issue_verified_metric_document,
+    _is_pristine_verified_metric_document,
+) = _metric_document_capability()
 
 
 def _sha256(payload: bytes) -> str:
@@ -1131,10 +1148,7 @@ class MetricDocumentFactory:
                 },
             }
         document["document_digest"] = _sha256(canonical_json_bytes(document))
-        return VerifiedMetricDocument(
-            document,
-            _factory_token=_METRIC_DOCUMENT_FACTORY_TOKEN,
-        )
+        return _issue_verified_metric_document(document)
 
 
 class RobustWalkForwardPolicy:
@@ -1200,9 +1214,7 @@ class RobustWalkForwardPolicy:
         for index, factory_document in enumerate(metric_documents):
             if (
                 not isinstance(factory_document, VerifiedMetricDocument)
-                or factory_document._factory_token
-                is not _METRIC_DOCUMENT_FACTORY_TOKEN
-                or not factory_document.is_pristine()
+                or not _is_pristine_verified_metric_document(factory_document)
             ):
                 raise EvaluationPolicyError(
                     f"metric_documents[{index}] is not pristine "
@@ -1412,19 +1424,20 @@ class RobustWalkForwardPolicy:
         result["evaluation_digest"] = _sha256(canonical_json_bytes(result))
         return result
 
+    @staticmethod
+    def ranking_key(value: Mapping[str, Any]) -> tuple[float, float, float, str]:
+        return (
+            -float(value["validation_score"]),
+            float(value["tie_break"]["lower_maximum_drawdown"]),
+            float(value["tie_break"]["lower_annual_turnover"]),
+            str(value["tie_break"]["strategy_configuration_digest"]),
+        )
+
     def select(self, evaluations: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
         eligible = [dict(value) for value in evaluations if value.get("eligible") is True]
         if not eligible:
             return None
-        return min(
-            eligible,
-            key=lambda value: (
-                -float(value["validation_score"]),
-                float(value["tie_break"]["lower_maximum_drawdown"]),
-                float(value["tie_break"]["lower_annual_turnover"]),
-                value["tie_break"]["strategy_configuration_digest"],
-            ),
-        )
+        return min(eligible, key=self.ranking_key)
 
     @staticmethod
     def _nonnegative(value: Any, label: str) -> float:

@@ -180,6 +180,7 @@ def test_robust_policy_is_transparent_and_uses_all_deterministic_tie_breaks(
     second["candidate_digest"] = "f" * 64
     second["tie_break"]["strategy_configuration_digest"] = "f" * 64
     selected = policy.select([second, first])
+    ranked = sorted([second, first], key=policy.ranking_key)
 
     assert first["eligible"] is True
     assert first["validation_score"] == (
@@ -188,6 +189,7 @@ def test_robust_policy_is_transparent_and_uses_all_deterministic_tie_breaks(
         - 0.05 * first["independent_metrics"]["annual_turnover"]
     )
     assert selected["candidate_digest"] == min(candidate_digest, "f" * 64)
+    assert ranked[0] == selected
     assert first["explanation"]["formula"]
 
 
@@ -250,6 +252,8 @@ def test_policy_rejects_mutated_factory_document_with_recomputed_digest(
     tmp_path: Path,
 ):
     document = _verified_document(tmp_path)
+    with pytest.raises(AttributeError):
+        document._issued_canonical_bytes = canonical_json_bytes(document)
     document["metrics"]["net_sharpe"] = 1_000_000.0
     document["document_digest"] = hashlib.sha256(
         canonical_json_bytes(

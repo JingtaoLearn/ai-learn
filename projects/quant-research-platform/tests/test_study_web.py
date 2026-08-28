@@ -438,7 +438,8 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     assert 'data-page="study-preview"' in preview.text
     assert "Split preview" in preview.text
     assert "Candidate capacity" in preview.text
-    assert "Expected Experiment bindings" in preview.text
+    assert "Minimum Experiment bindings" in preview.text
+    assert "Conditional maximum bindings" in preview.text
     values = {
         name: html.unescape(
             re.search(
@@ -530,7 +531,9 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
     preview = {
         "preview_digest": fresh_digest,
         "execution_estimate": {
-            "expected_experiment_bindings": 4,
+            "minimum_experiment_bindings": 2,
+            "conditional_maximum_experiment_bindings": 4,
+            "selection_dependent_bindings": 2,
             "rounds": [],
             "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
         },

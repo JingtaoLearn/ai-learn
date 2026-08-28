@@ -393,17 +393,21 @@ def test_preview_estimates_bindings_from_actual_defaults_first_suggestions(
         item["candidate_count"] for item in preview["execution_estimate"]["rounds"]
     ] == [2, 2]
     assert preview["execution_estimate"] == {
-        "expected_experiment_bindings": 6,
+        "minimum_experiment_bindings": 4,
+        "conditional_maximum_experiment_bindings": 6,
+        "selection_dependent_bindings": 2,
         "rounds": [
             {
                 "search_round": "OUTER:1",
                 "candidate_count": 2,
-                "binding_count": 3,
+                "minimum_binding_count": 2,
+                "conditional_maximum_binding_count": 3,
             },
             {
                 "search_round": "FINAL",
                 "candidate_count": 2,
-                "binding_count": 2,
+                "minimum_binding_count": 2,
+                "conditional_maximum_binding_count": 2,
             },
         ],
         "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
@@ -1705,6 +1709,67 @@ def test_public_study_records_divergent_attempts_as_contested(tmp_path: Path):
     ] == ["EVIDENCE_CONTESTED"]
 
 
+def test_late_divergent_attempt_invalidates_a_selected_study(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-late-divergence-study",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/161",
+        effect_executor=_real_attempt_executor(
+            studies,
+            experiments,
+            studies.catalog.state_root / "study-runs",
+        ),
+    )
+    for _ in range(40):
+        coordinator.advance(submitted["study_id"])
+        detail = coordinator.detail(submitted["study_id"])
+        if detail["phase"] == "HOLDOUT_READY":
+            break
+    else:
+        pytest.fail("selection did not reach HOLDOUT_READY")
+    binding = next(item for item in detail["bindings"] if item["state"] == "VERIFIED")
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO attempts(
+                attempt_id, experiment_id, action_id, sequence, status,
+                requested_json, resolved_json, created_at, result_path,
+                result_digest, comparison
+            )
+            SELECT ?, experiment_id, ?, 2, 'SUCCEEDED',
+                   requested_json, resolved_json, created_at, 'late-divergent',
+                   ?, 'DIVERGENT'
+            FROM attempts WHERE attempt_id = ?
+            """,
+            (
+                "d" * 64,
+                "late-divergent-attempt",
+                "b" * 64,
+                binding["attempt_id"],
+            ),
+        )
+
+    result = coordinator.advance(submitted["study_id"])
+    detail = coordinator.detail(submitted["study_id"])
+
+    assert result["status"] == "EVIDENCE_CONTESTED"
+    assert detail["control_status"] == "FAILED"
+    assert any(item["state"] == "CONTESTED" for item in detail["bindings"])
+    assert any(
+        item["evidence_type"] == "EVIDENCE_CONTESTED"
+        for item in detail["evidence"]
+    )
+
+
 def test_public_study_does_not_evaluate_partial_inner_folds(tmp_path: Path):
     studies, _ = _study_service(tmp_path)
     spec = _minimal_orchestration_spec()
@@ -1725,6 +1790,72 @@ def test_public_study_does_not_evaluate_partial_inner_folds(tmp_path: Path):
     assert detail["rankings"] == []
     assert detail["outer_evidence"] is None
     assert detail["selection_outcome"] == "NOT_DETERMINED"
+
+
+def test_failed_attempts_progress_to_no_eligible_candidate(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-all-failed-study",
+    )
+
+    for _ in range(30):
+        result = studies.advance(submitted["study_id"])
+        if result["status"] == "ATTEMPT_SUBMITTED":
+            attempt = experiments.claim_next_attempt()
+            assert attempt is not None
+            assert attempt["attempt_id"] == result["attempt_id"]
+            experiments.finish_failure(attempt["attempt_id"], "synthetic failure")
+        detail = studies.detail(submitted["study_id"])
+        if detail["phase"] == "COMPLETED":
+            break
+    else:
+        pytest.fail("failed Study Attempts did not reach a terminal conclusion")
+
+    assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert detail["holdout"] == {
+        "access": "SEALED",
+        "outcome": "NOT_RUN",
+        "freshness": "LEGACY_UNKNOWN",
+    }
+    assert {binding["state"] for binding in detail["bindings"]} == {"FAILED"}
+
+
+def test_failed_binding_follows_a_replacement_attempt(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-replacement-following-study",
+    )
+    assert studies.advance(submitted["study_id"])["status"] == "ADVANCED"
+    dispatched = studies.advance(submitted["study_id"])
+    attempt = experiments.claim_next_attempt()
+    assert attempt is not None
+    assert attempt["attempt_id"] == dispatched["attempt_id"]
+    assert experiments.recover_abandoned_attempts(
+        container_reconciler=lambda cidfile: True
+    ) == 1
+    assert studies.advance(submitted["study_id"])["status"] == "ATTEMPT_FAILED"
+    replacement = experiments.create_replacement_attempt(
+        attempt["attempt_id"],
+        action_id="replacement-for-study-binding",
+    )
+
+    result = studies.advance(submitted["study_id"])
+    detail = studies.detail(submitted["study_id"])
+    binding = detail["bindings"][0]
+
+    assert result["status"] == "ATTEMPT_PENDING"
+    assert result["attempt_id"] == replacement["attempt_id"]
+    assert binding["attempt_id"] == replacement["attempt_id"]
+    assert binding["attempt"]["status"] == "PENDING"
+    assert binding["state"] == "SUBMITTED"
 
 
 def test_public_detail_rejects_projection_only_holdout_pass(tmp_path: Path):
