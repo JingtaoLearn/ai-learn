@@ -620,6 +620,26 @@ def test_out_of_range_defaults_are_baseline_only_and_consume_unique_budget():
     )
 
 
+def test_optuna_numeric_enum_requires_a_categorical_distribution():
+    plan = _optuna_plan()
+    plan["operators"]["fit"]["parameter_schema"]["properties"]["window"]["enum"] = [
+        2,
+        5,
+    ]
+    plan["operators"]["fit"]["defaults"]["window"] = 2
+    plan["operators"]["fit"]["parameters"]["window"] = 2
+    plan["search"]["space"]["/operators/fit/window"] = {
+        "kind": "int",
+        "low": 2,
+        "high": 5,
+        "step": 1,
+        "log": False,
+    }
+
+    with pytest.raises(SuggesterValidationError, match="enum.*categorical"):
+        OptunaTPEParameterSuggester().next_suggestion(plan, [])
+
+
 def test_duplicate_grid_proposal_is_audited_without_creating_a_trial():
     plan = deepcopy(_frozen_plan())
     plan["search"]["unique_trial_budget"] = 5

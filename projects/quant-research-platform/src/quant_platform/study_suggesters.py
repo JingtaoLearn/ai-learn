@@ -636,6 +636,10 @@ def _compile_optuna_dimension(
     if log and raw_step is not None:
         raise SuggesterValidationError(f"{definition_path}.step and log are mutually exclusive")
 
+    if "enum" in property_schema:
+        raise SuggesterValidationError(
+            f"{definition_path} enum parameters require a categorical distribution"
+        )
     if distribution_type == "int":
         declared_type = property_schema.get("type")
         if declared_type != "integer":

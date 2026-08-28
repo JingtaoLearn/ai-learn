@@ -300,17 +300,27 @@ if (studyForm) {
       const checkbox = parameter.querySelector('input[name^="study__"]');
       const editor = parameter.querySelector("[data-domain-editor]");
       editor.hidden = !checkbox.checked;
+      checkbox.setAttribute("aria-expanded", String(checkbox.checked));
       for (const controls of editor.querySelectorAll("[data-domain-mode]")) {
         controls.hidden =
           controls.dataset.domainMode !== "both" &&
           controls.dataset.domainMode !== (adaptive ? "adaptive" : "finite");
+      }
+      const inactiveVersion = Boolean(
+        parameter.closest("[data-parameter-set]")?.hidden,
+      );
+      for (const control of editor.querySelectorAll("input, select, textarea")) {
+        const mode = control.closest("[data-domain-mode]")?.dataset.domainMode;
+        const activeMode =
+          !mode || mode === "both" || mode === (adaptive ? "adaptive" : "finite");
+        control.disabled = !checkbox.checked || inactiveVersion || !activeMode;
       }
     }
   };
   studyForm.addEventListener("change", (event) => {
     if (
       event.target === suggester ||
-      event.target.matches('input[name^="study__"]')
+      event.target.matches('input[name^="study__"], [data-operator-selector]')
     ) {
       updateStudyDomains();
     }
