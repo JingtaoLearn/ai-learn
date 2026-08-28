@@ -59,6 +59,8 @@ OPERATOR_REQUIRED_FIELDS = {"operator_id", "parameters"}
 OPERATOR_OPTIONAL_FIELDS = {"version"}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 ACTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+STUDY_INTERNAL_ACTION_PREFIX = "study-internal:"
+STUDY_EFFECT_ACTION_ID = re.compile(r"^study-internal:effect:[0-9a-f]{64}$")
 MAX_LOG_BYTES = 16_384
 
 
@@ -101,6 +103,22 @@ def _with_defaults(
 def _validate_action_id(action_id: str) -> str:
     if not isinstance(action_id, str) or ACTION_ID.fullmatch(action_id) is None:
         raise TaskValidationError("action_id has invalid syntax")
+    return action_id
+
+
+def _validate_public_action_id(action_id: str) -> str:
+    action_id = _validate_action_id(action_id)
+    if action_id.startswith(STUDY_INTERNAL_ACTION_PREFIX):
+        raise TaskValidationError("action_id uses a reserved internal namespace")
+    return action_id
+
+
+def _validate_study_effect_action_id(action_id: str) -> str:
+    if (
+        not isinstance(action_id, str)
+        or STUDY_EFFECT_ACTION_ID.fullmatch(action_id) is None
+    ):
+        raise TaskValidationError("Study effect action_id has invalid syntax")
     return action_id
 
 
@@ -353,12 +371,59 @@ class ExperimentService:
         return identity
 
     def submit(self, task: Any, *, action_id: str) -> dict[str, Any]:
-        action_id = _validate_action_id(action_id)
+        action_id = _validate_public_action_id(action_id)
+        return self._submit(task, action_id=action_id, trusted_study_effect=False)
+
+    def submit_study_effect(
+        self, task: Any, *, action_id: str
+    ) -> dict[str, Any]:
+        action_id = _validate_study_effect_action_id(action_id)
+        return self._submit(task, action_id=action_id, trusted_study_effect=True)
+
+    def _submit(
+        self,
+        task: Any,
+        *,
+        action_id: str,
+        trusted_study_effect: bool,
+    ) -> dict[str, Any]:
         resolved = self.resolve_task(task)
         identity = self._identity(resolved)
         experiment_id = hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
         now = _now()
         with self.catalog.transaction(immediate=True) as connection:
+            if trusted_study_effect:
+                repeated = connection.execute(
+                    """
+                    SELECT attempt_id, experiment_id, sequence
+                    FROM attempts WHERE action_id = ?
+                    """,
+                    (action_id,),
+                ).fetchone()
+                if repeated is not None:
+                    expected_attempt_id = hashlib.sha256(
+                        canonical_json_bytes(
+                            {
+                                "experiment_id": experiment_id,
+                                "action_id": action_id,
+                                "sequence": 1,
+                            }
+                        )
+                    ).hexdigest()
+                    if (
+                        repeated["experiment_id"] != experiment_id
+                        or repeated["sequence"] != 1
+                        or repeated["attempt_id"] != expected_attempt_id
+                    ):
+                        raise TaskValidationError(
+                            "Study effect action_id is bound to an unrelated attempt"
+                        )
+                    return {
+                        "status": "DUPLICATE",
+                        "experiment_id": experiment_id,
+                        "attempt_created": False,
+                        "attempt_id": repeated["attempt_id"],
+                    }
             existing = connection.execute(
                 "SELECT experiment_id FROM experiments WHERE experiment_id = ?",
                 (experiment_id,),
@@ -439,7 +504,7 @@ class ExperimentService:
         }
 
     def rerun(self, experiment_id: str, *, action_id: str) -> dict[str, Any]:
-        action_id = _validate_action_id(action_id)
+        action_id = _validate_public_action_id(action_id)
         with self.catalog.transaction(immediate=True) as connection:
             experiment = connection.execute(
                 "SELECT identity_json FROM experiments WHERE experiment_id = ?",
@@ -872,7 +937,7 @@ class ExperimentService:
     def create_replacement_attempt(
         self, attempt_id: str, *, action_id: str
     ) -> dict[str, Any]:
-        action_id = _validate_action_id(action_id)
+        action_id = _validate_public_action_id(action_id)
         with self.catalog.transaction(immediate=True) as connection:
             prior = connection.execute(
                 "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)

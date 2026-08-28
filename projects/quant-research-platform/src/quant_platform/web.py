@@ -25,6 +25,7 @@ from .dataset_service import DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
+from .parameter_study import ParameterStudy, StudyNotFoundError
 from .resolved_runner import effective_execution_identity
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
@@ -405,6 +406,11 @@ def create_app(
         datasets=datasets,
     )
     experiments.recover_abandoned_attempts()
+    studies = ParameterStudy.from_experiments(
+        catalog,
+        experiments=experiments,
+        release_locator=str(settings.project_root or settings.state_root),
+    )
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
     operators = OperatorService(catalog, runner_image=settings.runner_image)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -412,6 +418,7 @@ def create_app(
     app.state.catalog = catalog
     app.state.datasets = datasets
     app.state.experiments = experiments
+    app.state.studies = studies
     app.state.operators = operators
     app.state.auth = auth
     app.mount(
@@ -770,6 +777,57 @@ def create_app(
         return JSONResponse(
             result, status_code=201 if result["status"] == "CREATED" else 200
         )
+
+    @app.get("/api/studies/{study_id}")
+    async def api_study(request: Request, study_id: str):
+        _session(request)
+        try:
+            return {
+                "study": await run_in_threadpool(studies.detail, study_id)
+            }
+        except StudyNotFoundError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+
+    @app.post("/api/studies/{study_id}/advance")
+    async def api_study_advance(request: Request, study_id: str):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if type(body) is not dict or body:
+            return _json_error(400, "INVALID_REQUEST", "Expected an empty object")
+        try:
+            result = await run_in_threadpool(studies.advance, study_id)
+        except StudyNotFoundError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        return JSONResponse(result)
+
+    @app.post("/api/studies/{study_id}/control")
+    async def api_study_control(request: Request, study_id: str):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if type(body) is not dict or set(body) != {"operation", "action_id"}:
+            return _json_error(
+                400,
+                "INVALID_REQUEST",
+                "Expected exactly operation and action_id",
+            )
+        try:
+            result = await run_in_threadpool(
+                studies.control,
+                study_id,
+                body["operation"],
+                action_id=body["action_id"],
+            )
+        except StudyNotFoundError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        return JSONResponse(result)
 
     @app.get("/")
     async def dashboard(request: Request):

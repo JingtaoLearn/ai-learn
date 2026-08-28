@@ -4,6 +4,17 @@ from collections.abc import Callable
 from typing import Any
 
 from .experiment_service import ExperimentService
+from .parameter_study import ParameterStudy
+
+
+class SerialStudyWorker:
+    """Advance at most one privately discovered Parameter Study."""
+
+    def __init__(self, service: ParameterStudy):
+        self.service = service
+
+    def run_once(self) -> bool:
+        return self.service._advance_next_runnable() is not None
 
 
 class SerialAttemptWorker:

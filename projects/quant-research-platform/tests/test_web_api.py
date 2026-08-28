@@ -121,6 +121,10 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
             ("list_available", "resolve"),
         ),
         (
+            app.state.studies,
+            ("advance", "control", "detail"),
+        ),
+        (
             app.state.catalog,
             ("connect", "template_detail", "operator_detail"),
         ),
@@ -165,6 +169,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/api/experiments/not-found",
         "/api/experiments/not-found/attempts",
         "/api/attempts/not-found",
+        "/api/studies/not-found",
     )
     api_posts = (
         "/api/operators",
@@ -173,6 +178,8 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/api/experiments",
         "/api/experiments/not-found/rerun",
         "/api/attempts/not-found/recover",
+        "/api/studies/not-found/advance",
+        "/api/studies/not-found/control",
     )
 
     for path in html_gets:
@@ -207,6 +214,77 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         assert response.status_code == 401, path
         assert response.json()["error"]["code"] == "AUTH_REQUIRED"
     assert calls == []
+
+
+def test_study_api_requires_csrf_and_preserves_domain_statuses(
+    tmp_path: Path,
+    monkeypatch,
+):
+    app, client = make_app(tmp_path)
+    study_id = "a" * 64
+    assert app.state.studies.catalog is app.state.catalog
+    assert app.state.studies.datasets is app.state.datasets
+    assert app.state.studies.experiments is app.state.experiments
+
+    issued = authenticate(app, client)
+    mutation_headers = {
+        "origin": "https://quant.ai.jingtao.fun",
+        "x-csrf-token": issued.csrf_token,
+    }
+    rejected = client.post(
+        f"/api/studies/{study_id}/advance",
+        json={},
+        headers={
+            "origin": "https://quant.ai.jingtao.fun",
+            "x-csrf-token": "wrong",
+        },
+    )
+    assert rejected.status_code == 403
+    assert rejected.json()["error"]["code"] == "FORBIDDEN"
+
+    monkeypatch.setattr(
+        app.state.studies,
+        "detail",
+        lambda value: {"study_id": value, "phase": "FROZEN"},
+    )
+    detail = client.get(f"/api/studies/{study_id}")
+    assert detail.json()["study"]["study_id"] == study_id
+
+    for status in ("LEASE_BUSY", "EXECUTION_IDENTITY_DRIFT"):
+        monkeypatch.setattr(
+            app.state.studies,
+            "advance",
+            lambda value, status=status: {
+                "status": status,
+                "study_id": value,
+            },
+        )
+        response = client.post(
+            f"/api/studies/{study_id}/advance",
+            json={},
+            headers=mutation_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == status
+
+    for status in ("ACTION_CONFLICT", "INVALID_TRANSITION"):
+        monkeypatch.setattr(
+            app.state.studies,
+            "control",
+            lambda value, operation, *, action_id, status=status: {
+                "status": status,
+                "study_id": value,
+                "operation": operation,
+                "action_id": action_id,
+            },
+        )
+        response = client.post(
+            f"/api/studies/{study_id}/control",
+            json={"operation": "RESUME", "action_id": "control-action"},
+            headers=mutation_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == status
 
 
 def test_sso_callback_sets_secure_cookie_and_rejects_replay(tmp_path: Path):
@@ -271,6 +349,31 @@ def test_json_catalog_submit_duplicate_rerun_and_history_flow(tmp_path: Path):
         len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"])
         == 2
     )
+
+
+def test_api_cannot_preclaim_a_study_internal_experiment_action(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    task = _task(snapshot(app))
+
+    response = client.post(
+        "/api/experiments",
+        json={
+            "task": task,
+            "action_id": f"study-internal:effect:{'a' * 64}",
+        },
+        headers={
+            "origin": "https://quant.ai.jingtao.fun",
+            "x-csrf-token": issued.csrf_token,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "DOMAIN_ERROR",
+        "message": "action_id uses a reserved internal namespace",
+    }
+    assert app.state.experiments.list_experiments() == []
 
 
 def test_api_accepts_catalog_dataset_and_date_range_and_freezes_snapshot(
