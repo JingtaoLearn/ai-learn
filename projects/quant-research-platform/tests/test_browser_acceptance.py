@@ -50,6 +50,25 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         secure_cookies=False,
     ).validated()
     app = create_app(settings)
+    original_study_submit = app.state.studies.submit
+    study_submit_calls = 0
+
+    def submit_stale_once(spec, *, expected_preview_digest, action_id):
+        nonlocal study_submit_calls
+        study_submit_calls += 1
+        if study_submit_calls % 2:
+            return {
+                "status": "PREVIEW_STALE",
+                "expected_preview_digest": expected_preview_digest,
+                "current_preview_digest": expected_preview_digest,
+            }
+        return original_study_submit(
+            spec,
+            expected_preview_digest=expected_preview_digest,
+            action_id=action_id,
+        )
+
+    app.state.studies.submit = submit_stale_once
     app.state.operators.runner_image = IMAGE
     app.state.operators.validator = _passing_validator
     report_experiment = app.state.experiments.submit(

@@ -47,12 +47,15 @@ STUDY_OUTCOMES = {
     "ACTION_CONFLICT": "Action conflict: this action ID was already used differently.",
     "ADVANCED": "Study advanced.",
     "CANCELLED": "Study cancelled.",
+    "EFFECT_AUTHORIZED": "The next Study effect is authorized.",
     "EFFECT_COMMITTED": "Study effect committed.",
+    "EFFECT_PENDING": "A Study effect is pending.",
     "EXECUTION_IDENTITY_DRIFT": (
         "Execution identity drift detected. New Study effects remain blocked."
     ),
     "INVALID_TRANSITION": "The requested Study transition is not valid.",
     "LEASE_BUSY": "Another coordinator currently holds the Study lease.",
+    "NO_CHANGE": "The Study was already in the requested state.",
     "PAUSED": "Study paused.",
     "RESUMED": "Study resumed.",
 }
@@ -281,6 +284,18 @@ def _form_parameter_default(value: Any, schema: dict[str, Any]) -> str:
     return str(value)
 
 
+def _form_parameter(
+    form: dict[str, str],
+    field_name: str,
+    schema: dict[str, Any],
+    default: str = "",
+) -> Any:
+    try:
+        return _form_parameter_value(form.get(field_name, default), schema)
+    except ValueError as exc:
+        raise ValueError(f"{field_name}: {exc}") from exc
+
+
 def _task_from_form(
     form: dict[str, str],
     *,
@@ -298,7 +313,7 @@ def _task_from_form(
             if name == "evaluation_start"
             else end_date
             if name == "evaluation_end"
-            else _form_parameter_value(form.get(f"template_{name}", ""), schema)
+            else _form_parameter(form, f"template_{name}", schema)
         )
         for name, schema in template["parameter_schema"]["properties"].items()
     }
@@ -313,15 +328,17 @@ def _task_from_form(
             None if requested_version == "latest" else requested_version,
         )
         parameters = {
-            name: _form_parameter_value(
-                form.get(
-                    (
-                        f"operator_{slot}_param__{operator_id}__"
-                        f"{selected['version']}__{name}"
-                    ),
-                    _form_parameter_default(selected["defaults"][name], schema),
+            name: _form_parameter(
+                form,
+                (
+                    f"operator_{slot}_param__{operator_id}__"
+                    f"{selected['version']}__{name}"
                 ),
                 schema,
+                _form_parameter_default(
+                    selected["defaults"][name],
+                    schema,
+                ),
             )
             for name, schema in selected["parameter_schema"]["properties"].items()
         }

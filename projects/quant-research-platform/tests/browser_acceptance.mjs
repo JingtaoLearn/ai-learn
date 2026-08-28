@@ -106,10 +106,29 @@ try {
     return evaluation.result.value;
   }
 
+  async function waitForDocument(previousOrigin, expectedPath = undefined) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const state = await evaluate(
+        `({ origin: performance.timeOrigin, path: location.pathname + location.search, ready: document.readyState })`,
+      );
+      if (
+        state.ready === "complete" &&
+        state.origin !== previousOrigin &&
+        (!expectedPath || state.path === expectedPath)
+      ) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`Document navigation did not settle from ${previousOrigin}`);
+  }
+
   async function navigate(path) {
+    const previousOrigin = await evaluate("performance.timeOrigin");
     const loaded = once("Page.loadEventFired", sessionId);
     await send("Page.navigate", { url: `${baseUrl}${path}` }, sessionId);
     await loaded;
+    await waitForDocument(previousOrigin, path);
   }
 
   async function keyboardActivate(selector) {
@@ -138,6 +157,29 @@ try {
       sessionId,
     );
     await loaded;
+  }
+
+  async function clickAndNavigate(selector) {
+    const previousOrigin = await evaluate("performance.timeOrigin");
+    const point = await evaluate(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      element.scrollIntoView({ block: "center" });
+      const box = element.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    })()`);
+    const loaded = once("Page.loadEventFired", sessionId);
+    await send(
+      "Input.dispatchMouseEvent",
+      { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchMouseEvent",
+      { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 },
+      sessionId,
+    );
+    await loaded;
+    await waitForDocument(previousOrigin);
   }
 
   async function selectAndWaitForPreview(selectorQuery, value) {
@@ -177,6 +219,35 @@ try {
       );
       throw new Error(
         `Expected page ${page}, received ${actual}: ${JSON.stringify(diagnostic)}`,
+      );
+    }
+  }
+
+  async function expectStudyLayout(stage, width) {
+    const layout = await evaluate(`(() => {
+      const controls = Array.from(document.querySelectorAll(
+        "main button, main .button, main input:not([type=hidden]), main select, main textarea",
+      )).filter((element) => element.getClientRects().length);
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+        clipped: controls.filter((element) => {
+          const box = element.getBoundingClientRect();
+          return box.left < 0 || box.right > window.innerWidth + 1;
+        }).map((element) => element.name || element.textContent.trim()).slice(0, 5),
+        shortTargets: controls.filter((element) => {
+          const box = element.getBoundingClientRect();
+          return box.height < 44 || box.width < 44;
+        }).map((element) => element.name || element.textContent.trim()).slice(0, 5),
+      };
+    })()`);
+    if (
+      layout.documentWidth > layout.viewportWidth ||
+      layout.clipped.length ||
+      layout.shortTargets.length
+    ) {
+      throw new Error(
+        `Study layout failure at ${stage}/${width}px: ${JSON.stringify(layout)}`,
       );
     }
   }
@@ -228,6 +299,122 @@ try {
         if (value.documentWidth > value.viewportWidth) {
           throw new Error(`Horizontal page overflow for ${route} at ${width}px`);
         }
+      }
+
+      await navigate("/studies/new");
+      console.error(`stage study-new width=${width}`);
+      await expectStudyLayout("new", width);
+      const explicitPanels = await evaluate(`(() => {
+        const panels = Array.from(document.querySelectorAll("fieldset.parameter-set"));
+        return panels.length > 0 && panels.every(
+          (panel) => panel.querySelector("legend") && (
+            ${scriptsDisabled} || panel.hidden || panel.getClientRects().length
+          ),
+        );
+      })()`);
+      if (!explicitPanels) throw new Error("Study operator/version panels are ambiguous");
+      const blankStudyNumbers = await evaluate(
+        `Array.from(document.querySelectorAll(
+          '#study-form input[data-parameter-type="number"], #study-form input[data-parameter-type="integer"]',
+        )).filter((input) => !input.value && input.dataset.nullable !== "true")
+          .map((input) => input.name)`,
+      );
+      if (blankStudyNumbers.length) {
+        throw new Error(`Study numeric defaults are blank: ${JSON.stringify(blankStudyNumbers)}`);
+      }
+      await evaluate(`(() => {
+        const capital = document.querySelector('[name="template_initial_capital_cny"]') ||
+          document.createElement("input");
+        if (!capital.name) {
+          capital.type = "hidden";
+          capital.name = "template_initial_capital_cny";
+          document.querySelector("#study-form").append(capital);
+        }
+        capital.value = "100000";
+        for (const select of document.querySelectorAll(
+          '#study-form select[data-parameter-enum="true"]',
+        )) {
+          const canonical = Array.from(select.options).find((option) => {
+            try {
+              JSON.parse(option.value);
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          if (!canonical) throw new Error(
+            "Enum has no canonical option: " + select.name + " " +
+            JSON.stringify(Array.from(select.options).map((option) => option.value)),
+          );
+          select.value = canonical.value;
+        }
+        for (const range of document.querySelectorAll('#study-form input[name^="search__"]')) {
+          range.value = "";
+        }
+        const range = document.querySelector(
+          '[name="search__fit__prior_log_ols__1.0.0__window_sessions"]',
+        );
+        if (!range) throw new Error("Known finite Study range is unavailable");
+        range.value = "[2]";
+      })()`);
+      await clickAndNavigate('[data-testid="preview-study"]');
+      await expectPage("study-preview");
+      await expectStudyLayout("preview", width);
+      const previewHasPlan = await evaluate(
+        'document.querySelector(\'[data-testid="split-preview"]\').textContent.includes("Planned outer OOS")',
+      );
+      if (!previewHasPlan) throw new Error("Study split preview is missing its plan semantics");
+
+      await clickAndNavigate(
+        'form[data-testid="study-submit-form"] button[type="submit"]',
+      );
+      await expectPage("study-preview");
+      const staleRecovered = await evaluate(
+        'Boolean(document.querySelector(\'[data-testid="stale-preview"]\'))',
+      );
+      if (!staleRecovered) throw new Error("Study stale-preview recovery was not shown");
+      await expectStudyLayout("stale-preview", width);
+
+      await clickAndNavigate(
+        'form[data-testid="study-submit-form"] button[type="submit"]',
+      );
+      await expectPage("study-detail");
+      await expectStudyLayout("detail", width);
+      const studyPath = await evaluate("location.pathname");
+      if (!/^\/studies\/[0-9a-f]{64}$/.test(studyPath)) {
+        throw new Error(`Study detail has a non-canonical path: ${studyPath}`);
+      }
+
+      await clickAndNavigate(
+        `form[action="${studyPath}/advance"] button[type="submit"]`,
+      );
+      await expectPage("study-detail");
+      const advanceOutcome = await evaluate(
+        'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent.trim()',
+      );
+      if (!advanceOutcome) throw new Error("Study advance outcome was not rendered");
+
+      const controlOperation = await evaluate(
+        'document.body.textContent.includes("PAUSED") ? "RESUME" : "PAUSE"',
+      );
+      await clickAndNavigate(
+        `form[action="${studyPath}/control"]:has(input[value="${controlOperation}"]) button`,
+      );
+      await expectPage("study-detail");
+      const controlOutcome = await evaluate(
+        'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent.trim()',
+      );
+      if (!controlOutcome) throw new Error("Study control outcome was not rendered");
+
+      await clickAndNavigate(`a[href="${studyPath}/report"]`);
+      await expectPage("study-report");
+      await expectStudyLayout("report", width);
+      const separatedEvidence = await evaluate(`({
+        planned: document.body.textContent.includes("Planned outer OOS windows"),
+        holdout: document.body.textContent.includes("Terminal holdout plan and state"),
+      })`);
+      if (!separatedEvidence.planned || !separatedEvidence.holdout) {
+        throw new Error(`Study report evidence is not separated: ${JSON.stringify(separatedEvidence)}`);
       }
     }
 
@@ -515,6 +702,8 @@ try {
   }
 } finally {
   socket.close();
+  const exited = new Promise((resolve) => browser.once("exit", resolve));
   browser.kill("SIGTERM");
-  await rm(profile, { recursive: true, force: true });
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
