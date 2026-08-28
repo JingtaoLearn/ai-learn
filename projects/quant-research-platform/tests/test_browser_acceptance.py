@@ -1,3 +1,4 @@
+import json
 import shutil
 import socket
 import subprocess
@@ -15,6 +16,7 @@ from quant_platform.web import create_app
 from test_experiment_service import _task
 from test_operator_submission import IMAGE, _passing_validator
 from test_web_api import snapshot
+from test_web_ui import _experiment_form
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -71,8 +73,26 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
     app.state.studies.submit = submit_stale_once
     app.state.operators.runner_image = IMAGE
     app.state.operators.validator = _passing_validator
+    submit_study = app.state.studies.submit
+    stale_previews: set[str] = set()
+
+    def submit_with_one_stale_preview(
+        spec, *, expected_preview_digest: str, action_id: str
+    ):
+        key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+        if key not in stale_previews:
+            stale_previews.add(key)
+            return {"status": "PREVIEW_STALE"}
+        return submit_study(
+            spec,
+            expected_preview_digest=expected_preview_digest,
+            action_id=action_id,
+        )
+
+    app.state.studies.submit = submit_with_one_stale_preview
+    snapshot_id = snapshot(app)
     report_experiment = app.state.experiments.submit(
-        _task(snapshot(app)), action_id="browser-report"
+        _task(snapshot_id), action_id="browser-report"
     )
     report_attempt = app.state.experiments.claim_next_attempt()
     report_result = ResolvedAttemptExecutor(
@@ -108,6 +128,9 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                     issued.cookie,
                     chromium,
                     report_experiment["experiment_id"],
+                    json.dumps(
+                        _experiment_form(app, snapshot_id, issued.csrf_token)
+                    ),
                 ],
                 check=True,
                 capture_output=True,

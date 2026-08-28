@@ -1,20 +1,20 @@
-{% macro parameter_control(field_name, value, schema, data_kind, parameter_name, raw_value=none, invalid=false) -%}
+{% macro parameter_control(field_name, value, schema, data_kind, parameter_name, raw_value=none, preserve_raw=false, invalid=false) -%}
 {% if schema.enum %}
 <select id="{{ field_name }}" name="{{ field_name }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-parameter-enum="true" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
-  {% if schema.nullable and none not in schema.enum %}<option value="{{ none|canonical_json }}"{% if (raw_value is not none and raw_value == none|canonical_json) or (raw_value is none and value is none) %} selected{% endif %}>{{ none|canonical_json }}</option>{% endif %}
+  {% if schema.nullable and none not in schema.enum %}<option value="{{ none|canonical_json }}"{% if (preserve_raw and raw_value == none|canonical_json) or (not preserve_raw and value is none) %} selected{% endif %}>{{ none|canonical_json }}</option>{% endif %}
   {% for choice in schema.enum %}
-  <option value="{{ choice|canonical_json }}"{% if (raw_value is not none and raw_value == choice|canonical_json) or (raw_value is none and choice == value) %} selected{% endif %}>{{ choice|canonical_json }}</option>
+  <option value="{{ choice|canonical_json }}"{% if (preserve_raw and raw_value == choice|canonical_json) or (not preserve_raw and choice == value) %} selected{% endif %}>{{ choice|canonical_json }}</option>
   {% endfor %}
 </select>
 {% elif schema.type == "boolean" %}
-<select id="{{ field_name }}" name="{{ field_name }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="boolean" data-nullable="{{ 'true' if schema.nullable else 'false' }}{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
-  {% if schema.nullable %}<option value=""{% if value is none %} selected{% endif %}>None</option>{% endif %}
-  <option value="true"{% if raw_value == "true" or (raw_value is none and value is sameas true) %} selected{% endif %}>True</option>
-  <option value="false"{% if raw_value == "false" or (raw_value is none and value is sameas false) %} selected{% endif %}>False</option>
+<select id="{{ field_name }}" name="{{ field_name }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="boolean" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
+  {% if schema.nullable %}<option value=""{% if (preserve_raw and raw_value == "") or (not preserve_raw and value is none) %} selected{% endif %}>None</option>{% endif %}
+  <option value="true"{% if (preserve_raw and raw_value == "true") or (not preserve_raw and value is sameas true) %} selected{% endif %}>True</option>
+  <option value="false"{% if (preserve_raw and raw_value == "false") or (not preserve_raw and value is sameas false) %} selected{% endif %}>False</option>
 </select>
 {% elif schema.type in ("integer", "number") %}
-<input id="{{ field_name }}" name="{{ field_name }}" type="number" step="{{ '1' if schema.type == 'integer' else 'any' }}" value="{{ raw_value if raw_value is not none else value if value is not none else '' }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if schema.minimum is defined %} min="{{ schema.minimum }}"{% endif %}{% if schema.maximum is defined %} max="{{ schema.maximum }}"{% endif %}{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
+<input id="{{ field_name }}" name="{{ field_name }}" type="number" step="{{ '1' if schema.type == 'integer' else 'any' }}" value="{{ raw_value if preserve_raw else value if value is not none else '' }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if schema.minimum is defined %} min="{{ schema.minimum }}"{% endif %}{% if schema.maximum is defined %} max="{{ schema.maximum }}"{% endif %}{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
 {% else %}
-<input id="{{ field_name }}" name="{{ field_name }}" type="text" value="{{ raw_value if raw_value is not none else value if value is not none else '' }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
+<input id="{{ field_name }}" name="{{ field_name }}" type="text" value="{{ raw_value if preserve_raw else value if value is not none else '' }}"{% if not schema.nullable %} required{% endif %} data-{{ data_kind }}="{{ parameter_name }}" data-parameter-type="{{ schema.type }}" data-nullable="{{ 'true' if schema.nullable else 'false' }}"{% if invalid %} aria-invalid="true" aria-describedby="{{ field_name }}-error"{% endif %}>
 {% endif %}
 {%- endmacro %}

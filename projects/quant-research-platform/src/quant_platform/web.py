@@ -293,7 +293,7 @@ def _form_parameter(
     try:
         return _form_parameter_value(form.get(field_name, default), schema)
     except ValueError as exc:
-        raise ValueError(f"{field_name}: {exc}") from exc
+        raise TaskValidationError(f"{field_name}: {exc}") from exc
 
 
 def _task_from_form(
@@ -335,10 +335,7 @@ def _task_from_form(
                     f"{selected['version']}__{name}"
                 ),
                 schema,
-                _form_parameter_default(
-                    selected["defaults"][name],
-                    schema,
-                ),
+                _form_parameter_default(selected["defaults"][name], schema),
             )
             for name, schema in selected["parameter_schema"]["properties"].items()
         }

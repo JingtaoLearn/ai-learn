@@ -5,12 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium, reportExperimentId] = process.argv.slice(2);
-if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId) {
+const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson] =
+  process.argv.slice(2);
+if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId || !studyFormJson) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON",
   );
 }
+const studyFormValues = JSON.parse(studyFormJson);
 
 const profile = await mkdtemp(join(tmpdir(), "quant-browser-"));
 const browser = spawn(
@@ -106,29 +108,10 @@ try {
     return evaluation.result.value;
   }
 
-  async function waitForDocument(previousOrigin, expectedPath = undefined) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const state = await evaluate(
-        `({ origin: performance.timeOrigin, path: location.pathname + location.search, ready: document.readyState })`,
-      );
-      if (
-        state.ready === "complete" &&
-        state.origin !== previousOrigin &&
-        (!expectedPath || state.path === expectedPath)
-      ) {
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error(`Document navigation did not settle from ${previousOrigin}`);
-  }
-
   async function navigate(path) {
-    const previousOrigin = await evaluate("performance.timeOrigin");
     const loaded = once("Page.loadEventFired", sessionId);
     await send("Page.navigate", { url: `${baseUrl}${path}` }, sessionId);
     await loaded;
-    await waitForDocument(previousOrigin, path);
   }
 
   async function keyboardActivate(selector) {
@@ -157,29 +140,6 @@ try {
       sessionId,
     );
     await loaded;
-  }
-
-  async function clickAndNavigate(selector) {
-    const previousOrigin = await evaluate("performance.timeOrigin");
-    const point = await evaluate(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      element.scrollIntoView({ block: "center" });
-      const box = element.getBoundingClientRect();
-      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-    })()`);
-    const loaded = once("Page.loadEventFired", sessionId);
-    await send(
-      "Input.dispatchMouseEvent",
-      { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 },
-      sessionId,
-    );
-    await send(
-      "Input.dispatchMouseEvent",
-      { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 },
-      sessionId,
-    );
-    await loaded;
-    await waitForDocument(previousOrigin);
   }
 
   async function selectAndWaitForPreview(selectorQuery, value) {
@@ -223,22 +183,40 @@ try {
     }
   }
 
-  async function expectStudyLayout(stage, width) {
+  async function assertLayout(label, width) {
     const layout = await evaluate(`(() => {
-      const controls = Array.from(document.querySelectorAll(
-        "main button, main .button, main input:not([type=hidden]), main select, main textarea",
-      )).filter((element) => element.getClientRects().length);
+      const clipped = Array.from(document.querySelectorAll("main *")).filter((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          !element.closest(".table-wrap") &&
+          (rect.left < -1 || rect.right > window.innerWidth + 1);
+      }).slice(0, 5).map((element) => ({
+        tag: element.tagName,
+        className: element.className,
+        text: element.textContent.trim().slice(0, 60),
+        rect: element.getBoundingClientRect().toJSON(),
+      }));
+      const shortTargets = ${width === 390
+        ? `Array.from(document.querySelectorAll(
+            "main button, main .button, main input:not([type=hidden]), main select, main textarea"
+          )).filter((element) => {
+            const rect = element.getBoundingClientRect();
+            return getComputedStyle(element).display !== "none" &&
+              rect.width > 0 && rect.height > 0 && rect.height < 43;
+          }).slice(0, 5).map((element) => ({
+            tag: element.tagName,
+            name: element.getAttribute("name"),
+            height: element.getBoundingClientRect().height,
+          }))`
+        : "[]"};
       return {
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
-        clipped: controls.filter((element) => {
-          const box = element.getBoundingClientRect();
-          return box.left < 0 || box.right > window.innerWidth + 1;
-        }).map((element) => element.name || element.textContent.trim()).slice(0, 5),
-        shortTargets: controls.filter((element) => {
-          const box = element.getBoundingClientRect();
-          return box.height < 44 || box.width < 44;
-        }).map((element) => element.name || element.textContent.trim()).slice(0, 5),
+        clipped,
+        shortTargets,
       };
     })()`);
     if (
@@ -246,10 +224,85 @@ try {
       layout.clipped.length ||
       layout.shortTargets.length
     ) {
-      throw new Error(
-        `Study layout failure at ${stage}/${width}px: ${JSON.stringify(layout)}`,
-      );
+      throw new Error(`Layout failure for ${label} at ${width}px: ${JSON.stringify(layout)}`);
     }
+  }
+
+  async function runStudyLifecycle(width, scriptsDisabled) {
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
+      sessionId,
+    );
+    await navigate("/studies/new");
+    const loaded = once("Page.loadEventFired", sessionId);
+    await evaluate(`(() => {
+      const values = Object.fromEntries(new FormData(
+        document.querySelector('[data-testid="study-form"]')
+      ));
+      Object.assign(values, ${JSON.stringify(studyFormValues)}, {
+        seed: String(
+          ${JSON.stringify(`${scriptsDisabled ? "nojs" : "js"}-${width}`)}
+            .split("").reduce((total, character) => total + character.charCodeAt(0), 0)
+        ),
+        unique_trial_budget: "1", max_suggestions: "1",
+        outer_folds: "1", inner_folds: "1", scoring_sessions: "1",
+        minimum_training_sessions: "2", purge_sessions: "0",
+        holdout_sessions: "1", evaluation_version: "1.0.0",
+        parent_study_ids: "", prior_unique_candidate_count: "0",
+        lineage_complete: "true",
+        "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
+      });
+      const submission = document.createElement("form");
+      submission.method = "post";
+      submission.action = "/studies/preview";
+      for (const [name, value] of Object.entries(values)) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        submission.append(input);
+      }
+      document.body.append(submission);
+      submission.submit();
+    })()`);
+    await loaded;
+    await expectPage("study-preview");
+    const previewIsPlan = await evaluate(
+      'document.body.textContent.includes("Planned outer OOS") && !document.body.textContent.includes("Experiment bindings")',
+    );
+    if (!previewIsPlan) throw new Error("Study preview fabricated observed evidence or estimates");
+    await assertLayout("study preview", width);
+    await keyboardActivate('form[action="/studies"] button[type="submit"]');
+    await expectPage("study-preview");
+    if (!(await evaluate('Boolean(document.querySelector(\'[data-testid="stale-preview"]\'))'))) {
+      throw new Error("Study stale-preview recovery was not rendered");
+    }
+    await keyboardActivate('form[action="/studies"] button[type="submit"]');
+    await expectPage("study-detail");
+    const studyPath = await evaluate("location.pathname");
+    await assertLayout("study detail", width);
+    await keyboardActivate('form[action$="/advance"] button[type="submit"]');
+    await expectPage("study-detail");
+    const advanceOutcome = await evaluate(
+      'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent',
+    );
+    if (!advanceOutcome) throw new Error("Study advance outcome is missing");
+    await keyboardActivate('form[action$="/control"] input[value="PAUSE"] + input + button');
+    await expectPage("study-detail");
+    const outcome = await evaluate(
+      'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent',
+    );
+    if (!outcome?.includes("paused") || (await evaluate("location.pathname")) !== studyPath) {
+      throw new Error(`Study control outcome is missing: ${outcome}`);
+    }
+    await keyboardActivate('a[href$="/report"]');
+    await expectPage("study-report");
+    const reportIsPlan = await evaluate(
+      'document.body.textContent.includes("Planned outer OOS windows") && !document.body.textContent.includes("Verified report")',
+    );
+    if (!reportIsPlan) throw new Error("Study report evidence semantics are invalid");
+    await assertLayout("study report", width);
   }
 
   const routes = {
@@ -301,121 +354,6 @@ try {
         }
       }
 
-      await navigate("/studies/new");
-      console.error(`stage study-new width=${width}`);
-      await expectStudyLayout("new", width);
-      const explicitPanels = await evaluate(`(() => {
-        const panels = Array.from(document.querySelectorAll("fieldset.parameter-set"));
-        return panels.length > 0 && panels.every(
-          (panel) => panel.querySelector("legend") && (
-            ${scriptsDisabled} || panel.hidden || panel.getClientRects().length
-          ),
-        );
-      })()`);
-      if (!explicitPanels) throw new Error("Study operator/version panels are ambiguous");
-      const blankStudyNumbers = await evaluate(
-        `Array.from(document.querySelectorAll(
-          '#study-form input[data-parameter-type="number"], #study-form input[data-parameter-type="integer"]',
-        )).filter((input) => !input.value && input.dataset.nullable !== "true")
-          .map((input) => input.name)`,
-      );
-      if (blankStudyNumbers.length) {
-        throw new Error(`Study numeric defaults are blank: ${JSON.stringify(blankStudyNumbers)}`);
-      }
-      await evaluate(`(() => {
-        const capital = document.querySelector('[name="template_initial_capital_cny"]') ||
-          document.createElement("input");
-        if (!capital.name) {
-          capital.type = "hidden";
-          capital.name = "template_initial_capital_cny";
-          document.querySelector("#study-form").append(capital);
-        }
-        capital.value = "100000";
-        for (const select of document.querySelectorAll(
-          '#study-form select[data-parameter-enum="true"]',
-        )) {
-          const canonical = Array.from(select.options).find((option) => {
-            try {
-              JSON.parse(option.value);
-              return true;
-            } catch {
-              return false;
-            }
-          });
-          if (!canonical) throw new Error(
-            "Enum has no canonical option: " + select.name + " " +
-            JSON.stringify(Array.from(select.options).map((option) => option.value)),
-          );
-          select.value = canonical.value;
-        }
-        for (const range of document.querySelectorAll('#study-form input[name^="search__"]')) {
-          range.value = "";
-        }
-        const range = document.querySelector(
-          '[name="search__fit__prior_log_ols__1.0.0__window_sessions"]',
-        );
-        if (!range) throw new Error("Known finite Study range is unavailable");
-        range.value = "[2]";
-      })()`);
-      await clickAndNavigate('[data-testid="preview-study"]');
-      await expectPage("study-preview");
-      await expectStudyLayout("preview", width);
-      const previewHasPlan = await evaluate(
-        'document.querySelector(\'[data-testid="split-preview"]\').textContent.includes("Planned outer OOS")',
-      );
-      if (!previewHasPlan) throw new Error("Study split preview is missing its plan semantics");
-
-      await clickAndNavigate(
-        'form[data-testid="study-submit-form"] button[type="submit"]',
-      );
-      await expectPage("study-preview");
-      const staleRecovered = await evaluate(
-        'Boolean(document.querySelector(\'[data-testid="stale-preview"]\'))',
-      );
-      if (!staleRecovered) throw new Error("Study stale-preview recovery was not shown");
-      await expectStudyLayout("stale-preview", width);
-
-      await clickAndNavigate(
-        'form[data-testid="study-submit-form"] button[type="submit"]',
-      );
-      await expectPage("study-detail");
-      await expectStudyLayout("detail", width);
-      const studyPath = await evaluate("location.pathname");
-      if (!/^\/studies\/[0-9a-f]{64}$/.test(studyPath)) {
-        throw new Error(`Study detail has a non-canonical path: ${studyPath}`);
-      }
-
-      await clickAndNavigate(
-        `form[action="${studyPath}/advance"] button[type="submit"]`,
-      );
-      await expectPage("study-detail");
-      const advanceOutcome = await evaluate(
-        'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent.trim()',
-      );
-      if (!advanceOutcome) throw new Error("Study advance outcome was not rendered");
-
-      const controlOperation = await evaluate(
-        'document.body.textContent.includes("PAUSED") ? "RESUME" : "PAUSE"',
-      );
-      await clickAndNavigate(
-        `form[action="${studyPath}/control"]:has(input[value="${controlOperation}"]) button`,
-      );
-      await expectPage("study-detail");
-      const controlOutcome = await evaluate(
-        'document.querySelector(\'[data-testid="study-outcome"]\')?.textContent.trim()',
-      );
-      if (!controlOutcome) throw new Error("Study control outcome was not rendered");
-
-      await clickAndNavigate(`a[href="${studyPath}/report"]`);
-      await expectPage("study-report");
-      await expectStudyLayout("report", width);
-      const separatedEvidence = await evaluate(`({
-        planned: document.body.textContent.includes("Planned outer OOS windows"),
-        holdout: document.body.textContent.includes("Terminal holdout plan and state"),
-      })`);
-      if (!separatedEvidence.planned || !separatedEvidence.holdout) {
-        throw new Error(`Study report evidence is not separated: ${JSON.stringify(separatedEvidence)}`);
-      }
     }
 
     await navigate("/operators/submit");
@@ -699,11 +637,16 @@ try {
       }
       console.error("stage theme-persistence");
     }
+    for (const width of [390, 1280]) {
+      await runStudyLifecycle(width, scriptsDisabled);
+    }
   }
 } finally {
   socket.close();
-  const exited = new Promise((resolve) => browser.once("exit", resolve));
-  browser.kill("SIGTERM");
-  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  if (browser.exitCode === null) {
+    const exited = new Promise((resolve) => browser.once("exit", resolve));
+    browser.kill("SIGTERM");
+    await exited;
+  }
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

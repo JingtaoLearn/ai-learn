@@ -282,9 +282,9 @@ def test_study_wizard_preserves_invalid_values_and_identifies_errors(tmp_path: P
         r'id="unique_trial_budget"[^>]*value="not-a-number"[^>]*aria-invalid="true"',
         response.text,
     )
-    assert 'aria-describedby="study-field-error"' in response.text
-    assert response.text.count('class="parameter-panel-title"') == response.text.count(
-        'class="parameter-set"'
+    assert 'aria-describedby="unique_trial_budget-error"' in response.text
+    assert response.text.count('<fieldset class="parameter-set"') == response.text.count(
+        "Used when this exact published version is selected."
     )
 
 
