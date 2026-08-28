@@ -689,7 +689,7 @@ def _study_from_form(
             "low": low,
             "high": high,
         }
-        if kind == "int":
+        if kind == "int" and not log:
             raw_step = raw_step or "1"
         if raw_step:
             try:

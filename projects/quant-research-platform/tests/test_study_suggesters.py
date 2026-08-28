@@ -171,18 +171,18 @@ def _optuna_plan() -> dict:
         max_suggestions=12,
         space={
             "/operators/decision/mode": {
-                "type": "categorical",
+                "kind": "categorical",
                 "choices": ["cross", "level", "breakout"],
             },
             "/operators/decision/threshold": {
-                "type": "float",
+                "kind": "float",
                 "low": 0.1,
                 "high": 0.9,
                 "step": None,
                 "log": False,
             },
             "/operators/fit/window": {
-                "type": "int",
+                "kind": "int",
                 "low": 2,
                 "high": 5,
                 "step": 1,
@@ -417,7 +417,7 @@ def test_optuna_tpe_duplicate_is_audited_without_another_platform_evaluation():
     plan = _optuna_plan()
     plan["search"]["space"] = {
         "/operators/decision/mode": {
-            "type": "categorical",
+            "kind": "categorical",
             "choices": ["cross", "level", "breakout"],
         }
     }

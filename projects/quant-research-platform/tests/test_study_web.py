@@ -551,6 +551,31 @@ def test_typed_parameter_domains_emit_the_backend_contract(tmp_path: Path):
     }
 
 
+def test_integer_log_domain_omits_step_in_the_backend_contract(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    _typed_study_operator(app)
+    form, creation = _typed_study_form(app, issued.csrf_token)
+    form.update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "study__fit__typed_study_fit__1.0.0__window": "int",
+            "domain__fit__typed_study_fit__1.0.0__window__low": "2",
+            "domain__fit__typed_study_fit__1.0.0__window__high": "10",
+            "domain__fit__typed_study_fit__1.0.0__window__log": "true",
+        }
+    )
+
+    spec = _study_from_form(form, creation=creation)
+
+    assert spec["search"]["space"]["/operators/fit/window"] == {
+        "kind": "int",
+        "low": 2,
+        "high": 10,
+        "log": True,
+    }
+
+
 @pytest.mark.parametrize(
     ("updates", "field", "message"),
     [

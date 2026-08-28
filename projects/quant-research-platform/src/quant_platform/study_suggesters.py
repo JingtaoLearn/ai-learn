@@ -585,11 +585,11 @@ def _compile_optuna_dimension(
     property_schema: Mapping[str, Any],
 ) -> _SearchDimension:
     definition_path = f"frozen_plan.search.space.{path}"
-    distribution_type = definition.get("type")
+    distribution_type = definition.get("kind")
     if distribution_type == "categorical":
-        if set(definition) != {"type", "choices"}:
+        if set(definition) != {"kind", "choices"}:
             raise SuggesterValidationError(
-                f"{definition_path} categorical distribution must contain only type and choices"
+                f"{definition_path} categorical distribution must contain only kind and choices"
             )
         choices = definition.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -616,15 +616,18 @@ def _compile_optuna_dimension(
             cardinality=len(normalized),
         )
 
-    expected_fields = {"type", "low", "high", "step", "log"}
+    required_fields = {"kind", "low", "high", "log"}
+    allowed_fields = {*required_fields, "step"}
     if distribution_type not in {"int", "float"}:
         raise SuggesterValidationError(
-            f"{definition_path}.type must be categorical, int, or float"
+            f"{definition_path}.kind must be categorical, int, or float"
         )
-    if set(definition) != expected_fields:
+    if not required_fields.issubset(definition) or not set(definition).issubset(
+        allowed_fields
+    ):
         raise SuggesterValidationError(
-            f"{definition_path} {distribution_type} distribution must contain exactly "
-            "type, low, high, step, and log"
+            f"{definition_path} {distribution_type} distribution must contain "
+            "kind, low, high, and log, with optional step"
         )
     log = definition.get("log")
     if not isinstance(log, bool):
@@ -702,6 +705,54 @@ def _compile_optuna_dimension(
         optuna_distribution=distribution,
         cardinality=cardinality,
     )
+
+
+def normalize_optuna_search_definition(
+    definition: Mapping[str, Any],
+    property_schema: Mapping[str, Any],
+    path: str,
+) -> tuple[dict[str, Any], int | None]:
+    """Validate and canonicalize one public Optuna search distribution."""
+    dimension = _compile_optuna_dimension(
+        path=path,
+        slot="validation",
+        parameter="value",
+        definition=definition,
+        property_schema=property_schema,
+    )
+    distribution = dimension.optuna_distribution
+    if distribution is None:
+        raise SuggesterValidationError(
+            f"frozen_plan.search.space.{path} has no Optuna distribution"
+        )
+    if isinstance(distribution, CategoricalDistribution):
+        normalized = {
+            "kind": "categorical",
+            "choices": list(distribution.choices),
+        }
+    elif isinstance(distribution, IntDistribution):
+        normalized = {
+            "kind": "int",
+            "low": distribution.low,
+            "high": distribution.high,
+            "log": distribution.log,
+        }
+        if not distribution.log:
+            normalized["step"] = distribution.step
+    elif isinstance(distribution, FloatDistribution):
+        normalized = {
+            "kind": "float",
+            "low": distribution.low,
+            "high": distribution.high,
+            "log": distribution.log,
+        }
+        if distribution.step is not None:
+            normalized["step"] = distribution.step
+    else:
+        raise SuggesterValidationError(
+            f"frozen_plan.search.space.{path} has no supported Optuna distribution"
+        )
+    return normalized, dimension.cardinality
 
 
 def _compile_plan(

@@ -927,9 +927,9 @@ def _search(
 ) -> dict[str, Any]:
     search = _exact(value, SEARCH_FIELDS, "study.search")
     suggester = _string(search["suggester"], "study.search.suggester")
-    if suggester not in {"GRID", "SEEDED_RANDOM"}:
+    if suggester not in {"GRID", "SEEDED_RANDOM", "OPTUNA_TPE"}:
         raise StudyValidationError(
-            "study.search.suggester must be GRID or SEEDED_RANDOM"
+            "study.search.suggester must be GRID, SEEDED_RANDOM, or OPTUNA_TPE"
         )
     suggester_version = _string(
         search["suggester_version"], "study.search.suggester_version"
@@ -956,20 +956,11 @@ def _search(
     if not isinstance(search["space"], dict) or not search["space"]:
         raise StudyValidationError("study.search.space must be a non-empty object")
 
-    normalized_space: dict[str, dict[str, list[Any]]] = {}
+    normalized_space: dict[str, dict[str, Any]] = {}
+    optuna_cardinalities: list[int | None] = []
     for path, definition_value in sorted(search["space"].items()):
         if not isinstance(path, str):
             raise StudyValidationError("study.search.space paths must be strings")
-        definition = _exact(
-            definition_value,
-            {"values"},
-            f"study.search.space.{path}",
-        )
-        values = definition["values"]
-        if not isinstance(values, list) or not values:
-            raise StudyValidationError(
-                f"study.search.space.{path}.values must be a non-empty array"
-            )
         parts = path.split("/")
         if len(parts) == 4 and parts[:2] == ["", "operators"]:
             slot, parameter = parts[2:]
@@ -997,6 +988,34 @@ def _search(
             raise StudyValidationError(
                 f"study.search.space path has invalid syntax: {path}"
             )
+        if suggester == "OPTUNA_TPE":
+            if not isinstance(definition_value, dict):
+                raise StudyValidationError(
+                    f"study.search.space.{path} must be an object"
+                )
+            try:
+                normalized, cardinality = (
+                    study_suggesters.normalize_optuna_search_definition(
+                        definition_value,
+                        property_schema,
+                        path,
+                    )
+                )
+            except study_suggesters.SuggesterValidationError as exc:
+                raise StudyValidationError(str(exc)) from exc
+            normalized_space[path] = normalized
+            optuna_cardinalities.append(cardinality)
+            continue
+        definition = _exact(
+            definition_value,
+            {"values"},
+            f"study.search.space.{path}",
+        )
+        values = definition["values"]
+        if not isinstance(values, list) or not values:
+            raise StudyValidationError(
+                f"study.search.space.{path}.values must be a non-empty array"
+            )
         normalized_values = [
             _scalar(
                 property_schema,
@@ -1012,10 +1031,22 @@ def _search(
             )
         normalized_space[path] = {"values": normalized_values}
 
-    candidate_capacity = prod(
-        len(definition["values"]) for definition in normalized_space.values()
-    )
-    return {
+    if suggester == "OPTUNA_TPE":
+        candidate_capacity = (
+            None
+            if any(cardinality is None for cardinality in optuna_cardinalities)
+            else prod(
+                cardinality
+                for cardinality in optuna_cardinalities
+                if cardinality is not None
+            )
+        )
+    else:
+        candidate_capacity = prod(
+            len(definition["values"])
+            for definition in normalized_space.values()
+        )
+    frozen = {
         "suggester": suggester,
         "suggester_version": suggester_version,
         "seed": seed,
@@ -1024,6 +1055,9 @@ def _search(
         "space": normalized_space,
         "candidate_capacity": candidate_capacity,
     }
+    if suggester == "OPTUNA_TPE":
+        frozen["adapter_identity"] = study_suggesters.optuna_tpe_frozen_identity()
+    return frozen
 
 
 def _evaluation(value: Any) -> dict[str, Any]:
@@ -2673,10 +2707,13 @@ class ParameterStudy:
                     set(event)
                     != {
                         "event_type",
+                        "round_identity",
                         "role",
                         "candidate_digest",
                         "evaluation",
                     }
+                    or event.get("round_identity")
+                    != f"{study_id}/{search_round}"
                     or event.get("role") != "INNER_SCORE"
                     or row["candidate_digest"] not in pending
                     or row["candidate_digest"] not in known_unique
@@ -2714,7 +2751,7 @@ class ParameterStudy:
                 recorded = evaluation_evidence.get(
                     (search_round, row["candidate_digest"])
                 )
-                if evaluation == {"state": "FAIL"}:
+                if evaluation == {"status": "FAILED"}:
                     if (
                         not any(
                             binding["state"] == "FAILED"
@@ -2726,12 +2763,19 @@ class ParameterStudy:
                             "Suggestion Journal failure tell is invalid"
                         )
                 elif (
-                    any(
+                    set(evaluation)
+                    != {"status", "validation_score", "evaluation_digest"}
+                    or evaluation.get("status") != "COMPLETED"
+                    or any(
                         binding["state"] != "VERIFIED"
                         for binding in candidate_bindings
                     )
-                    or recorded != evaluation
-                    or evaluation.get("evidence_role") != "INNER_SCORE"
+                    or recorded is None
+                    or evaluation.get("validation_score")
+                    != recorded.get("validation_score")
+                    or evaluation.get("evaluation_digest")
+                    != recorded.get("evaluation_digest")
+                    or recorded.get("evidence_role") != "INNER_SCORE"
                 ):
                     raise RuntimeError(
                         "Suggestion Journal complete tell is not canonical"
@@ -3806,6 +3850,7 @@ class ParameterStudy:
     ) -> dict[str, Any]:
         event = {
             "event_type": "INNER_EVALUATION_RECORDED",
+            "round_identity": f"{study_id}/{search_round}",
             "role": "INNER_SCORE",
             "candidate_digest": candidate_digest,
             "evaluation": evaluation,
@@ -3844,7 +3889,7 @@ class ParameterStudy:
             "search_round": search_round,
             "candidate_digest": candidate_digest,
             "tell_state": (
-                "FAIL" if evaluation == {"state": "FAIL"} else "COMPLETE"
+                "FAIL" if evaluation.get("status") == "FAILED" else "COMPLETE"
             ),
         }
 
@@ -5567,7 +5612,7 @@ class ParameterStudy:
                         study_id=study_id,
                         search_round=search_round,
                         candidate_digest=pending["candidate_digest"],
-                        evaluation={"state": "FAIL"},
+                        evaluation={"status": "FAILED"},
                         history=history,
                     )
                 recorded = self._round_candidate_evaluation(
@@ -5600,7 +5645,15 @@ class ParameterStudy:
                     study_id=study_id,
                     search_round=search_round,
                     candidate_digest=pending["candidate_digest"],
-                    evaluation=recorded["evaluation"],
+                    evaluation={
+                        "status": "COMPLETED",
+                        "validation_score": recorded["evaluation"][
+                            "validation_score"
+                        ],
+                        "evaluation_digest": recorded["evaluation"][
+                            "evaluation_digest"
+                        ],
+                    },
                     history=history,
                 )
 
@@ -6907,7 +6960,10 @@ class ParameterStudy:
                 if row["event_type"] == "INNER_EVALUATION_RECORDED"
                 else None
             )
-            failed = evaluation == {"state": "FAIL"}
+            failed = (
+                evaluation is not None
+                and evaluation.get("status") == "FAILED"
+            )
             suggestion_journal_views.append(
                 {
                     "search_round": row["search_round"],

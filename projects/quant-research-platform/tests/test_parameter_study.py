@@ -36,6 +36,7 @@ from quant_platform.study_suggesters import (
     Exhausted,
     GridParameterSuggester,
     Suggestion,
+    optuna_tpe_frozen_identity,
 )
 
 
@@ -554,6 +555,133 @@ def test_preview_estimates_bindings_from_actual_defaults_first_suggestions(
         ],
         "reuse_resolution": "CANONICAL_EXPERIMENT_IDENTITY_AT_DISPATCH",
     }
+
+
+def test_public_preview_freezes_typed_optuna_search_and_adapter_identity(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    spec["search"].update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "unique_trial_budget": 3,
+            "max_suggestions": 6,
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "kind": "float",
+                    "low": 0.1,
+                    "high": 0.4,
+                    "step": 0.1,
+                    "log": False,
+                }
+            },
+        }
+    )
+
+    preview = studies.preview(spec)
+
+    frozen = preview["frozen_plan"]["search"]
+    assert frozen["suggester"] == "OPTUNA_TPE"
+    assert frozen["adapter_identity"] == optuna_tpe_frozen_identity()
+    assert frozen["space"] == spec["search"]["space"]
+    assert frozen["candidate_capacity"] == 4
+    assert [item["candidate_count"] for item in preview["execution_estimate"]["rounds"]] == [
+        3,
+        3,
+    ]
+
+
+def test_public_preview_rejects_invalid_optuna_distribution(tmp_path: Path):
+    studies, _ = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    spec["search"].update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "kind": "float",
+                    "low": 0.1,
+                    "high": 0.4,
+                    "step": 0.1,
+                    "log": True,
+                }
+            },
+        }
+    )
+
+    with pytest.raises(StudyValidationError, match="step and log"):
+        studies.preview(spec)
+
+
+def test_public_optuna_study_runs_real_adapter_to_completion(tmp_path: Path):
+    studies, experiments = _study_service(tmp_path)
+    spec = _minimal_orchestration_spec()
+    spec["search"].update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "unique_trial_budget": 2,
+            "max_suggestions": 4,
+            "space": {
+                "/operators/decision/buy_threshold_pct_per_day": {
+                    "kind": "float",
+                    "low": 0.1,
+                    "high": 0.4,
+                    "step": 0.1,
+                    "log": False,
+                }
+            },
+        }
+    )
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-real-optuna-study",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/optuna-real",
+        effect_executor=_real_attempt_executor(
+            studies,
+            experiments,
+            studies.catalog.state_root / "real-optuna-runs",
+        ),
+    )
+
+    for _ in range(120):
+        coordinator.advance(submitted["study_id"])
+        detail = coordinator.detail(submitted["study_id"])
+        if detail["phase"] == "COMPLETED":
+            break
+    else:
+        pytest.fail("real Optuna Study did not complete")
+
+    assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert detail["holdout"]["outcome"] in {"PASSED", "FAILED"}
+    assert detail["suggestion_journal"]
+    for search_round in ("OUTER:1", "FINAL"):
+        events = [
+            event
+            for event in detail["suggestion_journal"]
+            if event["search_round"] == search_round
+        ]
+        event_types = [event["event_type"] for event in events]
+        assert event_types[0] == "SUGGESTION_RECORDED"
+        assert event_types.count("SUGGESTION_RECORDED") == 2
+        assert event_types.count("INNER_EVALUATION_RECORDED") == 2
+        assert set(event_types) <= {
+            "SUGGESTION_RECORDED",
+            "DUPLICATE_SUGGESTION",
+            "INNER_EVALUATION_RECORDED",
+        }
+        first_tell = event_types.index("INNER_EVALUATION_RECORDED")
+        assert first_tell > event_types.index("SUGGESTION_RECORDED")
+        assert all(
+            event.get("role") in {None, "INNER_SCORE"}
+            for event in events
+        )
 
 
 def test_creation_options_are_supplied_by_the_parameter_study_boundary(
