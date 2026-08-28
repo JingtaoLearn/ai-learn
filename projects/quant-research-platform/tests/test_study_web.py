@@ -254,6 +254,36 @@ def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
     assert calls == [(STUDY_ID, "PAUSE", "pause-web"), (STUDY_ID, "ADVANCE")]
 
 
+def test_study_wizard_preserves_invalid_values_and_identifies_errors(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form.update(
+        {
+            "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
+            "unique_trial_budget": "not-a-number",
+        }
+    )
+
+    response = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert 'role="alert"' in response.text
+    assert 'href="#unique_trial_budget"' in response.text
+    assert re.search(
+        r'id="unique_trial_budget"[^>]*value="not-a-number"[^>]*aria-invalid="true"',
+        response.text,
+    )
+    assert 'aria-describedby="study-field-error"' in response.text
+    assert response.text.count('class="parameter-panel-title"') == response.text.count(
+        'class="parameter-set"'
+    )
+
+
 def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
@@ -439,6 +469,13 @@ def test_deeply_nested_study_json_is_a_controlled_bad_request(tmp_path: Path):
     assert html_response.status_code == 400
     assert "nesting limit" in html_response.text
     assert "RecursionError" not in api.text + html_response.text
+
+
+def test_study_json_rejects_excessive_container_counts():
+    containers = ",".join("{}" for _ in range(10_001))
+
+    with pytest.raises(ValueError, match="container limit"):
+        _json_text(f"[{containers}]", "study_json")
 
 
 def test_study_not_found_and_mutation_outcomes_are_visible(
