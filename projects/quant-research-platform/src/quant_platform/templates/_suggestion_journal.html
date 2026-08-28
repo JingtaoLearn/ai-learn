@@ -1,0 +1,23 @@
+{% macro suggestion_journal(study) %}
+{% set journal = study.get("suggestion_journal", []) %}
+<section class="panel" aria-labelledby="suggestion-journal-heading" data-testid="suggestion-journal">
+  <div class="section-heading">
+    <div><p class="eyebrow">ADAPTIVE SEARCH HISTORY</p><h2 id="suggestion-journal-heading">Suggestion ask/tell timeline</h2></div>
+    <span class="badge">{{ journal|length }} suggestions</span>
+  </div>
+  {% if journal %}
+    <ol class="suggestion-journal">
+    {% for entry in journal %}
+      {% set changed = entry.get("changed_parameters", entry.get("ask", {}).get("changed_parameters", entry.get("candidate", {}))) %}
+      {% set tell = entry.get("tell", {}) %}
+      <li class="suggestion-entry">
+        <div class="suggestion-heading"><span class="badge">{{ entry.get("search_round", entry.get("round", "UNSPECIFIED")) }}</span><strong>Ask #{{ entry.get("proposal_sequence", loop.index) }}</strong></div>
+        <dl class="technical"><dt>Changed parameters</dt><dd><pre>{{ changed|canonical_json }}</pre></dd><dt>Tell</dt><dd><span class="status">{{ tell.get("state", tell.get("status", "PENDING")) }}</span></dd><dt>Objective</dt><dd>{{ tell.get("objective") if tell.get("objective") is not none else "Not available" }}</dd></dl>
+      </li>
+    {% endfor %}
+    </ol>
+  {% else %}
+    <p class="empty">No adaptive suggestions have been journaled.</p>
+  {% endif %}
+</section>
+{% endmacro %}

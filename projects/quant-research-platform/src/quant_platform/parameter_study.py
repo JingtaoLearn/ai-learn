@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 from math import prod
 from typing import Any, Callable
 
+from . import catalog as catalog_module
+from . import study_suggesters
 from .catalog import Catalog, CatalogMigration
 from .dataset_service import DatasetResolutionError, DatasetService
 from .experiment_service import ExperimentService
@@ -106,8 +108,17 @@ MAX_STUDY_SESSIONS = 100_000
 MAX_STUDY_EVENTS = 10_000
 MAX_STUDY_EVIDENCE = 10_000
 MAX_STUDY_BINDINGS = 10_000
+MAX_STUDY_SUGGESTION_EVENTS = 10_000
 MAX_STUDY_DETAIL_BYTES = 64 * 1_048_576
 MAX_STUDY_DOCUMENT_BYTES = 4 * 1_048_576
+PARAMETER_STUDY_SCHEMA_VERSION = 9
+
+# The catalog extension version is owned here because this constrained migration
+# cannot edit the base catalog module.
+catalog_module.LATEST_SUPPORTED_SCHEMA_VERSION = max(
+    catalog_module.LATEST_SUPPORTED_SCHEMA_VERSION,
+    PARAMETER_STUDY_SCHEMA_VERSION,
+)
 STUDY_MIGRATION = CatalogMigration(
     version=5,
     applied_at="2026-08-28T00:00:00Z",
@@ -518,6 +529,52 @@ END;
 """,
 )
 
+STUDY_SUGGESTION_JOURNAL_MIGRATION = CatalogMigration(
+    version=9,
+    applied_at="2026-08-28T00:00:00Z",
+    sql="""
+CREATE TABLE parameter_study_suggestion_journal (
+    study_id TEXT NOT NULL REFERENCES parameter_studies(study_id),
+    search_round TEXT NOT NULL CHECK (
+        length(search_round) BETWEEN 1 AND 128
+    ),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    event_type TEXT NOT NULL CHECK (
+        event_type IN (
+            'SUGGESTION_RECORDED', 'DUPLICATE_SUGGESTION',
+            'INNER_EVALUATION_RECORDED'
+        )
+    ),
+    candidate_digest TEXT NOT NULL CHECK (
+        length(candidate_digest) = 64
+        AND candidate_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+    event_json TEXT NOT NULL CHECK (
+        json_valid(event_json) AND json_type(event_json) = 'object'
+    ),
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (study_id, search_round, sequence)
+);
+
+CREATE INDEX idx_parameter_study_suggestion_journal_order
+ON parameter_study_suggestion_journal(study_id, search_round, sequence);
+
+CREATE UNIQUE INDEX one_inner_tell_per_round_candidate
+ON parameter_study_suggestion_journal(study_id, search_round, candidate_digest)
+WHERE event_type = 'INNER_EVALUATION_RECORDED';
+
+CREATE TRIGGER append_only_parameter_study_suggestion_journal_update
+BEFORE UPDATE ON parameter_study_suggestion_journal BEGIN
+    SELECT RAISE(ABORT, 'Suggestion Journal is append-only');
+END;
+
+CREATE TRIGGER append_only_parameter_study_suggestion_journal_delete
+BEFORE DELETE ON parameter_study_suggestion_journal BEGIN
+    SELECT RAISE(ABORT, 'Suggestion Journal is append-only');
+END;
+""",
+)
+
 
 def _exact(value: Any, expected: set[str], path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -870,9 +927,9 @@ def _search(
 ) -> dict[str, Any]:
     search = _exact(value, SEARCH_FIELDS, "study.search")
     suggester = _string(search["suggester"], "study.search.suggester")
-    if suggester not in {"GRID", "SEEDED_RANDOM"}:
+    if suggester not in {"GRID", "SEEDED_RANDOM", "OPTUNA_TPE"}:
         raise StudyValidationError(
-            "study.search.suggester must be GRID or SEEDED_RANDOM"
+            "study.search.suggester must be GRID, SEEDED_RANDOM, or OPTUNA_TPE"
         )
     suggester_version = _string(
         search["suggester_version"], "study.search.suggester_version"
@@ -899,20 +956,11 @@ def _search(
     if not isinstance(search["space"], dict) or not search["space"]:
         raise StudyValidationError("study.search.space must be a non-empty object")
 
-    normalized_space: dict[str, dict[str, list[Any]]] = {}
+    normalized_space: dict[str, dict[str, Any]] = {}
+    optuna_cardinalities: list[int | None] = []
     for path, definition_value in sorted(search["space"].items()):
         if not isinstance(path, str):
             raise StudyValidationError("study.search.space paths must be strings")
-        definition = _exact(
-            definition_value,
-            {"values"},
-            f"study.search.space.{path}",
-        )
-        values = definition["values"]
-        if not isinstance(values, list) or not values:
-            raise StudyValidationError(
-                f"study.search.space.{path}.values must be a non-empty array"
-            )
         parts = path.split("/")
         if len(parts) == 4 and parts[:2] == ["", "operators"]:
             slot, parameter = parts[2:]
@@ -940,6 +988,34 @@ def _search(
             raise StudyValidationError(
                 f"study.search.space path has invalid syntax: {path}"
             )
+        if suggester == "OPTUNA_TPE":
+            if not isinstance(definition_value, dict):
+                raise StudyValidationError(
+                    f"study.search.space.{path} must be an object"
+                )
+            try:
+                normalized, cardinality = (
+                    study_suggesters.normalize_optuna_search_definition(
+                        definition_value,
+                        property_schema,
+                        path,
+                    )
+                )
+            except study_suggesters.SuggesterValidationError as exc:
+                raise StudyValidationError(str(exc)) from exc
+            normalized_space[path] = normalized
+            optuna_cardinalities.append(cardinality)
+            continue
+        definition = _exact(
+            definition_value,
+            {"values"},
+            f"study.search.space.{path}",
+        )
+        values = definition["values"]
+        if not isinstance(values, list) or not values:
+            raise StudyValidationError(
+                f"study.search.space.{path}.values must be a non-empty array"
+            )
         normalized_values = [
             _scalar(
                 property_schema,
@@ -955,10 +1031,22 @@ def _search(
             )
         normalized_space[path] = {"values": normalized_values}
 
-    candidate_capacity = prod(
-        len(definition["values"]) for definition in normalized_space.values()
-    )
-    return {
+    if suggester == "OPTUNA_TPE":
+        candidate_capacity = (
+            None
+            if any(cardinality is None for cardinality in optuna_cardinalities)
+            else prod(
+                cardinality
+                for cardinality in optuna_cardinalities
+                if cardinality is not None
+            )
+        )
+    else:
+        candidate_capacity = prod(
+            len(definition["values"])
+            for definition in normalized_space.values()
+        )
+    frozen = {
         "suggester": suggester,
         "suggester_version": suggester_version,
         "seed": seed,
@@ -967,6 +1055,9 @@ def _search(
         "space": normalized_space,
         "candidate_capacity": candidate_capacity,
     }
+    if suggester == "OPTUNA_TPE":
+        frozen["adapter_identity"] = study_suggesters.optuna_tpe_frozen_identity()
+    return frozen
 
 
 def _evaluation(value: Any) -> dict[str, Any]:
@@ -1334,6 +1425,7 @@ class ParameterStudy:
                 STUDY_EVALUATION_MIGRATION,
                 STUDY_ORCHESTRATION_MIGRATION,
                 STUDY_HOLDOUT_MIGRATION,
+                STUDY_SUGGESTION_JOURNAL_MIGRATION,
             ]
         )
 
@@ -1532,36 +1624,55 @@ class ParameterStudy:
         with self.catalog.transaction() as connection:
             preview = self._freeze_resolved_plan(resolved, connection)
         minimum_bindings = 0
+        conditional_maximum_inner_bindings = 0
         selection_dependent_bindings = 1  # One terminal holdout, if authorized.
         round_counts = []
         for search_round, inner_folds, outer_audit in self._selection_rounds(
             preview["frozen_plan"]
         ):
-            candidate_count = len(
-                self._round_candidates(
-                    preview["preview_digest"],
-                    preview["frozen_plan"],
-                    search_round,
+            if preview["frozen_plan"]["search"]["suggester"] == "OPTUNA_TPE":
+                minimum_candidate_count = 1
+                maximum_candidate_count = preview["frozen_plan"]["search"][
+                    "unique_trial_budget"
+                ]
+                candidate_count = maximum_candidate_count
+            else:
+                candidate_count = len(
+                    self._round_candidates(
+                        preview["preview_digest"],
+                        preview["frozen_plan"],
+                        search_round,
+                    )
                 )
-            )
-            minimum_round_bindings = candidate_count * len(inner_folds)
-            conditional_round_bindings = minimum_round_bindings
+                minimum_candidate_count = candidate_count
+                maximum_candidate_count = candidate_count
+            minimum_round_bindings = minimum_candidate_count * len(inner_folds)
+            maximum_inner_round_bindings = maximum_candidate_count * len(inner_folds)
+            conditional_round_bindings = maximum_inner_round_bindings
             if outer_audit is not None:
                 conditional_round_bindings += 1
                 selection_dependent_bindings += 1
             minimum_bindings += minimum_round_bindings
-            round_counts.append(
-                {
-                    "search_round": search_round,
-                    "candidate_count": candidate_count,
-                    "minimum_binding_count": minimum_round_bindings,
-                    "conditional_maximum_binding_count": conditional_round_bindings,
-                }
-            )
+            conditional_maximum_inner_bindings += maximum_inner_round_bindings
+            round_count = {
+                "search_round": search_round,
+                "candidate_count": candidate_count,
+                "minimum_binding_count": minimum_round_bindings,
+                "conditional_maximum_binding_count": conditional_round_bindings,
+            }
+            if preview["frozen_plan"]["search"]["suggester"] == "OPTUNA_TPE":
+                round_count.update(
+                    {
+                        "minimum_candidate_count": minimum_candidate_count,
+                        "conditional_maximum_candidate_count": maximum_candidate_count,
+                        "candidate_count_semantics": "ADAPTIVE_UPPER_BOUND",
+                    }
+                )
+            round_counts.append(round_count)
         preview["execution_estimate"] = {
             "minimum_experiment_bindings": minimum_bindings,
             "conditional_maximum_experiment_bindings": (
-                minimum_bindings + selection_dependent_bindings
+                conditional_maximum_inner_bindings + selection_dependent_bindings
             ),
             "selection_dependent_bindings": selection_dependent_bindings,
             "rounds": round_counts,
@@ -2467,6 +2578,18 @@ class ParameterStudy:
             """,
             (study_id,),
         ).fetchall()
+        suggestion_journal = connection.execute(
+            """
+            SELECT search_round, sequence, event_type, candidate_digest,
+                   event_json, length(event_json) AS bytes
+            FROM parameter_study_suggestion_journal
+            WHERE study_id = ?
+            ORDER BY search_round, sequence
+            """,
+            (study_id,),
+        ).fetchall()
+        if len(suggestion_journal) > MAX_STUDY_SUGGESTION_EVENTS:
+            raise RuntimeError("Suggestion Journal exceeds bounded event count")
         if (
             not events
             or len(events) > MAX_STUDY_EVENTS
@@ -2482,13 +2605,18 @@ class ParameterStudy:
             or events[0]["event_type"] != "STUDY_SUBMITTED"
         ):
             raise RuntimeError("Parameter Study event or evidence ledger is invalid")
-        documents = [*events, *evidence, *holdout]
+        documents = [*events, *evidence, *holdout, *suggestion_journal]
         if any(
             row["bytes"] > MAX_STUDY_DOCUMENT_BYTES for row in documents
         ) or sum(row["bytes"] for row in documents) > MAX_STUDY_DETAIL_BYTES:
             raise RuntimeError("Parameter Study ledger exceeds bounded detail size")
         for row in documents:
-            _strict_json_object(row["payload_json"], "Parameter Study ledger payload")
+            document_json = (
+                row["event_json"]
+                if "event_json" in row.keys()
+                else row["payload_json"]
+            )
+            _strict_json_object(document_json, "Parameter Study ledger payload")
         if any(
             row["holdout_identity_digest"] != holdout_identity for row in holdout
         ):
@@ -2520,6 +2648,153 @@ class ParameterStudy:
             }
             for row in evidence
         ]
+        if (
+            frozen_plan["search"]["suggester"] != "OPTUNA_TPE"
+            and suggestion_journal
+        ):
+            raise RuntimeError("legacy Study has an unexpected Suggestion Journal")
+        allowed_rounds = {
+            search_round
+            for search_round, _, _ in self._selection_rounds(frozen_plan)
+        }
+        evaluation_evidence = {
+            (
+                item["payload"].get("search_round"),
+                item["candidate_digest"],
+            ): item["payload"].get("evaluation")
+            for item in evidence_items
+            if item["evidence_type"] == "CANDIDATE_EVALUATED"
+        }
+        journal_by_round: dict[str, list[sqlite3.Row]] = {}
+        for row in suggestion_journal:
+            journal_by_round.setdefault(row["search_round"], []).append(row)
+        for search_round, rows in journal_by_round.items():
+            if (
+                search_round not in allowed_rounds
+                or [row["sequence"] for row in rows]
+                != list(range(1, len(rows) + 1))
+            ):
+                raise RuntimeError("Suggestion Journal round or sequence is invalid")
+            proposal_count = 0
+            pending: set[str] = set()
+            known_unique: set[str] = set()
+            for row in rows:
+                event = _strict_json_object(
+                    row["event_json"],
+                    "Suggestion Journal event",
+                )
+                if (
+                    event.get("event_type") != row["event_type"]
+                    or event.get("candidate_digest")
+                    != row["candidate_digest"]
+                ):
+                    raise RuntimeError(
+                        "Suggestion Journal columns disagree with its event"
+                    )
+                if row["event_type"] in {
+                    "SUGGESTION_RECORDED",
+                    "DUPLICATE_SUGGESTION",
+                }:
+                    if pending:
+                        raise RuntimeError(
+                            "Suggestion Journal asked before the prior tell"
+                        )
+                    try:
+                        suggestion = self._suggestion_from_event(event)
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(
+                            "Suggestion Journal proposal is invalid"
+                        ) from exc
+                    if (
+                        suggestion.as_history_event() != event
+                        or suggestion.proposal_sequence != proposal_count
+                    ):
+                        raise RuntimeError(
+                            "Suggestion Journal proposal is not canonical"
+                        )
+                    proposal_count += 1
+                    if suggestion.creates_trial:
+                        known_unique.add(suggestion.candidate_digest)
+                        pending.add(suggestion.candidate_digest)
+                    continue
+                if (
+                    set(event)
+                    != {
+                        "event_type",
+                        "round_identity",
+                        "role",
+                        "candidate_digest",
+                        "evaluation",
+                    }
+                    or event.get("round_identity")
+                    != f"{study_id}/{search_round}"
+                    or event.get("role") != "INNER_SCORE"
+                    or row["candidate_digest"] not in pending
+                    or row["candidate_digest"] not in known_unique
+                    or not isinstance(event.get("evaluation"), dict)
+                ):
+                    raise RuntimeError(
+                        "Suggestion Journal tell is not canonical same-round "
+                        "INNER_SCORE evidence"
+                    )
+                candidate_bindings = [
+                    binding
+                    for binding in bindings
+                    if binding["search_round"] == search_round
+                    and binding["role"] == "INNER_SCORE"
+                    and binding["candidate_digest"] == row["candidate_digest"]
+                ]
+                expected_folds = next(
+                    inner_folds
+                    for round_name, inner_folds, _ in self._selection_rounds(
+                        frozen_plan
+                    )
+                    if round_name == search_round
+                )
+                if (
+                    len(candidate_bindings) != len(expected_folds)
+                    or any(
+                        binding["state"] not in {"VERIFIED", "FAILED"}
+                        for binding in candidate_bindings
+                    )
+                ):
+                    raise RuntimeError(
+                        "Suggestion Journal tell has partial inner-fold evidence"
+                    )
+                evaluation = event["evaluation"]
+                recorded = evaluation_evidence.get(
+                    (search_round, row["candidate_digest"])
+                )
+                if evaluation == {"status": "FAILED"}:
+                    if (
+                        not any(
+                            binding["state"] == "FAILED"
+                            for binding in candidate_bindings
+                        )
+                        or recorded is not None
+                    ):
+                        raise RuntimeError(
+                            "Suggestion Journal failure tell is invalid"
+                        )
+                elif (
+                    set(evaluation)
+                    != {"status", "validation_score", "evaluation_digest"}
+                    or evaluation.get("status") != "COMPLETED"
+                    or any(
+                        binding["state"] != "VERIFIED"
+                        for binding in candidate_bindings
+                    )
+                    or recorded is None
+                    or evaluation.get("validation_score")
+                    != recorded.get("validation_score")
+                    or evaluation.get("evaluation_digest")
+                    != recorded.get("evaluation_digest")
+                    or recorded.get("evidence_role") != "INNER_SCORE"
+                ):
+                    raise RuntimeError(
+                        "Suggestion Journal complete tell is not canonical"
+                    )
+                pending.remove(row["candidate_digest"])
         champions = [
             item
             for item in evidence_items
@@ -3417,6 +3692,257 @@ class ParameterStudy:
         return rounds
 
     @staticmethod
+    def _round_plan(
+        study_id: str,
+        frozen_plan: dict[str, Any],
+        search_round: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "round_identity": f"{study_id}/{search_round}",
+            "template": frozen_plan["template"],
+            "operators": frozen_plan["operators"],
+            "search": frozen_plan["search"],
+        }
+
+    @staticmethod
+    def _sampled_parameters(
+        frozen_plan: dict[str, Any],
+        candidate: dict[str, Any],
+    ) -> dict[str, Any]:
+        sampled = {}
+        for path in sorted(frozen_plan["search"]["space"]):
+            parts = path.split("/")
+            if len(parts) != 4 or parts[:2] != ["", "operators"]:
+                raise RuntimeError("frozen search path is invalid")
+            sampled[path] = deepcopy(
+                candidate["operators"][parts[2]]["parameters"][parts[3]]
+            )
+        return sampled
+
+    @staticmethod
+    def _optuna_suggester() -> Any:
+        suggester_type = getattr(
+            study_suggesters,
+            "OptunaTPEParameterSuggester",
+            None,
+        )
+        if suggester_type is None:
+            raise RuntimeError("frozen Optuna TPE adapter is unavailable")
+        return suggester_type()
+
+    def _suggestion_history(
+        self,
+        study_id: str,
+        search_round: str,
+    ) -> list[dict[str, Any]]:
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT event_json
+                FROM parameter_study_suggestion_journal
+                WHERE study_id = ? AND search_round = ?
+                ORDER BY sequence
+                """,
+                (study_id, search_round),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            _strict_json_object(row["event_json"], "Suggestion Journal event")
+            for row in rows
+        ]
+
+    @staticmethod
+    def _suggestion_from_event(event: dict[str, Any]) -> Suggestion:
+        return Suggestion(
+            proposal_sequence=event.get("proposal_sequence"),
+            candidate_digest=event.get("candidate_digest"),
+            candidate=event.get("candidate"),
+            classification=event.get("classification"),
+            disposition=event.get("disposition"),
+            duplicate_of_sequence=event.get("duplicate_of_sequence"),
+        )
+
+    @classmethod
+    def _journal_candidates(
+        cls,
+        history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        candidates = []
+        for event in history:
+            if event.get("event_type") != "SUGGESTION_RECORDED":
+                continue
+            suggestion = cls._suggestion_from_event(event)
+            candidates.append(
+                {
+                    "candidate_digest": suggestion.candidate_digest,
+                    "configuration": suggestion.candidate,
+                    "proposal_sequence": suggestion.proposal_sequence,
+                    "classification": suggestion.classification.value,
+                    "champion_eligible": suggestion.champion_eligible,
+                }
+            )
+        return candidates
+
+    def _record_suggestion(
+        self,
+        *,
+        study_id: str,
+        search_round: str,
+        suggestion: Suggestion,
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        event = suggestion.as_history_event()
+        proposal_count = sum(
+            item.get("event_type")
+            in {"SUGGESTION_RECORDED", "DUPLICATE_SUGGESTION"}
+            for item in history
+        )
+        if suggestion.proposal_sequence != proposal_count:
+            raise RuntimeError("Parameter Suggester proposal sequence is invalid")
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            current_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM parameter_study_suggestion_journal
+                WHERE study_id = ? AND search_round = ?
+                """,
+                (study_id, search_round),
+            ).fetchone()[0]
+            if current_count != len(history):
+                raise RuntimeError("Suggestion Journal changed during proposal")
+            connection.execute(
+                """
+                INSERT INTO parameter_study_suggestion_journal(
+                    study_id, search_round, sequence, event_type,
+                    candidate_digest, event_json, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    search_round,
+                    current_count + 1,
+                    event["event_type"],
+                    suggestion.candidate_digest,
+                    canonical_json_bytes(event).decode(),
+                    now,
+                ),
+            )
+        if suggestion.creates_trial:
+            self._ensure_trials(
+                study_id=study_id,
+                search_round=search_round,
+                candidates=[
+                    {
+                        "candidate_digest": suggestion.candidate_digest,
+                        "configuration": suggestion.candidate,
+                        "proposal_sequence": suggestion.proposal_sequence,
+                        "classification": suggestion.classification.value,
+                        "champion_eligible": suggestion.champion_eligible,
+                    }
+                ],
+            )
+        return {
+            "status": event["event_type"],
+            "study_id": study_id,
+            "search_round": search_round,
+            "candidate_digest": suggestion.candidate_digest,
+            "proposal_sequence": suggestion.proposal_sequence,
+        }
+
+    def _record_inner_tell(
+        self,
+        *,
+        study_id: str,
+        search_round: str,
+        candidate_digest: str,
+        evaluation: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        event = {
+            "event_type": "INNER_EVALUATION_RECORDED",
+            "round_identity": f"{study_id}/{search_round}",
+            "role": "INNER_SCORE",
+            "candidate_digest": candidate_digest,
+            "evaluation": evaluation,
+        }
+        now = self._now()
+        with self.catalog.transaction(immediate=True) as connection:
+            current_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM parameter_study_suggestion_journal
+                WHERE study_id = ? AND search_round = ?
+                """,
+                (study_id, search_round),
+            ).fetchone()[0]
+            if current_count != len(history):
+                raise RuntimeError("Suggestion Journal changed during tell")
+            connection.execute(
+                """
+                INSERT INTO parameter_study_suggestion_journal(
+                    study_id, search_round, sequence, event_type,
+                    candidate_digest, event_json, occurred_at
+                ) VALUES (?, ?, ?, 'INNER_EVALUATION_RECORDED', ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    search_round,
+                    current_count + 1,
+                    candidate_digest,
+                    canonical_json_bytes(event).decode(),
+                    now,
+                ),
+            )
+        return {
+            "status": "INNER_EVALUATION_RECORDED",
+            "study_id": study_id,
+            "search_round": search_round,
+            "candidate_digest": candidate_digest,
+            "tell_state": (
+                "FAIL" if evaluation.get("status") == "FAILED" else "COMPLETE"
+            ),
+        }
+
+    def _round_candidate_evaluation(
+        self,
+        study_id: str,
+        search_round: str,
+        candidate_digest: str,
+    ) -> dict[str, Any] | None:
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM parameter_study_evidence
+                WHERE study_id = ? AND evidence_type = 'CANDIDATE_EVALUATED'
+                  AND candidate_digest = ?
+                ORDER BY sequence
+                """,
+                (study_id, candidate_digest),
+            ).fetchall()
+        finally:
+            connection.close()
+        matches = [
+            payload
+            for row in rows
+            if (
+                payload := _strict_json_object(
+                    row["payload_json"],
+                    "candidate evaluation evidence",
+                )
+            ).get("search_round")
+            == search_round
+        ]
+        if len(matches) > 1:
+            raise RuntimeError("candidate evaluation evidence is duplicated")
+        return None if not matches else matches[0]
+
+    @staticmethod
     def _round_candidates(
         study_id: str,
         frozen_plan: dict[str, Any],
@@ -3427,13 +3953,11 @@ class ParameterStudy:
             if frozen_plan["search"]["suggester"] == "GRID"
             else SeededRandomParameterSuggester()
         )
-        round_plan = {
-            "schema_version": 1,
-            "round_identity": f"{study_id}/{search_round}",
-            "template": frozen_plan["template"],
-            "operators": frozen_plan["operators"],
-            "search": frozen_plan["search"],
-        }
+        round_plan = ParameterStudy._round_plan(
+            study_id,
+            frozen_plan,
+            search_round,
+        )
         history: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         while True:
@@ -4171,7 +4695,15 @@ class ParameterStudy:
         inner_folds: list[dict[str, Any]],
     ) -> list[dict[str, Any]] | None:
         bindings = self._bindings(study_id, search_round=search_round)
-        inner = [binding for binding in bindings if binding["role"] == "INNER_SCORE"]
+        candidate_digests = {
+            candidate["candidate_digest"] for candidate in candidates
+        }
+        inner = [
+            binding
+            for binding in bindings
+            if binding["role"] == "INNER_SCORE"
+            and binding["candidate_digest"] in candidate_digests
+        ]
         expected_count = len(candidates) * len(inner_folds)
         if len(inner) != expected_count or any(
             binding["state"] not in {"VERIFIED", "FAILED"} for binding in inner
@@ -4978,6 +5510,262 @@ class ParameterStudy:
             binding=binding,
         )
 
+    def _advance_optuna_selection(
+        self,
+        study_id: str,
+        frozen_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        outer_records = self._outer_records(study_id)
+        for search_round, inner_folds, outer_fold in self._selection_rounds(
+            frozen_plan
+        ):
+            if search_round != "FINAL" and search_round in outer_records:
+                continue
+            history = self._suggestion_history(study_id, search_round)
+            candidates = self._journal_candidates(history)
+            bindings = self._bindings(study_id, search_round=search_round)
+            refreshed = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding["state"] == "FAILED"
+                    and self.experiments.experiment_detail(
+                        binding["experiment_id"]
+                    )["attempts"][-1]["attempt_id"]
+                    != binding["attempt_id"]
+                ),
+                None,
+            )
+            if refreshed is not None:
+                return self._observe_binding(
+                    study_id=study_id,
+                    binding=refreshed,
+                    configuration=self._candidate_configuration(
+                        study_id,
+                        refreshed["candidate_digest"],
+                    ),
+                )
+            submitted = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding["state"] == "SUBMITTED"
+                ),
+                None,
+            )
+            if submitted is not None:
+                return self._observe_binding(
+                    study_id=study_id,
+                    binding=submitted,
+                    configuration=self._candidate_configuration(
+                        study_id,
+                        submitted["candidate_digest"],
+                    ),
+                )
+
+            told = {
+                event["candidate_digest"]
+                for event in history
+                if event.get("event_type") == "INNER_EVALUATION_RECORDED"
+            }
+            pending = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate["candidate_digest"] not in told
+                ),
+                None,
+            )
+            if pending is not None:
+                self._ensure_trials(
+                    study_id=study_id,
+                    search_round=search_round,
+                    candidates=[pending],
+                )
+                bindings = self._bindings(study_id, search_round=search_round)
+                for fold_sequence, fold_window in enumerate(inner_folds, start=1):
+                    binding_id = self._binding_id(
+                        study_id=study_id,
+                        search_round=search_round,
+                        candidate_digest=pending["candidate_digest"],
+                        role="INNER_SCORE",
+                        fold_sequence=fold_sequence,
+                        fold_window=fold_window,
+                    )
+                    if not any(
+                        binding["binding_id"] == binding_id
+                        for binding in bindings
+                    ):
+                        return self._dispatch_binding(
+                            study_id=study_id,
+                            frozen_plan=frozen_plan,
+                            search_round=search_round,
+                            candidate=pending,
+                            fold_window=fold_window,
+                            fold_sequence=fold_sequence,
+                        )
+                candidate_bindings = [
+                    binding
+                    for binding in bindings
+                    if binding["role"] == "INNER_SCORE"
+                    and binding["candidate_digest"]
+                    == pending["candidate_digest"]
+                ]
+                if len(candidate_bindings) != len(inner_folds) or any(
+                    binding["state"] not in {"VERIFIED", "FAILED"}
+                    for binding in candidate_bindings
+                ):
+                    raise RuntimeError(
+                        "partial inner evidence reached adaptive tell boundary"
+                    )
+                if any(
+                    binding["state"] == "FAILED"
+                    for binding in candidate_bindings
+                ):
+                    return self._record_inner_tell(
+                        study_id=study_id,
+                        search_round=search_round,
+                        candidate_digest=pending["candidate_digest"],
+                        evaluation={"status": "FAILED"},
+                        history=history,
+                    )
+                recorded = self._round_candidate_evaluation(
+                    study_id,
+                    search_round,
+                    pending["candidate_digest"],
+                )
+                if recorded is None:
+                    evaluations = self._evaluate_round_candidates(
+                        study_id=study_id,
+                        frozen_plan=frozen_plan,
+                        search_round=search_round,
+                        candidates=[pending],
+                        inner_folds=inner_folds,
+                    )
+                    if evaluations is None or len(evaluations) != 1:
+                        raise RuntimeError(
+                            "canonical inner evidence did not produce one evaluation"
+                        )
+                    return {
+                        "status": "CANDIDATE_EVALUATED",
+                        "study_id": study_id,
+                        "search_round": search_round,
+                        "candidate_digest": pending["candidate_digest"],
+                        "evaluation_digest": evaluations[0][
+                            "evaluation_digest"
+                        ],
+                    }
+                return self._record_inner_tell(
+                    study_id=study_id,
+                    search_round=search_round,
+                    candidate_digest=pending["candidate_digest"],
+                    evaluation={
+                        "status": "COMPLETED",
+                        "validation_score": recorded["evaluation"][
+                            "validation_score"
+                        ],
+                        "evaluation_digest": recorded["evaluation"][
+                            "evaluation_digest"
+                        ],
+                    },
+                    history=history,
+                )
+
+            outcome = self._optuna_suggester().next_suggestion(
+                self._round_plan(study_id, frozen_plan, search_round),
+                history,
+            )
+            if isinstance(outcome, Suggestion):
+                return self._record_suggestion(
+                    study_id=study_id,
+                    search_round=search_round,
+                    suggestion=outcome,
+                    history=history,
+                )
+            if not isinstance(outcome, Exhausted):
+                raise RuntimeError("Parameter Suggester returned an invalid outcome")
+            if not candidates:
+                raise RuntimeError("Parameter Study search round produced no Trials")
+
+            evaluations = []
+            for candidate in candidates:
+                recorded = self._round_candidate_evaluation(
+                    study_id,
+                    search_round,
+                    candidate["candidate_digest"],
+                )
+                if recorded is not None:
+                    evaluations.append(recorded["evaluation"])
+            eligible_digests = {
+                candidate["candidate_digest"]
+                for candidate in candidates
+                if candidate["champion_eligible"]
+            }
+            selected = self.evaluation_policy.select(
+                [
+                    evaluation
+                    for evaluation in evaluations
+                    if evaluation["candidate_digest"] in eligible_digests
+                ]
+            )
+            if search_round == "FINAL":
+                return self._freeze_selection(
+                    study_id=study_id,
+                    frozen_plan=frozen_plan,
+                    candidates=candidates,
+                    evaluations=evaluations,
+                )
+            if selected is None:
+                return self._record_outer_selection(
+                    study_id=study_id,
+                    search_round=search_round,
+                    selected=None,
+                    binding=None,
+                    configuration=None,
+                )
+            if outer_fold is None:
+                raise RuntimeError("outer search round has no audit fold")
+            selected_candidate = next(
+                candidate
+                for candidate in candidates
+                if candidate["candidate_digest"] == selected["candidate_digest"]
+            )
+            outer_binding_id = self._binding_id(
+                study_id=study_id,
+                search_round=search_round,
+                candidate_digest=selected["candidate_digest"],
+                role="OUTER_AUDIT",
+                fold_sequence=1,
+                fold_window=outer_fold,
+            )
+            outer_binding = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding["binding_id"] == outer_binding_id
+                ),
+                None,
+            )
+            if outer_binding is None:
+                return self._dispatch_binding(
+                    study_id=study_id,
+                    frozen_plan=frozen_plan,
+                    search_round=search_round,
+                    candidate=selected_candidate,
+                    fold_window=outer_fold,
+                    fold_sequence=1,
+                )
+            if outer_binding["state"] != "VERIFIED":
+                raise RuntimeError("outer binding is not verified")
+            return self._record_outer_selection(
+                study_id=study_id,
+                search_round=search_round,
+                selected=selected,
+                binding=outer_binding,
+                configuration=selected_candidate["configuration"],
+            )
+        raise RuntimeError("Parameter Study adaptive selection state is inconsistent")
+
     def _advance_selection(
         self,
         study_id: str,
@@ -5001,6 +5789,8 @@ class ParameterStudy:
                         binding=binding,
                         experiment=experiment,
                     )
+        if frozen_plan["search"]["suggester"] == "OPTUNA_TPE":
+            return self._advance_optuna_selection(study_id, frozen_plan)
         outer_records = self._outer_records(study_id)
         for search_round, inner_folds, outer_fold in self._selection_rounds(
             frozen_plan
@@ -5986,6 +6776,15 @@ class ParameterStudy:
                 """,
                 (study_id,),
             ).fetchall()
+            suggestion_journal = connection.execute(
+                """
+                SELECT search_round, sequence, event_type, candidate_digest,
+                       event_json, occurred_at
+                FROM parameter_study_suggestion_journal
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            ).fetchall()
             bindings = connection.execute(
                 """
                 SELECT *
@@ -6147,6 +6946,60 @@ class ParameterStudy:
                     "proposal_sequence": trial["proposal_sequence"],
                     "classification": trial["classification"],
                     "created_at": trial["created_at"],
+                }
+            )
+        round_order = {
+            search_round: index
+            for index, (search_round, _, _) in enumerate(
+                self._selection_rounds(frozen_plan)
+            )
+        }
+        suggestion_journal_views = []
+        for row in sorted(
+            suggestion_journal,
+            key=lambda item: (
+                round_order[item["search_round"]],
+                item["sequence"],
+            ),
+        ):
+            event = _strict_json_object(
+                row["event_json"],
+                "Suggestion Journal event",
+            )
+            candidate = event.get("candidate")
+            if candidate is None:
+                candidate = trial_configurations[row["candidate_digest"]]
+            evaluation = (
+                event["evaluation"]
+                if row["event_type"] == "INNER_EVALUATION_RECORDED"
+                else None
+            )
+            failed = (
+                evaluation is not None
+                and evaluation.get("status") == "FAILED"
+            )
+            suggestion_journal_views.append(
+                {
+                    "search_round": row["search_round"],
+                    "sequence": row["sequence"],
+                    "event_type": row["event_type"],
+                    "candidate_digest": row["candidate_digest"],
+                    "sampled_parameters": self._sampled_parameters(
+                        frozen_plan,
+                        candidate,
+                    ),
+                    "tell_state": (
+                        None
+                        if evaluation is None
+                        else ("FAIL" if failed else "COMPLETE")
+                    ),
+                    "objective": (
+                        None
+                        if evaluation is None or failed
+                        else evaluation["validation_score"]
+                    ),
+                    "occurred_at": row["occurred_at"],
+                    "event": event,
                 }
             )
         metric_evidence_by_binding = {
@@ -6316,6 +7169,7 @@ class ParameterStudy:
                 }
                 for event in events
             ],
+            "suggestion_journal": suggestion_journal_views,
             "trials": trial_views,
             "bindings": binding_views,
             "rankings": rankings,

@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import warnings
 from copy import deepcopy
 from math import prod
+from typing import Any
 
+from optuna.distributions import (
+    CategoricalDistribution,
+    FloatDistribution,
+    IntDistribution,
+)
+from optuna.trial import TrialState
 import pytest
 
 import quant_platform.study_suggesters as study_suggesters
@@ -24,6 +32,7 @@ from quant_platform.study_suggesters import (
     MAX_SUGGESTIONS,
     MAX_UNIQUE_TRIAL_BUDGET,
     MAX_VALUES_PER_DIMENSION,
+    OptunaTPEParameterSuggester,
     ParameterSuggester,
     SeededRandomParameterSuggester,
     Suggestion,
@@ -31,6 +40,7 @@ from quant_platform.study_suggesters import (
     SuggestionDisposition,
     SuggesterHistoryLeakageError,
     SuggesterValidationError,
+    optuna_tpe_frozen_identity,
 )
 
 
@@ -146,6 +156,374 @@ def _plan_with_integer_dimensions(sizes: list[int]) -> dict:
     return plan
 
 
+def _optuna_plan() -> dict:
+    plan = deepcopy(_frozen_plan())
+    decision = plan["operators"]["decision"]
+    decision["parameter_schema"]["properties"]["mode"]["enum"] = [
+        "cross",
+        "level",
+        "breakout",
+    ]
+    plan["search"].update(
+        suggester="OPTUNA_TPE",
+        adapter_identity=optuna_tpe_frozen_identity(),
+        unique_trial_budget=8,
+        max_suggestions=12,
+        space={
+            "/operators/decision/mode": {
+                "kind": "categorical",
+                "choices": ["cross", "level", "breakout"],
+            },
+            "/operators/decision/threshold": {
+                "kind": "float",
+                "low": 0.1,
+                "high": 0.9,
+                "step": None,
+                "log": False,
+            },
+            "/operators/fit/window": {
+                "kind": "int",
+                "low": 2,
+                "high": 5,
+                "step": 1,
+                "log": False,
+            },
+        },
+    )
+    plan["search"].pop("candidate_capacity")
+    return plan
+
+
+def _inner_evaluation(
+    suggestion: Suggestion,
+    *,
+    score: float | None = None,
+    status: str = "COMPLETED",
+    round_identity: str = "study-001/search-round-001",
+) -> dict:
+    evaluation: dict[str, Any] = {"status": status}
+    if score is not None:
+        evaluation["validation_score"] = score
+    return {
+        "event_type": "INNER_EVALUATION_RECORDED",
+        "round_identity": round_identity,
+        "role": "INNER_SCORE",
+        "candidate_digest": suggestion.candidate_digest,
+        "evaluation": evaluation,
+    }
+
+
+def _append_optuna_result(
+    plan: dict[str, Any],
+    history: list[dict[str, Any]],
+    *,
+    score: float,
+) -> Suggestion:
+    suggestion = OptunaTPEParameterSuggester().next_suggestion(plan, history)
+    assert isinstance(suggestion, Suggestion)
+    history.append(suggestion.as_history_event())
+    if suggestion.creates_trial:
+        history.append(_inner_evaluation(suggestion, score=score))
+    return suggestion
+
+
+def test_optuna_tpe_baseline_is_first_even_outside_search_distributions():
+    plan = _optuna_plan()
+    plan["search"]["space"]["/operators/decision/mode"]["choices"] = [
+        "level",
+        "breakout",
+    ]
+    plan["search"]["space"]["/operators/decision/threshold"]["low"] = 0.3
+    plan["search"]["space"]["/operators/fit/window"]["low"] = 4
+    suggester = OptunaTPEParameterSuggester()
+
+    baseline = suggester.next_suggestion(plan, [])
+
+    assert isinstance(suggester, ParameterSuggester)
+    assert isinstance(baseline, Suggestion)
+    assert not hasattr(suggester, "__dict__")
+    assert baseline.proposal_sequence == 0
+    assert baseline.candidate["operators"]["decision"]["parameters"] == {
+        "enabled": True,
+        "mode": "cross",
+        "threshold": 0.2,
+    }
+    assert baseline.candidate["operators"]["fit"]["parameters"] == {"window": 3}
+    assert baseline.classification is SuggestionClassification.BASELINE_ONLY
+
+    history = [baseline.as_history_event(), _inner_evaluation(baseline, score=0.125)]
+    first_in_range = suggester.next_suggestion(plan, history)
+    assert isinstance(first_in_range, Suggestion)
+    assert first_in_range.classification is SuggestionClassification.IN_RANGE
+
+
+def test_optuna_tpe_uses_explicit_typed_distributions_and_frozen_sampler_settings(
+    monkeypatch,
+):
+    plan = _optuna_plan()
+    observed_distributions = []
+    original_ask = study_suggesters.optuna.study.Study.ask
+
+    def recording_ask(study, fixed_distributions=None):
+        if fixed_distributions is not None:
+            observed_distributions.append(fixed_distributions)
+        return original_ask(study, fixed_distributions=fixed_distributions)
+
+    monkeypatch.setattr(study_suggesters.optuna.study.Study, "ask", recording_ask)
+
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always", FutureWarning)
+        baseline = OptunaTPEParameterSuggester().next_suggestion(plan, [])
+    assert isinstance(baseline, Suggestion)
+    assert not [warning for warning in emitted if issubclass(warning.category, FutureWarning)]
+
+    distributions = observed_distributions[-1]
+    assert isinstance(
+        distributions["/operators/decision/mode"],
+        CategoricalDistribution,
+    )
+    assert isinstance(
+        distributions["/operators/decision/threshold"],
+        FloatDistribution,
+    )
+    assert isinstance(distributions["/operators/fit/window"], IntDistribution)
+    assert distributions["/operators/decision/mode"].choices == (
+        "cross",
+        "level",
+        "breakout",
+    )
+    assert distributions["/operators/decision/threshold"].step is None
+    assert distributions["/operators/fit/window"].step == 1
+
+    identity = optuna_tpe_frozen_identity()
+    assert identity["sampler_settings"] == {
+        "consider_prior": None,
+        "prior_weight": None,
+        "consider_magic_clip": None,
+        "consider_endpoints": None,
+        "n_startup_trials": 5,
+        "n_ei_candidates": 24,
+        "gamma": None,
+        "weights": None,
+        "multivariate": False,
+        "group": False,
+        "warn_independent_sampling": None,
+        "constant_liar": False,
+        "constraints_func": None,
+        "categorical_distance_func": None,
+    }
+
+
+def test_optuna_tpe_uses_deterministic_study_name_without_info_noise(
+    capsys,
+    monkeypatch,
+):
+    plan = _optuna_plan()
+    observed_names = []
+    original_create_study = study_suggesters.optuna.create_study
+
+    def recording_create_study(*args, **kwargs):
+        observed_names.append(kwargs.get("study_name"))
+        return original_create_study(*args, **kwargs)
+
+    monkeypatch.setattr(study_suggesters.optuna, "create_study", recording_create_study)
+
+    OptunaTPEParameterSuggester().next_suggestion(plan, [])
+    OptunaTPEParameterSuggester().next_suggestion(plan, [])
+
+    expected_name = (
+        "quant-platform-optuna-tpe-"
+        + hashlib.sha256(plan["round_identity"].encode("utf-8")).hexdigest()
+    )
+    assert observed_names == [expected_name, expected_name]
+    assert "[I " not in capsys.readouterr().err
+
+
+def test_optuna_tpe_replays_successes_and_restarts_at_exact_next_candidate():
+    plan = _optuna_plan()
+    suggester = OptunaTPEParameterSuggester()
+    baseline = suggester.next_suggestion(plan, [])
+    assert isinstance(baseline, Suggestion)
+
+    with pytest.raises(SuggesterValidationError, match="terminal inner evaluation"):
+        suggester.next_suggestion(plan, [baseline.as_history_event()])
+
+    history: list[dict[str, Any]] = []
+    completed = [
+        _append_optuna_result(plan, history, score=score)
+        for score in (0.125, -0.25, 0.375, 0.5, -0.625, 0.75)
+    ]
+    uninterrupted = suggester.next_suggestion(plan, history)
+    restarted = OptunaTPEParameterSuggester().next_suggestion(plan, deepcopy(history))
+
+    assert all(suggestion.disposition is SuggestionDisposition.UNIQUE for suggestion in completed)
+    assert isinstance(uninterrupted, Suggestion)
+    assert isinstance(restarted, Suggestion)
+    assert restarted.as_history_event() == uninterrupted.as_history_event()
+    assert restarted.proposal_sequence == 6
+    assert (
+        restarted.candidate_digest
+        == "e8974216bd5cc148dc41a11904054dafdd99c6664ada242fd9a24bb005260826"
+    )
+    parameters = restarted.candidate["operators"]
+    assert parameters["decision"]["parameters"]["mode"] == "breakout"
+    assert parameters["decision"]["parameters"]["threshold"] == 0.8932884654599286
+    assert parameters["fit"]["parameters"]["window"] == 5
+
+
+def test_optuna_tpe_failed_tell_has_no_score_and_continues_deterministically(
+    monkeypatch,
+):
+    plan = _optuna_plan()
+    baseline = OptunaTPEParameterSuggester().next_suggestion(plan, [])
+    assert isinstance(baseline, Suggestion)
+    observed_tells = []
+    original_tell = study_suggesters.optuna.study.Study.tell
+
+    def recording_tell(study, trial, values=None, state=None, skip_if_finished=False):
+        observed_tells.append((trial.number, values, state))
+        return original_tell(
+            study,
+            trial,
+            values,
+            state=state,
+            skip_if_finished=skip_if_finished,
+        )
+
+    monkeypatch.setattr(study_suggesters.optuna.study.Study, "tell", recording_tell)
+    history = [
+        baseline.as_history_event(),
+        _inner_evaluation(baseline, status="FAILED"),
+    ]
+
+    continued = OptunaTPEParameterSuggester().next_suggestion(plan, history)
+    restarted = OptunaTPEParameterSuggester().next_suggestion(plan, history)
+
+    assert isinstance(continued, Suggestion)
+    assert isinstance(restarted, Suggestion)
+    assert continued.as_history_event() == restarted.as_history_event()
+    assert observed_tells
+    assert all(values is None and state is TrialState.FAIL for _, values, state in observed_tells)
+
+    fake_score = _inner_evaluation(baseline, status="FAILED", score=0.0)
+    with pytest.raises(SuggesterValidationError, match="fabricated score"):
+        OptunaTPEParameterSuggester().next_suggestion(
+            plan,
+            [baseline.as_history_event(), fake_score],
+        )
+
+
+def test_optuna_tpe_duplicate_is_audited_without_another_platform_evaluation():
+    plan = _optuna_plan()
+    plan["search"]["space"] = {
+        "/operators/decision/mode": {
+            "kind": "categorical",
+            "choices": ["cross", "level", "breakout"],
+        }
+    }
+    plan["search"]["unique_trial_budget"] = 3
+    history: list[dict[str, Any]] = []
+
+    baseline = _append_optuna_result(plan, history, score=0.0)
+    first = _append_optuna_result(plan, history, score=1.0)
+    duplicate = OptunaTPEParameterSuggester().next_suggestion(plan, history)
+
+    assert baseline.candidate["operators"]["decision"]["parameters"]["mode"] == "cross"
+    assert first.candidate["operators"]["decision"]["parameters"]["mode"] == "level"
+    assert isinstance(duplicate, Suggestion)
+    assert duplicate.proposal_sequence == 2
+    assert duplicate.disposition is SuggestionDisposition.DUPLICATE
+    assert duplicate.duplicate_of_sequence == 1
+    assert duplicate.creates_trial is False
+    assert duplicate.as_history_event()["event_type"] is HistoryEventType.DUPLICATE_SUGGESTION
+
+    continued = OptunaTPEParameterSuggester().next_suggestion(
+        plan,
+        [*history, duplicate.as_history_event()],
+    )
+    assert isinstance(continued, Suggestion)
+    assert continued.proposal_sequence == 3
+
+
+@pytest.mark.parametrize(
+    ("identity_path", "drifted_value"),
+    [
+        (("adapter_version",), "1.0.1"),
+        (("library_version",), "4.9.1"),
+        (("sampler_settings", "n_startup_trials"), 10),
+        (("direction",), "MINIMIZE"),
+        (("objective",), "outer_score"),
+    ],
+)
+def test_optuna_tpe_rejects_adapter_identity_drift(identity_path, drifted_value):
+    plan = _optuna_plan()
+    target = plan["search"]["adapter_identity"]
+    for key in identity_path[:-1]:
+        target = target[key]
+    target[identity_path[-1]] = drifted_value
+
+    with pytest.raises(SuggesterValidationError, match="adapter_identity"):
+        OptunaTPEParameterSuggester().next_suggestion(plan, [])
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        {
+            "event_type": "OUTER_EVALUATION_RECORDED",
+            "role": "OUTER_OOS",
+            "candidate_digest": "unused",
+            "evaluation": {"validation_score": 99.0},
+        },
+        {
+            "event_type": "HOLDOUT_EVALUATION_RECORDED",
+            "role": "TERMINAL_HOLDOUT",
+            "candidate_digest": "unused",
+            "evaluation": {"passed": True},
+        },
+        {
+            "event_type": "INNER_EVALUATION_RECORDED",
+            "round_identity": "study-001/search-round-001",
+            "role": "OUTER_AUDIT",
+            "candidate_digest": "replace",
+            "evaluation": {"status": "COMPLETED", "validation_score": 99.0},
+        },
+    ],
+)
+def test_optuna_tpe_rejects_outer_and_holdout_history(forbidden):
+    plan = _optuna_plan()
+    baseline = OptunaTPEParameterSuggester().next_suggestion(plan, [])
+    assert isinstance(baseline, Suggestion)
+    forbidden = deepcopy(forbidden)
+    if forbidden["candidate_digest"] == "replace":
+        forbidden["candidate_digest"] = baseline.candidate_digest
+
+    with pytest.raises(SuggesterHistoryLeakageError, match=forbidden["role"]):
+        OptunaTPEParameterSuggester().next_suggestion(
+            plan,
+            [baseline.as_history_event(), forbidden],
+        )
+
+
+def test_optuna_tpe_rejects_cross_round_inner_history():
+    plan = _optuna_plan()
+    baseline = OptunaTPEParameterSuggester().next_suggestion(plan, [])
+    assert isinstance(baseline, Suggestion)
+
+    with pytest.raises(SuggesterHistoryLeakageError, match="same search round"):
+        OptunaTPEParameterSuggester().next_suggestion(
+            plan,
+            [
+                baseline.as_history_event(),
+                _inner_evaluation(
+                    baseline,
+                    score=0.125,
+                    round_identity="study-001/search-round-previous",
+                ),
+            ],
+        )
+
+
 def test_grid_proposes_canonical_defaults_as_sequence_zero():
     suggester = GridParameterSuggester()
     suggestion = suggester.next_suggestion(_frozen_plan(), [])
@@ -240,6 +618,26 @@ def test_out_of_range_defaults_are_baseline_only_and_consume_unique_budget():
         raw_suggestion_count=1,
         unique_trial_count=1,
     )
+
+
+def test_optuna_numeric_enum_requires_a_categorical_distribution():
+    plan = _optuna_plan()
+    plan["operators"]["fit"]["parameter_schema"]["properties"]["window"]["enum"] = [
+        2,
+        5,
+    ]
+    plan["operators"]["fit"]["defaults"]["window"] = 2
+    plan["operators"]["fit"]["parameters"]["window"] = 2
+    plan["search"]["space"]["/operators/fit/window"] = {
+        "kind": "int",
+        "low": 2,
+        "high": 5,
+        "step": 1,
+        "log": False,
+    }
+
+    with pytest.raises(SuggesterValidationError, match="enum.*categorical"):
+        OptunaTPEParameterSuggester().next_suggestion(plan, [])
 
 
 def test_duplicate_grid_proposal_is_audited_without_creating_a_trial():

@@ -62,6 +62,20 @@ An immutable verified account-level evidence document derived from a canonical s
 
 The only replaceable parameter-search seam. It proposes candidates from a Frozen Study Plan and ordered history but owns no Experiment, Trial, or result facts.
 
+## Search Distribution
+
+A frozen typed domain of permitted values for one selected operator parameter. It defines what a Parameter Suggester may propose, not a mutable parameter value.
+
+## Suggestion Journal
+
+The authoritative ordered record of candidate proposals and same-round inner evaluations used to deterministically reconstruct an adaptive Parameter Suggester after interruption.
+
+**Distinguish from:** Optuna storage. Third-party sampler state is derived from this journal and is never the platform fact source.
+
+## Adaptive Suggestion
+
+A proposal made after observing earlier canonical inner-fold evaluations from the same Search Round. Outer-audit and terminal-holdout evidence are never adaptive inputs.
+
 ## Execution Identity
 
 The content identity of source, dependencies, runtime, runner image, metric semantics, and protocol implementation frozen by a Study. A release path is only a locator.

@@ -293,6 +293,47 @@ try {
       sessionId,
     );
     await navigate("/studies/new");
+    if (!scriptsDisabled) {
+      const toggleState = await evaluate(`(() => {
+        const name = "study__fit__prior_log_ols__1.0.0__window_sessions";
+        const checkbox = document.querySelector('[name="' + name + '"]');
+        const editor = document.querySelector('[data-domain-editor="' + name + '"]');
+        const field = document.querySelector(
+          '[name="search__fit__prior_log_ols__1.0.0__window_sessions"]',
+        );
+        const initial = {
+          hidden: editor.hidden,
+          disabled: field.disabled,
+          expanded: checkbox.getAttribute("aria-expanded"),
+        };
+        checkbox.checked = true;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        const selected = {
+          hidden: editor.hidden,
+          disabled: field.disabled,
+          expanded: checkbox.getAttribute("aria-expanded"),
+        };
+        field.value = "[2,3]";
+        checkbox.checked = false;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        const cleared = {
+          hidden: editor.hidden,
+          disabled: field.disabled,
+          expanded: checkbox.getAttribute("aria-expanded"),
+        };
+        return { initial, selected, cleared };
+      })()`);
+      if (
+        !toggleState.initial.hidden || !toggleState.initial.disabled ||
+        toggleState.initial.expanded !== "false" ||
+        toggleState.selected.hidden || toggleState.selected.disabled ||
+        toggleState.selected.expanded !== "true" ||
+        !toggleState.cleared.hidden || !toggleState.cleared.disabled ||
+        toggleState.cleared.expanded !== "false"
+      ) {
+        throw new Error(`Study parameter toggle is unsafe: ${JSON.stringify(toggleState)}`);
+      }
+    }
     if (scriptsDisabled) {
       const fieldsetsAreExplicit = await evaluate(`(() => {
         const controls = Array.from(document.querySelectorAll(
@@ -316,6 +357,12 @@ try {
       for (const [name, value] of Object.entries(values)) {
         if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value;
       }
+      form.elements.namedItem(
+        "study__fit__prior_log_ols__1.0.0__window_sessions",
+      ).checked = true;
+      form.elements.namedItem(
+        "study__fit__prior_log_ols__1.0.0__window_sessions",
+      ).dispatchEvent(new Event("change", { bubbles: true }));
       form.elements.namedItem(
         "search__fit__prior_log_ols__1.0.0__window_sessions",
       ).value = "[2,";
@@ -361,6 +408,7 @@ try {
         holdout_sessions: "1", evaluation_version: "1.0.0",
         parent_study_ids: "", prior_unique_candidate_count: "0",
         lineage_complete: "true",
+        "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
         "search__fit__prior_log_ols__1.0.0__window_sessions": "[2,3]",
       });
       const submission = document.createElement("form");

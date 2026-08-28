@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from quant_platform.parameter_study import ParameterStudy
+from quant_platform.parameter_study import (
+    ParameterStudy,
+    StudyValidationError,
+)
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _json_text, _study_from_form
 
@@ -201,6 +204,7 @@ def test_study_html_creation_uses_only_the_public_parameter_study_seam(
     form = _experiment_form(app, snapshot(app), issued.csrf_token)
     form.update(
         {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
             "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
             "suggester": "GRID",
             "seed": "17",
@@ -290,6 +294,54 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert "Terminal holdout plan and state" in report.text
 
 
+def test_study_detail_and_report_render_optional_suggestion_journal(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    detail["suggestion_journal"] = [
+        {
+            "search_round": "OUTER:1",
+            "proposal_sequence": 1,
+            "changed_parameters": {"/operators/fit/window_sessions": 40},
+            "tell": {"state": "COMPLETE", "objective": 1.25},
+        },
+        {
+            "search_round": "FINAL",
+            "proposal_sequence": 2,
+            "changed_parameters": {"/operators/fit/window_sessions": 60},
+            "tell": {"state": "FAIL", "objective": None},
+        },
+    ]
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+
+    for path in (f"/studies/{STUDY_ID}", f"/studies/{STUDY_ID}/report"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert 'data-testid="suggestion-journal"' in response.text
+        assert response.text.index("OUTER:1") < response.text.index("FINAL")
+        assert "/operators/fit/window_sessions" in response.text
+        assert "COMPLETE" in response.text
+        assert "1.25" in response.text
+        assert "FAIL" in response.text
+
+
+def test_old_studies_without_suggestion_journal_render_safely(tmp_path: Path, monkeypatch):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+
+    missing = client.get(f"/studies/{STUDY_ID}")
+    detail["suggestion_journal"] = []
+    empty = client.get(f"/studies/{STUDY_ID}/report")
+
+    assert missing.status_code == empty.status_code == 200
+    assert "No adaptive suggestions have been journaled." in missing.text
+    assert "No adaptive suggestions have been journaled." in empty.text
+
+
 def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
@@ -340,6 +392,7 @@ def test_study_wizard_preserves_invalid_values_and_identifies_errors(tmp_path: P
     form = _experiment_form(app, snapshot(app), issued.csrf_token)
     form.update(
         {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
             "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
             "unique_trial_budget": "not-a-number",
         }
@@ -369,6 +422,7 @@ def test_invalid_finite_range_identifies_the_search_field(tmp_path: Path):
     issued = authenticate(app, client)
     field = "search__fit__prior_log_ols__1.0.0__window_sessions"
     form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form["study__fit__prior_log_ols__1.0.0__window_sessions"] = "int"
     form[field] = "[2,"
 
     response = client.post(
@@ -385,6 +439,234 @@ def test_invalid_finite_range_identifies_the_search_field(tmp_path: Path):
     assert f'aria-describedby="{field}-error"' in control
     assert "autofocus" in control
     assert f'id="{field}-error"' in response.text
+
+
+def _typed_study_operator(app) -> None:
+    app.state.catalog.insert_operator_version_for_test(
+        operator_id="typed_study_fit",
+        slot="fit",
+        version="1.0.0",
+        content_digest="8" * 64,
+        parameter_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["slow", "fast"]},
+                "window": {"type": "integer", "minimum": 2, "maximum": 20},
+                "threshold": {"type": "number", "minimum": 0.1, "maximum": 2.0},
+                "enabled": {"type": "boolean"},
+            },
+            "required": ["enabled", "mode", "threshold", "window"],
+            "additionalProperties": False,
+        },
+        defaults={"mode": "slow", "window": 4, "threshold": 0.5, "enabled": True},
+    )
+
+
+def _typed_study_form(app, csrf_token: str) -> tuple[dict[str, str], dict]:
+    form = _experiment_form(app, snapshot(app), csrf_token)
+    form["operator_fit_selector"] = "typed_study_fit@latest"
+    for name, value in {
+        "mode": '"slow"',
+        "window": "4",
+        "threshold": "0.5",
+        "enabled": "true",
+    }.items():
+        form[f"operator_fit_param__typed_study_fit__1.0.0__{name}"] = value
+    return form, app.state.studies.creation_options()
+
+
+def test_study_wizard_renders_explicit_schema_typed_parameter_selectors(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    snapshot(app)
+    _typed_study_operator(app)
+
+    response = client.get("/studies/new")
+
+    assert response.status_code == 200
+    for name, kind in (
+        ("mode", "categorical"),
+        ("window", "int"),
+        ("threshold", "float"),
+        ("enabled", "categorical"),
+    ):
+        selection = f"study__fit__typed_study_fit__1.0.0__{name}"
+        assert re.search(
+            rf'<input\b[^>]*type="checkbox"[^>]*name="{selection}"'
+            rf'[^>]*value="{kind}"',
+            response.text,
+        )
+        assert f'data-domain-editor="{selection}"' in response.text
+        assert f"Fixed {name}" in response.text
+    assert "OPTUNA_TPE" in response.text
+    assert "Optuna TPE" in response.text
+    assert "Adaptive unique Trial budget" in response.text
+    assert "Adaptive raw suggestion budget" in response.text
+    assert "study__cost__" not in response.text
+    assert "study__report__" not in response.text
+
+
+def test_typed_parameter_domains_emit_the_backend_contract(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    _typed_study_operator(app)
+    form, creation = _typed_study_form(app, issued.csrf_token)
+    form.update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "study__fit__typed_study_fit__1.0.0__mode": "categorical",
+            "domain__fit__typed_study_fit__1.0.0__mode__choices": '["slow","fast"]',
+            "study__fit__typed_study_fit__1.0.0__window": "int",
+            "domain__fit__typed_study_fit__1.0.0__window__low": "2",
+            "domain__fit__typed_study_fit__1.0.0__window__high": "10",
+            "domain__fit__typed_study_fit__1.0.0__window__step": "2",
+            "study__fit__typed_study_fit__1.0.0__threshold": "float",
+            "domain__fit__typed_study_fit__1.0.0__threshold__low": "0.1",
+            "domain__fit__typed_study_fit__1.0.0__threshold__high": "1.5",
+            "domain__fit__typed_study_fit__1.0.0__threshold__log": "true",
+        }
+    )
+
+    spec = _study_from_form(form, creation=creation)
+
+    assert spec["search"]["suggester"] == "OPTUNA_TPE"
+    assert spec["search"]["space"] == {
+        "/operators/fit/mode": {
+            "kind": "categorical",
+            "choices": ["slow", "fast"],
+        },
+        "/operators/fit/window": {
+            "kind": "int",
+            "low": 2,
+            "high": 10,
+            "step": 2,
+            "log": False,
+        },
+        "/operators/fit/threshold": {
+            "kind": "float",
+            "low": 0.1,
+            "high": 1.5,
+            "log": True,
+        },
+    }
+
+
+def test_integer_log_domain_omits_step_in_the_backend_contract(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    _typed_study_operator(app)
+    form, creation = _typed_study_form(app, issued.csrf_token)
+    form.update(
+        {
+            "suggester": "OPTUNA_TPE",
+            "study__fit__typed_study_fit__1.0.0__window": "int",
+            "domain__fit__typed_study_fit__1.0.0__window__low": "2",
+            "domain__fit__typed_study_fit__1.0.0__window__high": "10",
+            "domain__fit__typed_study_fit__1.0.0__window__log": "true",
+        }
+    )
+
+    spec = _study_from_form(form, creation=creation)
+
+    assert spec["search"]["space"]["/operators/fit/window"] == {
+        "kind": "int",
+        "low": 2,
+        "high": 10,
+        "log": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("updates", "field", "message"),
+    [
+        (
+            {"domain__fit__typed_study_fit__1.0.0__window__low": "2"},
+            "domain__fit__typed_study_fit__1.0.0__window__low",
+            "unchecked parameter",
+        ),
+        (
+            {"study__fit__typed_study_fit__1.0.0__window": "float"},
+            "study__fit__typed_study_fit__1.0.0__window",
+            "must use int domain",
+        ),
+        (
+            {
+                "study__fit__typed_study_fit__1.0.0__window": "int",
+                "domain__fit__typed_study_fit__1.0.0__window__low": "2",
+                "domain__fit__typed_study_fit__1.0.0__window__high": "10",
+                "domain__fit__typed_study_fit__1.0.0__window__step": "2",
+                "domain__fit__typed_study_fit__1.0.0__window__log": "true",
+            },
+            "domain__fit__typed_study_fit__1.0.0__window__step",
+            "step and log",
+        ),
+        (
+            {
+                "study__fit__typed_study_fit__1.0.0__window": "int",
+                "domain__fit__typed_study_fit__1.0.0__window__low": "12",
+                "domain__fit__typed_study_fit__1.0.0__window__high": "10",
+            },
+            "domain__fit__typed_study_fit__1.0.0__window__high",
+            "high must be greater than or equal to low",
+        ),
+        (
+            {
+                "study__fit__typed_study_fit__1.0.0__mode": "categorical",
+                "domain__fit__typed_study_fit__1.0.0__mode__choices": '["slow","unknown"]',
+            },
+            "domain__fit__typed_study_fit__1.0.0__mode__choices",
+            "must be one of",
+        ),
+    ],
+)
+def test_typed_parameter_domains_fail_closed(
+    tmp_path: Path,
+    updates: dict[str, str],
+    field: str,
+    message: str,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    _typed_study_operator(app)
+    form, creation = _typed_study_form(app, issued.csrf_token)
+    form["suggester"] = "OPTUNA_TPE"
+    form.update(updates)
+
+    with pytest.raises(StudyValidationError, match=message) as error:
+        _study_from_form(form, creation=creation)
+
+    assert str(error.value).startswith(f"{field}:")
+
+
+def test_typed_parameter_domain_errors_preserve_checked_values(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    _typed_study_operator(app)
+    form, _ = _typed_study_form(app, issued.csrf_token)
+    selection = "study__fit__typed_study_fit__1.0.0__threshold"
+    low = "domain__fit__typed_study_fit__1.0.0__threshold__low"
+    high = "domain__fit__typed_study_fit__1.0.0__threshold__high"
+    form.update(
+        {
+            "suggester": "OPTUNA_TPE",
+            selection: "float",
+            low: "not-a-number",
+            high: "1.5",
+        }
+    )
+
+    response = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert f'href="#{low}"' in response.text
+    assert re.search(rf'name="{selection}"[^>]*checked', response.text)
+    assert re.search(rf'id="{low}"[^>]*value="not-a-number"[^>]*aria-invalid="true"', response.text)
+    assert re.search(rf'id="{high}"[^>]*value="1.5"', response.text)
+    assert f'id="{low}-error"' in response.text
 
 
 def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
@@ -417,6 +699,7 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     form = _experiment_form(app, snapshot_id, issued.csrf_token)
     form.update(
         {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
             "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
             "suggester": "GRID",
             "seed": "17",
@@ -488,6 +771,7 @@ def test_preview_edit_preserves_complete_wizard_values(tmp_path: Path):
     end_date = form["end_date"]
     form.update(
         {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
             range_field: "[2,3]",
             "unique_trial_budget": "2",
             "max_suggestions": "3",
@@ -782,6 +1066,7 @@ def test_invalid_wizard_preserves_values_and_links_accessible_errors(tmp_path: P
     form = _experiment_form(app, snapshot_id, issued.csrf_token)
     form.update(
         {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
             "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
             "suggester": "GRID",
             "seed": "17",

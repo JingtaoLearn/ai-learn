@@ -159,6 +159,25 @@ fieldset label + label { margin-top: 14px; }
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
 }
 .parameter-range label { display: grid; gap: 7px; color: var(--label); font-size: 13px; }
+.study-parameter { min-width: 0; }
+.check-control {
+  display: flex !important; min-height: 44px; grid-template-columns: none; align-items: center; gap: 10px;
+}
+.check-control input[type="checkbox"] { width: 20px; min-width: 20px; min-height: 20px; margin: 0; }
+.check-control span { display: grid; gap: 2px; }
+.check-control small, .baseline, .fixed-only { color: var(--muted); }
+.domain-editor {
+  display: grid; min-width: 0; gap: 12px; margin-top: 10px; padding: 14px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised);
+}
+.domain-editor[hidden] { display: none; }
+.baseline { margin: 0; font-size: 13px; }
+.domain-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.domain-log { align-self: end; }
+.suggestion-journal { display: grid; gap: 14px; padding: 0; list-style: none; }
+.suggestion-entry { padding: 16px; border: 1px solid var(--border); border-radius: 7px; }
+.suggestion-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.suggestion-entry pre { margin: 0; }
 .validation-summary {
   padding: 18px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
   border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, var(--surface));
@@ -230,7 +249,7 @@ iframe { width: 100%; min-height: 720px; border: 1px solid var(--border); backgr
   .timeline-item { grid-template-columns: 1fr; }
   .filter-bar { grid-template-columns: 1fr; }
   .wizard-step { grid-template-columns: 1fr; padding: 18px; }
-  .parameter-range, .holdout-dimensions { grid-template-columns: 1fr; }
+  .parameter-range, .domain-grid, .holdout-dimensions { grid-template-columns: 1fr; }
   .holdout-dimensions div { border-right: 0; border-bottom: 1px solid var(--border); }
   .holdout-dimensions div:last-child { border-bottom: 0; }
   .evidence-window { grid-template-columns: 1fr; gap: 4px; }

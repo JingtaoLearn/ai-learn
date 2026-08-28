@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_parameter_control.html" import parameter_control %}
+{% from "_parameter_control.html" import parameter_control, study_parameter_domain %}
 {% block title %}New Parameter Study · Quant Research{% endblock %}
 {% block page %}study-new{% endblock %}
 {% block content %}
@@ -23,7 +23,7 @@
   </section>
   <section class="wizard-step" aria-labelledby="study-fixed-heading">
     <div class="step-number" aria-hidden="true">2</div>
-    <div><h2 id="study-fixed-heading">Fixed parameters and finite ranges</h2><p class="muted">Every parameter keeps its displayed fixed default unless its finite JSON range supplies a Trial value. Cost and report parameters cannot be searched.</p>
+    <div><h2 id="study-fixed-heading">Fixed parameters and study domains</h2><p class="muted">Every Trial starts from the visible fixed baseline. Explicitly select eligible parameters to vary; cost and report parameters always remain fixed.</p>
       <fieldset class="slot-field"><legend>Template defaults</legend>
       {% for name, schema in template.parameter_schema.properties.items() %}{% if name not in ("evaluation_start", "evaluation_end") %}
         {% set field_name = "template_" ~ name %}<label>{{ name }}{{ parameter_control(field_name, template.defaults[name], schema, "template-parameter", name, form_values.get(field_name), field_name in form_values, field_name in invalid_fields) }}</label>
@@ -38,7 +38,7 @@
           {% for name, schema in version.parameter_schema.properties.items() %}
           <div class="parameter-range">
             {% set field_name = "operator_" ~ slot ~ "_param__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name %}<label>Fixed {{ name }}{{ parameter_control(field_name, version.defaults[name], schema, "parameter-name", name, form_values.get(field_name), field_name in form_values, field_name in invalid_fields) }}</label>
-            {% if slot not in ("cost", "report") %}{% set search_name = "search__" ~ slot ~ "__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name %}<label>Finite search values for {{ name }} <span class="optional">(JSON array; blank keeps fixed)</span><input id="{{ search_name }}" class="mono" name="{{ search_name }}" value="{{ form_values.get(search_name, [version.defaults[name]]|canonical_json if default_search and default_search[0] == slot and default_search[1] == operator.operator_id and default_search[2] == version.version and default_search[3] == name else '') }}" placeholder='[20,40,60]'{% if search_name in invalid_fields %} aria-invalid="true" aria-describedby="{{ search_name }}-error" autofocus{% endif %}>{% if search_name in invalid_fields %}<span id="{{ search_name }}-error" class="field-error">{{ error_messages[search_name] }}</span>{% endif %}</label>{% endif %}
+            {% if slot not in ("cost", "report") %}{{ study_parameter_domain(slot, operator.operator_id, version.version, name, schema, version.defaults[name], form_values, invalid_fields, error_messages) }}{% else %}<p class="fixed-only">Fixed for every Trial.</p>{% endif %}
           </div>
           {% endfor %}
           {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
@@ -50,10 +50,10 @@
   </section>
   <section class="wizard-step" aria-labelledby="study-budget-heading">
     <div class="step-number" aria-hidden="true">3</div>
-    <div><h2 id="study-budget-heading">Search and validation budgets</h2><p class="muted">Preview validates that these finite budgets fit the available sessions and shows the exact split windows.</p>
+    <div><h2 id="study-budget-heading">Search and validation budgets</h2><p class="muted">Adaptive budgets count accepted unique Trials separately from all raw suggestions, including audited duplicates.</p>
       <div class="form-grid">
-        <label>Suggester<select id="suggester" name="suggester"><option value="GRID"{% if form_values.get("suggester", "GRID") == "GRID" %} selected{% endif %}>Deterministic Grid</option><option value="SEEDED_RANDOM"{% if form_values.get("suggester") == "SEEDED_RANDOM" %} selected{% endif %}>Seeded Random</option></select></label>
-        {% for name, label, default, minimum in (("seed", "Seed", "17", none), ("unique_trial_budget", "Unique Trial budget", "1", 1), ("max_suggestions", "Raw suggestion budget", "1", 1), ("outer_folds", "Outer folds", "1", 1), ("inner_folds", "Inner folds", "1", 1), ("scoring_sessions", "Scoring sessions per fold", "1", 1), ("minimum_training_sessions", "Minimum training sessions", "2", 1), ("purge_sessions", "Purge sessions", "0", 0), ("holdout_sessions", "Terminal holdout sessions", "1", 1)) %}
+        <label>Suggester<select id="suggester" name="suggester" data-study-suggester><option value="GRID"{% if form_values.get("suggester", "GRID") == "GRID" %} selected{% endif %}>Deterministic Grid</option><option value="SEEDED_RANDOM"{% if form_values.get("suggester") == "SEEDED_RANDOM" %} selected{% endif %}>Seeded Random</option><option value="OPTUNA_TPE"{% if form_values.get("suggester") == "OPTUNA_TPE" %} selected{% endif %}>Optuna TPE</option></select></label>
+        {% for name, label, default, minimum in (("seed", "Seed", "17", none), ("unique_trial_budget", "Adaptive unique Trial budget", "1", 1), ("max_suggestions", "Adaptive raw suggestion budget", "1", 1), ("outer_folds", "Outer folds", "1", 1), ("inner_folds", "Inner folds", "1", 1), ("scoring_sessions", "Scoring sessions per fold", "1", 1), ("minimum_training_sessions", "Minimum training sessions", "2", 1), ("purge_sessions", "Purge sessions", "0", 0), ("holdout_sessions", "Terminal holdout sessions", "1", 1)) %}
         <label>{{ label }}<input id="{{ name }}" name="{{ name }}" type="number"{% if minimum is not none %} min="{{ minimum }}"{% endif %} value="{{ form_values.get(name, default) }}" required{% if name in invalid_fields %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>{% if name in invalid_fields %}<span id="{{ name }}-error" class="field-error">{{ errors[0].message }}</span>{% endif %}</label>
         {% endfor %}
         <label>Evaluation policy<select id="evaluation_version" name="evaluation_version"><option value="latest"{% if form_values.get("evaluation_version", "latest") == "latest" %} selected{% endif %}>robust_walk_forward · latest</option><option value="1.0.0"{% if form_values.get("evaluation_version") == "1.0.0" %} selected{% endif %}>robust_walk_forward · 1.0.0</option></select></label>

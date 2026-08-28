@@ -197,13 +197,23 @@ python -m quant_platform.web
 
 Authenticated researchers can open `/studies` to create and inspect immutable Parameter
 Studies. The server-rendered wizard supports catalog Dataset number/name selection, date
-ranges, fixed operator parameters, finite JSON search ranges, deterministic Grid or
-Seeded Random budgets, chronological split controls, terminal holdout settings, and
-complete Study Lineage. Preview resolves the frozen plan, split windows, candidate
-capacity, and minimum/conditional-maximum Experiment binding counts before submission.
+ranges, fixed operator parameters, explicit research-parameter checkboxes, typed categorical,
+integer, and float search distributions, deterministic Grid/Seeded Random, and adaptive
+Optuna TPE. Cost, report, and template-protocol parameters remain fixed so the optimizer
+cannot improve its score by changing accounting or evidence semantics. Search budgets,
+chronological split controls, terminal holdout settings, and complete Study Lineage are
+frozen before execution. Preview resolves the exact plan and split windows and reports a
+baseline-only minimum plus a conditional adaptive upper bound for Experiment bindings.
 Selection-dependent bindings and canonical Experiment reuse are resolved only at dispatch.
-If an identity changes,
-submission creates nothing and returns a fresh preview for review.
+If an identity changes, submission creates nothing and returns a fresh preview for review.
+
+Optuna is a version-frozen parameter suggester, not a platform fact store. Each outer round
+and the final round follows an append-only `ask -> canonical inner folds -> independent
+evaluate -> tell` journal. The adapter receives only same-round `INNER_SCORE` evidence;
+outer-audit and terminal-holdout evidence are rejected. Restart reconstructs Optuna 4.9.0
+from that journal and verifies every replayed proposal. Duplicate suggestions are recorded
+without creating duplicate Trials, and failed candidates are told as failed without a
+fabricated score.
 
 Study detail and report views keep outer OOS selection-process evidence visibly separate
 from terminal holdout access, outcome, and freshness. Trial rankings display eligibility,
