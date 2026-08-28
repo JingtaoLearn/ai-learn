@@ -404,19 +404,20 @@ def _study_from_form(
             None if selector["version"] == "latest" else selector["version"],
         )
         for name, schema in selected["parameter_schema"]["properties"].items():
-            raw = form.get(
-                (
-                    f"search__{slot}__{selector['operator_id']}__"
-                    f"{selected['version']}__{name}"
-                ),
-                "",
-            ).strip()
+            field_name = (
+                f"search__{slot}__{selector['operator_id']}__"
+                f"{selected['version']}__{name}"
+            )
+            raw = form.get(field_name, "").strip()
             if not raw:
                 continue
-            values = _json_text(raw, f"search range for {slot}.{name}")
+            try:
+                values = _json_text(raw, f"search range for {slot}.{name}")
+            except ValueError as exc:
+                raise StudyValidationError(f"{field_name}: {exc}") from exc
             if not isinstance(values, list) or not values:
                 raise StudyValidationError(
-                    f"search range for {slot}.{name} must be a non-empty JSON array"
+                    f"{field_name}: search range must be a non-empty JSON array"
                 )
             search_space[f"/operators/{slot}/{name}"] = {"values": values}
     if not search_space:
@@ -1307,6 +1308,7 @@ def create_app(
             "action_id": values.get("action_id") or secrets.token_hex(16),
             "form_values": values,
             "errors": errors,
+            "error_messages": {error["field"]: error["message"] for error in errors},
             "invalid_fields": {error["field"] for error in errors},
         }
 
@@ -1342,8 +1344,31 @@ def create_app(
             session=session,
             preview=preview,
             study_json=_canonical_json_text(spec),
+            wizard_json=_canonical_json_text(
+                {key: value for key, value in form.items() if key != "csrf_token"}
+            ),
             action_id=form.get("action_id") or secrets.token_hex(16),
             stale=False,
+        )
+
+    @app.post("/studies/edit")
+    async def study_edit_action(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        if set(form) != {"csrf_token", "wizard_json"}:
+            raise StudyValidationError("Study edit form fields are invalid")
+        _csrf(request, session, form["csrf_token"])
+        values = _json_text(form["wizard_json"], "wizard_json")
+        if not isinstance(values, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in values.items()
+        ):
+            raise StudyValidationError("wizard_json must contain form text values")
+        return _render(
+            request,
+            "study_new.html",
+            session=session,
+            **await study_form_context(values),
         )
 
     @app.post("/studies")
@@ -1356,6 +1381,7 @@ def create_app(
             "action_id",
             "expected_preview_digest",
             "study_json",
+            "wizard_json",
         }:
             raise StudyValidationError("Study submission form fields are invalid")
         spec = _json_text(form["study_json"], "study_json")
@@ -1373,6 +1399,7 @@ def create_app(
                 session=session,
                 preview=preview,
                 study_json=_canonical_json_text(spec),
+                wizard_json=form["wizard_json"],
                 action_id=secrets.token_hex(16),
                 stale=True,
                 status_code=409,

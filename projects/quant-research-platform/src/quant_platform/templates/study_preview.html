@@ -14,11 +14,19 @@
   <div class="evidence-window holdout-window"><strong>Terminal holdout</strong><span>{{ preview.frozen_plan.holdout.fold_window.scoring_start }} → {{ preview.frozen_plan.holdout.fold_window.scoring_end }}</span><small>Remains sealed until one final candidate is frozen.</small></div>
 </section>
 <section class="panel"><h2>Resolved plan identity</h2><dl class="technical"><dt>Preview digest</dt><dd>{{ preview.preview_digest }}</dd><dt>Dataset</dt><dd>{{ preview.frozen_plan.dataset.dataset_id }} · {{ preview.frozen_plan.dataset.name }}</dd><dt>Snapshot</dt><dd>{{ preview.frozen_plan.dataset.snapshot_id }}</dd><dt>Execution identity</dt><dd>{{ preview.frozen_plan.execution.identity|canonical_json }}</dd></dl></section>
+<div class="actions">
+<form method="post" action="/studies/edit" data-testid="study-edit-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <textarea name="wizard_json" hidden>{{ wizard_json }}</textarea>
+  <button class="quiet" type="submit">Edit plan</button>
+</form>
 <form method="post" action="/studies" data-testid="study-submit-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="action_id" value="{{ action_id }}">
   <input type="hidden" name="expected_preview_digest" value="{{ preview.preview_digest }}">
   <textarea name="study_json" hidden>{{ study_json }}</textarea>
-  <div class="actions"><a class="button quiet" href="/studies/new">Edit plan</a><button type="submit">Submit immutable Study</button></div>
+  <textarea name="wizard_json" hidden>{{ wizard_json }}</textarea>
+  <button type="submit">Submit immutable Study</button>
 </form>
+</div>
 {% endblock %}

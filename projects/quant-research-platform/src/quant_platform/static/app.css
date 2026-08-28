@@ -10,6 +10,8 @@
   --accent: #5e6ad2;
   --accent-hover: #6f79dc;
   --danger: #e5484d;
+  --danger-button: #b4232d;
+  --danger-button-hover: #8f1822;
   --header: #0b0c0d;
   --link: #aeb4ff;
   --link-hover: #d7d9ff;
@@ -33,6 +35,8 @@
   --accent: #5e6ad2;
   --accent-hover: #4f5bc4;
   --danger: #c9373c;
+  --danger-button: #b4232d;
+  --danger-button-hover: #8f1822;
   --header: #ffffff;
   --link: #4653bd;
   --link-hover: #303da8;
@@ -54,6 +58,8 @@
     --accent: #5e6ad2;
     --accent-hover: #4f5bc4;
     --danger: #c9373c;
+    --danger-button: #b4232d;
+    --danger-button-hover: #8f1822;
     --header: #ffffff;
     --link: #4653bd;
     --link-hover: #303da8;
@@ -158,8 +164,8 @@ fieldset label + label { margin-top: 14px; }
 }
 .validation-summary p { margin-bottom: 0; }
 .validation-summary.danger { border-color: var(--danger); }
-.danger-button { border-color: var(--danger); background: var(--danger); }
-.danger-button:hover { border-color: var(--danger); background: var(--danger); color: white; opacity: .86; }
+.danger-button { border-color: var(--danger-button); background: var(--danger-button); }
+.danger-button:hover { border-color: var(--danger-button-hover); background: var(--danger-button-hover); color: white; }
 .field-error { color: var(--danger); }
 .study-row .chips { justify-content: flex-end; }
 .evidence-panel {

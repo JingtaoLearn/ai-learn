@@ -228,6 +228,64 @@ try {
     }
   }
 
+  async function assertDangerContrast(width) {
+    for (const [theme, preference] of [
+      ["dark", "dark"],
+      ["light", "light"],
+      ["system", "light"],
+      ["system", "dark"],
+    ]) {
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-color-scheme", value: preference }] },
+        sessionId,
+      );
+      await evaluate(
+        `document.documentElement.dataset.theme = ${JSON.stringify(theme)}`,
+      );
+      const point = await evaluate(`(() => {
+        const button = document.querySelector(".danger-button");
+        const box = button.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })()`);
+      const ratio = async () => evaluate(`(() => {
+        const parse = (value) => value.match(/[\\d.]+/g).slice(0, 3).map(Number);
+        const luminance = (color) => {
+          const channels = parse(color).map((value) => {
+            const normalized = value / 255;
+            return normalized <= 0.04045
+              ? normalized / 12.92
+              : ((normalized + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+        };
+        const style = getComputedStyle(document.querySelector(".danger-button"));
+        const foreground = luminance(style.color);
+        const background = luminance(style.backgroundColor);
+        return (Math.max(foreground, background) + 0.05) /
+          (Math.min(foreground, background) + 0.05);
+      })()`);
+      const normal = await ratio();
+      await send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: point.x, y: point.y },
+        sessionId,
+      );
+      const hover = await ratio();
+      await send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", x: 0, y: 0 },
+        sessionId,
+      );
+      if (normal < 4.5 || hover < 4.5) {
+        throw new Error(
+          `Cancel contrast failed for ${theme}/${preference} at ${width}px: ` +
+          `${JSON.stringify({ normal, hover })}`,
+        );
+      }
+    }
+  }
+
   async function runStudyLifecycle(width, scriptsDisabled) {
     await send(
       "Emulation.setDeviceMetricsOverride",
@@ -235,6 +293,58 @@ try {
       sessionId,
     );
     await navigate("/studies/new");
+    if (scriptsDisabled) {
+      const fieldsetsAreExplicit = await evaluate(`(() => {
+        const controls = Array.from(document.querySelectorAll(
+          '[name^="operator_"][name*="_param__"], [name^="search__"]',
+        ));
+        return controls.length > 0 && controls.every((control) => {
+          const fieldset = control.closest("fieldset.parameter-set");
+          return fieldset && getComputedStyle(fieldset).display !== "none" &&
+            fieldset.getClientRects().length > 0;
+        });
+      })()`);
+      if (!fieldsetsAreExplicit) {
+        throw new Error("No-JS Study controls escaped a visible operator-version fieldset");
+      }
+    }
+    const invalidLoaded = once("Page.loadEventFired", sessionId);
+    await evaluate(`(() => {
+      const form = document.querySelector('[data-testid="study-form"]');
+      Object.assign(form.elements, {});
+      const values = ${JSON.stringify(studyFormValues)};
+      for (const [name, value] of Object.entries(values)) {
+        if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value;
+      }
+      form.elements.namedItem(
+        "search__fit__prior_log_ols__1.0.0__window_sessions",
+      ).value = "[2,";
+      form.submit();
+    })()`);
+    await invalidLoaded;
+    await expectPage("study-new");
+    const invalidField = await evaluate(`(() => {
+      const name = "search__fit__prior_log_ols__1.0.0__window_sessions";
+      const field = document.getElementById(name);
+      const link = document.querySelector('.validation-summary a[href="#' + name + '"]');
+      return {
+        invalid: field?.getAttribute("aria-invalid"),
+        describedBy: field?.getAttribute("aria-describedby"),
+        linked: Boolean(link),
+        focused: document.activeElement === field,
+      };
+    })()`);
+    if (
+      invalidField.invalid !== "true" ||
+      invalidField.describedBy !==
+        "search__fit__prior_log_ols__1.0.0__window_sessions-error" ||
+      !invalidField.linked ||
+      !invalidField.focused
+    ) {
+      throw new Error(
+        `Finite-range error is not field-accessible at ${width}px: ${JSON.stringify(invalidField)}`,
+      );
+    }
     const loaded = once("Page.loadEventFired", sessionId);
     await evaluate(`(() => {
       const values = Object.fromEntries(new FormData(
@@ -251,7 +361,7 @@ try {
         holdout_sessions: "1", evaluation_version: "1.0.0",
         parent_study_ids: "", prior_unique_candidate_count: "0",
         lineage_complete: "true",
-        "search__fit__prior_log_ols__1.0.0__window_sessions": "[2]",
+        "search__fit__prior_log_ols__1.0.0__window_sessions": "[2,3]",
       });
       const submission = document.createElement("form");
       submission.method = "post";
@@ -273,6 +383,34 @@ try {
     );
     if (!previewIsPlan) throw new Error("Study preview fabricated observed evidence or estimates");
     await assertLayout("study preview", width);
+    await keyboardActivate('form[action="/studies/edit"] button[type="submit"]');
+    await expectPage("study-new");
+    const restored = await evaluate(`(() => {
+      const form = document.querySelector('[data-testid="study-form"]');
+      return {
+        range: form.elements.namedItem(
+          "search__fit__prior_log_ols__1.0.0__window_sessions",
+        ).value,
+        seed: form.elements.namedItem("seed").value,
+        start: form.elements.namedItem("start_date").value,
+        end: form.elements.namedItem("end_date").value,
+        lineage: form.elements.namedItem("lineage_complete").value,
+      };
+    })()`);
+    if (
+      restored.range !== "[2,3]" ||
+      restored.seed !== String(
+        `${scriptsDisabled ? "nojs" : "js"}-${width}`
+          .split("").reduce((total, character) => total + character.charCodeAt(0), 0)
+      ) ||
+      !restored.start ||
+      !restored.end ||
+      restored.lineage !== "true"
+    ) {
+      throw new Error(`Edit plan lost wizard values at ${width}px: ${JSON.stringify(restored)}`);
+    }
+    await keyboardActivate('[data-testid="preview-study"]');
+    await expectPage("study-preview");
     await keyboardActivate('form[action="/studies"] button[type="submit"]');
     await expectPage("study-preview");
     if (!(await evaluate('Boolean(document.querySelector(\'[data-testid="stale-preview"]\'))'))) {
@@ -282,6 +420,7 @@ try {
     await expectPage("study-detail");
     const studyPath = await evaluate("location.pathname");
     await assertLayout("study detail", width);
+    await assertDangerContrast(width);
     await keyboardActivate('form[action$="/advance"] button[type="submit"]');
     await expectPage("study-detail");
     const advanceOutcome = await evaluate(

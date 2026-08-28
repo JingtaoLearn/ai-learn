@@ -290,6 +290,29 @@ def test_study_wizard_preserves_invalid_values_and_identifies_errors(tmp_path: P
     )
 
 
+def test_invalid_finite_range_identifies_the_search_field(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    field = "search__fit__prior_log_ols__1.0.0__window_sessions"
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form[field] = "[2,"
+
+    response = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert f'href="#{field}"' in response.text
+    control = re.search(rf'<input[^>]*id="{field}"[^>]*>', response.text).group(0)
+    assert 'value="[2,"' in control
+    assert 'aria-invalid="true"' in control
+    assert f'aria-describedby="{field}-error"' in control
+    assert "autofocus" in control
+    assert f'id="{field}-error"' in response.text
+
+
 def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
@@ -364,6 +387,12 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
             preview.text,
         ).group(1)
     )
+    values["wizard_json"] = html.unescape(
+        re.search(
+            r'<textarea name="wizard_json" hidden>(.*?)</textarea>',
+            preview.text,
+        ).group(1)
+    )
     submitted = client.post(
         "/studies",
         data=values,
@@ -373,6 +402,55 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
 
     assert submitted.status_code == 303
     assert submitted.headers["location"].startswith("/studies/")
+
+
+def test_preview_edit_preserves_complete_wizard_values(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    range_field = "search__fit__prior_log_ols__1.0.0__window_sessions"
+    start_date = form["start_date"]
+    end_date = form["end_date"]
+    form.update(
+        {
+            range_field: "[2,3]",
+            "unique_trial_budget": "2",
+            "max_suggestions": "3",
+            "parent_study_ids": "",
+            "prior_unique_candidate_count": "7",
+            "lineage_complete": "false",
+        }
+    )
+    headers = {"origin": "https://quant.ai.jingtao.fun"}
+
+    preview = client.post("/studies/preview", data=form, headers=headers)
+    wizard_json = html.unescape(
+        re.search(
+            r'<textarea name="wizard_json" hidden>(.*?)</textarea>',
+            preview.text,
+        ).group(1)
+    )
+    edited = client.post(
+        "/studies/edit",
+        data={"csrf_token": issued.csrf_token, "wizard_json": wizard_json},
+        headers=headers,
+    )
+
+    assert edited.status_code == 200
+    for name, value in (
+        (range_field, "[2,3]"),
+        ("start_date", start_date),
+        ("end_date", end_date),
+        ("unique_trial_budget", "2"),
+        ("max_suggestions", "3"),
+        ("prior_unique_candidate_count", "7"),
+    ):
+        assert re.search(
+            rf'(?:name|id)="{re.escape(name)}"[^>]*value="{re.escape(value)}"',
+            edited.text,
+        )
+    assert 'name="parent_study_ids"' in edited.text
+    assert '<option value="false" selected>' in edited.text
 
 
 def test_stale_study_submit_returns_a_fresh_reviewable_preview(
@@ -433,6 +511,7 @@ def test_stale_study_submit_returns_a_fresh_reviewable_preview(
             "action_id": "stale-submit",
             "expected_preview_digest": STUDY_ID,
             "study_json": '{"schema_version":1}',
+            "wizard_json": "{}",
         },
         headers={"origin": "https://quant.ai.jingtao.fun"},
     )
@@ -465,6 +544,7 @@ def test_deeply_nested_study_json_is_a_controlled_bad_request(tmp_path: Path):
             "action_id": "deep-study-json",
             "expected_preview_digest": STUDY_ID,
             "study_json": nested,
+            "wizard_json": "{}",
         },
         headers={"origin": "https://quant.ai.jingtao.fun"},
     )
