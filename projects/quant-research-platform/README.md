@@ -193,6 +193,31 @@ The FastAPI/Jinja2 application is started with:
 python -m quant_platform.web
 ```
 
+### Proofline design verification
+
+Run the pinned design specification linter without adding a production dependency:
+
+```bash
+./scripts/design_lint.sh
+```
+
+The Chromium acceptance test uses one CDP harness with bounded scopes:
+
+```bash
+PROOFLINE_BROWSER_SCOPE=foundation pytest -q tests/test_browser_acceptance.py
+PROOFLINE_BROWSER_SCOPE=report pytest -q tests/test_browser_acceptance.py
+pytest -q tests/test_browser_acceptance.py
+```
+
+`foundation` covers login, an empty dashboard, skip-link traversal, POST logout,
+forced colors, and reduced motion with JavaScript enabled and disabled. `report`
+covers the report wrapper/full-screen action and responsive proxies. The 320 CSS-pixel
+DPR2 check is only a high-density reflow gate; DPR is not browser zoom. The separate
+200% text-resize proxy doubles the root text size and checks layout, hit targets, utility
+access, and fixed-navigation reserves. It does not automate browser page zoom, pinch
+zoom, or `visualViewport` scaling. Those remain manual browser review gates. Screenshots
+are written only to `PROOFLINE_SCREENSHOT_DIR` (or `/tmp/proofline-browser-artifacts`).
+
 ### Parameter Study UI
 
 Authenticated researchers can open `/studies` to create and inspect immutable Parameter
