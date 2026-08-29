@@ -6,3 +6,9 @@
     <option value="dark">Dark</option>
   </select>
 </label>
+<div class="no-js-theme" aria-label="Theme without JavaScript">
+  <span>Choose theme</span>
+  <a href="{{ request.url.path }}?theme=system"{% if theme == "system" %} aria-current="page"{% endif %}>System</a>
+  <a href="{{ request.url.path }}?theme=light"{% if theme == "light" %} aria-current="page"{% endif %}>Light</a>
+  <a href="{{ request.url.path }}?theme=dark"{% if theme == "dark" %} aria-current="page"{% endif %}>Dark</a>
+</div>

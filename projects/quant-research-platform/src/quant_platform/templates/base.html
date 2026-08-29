@@ -1,33 +1,74 @@
 <!doctype html>
-<html lang="en">
+{% set path = request.url.path %}
+{% set is_overview = path == "/" %}
+{% set is_operators = path.startswith("/operators") %}
+{% set is_template = path.startswith("/templates") %}
+{% set is_new_experiment = path in ("/experiments/new", "/experiments/preview") %}
+{% set is_studies = path.startswith("/studies") %}
+{% set is_history = path.startswith("/history") or (path.startswith("/experiments/") and not is_new_experiment) or path.startswith("/reports/") %}
+<html lang="en" data-theme="{{ theme }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Quant Research{% endblock %}</title>
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Proofline{% endblock %}</title>
   <script src="/static/theme-init.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body data-page="{% block page %}base{% endblock %}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <header class="shell-header">
-    <a class="wordmark" href="/">Quant Research</a>
-    <nav aria-label="Primary" data-testid="primary-nav">
-      <a href="/">Overview</a>
-      <a href="/operators">Operators</a>
-      <a href="/templates/single_stock_daily_causal/1">Template</a>
-      <a href="/experiments/new">New experiment</a>
-      <a href="/studies">Studies</a>
-      <a href="/history">History</a>
-    </nav>
-    {% include "_theme_selector.html" %}
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="quiet" type="submit">Log out</button>
-    </form>
+  <header class="masthead">
+    <a class="wordmark" href="/" aria-label="Proofline overview"><strong>Proofline</strong><span>Research evidence workbench</span></a>
+    <span class="masthead-context">Research only</span>
+    <details class="utility-menu">
+      <summary><span>{{ session.display_name }}</span><span class="utility-label">Utilities</span></summary>
+      <div class="utility-panel">
+        <div class="account-identity"><strong>{{ session.display_name }}</strong><span>{{ session.email }}</span></div>
+        <a href="/templates/single_stock_daily_causal/1"{% if is_template %} aria-current="page"{% endif %}>Template catalog</a>
+        {% include "_theme_selector.html" %}
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="quiet" type="submit">Log out</button>
+        </form>
+      </div>
+    </details>
   </header>
-  <main id="main-content" class="shell" data-testid="main-content" tabindex="-1">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="workspace">
+    <nav class="task-rail" aria-label="Primary navigation" data-testid="primary-nav">
+      <div class="nav-group">
+        <span class="nav-label">Overview</span>
+        <a href="/"{% if is_overview %} aria-current="page"{% endif %}>Overview</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Create</span>
+        <a href="/experiments/new"{% if is_new_experiment %} aria-current="page"{% endif %}>New experiment</a>
+        <a href="/studies/new"{% if path in ("/studies/new", "/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>New Study</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Research</span>
+        <a href="/studies"{% if is_studies and path not in ("/studies/new", "/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>Studies</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Catalog</span>
+        <a href="/operators"{% if is_operators %} aria-current="page"{% endif %}>Operators</a>
+        <a href="/templates/single_stock_daily_causal/1"{% if is_template %} aria-current="page"{% endif %}>Template</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Evidence</span>
+        <a href="/history"{% if is_history %} aria-current="page"{% endif %}>History</a>
+      </div>
+    </nav>
+    <main id="main-content" class="shell" data-testid="main-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <nav class="mobile-nav" aria-label="Mobile primary navigation">
+    <a href="/"{% if is_overview %} aria-current="page"{% endif %}>Overview</a>
+    <a href="/operators"{% if is_operators or is_template %} aria-current="page"{% endif %}>Operators</a>
+    <a href="/experiments/new"{% if is_new_experiment %} aria-current="page"{% endif %}>New experiment</a>
+    <a href="/studies"{% if is_studies %} aria-current="page"{% endif %}>Studies</a>
+    <a href="/history"{% if is_history %} aria-current="page"{% endif %}>History</a>
+  </nav>
 </body>
 </html>

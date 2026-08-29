@@ -40,6 +40,8 @@ from .strategy_runner import (
 
 
 SESSION_COOKIE = "quant_session"
+THEME_COOKIE = "quant_theme"
+THEMES = frozenset({"light", "dark", "system"})
 MAX_BODY_BYTES = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_CONTAINERS = 10_000
@@ -225,6 +227,14 @@ def _csrf(request: Request, session: SessionData, token: str | None = None) -> N
     )
 
 
+def _theme(request: Request) -> str:
+    requested = request.query_params.get("theme")
+    if requested in THEMES:
+        return requested
+    stored = request.cookies.get(THEME_COOKIE)
+    return stored if stored in THEMES else "system"
+
+
 def _render(
     request: Request,
     name: str,
@@ -236,7 +246,12 @@ def _render(
     return TEMPLATES.TemplateResponse(
         request=request,
         name=name,
-        context={"session": session, "csrf_token": session.csrf_token, **context},
+        context={
+            "session": session,
+            "csrf_token": session.csrf_token,
+            "theme": _theme(request),
+            **context,
+        },
         status_code=status_code,
     )
 
@@ -896,6 +911,17 @@ def create_app(
                 )
             return HTMLResponse("Invalid request origin.", status_code=403)
         response = await call_next(request)
+        requested_theme = request.query_params.get("theme")
+        if request.method == "GET" and requested_theme in THEMES:
+            response.set_cookie(
+                THEME_COOKIE,
+                requested_theme,
+                max_age=31_536_000,
+                secure=settings.secure_cookies,
+                httponly=False,
+                samesite="lax",
+                path="/",
+            )
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -980,6 +1006,7 @@ def create_app(
             "login_url": login_url,
             "auth_mode": settings.auth_mode,
             "login_csrf": None,
+            "theme": _theme(request),
         }
         response = TEMPLATES.TemplateResponse(
             request=request,

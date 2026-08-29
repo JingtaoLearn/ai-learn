@@ -1,4 +1,4 @@
 {% extends "base.html" %}
-{% block title %}Error · Quant Research{% endblock %}
+{% block title %}Request failed · Proofline{% endblock %}
 {% block page %}error{% endblock %}
-{% block content %}<section class="page-heading"><p class="eyebrow">REQUEST FAILED</p><h1>Unable to complete the request</h1><p>{{ message }}</p><a class="button" href="/">Return to overview</a></section>{% endblock %}
+{% block content %}<section class="page-heading error-state" data-testid="error-state"><p class="eyebrow">REQUEST FAILED</p><h1>Proofline could not complete this request</h1><p>{{ message }}</p><p>Return to the research overview and retry the operation from its current state.</p><a class="button" href="/">Return to overview</a></section>{% endblock %}
