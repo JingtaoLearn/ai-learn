@@ -23,7 +23,8 @@ if (
   !chromium ||
   !screenshotRoot ||
   !new Set(["foundation", "report", "full"]).has(scope) ||
-  (scope !== "foundation" &&
+  (scope === "report" && (!reportExperimentId || !reportAttemptId)) ||
+  (scope === "full" &&
     (!reportExperimentId || !reportAttemptId || !studyFormJson || !completedStudyId))
 ) {
   throw new Error(

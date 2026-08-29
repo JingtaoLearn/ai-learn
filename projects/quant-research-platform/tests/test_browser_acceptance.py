@@ -130,39 +130,41 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         if requested_scope == "foundation":
             return
 
-        submit_study = app.state.studies.submit
-        stale_previews: set[str] = set()
-
-        def submit_with_one_stale_preview(
-            spec, *, expected_preview_digest: str, action_id: str
-        ):
-            key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
-            if key not in stale_previews:
-                stale_previews.add(key)
-                return {"status": "PREVIEW_STALE"}
-            return submit_study(
-                spec,
-                expected_preview_digest=expected_preview_digest,
-                action_id=action_id,
-            )
-
         snapshot_id = snapshot(app)
-        publish_snapshot(
-            _bars(),
-            app.state.catalog.state_root,
-            {
-                "instrument": "SYNTH.SS",
-                "provider": "synthetic",
-                "market": "XSHG",
-                "currency": "CNY",
-                "adjustment": "mixed",
-            },
-        )
-        completed_study_id = _persist_production_completed_study(
-            app.state.studies,
-            app.state.experiments,
-        )
-        app.state.studies.submit = submit_with_one_stale_preview
+        completed_study_id = ""
+        if requested_scope == "full":
+            submit_study = app.state.studies.submit
+            stale_previews: set[str] = set()
+
+            def submit_with_one_stale_preview(
+                spec, *, expected_preview_digest: str, action_id: str
+            ):
+                key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+                if key not in stale_previews:
+                    stale_previews.add(key)
+                    return {"status": "PREVIEW_STALE"}
+                return submit_study(
+                    spec,
+                    expected_preview_digest=expected_preview_digest,
+                    action_id=action_id,
+                )
+
+            publish_snapshot(
+                _bars(),
+                app.state.catalog.state_root,
+                {
+                    "instrument": "SYNTH.SS",
+                    "provider": "synthetic",
+                    "market": "XSHG",
+                    "currency": "CNY",
+                    "adjustment": "mixed",
+                },
+            )
+            completed_study_id = _persist_production_completed_study(
+                app.state.studies,
+                app.state.experiments,
+            )
+            app.state.studies.submit = submit_with_one_stale_preview
         report_experiment = app.state.experiments.submit(
             _task(snapshot_id), action_id="browser-report"
         )
@@ -181,8 +183,10 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
             requested_scope,
             report_experiment_id=report_experiment["experiment_id"],
             report_attempt_id=report_attempt["attempt_id"],
-            study_form_json=json.dumps(
-                _experiment_form(app, snapshot_id, issued.csrf_token)
+            study_form_json=(
+                json.dumps(_experiment_form(app, snapshot_id, issued.csrf_token))
+                if requested_scope == "full"
+                else ""
             ),
             completed_study_id=completed_study_id,
         )
