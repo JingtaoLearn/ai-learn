@@ -148,15 +148,6 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                     action_id=action_id,
                 )
 
-            app.state.studies.submit = submit_with_one_stale_preview
-        if requested_scope == "study":
-            run_harness(
-                "study",
-                study_form_json=json.dumps(
-                    _experiment_form(app, snapshot_id, issued.csrf_token)
-                ),
-            )
-            return
         completed_study_id = ""
         if requested_scope == "full":
             publish_snapshot(
@@ -174,6 +165,16 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 app.state.studies,
                 app.state.experiments,
             )
+        if requested_scope in {"study", "full"}:
+            app.state.studies.submit = submit_with_one_stale_preview
+        if requested_scope == "study":
+            run_harness(
+                "study",
+                study_form_json=json.dumps(
+                    _experiment_form(app, snapshot_id, issued.csrf_token)
+                ),
+            )
+            return
         report_experiment = app.state.experiments.submit(
             _task(snapshot_id), action_id="browser-report"
         )
