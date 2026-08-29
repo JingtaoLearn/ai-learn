@@ -57,53 +57,6 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
     app = create_app(settings)
     app.state.operators.runner_image = IMAGE
     app.state.operators.validator = _passing_validator
-    submit_study = app.state.studies.submit
-    stale_previews: set[str] = set()
-
-    def submit_with_one_stale_preview(
-        spec, *, expected_preview_digest: str, action_id: str
-    ):
-        key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
-        if key not in stale_previews:
-            stale_previews.add(key)
-            return {"status": "PREVIEW_STALE"}
-        return submit_study(
-            spec,
-            expected_preview_digest=expected_preview_digest,
-            action_id=action_id,
-        )
-
-    snapshot_id = snapshot(app)
-    publish_snapshot(
-        _bars(),
-        app.state.catalog.state_root,
-        {
-            "instrument": "SYNTH.SS",
-            "provider": "synthetic",
-            "market": "XSHG",
-            "currency": "CNY",
-            "adjustment": "mixed",
-        },
-    )
-    completed_study_id = _persist_production_completed_study(
-        app.state.studies,
-        app.state.experiments,
-    )
-    app.state.studies.submit = submit_with_one_stale_preview
-    report_experiment = app.state.experiments.submit(
-        _task(snapshot_id), action_id="browser-report"
-    )
-    report_attempt = app.state.experiments.claim_next_attempt()
-    report_result = ResolvedAttemptExecutor(
-        app.state.catalog,
-        output_root=app.state.catalog.state_root / "experiment-runs",
-        project_root=PROJECT_ROOT,
-    )(report_attempt)
-    app.state.experiments.finish_success(
-        report_attempt["attempt_id"],
-        result_path=report_result["result_path"],
-        result_digest=report_result["result_digest"],
-    )
     issued = app.state.auth.issue_session(
         {"email": "researcher@example.com", "display_name": "Researcher"}
     )
@@ -127,35 +80,112 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         screenshot_root.mkdir(parents=True, exist_ok=True)
         child_environment = os.environ.copy()
         child_environment.pop("NODE_OPTIONS", None)
-        try:
-            subprocess.run(
-                [
-                    node,
-                    str(Path(__file__).with_name("browser_acceptance.mjs")),
-                    base_url,
-                    issued.cookie,
-                    chromium,
-                    report_experiment["experiment_id"],
-                    json.dumps(
-                        _experiment_form(app, snapshot_id, issued.csrf_token)
-                    ),
-                    completed_study_id,
-                    str(screenshot_root),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=600,
-                env=child_environment,
+        requested_scope = os.environ.get("PROOFLINE_BROWSER_SCOPE", "full")
+        if requested_scope not in {"foundation", "report", "full"}:
+            raise AssertionError(f"unknown PROOFLINE_BROWSER_SCOPE: {requested_scope}")
+
+        def run_harness(
+            harness_scope: str,
+            *,
+            report_experiment_id: str = "",
+            report_attempt_id: str = "",
+            study_form_json: str = "",
+            completed_study_id: str = "",
+        ) -> None:
+            try:
+                subprocess.run(
+                    [
+                        node,
+                        str(Path(__file__).with_name("browser_acceptance.mjs")),
+                        base_url,
+                        issued.cookie,
+                        chromium,
+                        report_experiment_id,
+                        report_attempt_id,
+                        study_form_json,
+                        completed_study_id,
+                        str(screenshot_root),
+                        harness_scope,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=600 if harness_scope == "full" else 180,
+                    env=child_environment,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise AssertionError(exc.stderr) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise AssertionError(
+                    (exc.stderr or b"").decode(errors="replace")
+                    if isinstance(exc.stderr, bytes)
+                    else (
+                        exc.stderr
+                        or f"{harness_scope} browser acceptance timed out without diagnostics"
+                    )
+                ) from exc
+
+        if requested_scope in {"foundation", "full"}:
+            run_harness("foundation")
+        if requested_scope == "foundation":
+            return
+
+        submit_study = app.state.studies.submit
+        stale_previews: set[str] = set()
+
+        def submit_with_one_stale_preview(
+            spec, *, expected_preview_digest: str, action_id: str
+        ):
+            key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+            if key not in stale_previews:
+                stale_previews.add(key)
+                return {"status": "PREVIEW_STALE"}
+            return submit_study(
+                spec,
+                expected_preview_digest=expected_preview_digest,
+                action_id=action_id,
             )
-        except subprocess.CalledProcessError as exc:
-            raise AssertionError(exc.stderr) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise AssertionError(
-                (exc.stderr or b"").decode(errors="replace")
-                if isinstance(exc.stderr, bytes)
-                else (exc.stderr or "browser acceptance timed out without diagnostics")
-            ) from exc
+
+        snapshot_id = snapshot(app)
+        publish_snapshot(
+            _bars(),
+            app.state.catalog.state_root,
+            {
+                "instrument": "SYNTH.SS",
+                "provider": "synthetic",
+                "market": "XSHG",
+                "currency": "CNY",
+                "adjustment": "mixed",
+            },
+        )
+        completed_study_id = _persist_production_completed_study(
+            app.state.studies,
+            app.state.experiments,
+        )
+        app.state.studies.submit = submit_with_one_stale_preview
+        report_experiment = app.state.experiments.submit(
+            _task(snapshot_id), action_id="browser-report"
+        )
+        report_attempt = app.state.experiments.claim_next_attempt()
+        report_result = ResolvedAttemptExecutor(
+            app.state.catalog,
+            output_root=app.state.catalog.state_root / "experiment-runs",
+            project_root=PROJECT_ROOT,
+        )(report_attempt)
+        app.state.experiments.finish_success(
+            report_attempt["attempt_id"],
+            result_path=report_result["result_path"],
+            result_digest=report_result["result_digest"],
+        )
+        run_harness(
+            requested_scope,
+            report_experiment_id=report_experiment["experiment_id"],
+            report_attempt_id=report_attempt["attempt_id"],
+            study_form_json=json.dumps(
+                _experiment_form(app, snapshot_id, issued.csrf_token)
+            ),
+            completed_study_id=completed_study_id,
+        )
     finally:
         server.should_exit = True
         thread.join(timeout=10)

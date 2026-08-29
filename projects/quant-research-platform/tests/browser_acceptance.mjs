@@ -10,25 +10,27 @@ const [
   sessionCookie,
   chromium,
   reportExperimentId,
+  reportAttemptId,
   studyFormJson,
   completedStudyId,
   screenshotRoot,
+  scope = "full",
 ] =
   process.argv.slice(2);
 if (
   !baseUrl ||
   !sessionCookie ||
   !chromium ||
-  !reportExperimentId ||
-  !studyFormJson ||
-  !completedStudyId ||
-  !screenshotRoot
+  !screenshotRoot ||
+  !new Set(["foundation", "report", "full"]).has(scope) ||
+  (scope !== "foundation" &&
+    (!reportExperimentId || !reportAttemptId || !studyFormJson || !completedStudyId))
 ) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID REPORT_ATTEMPT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT [foundation|report|full]",
   );
 }
-const studyFormValues = JSON.parse(studyFormJson);
+const studyFormValues = studyFormJson ? JSON.parse(studyFormJson) : {};
 
 const profile = await mkdtemp(join(tmpdir(), "quant-browser-"));
 const browser = spawn(
@@ -139,9 +141,7 @@ try {
     await writeFile(join(screenshotRoot, name), Buffer.from(image.data, "base64"));
   }
 
-  async function keyboardActivate(selector) {
-    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
-    const loaded = once("Page.loadEventFired", sessionId);
+  async function pressEnter() {
     await send(
       "Input.dispatchKeyEvent",
       { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
@@ -164,33 +164,31 @@ try {
       { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
       sessionId,
     );
+  }
+
+  async function pressTab() {
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+      sessionId,
+    );
+  }
+
+  async function keyboardActivate(selector) {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+    const loaded = once("Page.loadEventFired", sessionId);
+    await pressEnter();
     await loaded;
   }
 
   async function keyboardToggle(selector) {
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
-    await send(
-      "Input.dispatchKeyEvent",
-      { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-      sessionId,
-    );
-    await send(
-      "Input.dispatchKeyEvent",
-      {
-        type: "char",
-        key: "Enter",
-        code: "Enter",
-        text: "\r",
-        unmodifiedText: "\r",
-        windowsVirtualKeyCode: 13,
-      },
-      sessionId,
-    );
-    await send(
-      "Input.dispatchKeyEvent",
-      { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-      sessionId,
-    );
+    await pressEnter();
   }
 
   async function selectAndWaitForPreview(selectorQuery, value) {
@@ -250,7 +248,7 @@ try {
         text: element.textContent.trim().slice(0, 60),
         rect: element.getBoundingClientRect().toJSON(),
       }));
-      const shortTargets = ${width === 390
+      const shortTargets = ${width < 768
         ? `Array.from(document.querySelectorAll(
             "main button, main .button, main input:not([type=hidden]), main select, main textarea"
           )).filter((element) => {
@@ -432,6 +430,201 @@ try {
         );
       }
     }
+  }
+
+  async function installSessionCookie() {
+    const installed = await send(
+      "Network.setCookie",
+      {
+        name: "quant_session",
+        value: sessionCookie,
+        url: baseUrl,
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+      sessionId,
+    );
+    if (!installed.success) throw new Error("Could not restore authenticated browser cookie");
+  }
+
+  async function runFoundationScenarios() {
+    for (const scriptsDisabled of [false, true]) {
+      await send(
+        "Emulation.setScriptExecutionDisabled",
+        { value: scriptsDisabled },
+        sessionId,
+      );
+      await send(
+        "Emulation.setDeviceMetricsOverride",
+        { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
+        sessionId,
+      );
+
+      await send(
+        "Network.deleteCookies",
+        { name: "quant_session", url: baseUrl },
+        sessionId,
+      );
+      await navigate("/login");
+      await expectPage("login");
+      if (!(await evaluate('Boolean(document.querySelector("[data-testid=login-panel]"))'))) {
+        throw new Error("focused-login: login panel is missing");
+      }
+
+      await installSessionCookie();
+      await navigate("/");
+      await expectPage("dashboard");
+      if (!(await evaluate('Boolean(document.querySelector("[data-testid=dashboard-empty]"))'))) {
+        throw new Error("focused-empty-dashboard: empty state is missing");
+      }
+
+      await evaluate("document.activeElement?.blur()");
+      await pressTab();
+      const skipFocused = await evaluate(
+        'document.activeElement?.classList.contains("skip-link")',
+      );
+      if (!skipFocused) throw new Error("focused-skip-link: skip link was not first");
+      await pressEnter();
+      const mainFocused = await evaluate(
+        'document.activeElement?.matches("[data-testid=main-content]")',
+      );
+      if (!mainFocused) {
+        throw new Error("focused-skip-link: traversal did not focus main content");
+      }
+
+      await evaluate('document.querySelector(".utility-menu").open = true');
+      await keyboardActivate('form[action="/logout"] button[type="submit"]');
+      await expectPage("login");
+      const loggedOutCookies = await send(
+        "Network.getCookies",
+        { urls: [baseUrl] },
+        sessionId,
+      );
+      if (loggedOutCookies.cookies.some((item) => item.name === "quant_session")) {
+        throw new Error("focused-post-logout: session cookie remains");
+      }
+      await installSessionCookie();
+
+      await navigate("/");
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "forced-colors", value: "active" }] },
+        sessionId,
+      );
+      const forcedColors = await evaluate(`({
+        active: matchMedia("(forced-colors: active)").matches,
+        currentBorder: getComputedStyle(
+          document.querySelector('.mobile-nav [aria-current="page"]')
+        ).borderTopWidth,
+      })`);
+      if (!forcedColors.active || forcedColors.currentBorder !== "2px") {
+        throw new Error(`forced-colors scenario failed: ${JSON.stringify(forcedColors)}`);
+      }
+
+      await send(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+        sessionId,
+      );
+      const reducedMotion = await evaluate(`({
+        active: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        transition: getComputedStyle(document.querySelector("button")).transitionDuration,
+        animation: getComputedStyle(document.querySelector("button")).animationDuration,
+      })`);
+      if (
+        !reducedMotion.active ||
+        reducedMotion.transition !== "0s" ||
+        reducedMotion.animation !== "0s"
+      ) {
+        throw new Error(
+          `prefers-reduced-motion scenario failed: ${JSON.stringify(reducedMotion)}`,
+        );
+      }
+      await send("Emulation.setEmulatedMedia", { features: [] }, sessionId);
+    }
+  }
+
+  async function runReportScenario(scriptsDisabled) {
+    await send(
+      "Emulation.setScriptExecutionDisabled",
+      { value: scriptsDisabled },
+      sessionId,
+    );
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 1280, height: 844, deviceScaleFactor: 1, mobile: false },
+      sessionId,
+    );
+    await navigate(`/reports/${reportAttemptId}`);
+    await expectPage("report-wrapper");
+    const report = await evaluate(`({
+      canonical: document.querySelector(".report-toolbar strong")?.textContent,
+      fullscreen: Boolean(document.querySelector("[data-fullscreen-report]")),
+      sandbox: document.querySelector("[data-testid=report-frame]")?.getAttribute("sandbox"),
+    })`);
+    if (
+      report.canonical !== "Verified canonical report" ||
+      !report.fullscreen ||
+      report.sandbox !== "allow-scripts"
+    ) {
+      throw new Error(`focused-report-wrapper: ${JSON.stringify(report)}`);
+    }
+    if (!scriptsDisabled) {
+      await keyboardToggle("[data-fullscreen-report]");
+      const fullscreen = await evaluate(
+        'document.fullscreenElement?.matches("[data-testid=report-frame]")',
+      );
+      if (!fullscreen) {
+        throw new Error("focused-report-wrapper: full-screen action did not activate");
+      }
+      await evaluate("document.exitFullscreen()");
+    }
+  }
+
+  async function runViewportProxies(scriptsDisabled) {
+    await send(
+      "Emulation.setScriptExecutionDisabled",
+      { value: scriptsDisabled },
+      sessionId,
+    );
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 320, height: 640, deviceScaleFactor: 2, mobile: true },
+      sessionId,
+    );
+    await navigate("/");
+    await assertLayout("320px DPR2 reflow", 320);
+    await assertShellContract("320px DPR2 reflow", 320, "Overview", "Overview");
+    const density = await evaluate("({width: innerWidth, devicePixelRatio})");
+    if (density.width !== 320 || density.devicePixelRatio < 1.9) {
+      throw new Error(`320px DPR2 reflow failed: ${JSON.stringify(density)}`);
+    }
+    if (!scriptsDisabled) await capture("overview-320-dpr2.png");
+
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 320, height: 640, deviceScaleFactor: 1, mobile: true },
+      sessionId,
+    );
+    await navigate("/");
+    await evaluate('document.documentElement.style.fontSize = "200%"');
+    await assertLayout("200% text-resize proxy", 320);
+    await assertShellContract("200% text-resize proxy", 320, "Overview", "Overview");
+    await evaluate('document.querySelector(".utility-menu").open = true');
+    const utilitiesAvailable = await evaluate(`[
+      '[data-theme-selector]',
+      'form[action="/logout"] button',
+      'a[href="/templates/single_stock_daily_causal/1"]'
+    ].every((selector) => {
+      const element = document.querySelector(selector);
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    })`);
+    if (!utilitiesAvailable) {
+      throw new Error("200% text-resize proxy did not preserve utility functions");
+    }
+    if (!scriptsDisabled) await capture("overview-320-text-resize-200.png");
+    await evaluate('document.documentElement.style.removeProperty("font-size")');
   }
 
   async function runStudyLifecycle(width, scriptsDisabled) {
@@ -713,6 +906,18 @@ try {
     await expectPage("study-detail");
   }
 
+  if (scope === "foundation") {
+    await runFoundationScenarios();
+  }
+
+  if (scope === "report") {
+    for (const scriptsDisabled of [false, true]) {
+      await runReportScenario(scriptsDisabled);
+      await runViewportProxies(scriptsDisabled);
+    }
+  }
+
+  if (scope === "full") {
   const routes = {
     "/": { page: "dashboard", task: "Overview", mobile: "Overview" },
     "/operators": { page: "operators", task: "Operators", mobile: "Operators" },
@@ -778,38 +983,6 @@ try {
       await navigate("/");
       await assertShellContract("responsive boundary", width, "Overview", "Overview");
     }
-
-    await send(
-      "Emulation.setDeviceMetricsOverride",
-      { width: 320, height: 640, deviceScaleFactor: 2, mobile: true },
-      sessionId,
-    );
-    await navigate("/");
-    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }, sessionId);
-    await assertLayout("320px at 200 percent zoom", 320);
-    await assertShellContract("320px at 200 percent zoom", 320, "Overview", "Overview");
-    const zoomViewport = await evaluate(`({
-      scale: visualViewport.scale,
-      width: visualViewport.width,
-      height: visualViewport.height,
-      layoutWidth: innerWidth,
-      devicePixelRatio,
-    })`);
-    const effectiveScale =
-      zoomViewport.scale * zoomViewport.devicePixelRatio;
-    if (
-      effectiveScale < 1.9 ||
-      Math.abs(zoomViewport.width - 320) > 2
-    ) {
-      throw new Error(
-        `Expected an effective 320px viewport at 200 percent zoom: ${JSON.stringify({
-          ...zoomViewport,
-          effectiveScale,
-        })}`,
-      );
-    }
-    if (!scriptsDisabled) await capture("overview-320-zoom200.png");
-    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }, sessionId);
 
     await navigate("/history?search=definitely-not-found");
     if (!(await evaluate('Boolean(document.querySelector("[data-testid=history-empty]"))'))) {
@@ -1120,6 +1293,11 @@ try {
     }
   }
 
+  for (const scriptsDisabled of [false, true]) {
+    await runReportScenario(scriptsDisabled);
+    await runViewportProxies(scriptsDisabled);
+  }
+
   await send("Emulation.setScriptExecutionDisabled", { value: false }, sessionId);
   for (const theme of ["light", "dark"]) {
     for (const width of [390, 1440]) {
@@ -1145,6 +1323,7 @@ try {
       }
       await capture(`completed-study-${theme}-${width}.png`);
     }
+  }
   }
 } finally {
   socket.close();
