@@ -469,15 +469,35 @@ def test_study_detail_and_report_render_optional_suggestion_journal(
     detail["suggestion_journal"] = [
         {
             "search_round": "OUTER:1",
-            "proposal_sequence": 1,
-            "changed_parameters": {"/operators/fit/window_sessions": 40},
-            "tell": {"state": "COMPLETE", "objective": 1.25},
+            "sequence": 1,
+            "event_type": "SUGGESTION_RECORDED",
+            "sampled_parameters": {"/operators/fit/window_sessions": 40},
+            "tell_state": None,
+            "objective": None,
+        },
+        {
+            "search_round": "OUTER:1",
+            "sequence": 2,
+            "event_type": "DUPLICATE_SUGGESTION",
+            "sampled_parameters": {"/operators/fit/window_sessions": 40},
+            "tell_state": None,
+            "objective": None,
         },
         {
             "search_round": "FINAL",
-            "proposal_sequence": 2,
-            "changed_parameters": {"/operators/fit/window_sessions": 60},
-            "tell": {"state": "FAIL", "objective": None},
+            "sequence": 1,
+            "event_type": "INNER_EVALUATION_RECORDED",
+            "sampled_parameters": {"/operators/fit/window_sessions": 60},
+            "tell_state": "COMPLETE",
+            "objective": 1.25,
+        },
+        {
+            "search_round": "FINAL",
+            "sequence": 2,
+            "event_type": "INNER_EVALUATION_RECORDED",
+            "sampled_parameters": {"/operators/fit/window_sessions": 80},
+            "tell_state": "FAIL",
+            "objective": None,
         },
     ]
     monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
@@ -488,14 +508,16 @@ def test_study_detail_and_report_render_optional_suggestion_journal(
         assert 'data-testid="suggestion-journal"' in response.text
         assert response.text.index("OUTER:1") < response.text.index("FINAL")
         assert "/operators/fit/window_sessions" in response.text
+        assert "SUGGESTION_RECORDED" in response.text
+        assert "DUPLICATE_SUGGESTION" in response.text
         assert "COMPLETE" in response.text
         assert "1.25" in response.text
         assert "FAIL" in response.text
         journal = response.text.split('data-testid="suggestion-journal"', 1)[1]
-        complete = journal.index("COMPLETE")
-        details = journal.index("Ask/tell event details")
-        changed = journal.index("/operators/fit/window_sessions")
-        assert complete < details < changed
+        complete_entry = journal.split('data-status="COMPLETE"', 1)[1]
+        assert complete_entry.index("Ask/tell event details") < complete_entry.index(
+            "/operators/fit/window_sessions"
+        )
 
 
 def test_old_studies_without_suggestion_journal_render_safely(tmp_path: Path, monkeypatch):
