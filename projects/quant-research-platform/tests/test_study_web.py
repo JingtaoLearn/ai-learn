@@ -18,7 +18,7 @@ from test_parameter_study import (
     _study_service,
 )
 from test_web_api import authenticate, make_app, snapshot
-from test_web_ui import _experiment_form
+from test_web_ui import _experiment_form, _no_js_theme_submission
 
 
 STUDY_ID = "a" * 64
@@ -385,6 +385,19 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     )
     assert "Ineligible" in ranking
     assert "minimum_trades" in ranking
+    assert study.text.index('data-testid="decision-summary"') < study.text.index(
+        'id="holdout-evidence-heading"'
+    )
+    assert study.text.index('id="holdout-evidence-heading"') < study.text.index(
+        'id="outer-plan-heading"'
+    )
+    assert study.text.index('id="outer-plan-heading"') < study.text.index(
+        'id="trial-ranking-heading"'
+    )
+    assert "Study coordinator lease details" in study.text
+    assert "Study event history" in study.text
+    for label in ("Sequence", "Event", "Occurred"):
+        assert f'data-label="{label}"' in study.text
 
 
 def test_completed_study_replaces_controls_and_identifies_unranked_trials(
@@ -478,6 +491,11 @@ def test_study_detail_and_report_render_optional_suggestion_journal(
         assert "COMPLETE" in response.text
         assert "1.25" in response.text
         assert "FAIL" in response.text
+        journal = response.text.split('data-testid="suggestion-journal"', 1)[1]
+        complete = journal.index("COMPLETE")
+        details = journal.index("Ask/tell event details")
+        changed = journal.index("/operators/fit/window_sessions")
+        assert complete < details < changed
 
 
 def test_old_studies_without_suggestion_journal_render_safely(tmp_path: Path, monkeypatch):
@@ -585,12 +603,19 @@ def test_invalid_finite_range_identifies_the_search_field(tmp_path: Path):
     )
 
     assert response.status_code == 400
+    summary = re.search(
+        r'<section[^>]*class="validation-summary danger"[^>]*>',
+        response.text,
+    ).group(0)
+    assert 'id="study-errors"' in summary
+    assert 'tabindex="-1"' in summary
+    assert "autofocus" in summary
     assert f'href="#{field}"' in response.text
     control = re.search(rf'<input[^>]*id="{field}"[^>]*>', response.text).group(0)
     assert 'value="[2,"' in control
     assert 'aria-invalid="true"' in control
     assert f'aria-describedby="{field}-error"' in control
-    assert "autofocus" in control
+    assert "autofocus" not in control
     assert f'id="{field}-error"' in response.text
 
 
@@ -882,6 +907,12 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     assert "Candidate capacity" in preview.text
     assert "Minimum Experiment bindings" in preview.text
     assert "Conditional maximum bindings" in preview.text
+    assert "Full immutable Study preview identity" in preview.text
+    identity = preview.text.split("Full immutable Study preview identity", 1)[1]
+    assert re.search(r"[0-9a-f]{64}", identity)
+    assert preview.text.index("Study estimates") < preview.text.index(
+        "Full immutable Study preview identity"
+    )
     values = {
         name: html.unescape(
             re.search(
@@ -963,6 +994,60 @@ def test_preview_edit_preserves_complete_wizard_values(tmp_path: Path):
         )
     assert 'name="parent_study_ids"' in edited.text
     assert '<option value="false" selected>' in edited.text
+
+
+def test_study_preview_no_js_theme_forms_preserve_post_context(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    range_field = "search__fit__prior_log_ols__1.0.0__window_sessions"
+    form.update(
+        {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
+            range_field: "[2,3]",
+            "unique_trial_budget": "2",
+            "max_suggestions": "3",
+            "parent_study_ids": "",
+            "prior_unique_candidate_count": "7",
+            "lineage_complete": "false",
+        }
+    )
+    preview = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+
+    for theme in ("light", "dark", "system"):
+        action, values = _no_js_theme_submission(preview.text, theme)
+        assert action == f"/studies/preview?theme={theme}"
+        assert values[range_field] == "[2,3]"
+        themed = client.post(
+            action,
+            data=values,
+            headers={"origin": "https://quant.ai.jingtao.fun"},
+        )
+        assert themed.status_code == 200
+        assert 'data-page="study-preview"' in themed.text
+        assert f'<html lang="en" data-theme="{theme}">' in themed.text
+        assert f"quant_theme={theme}" in themed.headers["set-cookie"]
+
+
+def test_study_list_identity_is_copyable_with_no_js_fallback(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
+
+    response = client.get("/studies")
+
+    assert response.status_code == 200
+    assert f'data-copy-value="{STUDY_ID}"' in response.text
+    assert "Full Study ID" in response.text
+    assert STUDY_ID in response.text.split("Full Study ID", 1)[1]
 
 
 def test_stale_study_submit_returns_a_fresh_reviewable_preview(

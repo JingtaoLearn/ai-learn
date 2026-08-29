@@ -40,6 +40,8 @@ from .strategy_runner import (
 
 
 SESSION_COOKIE = "quant_session"
+THEME_COOKIE = "quant_theme"
+THEMES = frozenset({"light", "dark", "system"})
 MAX_BODY_BYTES = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_CONTAINERS = 10_000
@@ -225,6 +227,14 @@ def _csrf(request: Request, session: SessionData, token: str | None = None) -> N
     )
 
 
+def _theme(request: Request) -> str:
+    requested = request.query_params.get("theme")
+    if requested in THEMES:
+        return requested
+    stored = request.cookies.get(THEME_COOKIE)
+    return stored if stored in THEMES else "system"
+
+
 def _render(
     request: Request,
     name: str,
@@ -236,9 +246,39 @@ def _render(
     return TEMPLATES.TemplateResponse(
         request=request,
         name=name,
-        context={"session": session, "csrf_token": session.csrf_token, **context},
+        context={
+            "session": session,
+            "csrf_token": session.csrf_token,
+            "theme": _theme(request),
+            **context,
+        },
         status_code=status_code,
     )
+
+
+def _form_error_context(
+    values: dict[str, str],
+    error: Exception,
+    *,
+    fallback_field: str,
+) -> dict[str, Any]:
+    message = str(error)
+    field = next(
+        (
+            name
+            for name in values
+            if message.startswith(name)
+            or f".{name}" in message
+            or f" {name} " in f" {message} "
+        ),
+        fallback_field,
+    )
+    errors = [{"field": field, "message": message}]
+    return {
+        "errors": errors,
+        "error_messages": {field: message},
+        "invalid_fields": {field},
+    }
 
 
 def _datasets(state_root: Path) -> list[dict[str, str]]:
@@ -896,6 +936,17 @@ def create_app(
                 )
             return HTMLResponse("Invalid request origin.", status_code=403)
         response = await call_next(request)
+        requested_theme = request.query_params.get("theme")
+        if requested_theme in THEMES:
+            response.set_cookie(
+                THEME_COOKIE,
+                requested_theme,
+                max_age=31_536_000,
+                secure=settings.secure_cookies,
+                httponly=False,
+                samesite="lax",
+                path="/",
+            )
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -980,6 +1031,7 @@ def create_app(
             "login_url": login_url,
             "auth_mode": settings.auth_mode,
             "login_csrf": None,
+            "theme": _theme(request),
         }
         response = TEMPLATES.TemplateResponse(
             request=request,
@@ -1374,7 +1426,12 @@ def create_app(
     async def operator_submit_form(request: Request):
         session = _session(request)
         return _render(
-            request, "operator_submit.html", session=session
+            request,
+            "operator_submit.html",
+            session=session,
+            form_values={},
+            errors=[],
+            invalid_fields=set(),
         )
 
     @app.post("/operators/submit")
@@ -1382,21 +1439,33 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
-        submission = {
-            "operator_id": form.get("operator_id", ""),
-            "slot": form.get("slot", ""),
-            "version": form.get("version", ""),
-            "source": form.get("source", ""),
-            "parameter_schema": _json_text(
-                form.get("parameter_schema", ""), "parameter_schema"
-            ),
-            "defaults": _json_text(form.get("defaults", ""), "defaults"),
-            "title_zh": form.get("title_zh", ""),
-            "summary_zh": form.get("summary_zh", ""),
-            "documentation": form.get("documentation", ""),
-            "tests": _json_text(form.get("tests", ""), "tests"),
-        }
-        result = await run_in_threadpool(operators.submit, submission)
+        try:
+            submission = {
+                "operator_id": form.get("operator_id", ""),
+                "slot": form.get("slot", ""),
+                "version": form.get("version", ""),
+                "source": form.get("source", ""),
+                "parameter_schema": _json_text(
+                    form.get("parameter_schema", ""), "parameter_schema"
+                ),
+                "defaults": _json_text(form.get("defaults", ""), "defaults"),
+                "title_zh": form.get("title_zh", ""),
+                "summary_zh": form.get("summary_zh", ""),
+                "documentation": form.get("documentation", ""),
+                "tests": _json_text(form.get("tests", ""), "tests"),
+            }
+            result = await run_in_threadpool(operators.submit, submission)
+        except (OperatorSubmissionError, ValueError) as exc:
+            return _render(
+                request,
+                "operator_submit.html",
+                session=session,
+                status_code=400,
+                form_values=form,
+                **_form_error_context(
+                    form, exc, fallback_field="operator-form"
+                ),
+            )
         return RedirectResponse(
             f"/operators/{result['operator_id']}/{result['version']}",
             status_code=303,
@@ -1434,19 +1503,41 @@ def create_app(
             },
         )
 
+    async def experiment_form_context(
+        form_values: dict[str, str] | None = None,
+        validation_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        grouped = _operator_groups(operators)
+        dataset_options = await run_in_threadpool(datasets.list_available)
+        values = form_values or {}
+        context = {
+            "datasets": dataset_options,
+            "grouped": grouped,
+            "template": catalog.template_detail("single_stock_daily_causal", "1"),
+            "action_id": values.get("action_id") or secrets.token_hex(16),
+            "form_values": values,
+            "errors": [],
+            "error_messages": {},
+            "invalid_fields": set(),
+        }
+        if validation_error is not None:
+            context.update(
+                _form_error_context(
+                    values,
+                    validation_error,
+                    fallback_field="experiment-form",
+                )
+            )
+        return context
+
     @app.get("/experiments/new")
     async def experiment_new(request: Request):
         session = _session(request)
-        grouped = _operator_groups(operators)
-        dataset_options = await run_in_threadpool(datasets.list_available)
         return _render(
             request,
             "experiment_new.html",
             session=session,
-            datasets=dataset_options,
-            grouped=grouped,
-            template=catalog.template_detail("single_stock_daily_causal", "1"),
-            action_id=secrets.token_hex(16),
+            **await experiment_form_context(),
         )
 
     @app.post("/experiments/preview")
@@ -1454,13 +1545,25 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
-        task = _task_from_form(form, catalog=catalog)
-        preview = await run_in_threadpool(experiments.preview_task, task)
+        try:
+            task = _task_from_form(form, catalog=catalog)
+            preview = await run_in_threadpool(experiments.preview_task, task)
+        except (TaskValidationError, ValueError) as exc:
+            return _render(
+                request,
+                "experiment_new.html",
+                session=session,
+                status_code=400,
+                **await experiment_form_context(form, validation_error=exc),
+            )
         return _render(
             request,
             "experiment_preview.html",
             session=session,
             preview=preview,
+            form_values=form,
+            theme_action="/experiments/preview",
+            theme_form_values=form,
         )
 
     @app.post("/experiments/new")
@@ -1468,11 +1571,30 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
-        result = await run_in_threadpool(
-            experiments.submit,
-            _task_from_form(form, catalog=catalog),
-            action_id=form.get("action_id") or secrets.token_hex(16),
-        )
+        intent = form.pop("intent", None)
+        if intent is not None:
+            if intent != "edit":
+                raise ValueError("experiment form intent is invalid")
+            return _render(
+                request,
+                "experiment_new.html",
+                session=session,
+                **await experiment_form_context(form),
+            )
+        try:
+            result = await run_in_threadpool(
+                experiments.submit,
+                _task_from_form(form, catalog=catalog),
+                action_id=form.get("action_id") or secrets.token_hex(16),
+            )
+        except (TaskValidationError, ValueError) as exc:
+            return _render(
+                request,
+                "experiment_new.html",
+                session=session,
+                status_code=400,
+                **await experiment_form_context(form, validation_error=exc),
+            )
         return RedirectResponse(
             f"/experiments/{result['experiment_id']}", status_code=303
         )
@@ -1640,6 +1762,8 @@ def create_app(
             ),
             action_id=form.get("action_id") or secrets.token_hex(16),
             stale=False,
+            theme_action="/studies/preview",
+            theme_form_values=form,
         )
 
     @app.post("/studies/edit")
@@ -1694,6 +1818,9 @@ def create_app(
                 action_id=secrets.token_hex(16),
                 stale=True,
                 status_code=409,
+                theme_action="/studies/preview",
+                theme_form_values=_json_text(form["wizard_json"], "wizard_json")
+                | {"csrf_token": form["csrf_token"]},
             )
         if "study_id" not in result:
             raise StudyValidationError(
@@ -1844,11 +1971,23 @@ def create_app(
     @app.get("/reports/{attempt_id}")
     async def report(request: Request, attempt_id: str):
         session = _session(request)
+        attempt = experiments.attempt_detail(attempt_id)
+        experiment = experiments.experiment_detail(attempt["experiment_id"])
+        is_canonical = experiment["canonical_attempt_id"] == attempt_id
+        report_label = (
+            "Verified canonical report"
+            if is_canonical
+            else "Verified divergent rerun report"
+            if attempt.get("comparison") == "DIVERGENT"
+            else "Verified equivalent rerun report"
+        )
         return _render(
             request,
             "report_wrapper.html",
             session=session,
             attempt_id=attempt_id,
+            attempt=attempt,
+            report_label=report_label,
         )
 
     @app.get("/reports/{attempt_id}/content")
