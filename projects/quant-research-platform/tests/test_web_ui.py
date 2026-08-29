@@ -398,6 +398,48 @@ def test_template_and_dashboard_show_slot_defaults_and_linked_recent_attempts(
     assert f'href="/experiments/{created["experiment_id"]}"' in dashboard.text
 
 
+def test_overview_and_catalog_surfaces_expose_mobile_records_and_grouped_evidence(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    app.state.experiments.submit(_task(snapshot(app)), action_id="catalog-layout")
+
+    dashboard = client.get("/").text
+    submission = client.get("/operators/submit").text
+    operator = client.get("/operators/prior_log_ols/1.0.0").text
+    template = client.get("/templates/single_stock_daily_causal/1").text
+    digest = app.state.catalog.operator_detail("prior_log_ols", "1.0.0")[
+        "content_digest"
+    ]
+
+    assert "<caption>Recent experiment attempts</caption>" in dashboard
+    assert 'class="record-table"' in dashboard
+    for label in ("Attempt", "Experiment", "Status", "Created"):
+        assert f'data-label="{label}"' in dashboard
+
+    for heading in (
+        "Operator identity",
+        "Implementation source",
+        "Contract and deterministic tests",
+        "Documentation",
+    ):
+        assert heading in submission
+    assert submission.count('class="form-section') == 4
+
+    assert "<caption>Declared operator parameters</caption>" in operator
+    assert 'class="record-table"' in operator
+    assert f">{digest[:12]}…" in operator
+    assert "Full immutable operator identity" in operator
+    assert digest in operator.split("Full immutable operator identity", 1)[1]
+
+    assert "<caption>Initial operator resolution by slot</caption>" in template
+    assert "<caption>Template-owned parameters</caption>" in template
+    assert template.count('class="record-table"') == 2
+    for label in ("Slot", "Default operator", "Version", "Parameters"):
+        assert f'data-label="{label}"' in template
+
+
 def test_preview_renders_complete_resolved_audit_and_duplicate_link(tmp_path: Path):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
