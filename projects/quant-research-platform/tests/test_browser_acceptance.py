@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -117,6 +118,10 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         time.sleep(0.05)
     assert server.started
     try:
+        screenshot_dir = tmp_path / "proofline-screenshots"
+        browser_env = os.environ.copy()
+        browser_env.pop("NODE_OPTIONS", None)
+        browser_env["QUANT_SCREENSHOT_DIR"] = str(screenshot_dir)
         try:
             subprocess.run(
                 [
@@ -135,6 +140,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 capture_output=True,
                 text=True,
                 timeout=180,
+                env=browser_env,
             )
         except subprocess.CalledProcessError as exc:
             raise AssertionError(exc.stderr) from exc

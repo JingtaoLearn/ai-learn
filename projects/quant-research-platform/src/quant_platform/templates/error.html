@@ -1,4 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Error · Quant Research{% endblock %}
+{% block title %}Request recovery · Quant Proofline{% endblock %}
 {% block page %}error{% endblock %}
-{% block content %}<section class="page-heading"><p class="eyebrow">REQUEST FAILED</p><h1>Unable to complete the request</h1><p>{{ message }}</p><a class="button" href="/">Return to overview</a></section>{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <p class="eyebrow">REQUEST RECOVERY</p>
+  <h1>Quant Proofline could not complete the request</h1>
+  <p>{{ message }}</p>
+  <div class="actions"><a class="button quiet" href="/history">Review history</a><a class="button" href="/">Return to overview</a></div>
+</section>
+{% endblock %}

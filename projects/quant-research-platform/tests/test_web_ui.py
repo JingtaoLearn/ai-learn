@@ -135,6 +135,24 @@ def test_authenticated_shell_uses_workbench_navigation_and_no_js_utilities(
     )
 
 
+def test_login_and_error_states_use_proofline_identity(tmp_path: Path):
+    app, client = make_app(tmp_path)
+
+    login = client.get("/login")
+    authenticate(app, client)
+    error = client.get("/history?status=invalid")
+
+    assert login.status_code == 200
+    assert 'data-testid="login-panel"' in login.text
+    assert "Quant Proofline" in login.text
+    assert "Evidence workbench access" in login.text
+    assert 'data-theme-selector' in login.text
+    assert error.status_code == 400
+    assert "Quant Proofline" in error.text
+    assert "Request recovery" in error.text
+    assert "/history" in error.text
+
+
 def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)

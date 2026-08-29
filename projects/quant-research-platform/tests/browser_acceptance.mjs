@@ -1,7 +1,7 @@
 "use strict";
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +20,7 @@ if (
   );
 }
 const studyFormValues = JSON.parse(studyFormJson);
+const screenshotDir = process.env.QUANT_SCREENSHOT_DIR;
 
 const profile = await mkdtemp(join(tmpdir(), "quant-browser-"));
 const browser = spawn(
@@ -233,6 +234,20 @@ try {
     ) {
       throw new Error(`Layout failure for ${label} at ${width}px: ${JSON.stringify(layout)}`);
     }
+
+  }
+
+  async function captureReviewScreenshot(label, width) {
+    if (!screenshotDir) return;
+    await mkdir(screenshotDir, { recursive: true });
+    const shot = await send(
+      "Page.captureScreenshot",
+      { format: "png", captureBeyondViewport: true },
+      sessionId,
+    );
+    const file = join(screenshotDir, `${label}-${width}.png`);
+    await writeFile(file, Buffer.from(shot.data, "base64"));
+    console.error(`screenshot:${file}`);
   }
 
   async function assertDangerContrast(width) {
@@ -588,7 +603,7 @@ try {
       { value: scriptsDisabled },
       sessionId,
     );
-    for (const width of [390, 1280]) {
+    for (const width of [390, 1280, 1440]) {
       await send(
         "Emulation.setDeviceMetricsOverride",
         { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
@@ -599,6 +614,17 @@ try {
         const value = await evaluate(`({
               page: document.body.dataset.page,
               hasMain: Boolean(document.querySelector("main")),
+              hasMasthead: Boolean(document.querySelector(".shell-masthead")),
+              mastheadHeight: Math.round(document.querySelector(".shell-masthead")?.getBoundingClientRect().height || 0),
+              railWidth: Math.round(document.querySelector(".task-rail")?.getBoundingClientRect().width || 0),
+              railVisible: getComputedStyle(document.querySelector(".task-rail")).display !== "none",
+              mobileNavCount: document.querySelectorAll(".mobile-bottom-nav .mobile-nav-link").length,
+              activeRailCount: document.querySelectorAll(".task-rail [aria-current='page']").length,
+              activeMobileCount: document.querySelectorAll(".mobile-bottom-nav [aria-current='page']").length,
+              expectsMobileActive: ${JSON.stringify(["/", "/operators", "/experiments/new", "/studies", "/history"])}.includes(location.pathname),
+              utilityNative: document.querySelector("[data-testid='utility-disclosure']")?.tagName === "DETAILS",
+              bottomPadding: Number.parseFloat(getComputedStyle(document.querySelector("main")).paddingBottom),
+              bottomNavHeight: document.querySelector(".mobile-bottom-nav").getBoundingClientRect().height,
               hasPrimaryAction: ${route === "/experiments/new"
                 ? 'Boolean(document.querySelector(\'form[data-testid="experiment-form"] button[type="submit"]\'))'
                 : route === "/studies/new"
@@ -611,6 +637,13 @@ try {
         if (
           value.page !== expectedPage ||
           !value.hasMain ||
+          !value.hasMasthead ||
+          !value.utilityNative ||
+          value.mastheadHeight !== 52 ||
+          value.mobileNavCount !== 5 ||
+          (value.expectsMobileActive && value.activeMobileCount !== 1) ||
+          (width === 390 && value.bottomPadding < value.bottomNavHeight + 24) ||
+          (width >= 1024 && (!value.railVisible || value.railWidth !== 240 || value.activeRailCount !== 1)) ||
           !value.hasPrimaryAction ||
           !value.hasThemeSelector
         ) {
@@ -618,6 +651,9 @@ try {
         }
         if (value.documentWidth > value.viewportWidth) {
           throw new Error(`Horizontal page overflow for ${route} at ${width}px`);
+        }
+        if (route === "/" && (width === 390 || width === 1440) && !scriptsDisabled) {
+          await captureReviewScreenshot("overview", width);
         }
       }
 
@@ -843,6 +879,7 @@ try {
     if (!scriptsDisabled) {
       await navigate("/");
       const keyboardTheme = await evaluate(`(() => {
+        document.querySelector("[data-testid='utility-disclosure']").open = true;
         const selector = document.querySelector("[data-theme-selector]");
         selector.focus();
         return {
