@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import prod
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from . import catalog as catalog_module
 from . import study_suggesters
@@ -1413,6 +1413,85 @@ def _build_decision_summary(
         "rationale": rationale,
         "evaluation_policy": deepcopy(policy_identity),
     }
+
+
+def _unranked_trial_evidence(
+    *,
+    frozen_plan: dict[str, Any],
+    trials: list[dict[str, Any]],
+    rankings: list[dict[str, Any]],
+    bindings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ranked = {item["candidate_digest"] for item in rankings}
+    final_folds = frozen_plan["validation"]["final_search_round"]["inner_folds"]
+    search_space = frozen_plan.get("search", {}).get("space", {})
+    result = []
+    for trial in trials:
+        if trial["candidate_digest"] in ranked:
+            continue
+        trial_bindings = [
+            binding
+            for binding in bindings
+            if binding["candidate_digest"] == trial["candidate_digest"]
+            and binding["search_round"] == "FINAL"
+            and binding["role"] == "INNER_SCORE"
+        ]
+        missing = []
+        for fold_sequence, _ in enumerate(final_folds, start=1):
+            fold_bindings = [
+                binding
+                for binding in trial_bindings
+                if binding["fold_sequence"] == fold_sequence
+            ]
+            if not fold_bindings:
+                missing.append(
+                    {
+                        "search_round": "FINAL",
+                        "role": "INNER_SCORE",
+                        "fold_sequence": fold_sequence,
+                        "reason": "NO_BINDING_RENDERED",
+                    }
+                )
+                continue
+            if not any(
+                binding["state"] == "VERIFIED"
+                and binding["attempt"]["status"] == "SUCCEEDED"
+                and binding["attempt"]["comparison"] == "CANONICAL"
+                and binding["metric_document"] is not None
+                for binding in fold_bindings
+            ):
+                missing.append(
+                    {
+                        "search_round": "FINAL",
+                        "role": "INNER_SCORE",
+                        "fold_sequence": fold_sequence,
+                        "reason": "NO_VERIFIED_CANONICAL_METRIC_DOCUMENT",
+                        "rendered_binding_ids": [
+                            binding["binding_id"] for binding in fold_bindings
+                        ],
+                    }
+                )
+        if not missing:
+            missing.append(
+                {
+                    "search_round": "FINAL",
+                    "role": "INNER_SCORE",
+                    "reason": "NO_FINAL_CANDIDATE_EVALUATION",
+                }
+            )
+        result.append(
+            {
+                "candidate_digest": trial["candidate_digest"],
+                "studied_parameters": _studied_parameters(
+                    trial["configuration"],
+                    search_space,
+                ),
+                "configuration": deepcopy(trial["configuration"]),
+                "missing_canonical_fold_evidence": missing,
+                "rendered_bindings": trial_bindings,
+            }
+        )
+    return result
 
 
 def _strict_json_value(value: Any, path: str) -> Any:
@@ -7321,6 +7400,12 @@ class ParameterStudy:
             "trials": trial_views,
             "bindings": binding_views,
             "rankings": rankings,
+            "unranked_trials": _unranked_trial_evidence(
+                frozen_plan=frozen_plan,
+                trials=trial_views,
+                rankings=rankings,
+                bindings=binding_views,
+            ),
             "decision_summary": decision_summary,
             "verified_metrics": [
                 binding["metric_document"]

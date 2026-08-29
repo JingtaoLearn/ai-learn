@@ -17,6 +17,7 @@
   <p>{{ study.frozen_plan.holdout.fold_window.scoring_start }} → {{ study.frozen_plan.holdout.fold_window.scoring_end }}. Freshness describes recorded platform history only; it does not claim global novelty.</p>
 </section>
 {% set decision = study.get("decision_summary") %}
+{% set policy = decision.evaluation_policy if decision else study.frozen_plan.evaluation.manifest %}
 {% if decision %}
 <section class="panel decision-summary" aria-labelledby="decision-summary-heading" data-testid="decision-summary">
   <div class="section-heading"><div><p class="eyebrow">DECISION SUMMARY</p><h2 id="decision-summary-heading">Best observed parameters</h2></div><span class="badge">{{ decision.claim }}</span></div>
@@ -29,6 +30,7 @@
   </div>
   {% if decision.primary_ties %}<div class="notice compact-notice"><strong>Primary-evidence ties</strong><ul>{% for item in decision.primary_ties %}<li><code>{{ item.studied_parameters|canonical_json }}</code> <span class="mono">{{ item.candidate_digest }}</span></li>{% endfor %}</ul></div>{% endif %}
   {% if decision.outer_selections %}<details><summary>Outer-round selections</summary><ul>{% for item in decision.outer_selections %}<li><strong>{{ item.search_round }}</strong> <code>{{ item.studied_parameters|canonical_json }}</code></li>{% endfor %}</ul></details>{% endif %}
+  <details><summary>Canonical evaluation policy</summary><dl class="technical"><dt>Formula</dt><dd><code>{{ policy.validation_score }}</code></dd><dt>Ordered tie-break fields</dt><dd><ol>{% for field in policy.tie_break %}<li><code>{{ field }}</code></li>{% endfor %}</ol></dd></dl></details>
   <p class="muted">NOT_ESTABLISHED means this Study did not run a separate statistical significance test. “Champion” is the observed winner under the frozen ranking and tie-break rules, not proof of a universally superior parameter.</p>
 </section>
 {% endif %}
@@ -36,20 +38,21 @@
 {% set rankings = study.get("rankings", []) %}
 {% set trials = study.get("trials", []) %}
 {% set bindings = study.get("bindings", []) %}
+{% set unranked_trials = study.get("unranked_trials", []) %}
 <section class="panel" aria-labelledby="trial-ranking-heading">
   <div class="section-heading"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2 id="trial-ranking-heading">Trial ranking</h2></div><span class="badge">{{ trials|length }} Trials</span></div>
-  {% set unranked_count = trials|length - rankings|length %}
-  {% if unranked_count > 0 %}<p class="notice compact-notice">{{ unranked_count }} {{ "Trial is" if unranked_count == 1 else "Trials are" }} not ranked because complete canonical fold evidence is unavailable. {{ "Its" if unranked_count == 1 else "Their" }} immutable Trial and binding records remain visible in the Study evidence.</p>{% endif %}
-  {% if rankings %}<div class="table-wrap ranking-wrap"><table class="study-ranking-table"><thead><tr><th>Rank / Candidate</th><th>Studied parameters</th><th>Validation score</th><th>Independent metrics</th><th>Eligibility / Constraint reasons</th><th>Experiment bindings</th></tr></thead><tbody>
+  {% if unranked_trials %}<div class="notice compact-notice" data-testid="unranked-trials"><strong>{{ unranked_trials|length }} {{ "Trial is" if unranked_trials|length == 1 else "Trials are" }} not ranked because complete canonical fold evidence is unavailable.</strong><ul>{% for trial in unranked_trials %}<li><code>{{ trial.studied_parameters|canonical_json }}</code> <span class="mono">{{ trial.candidate_digest }}</span><ul>{% for missing in trial.missing_canonical_fold_evidence %}<li>{{ missing.search_round }} {{ missing.role }}{% if missing.fold_sequence %} fold {{ missing.fold_sequence }}{% endif %}: {{ missing.reason }}{% if missing.rendered_binding_ids %} (rendered binding {% for binding_id in missing.rendered_binding_ids %}<span class="mono">{{ binding_id }}</span>{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}</li>{% endfor %}</ul>{% if trial.rendered_bindings %}<details><summary>Rendered binding records for this unranked Trial</summary><ul>{% for binding in trial.rendered_bindings %}<li><span class="mono">{{ binding.binding_id }}</span> {{ binding.search_round }} {{ binding.role }} fold {{ binding.fold_sequence }} · {{ binding.state }} / {{ binding.attempt.status }} / {{ binding.attempt.comparison or "NO_CANONICAL_COMPARISON" }}</li>{% endfor %}</ul></details>{% endif %}</li>{% endfor %}</ul></div>{% endif %}
+  {% if rankings %}<div class="table-wrap ranking-wrap"><table class="study-ranking-table"><thead><tr><th>Studied parameters</th><th>Rank / Candidate</th><th>Validation score and formula</th><th>Independent metrics</th><th>Eligibility evidence</th><th>Ordered tie-break fields</th><th>Experiment bindings</th></tr></thead><tbody>
   {% for ranking in rankings %}
     {% set trial = namespace(value=none) %}
     {% for candidate in trials %}{% if candidate.candidate_digest == ranking.candidate_digest %}{% set trial.value = candidate %}{% endif %}{% endfor %}
     <tr>
-      <td data-label="Rank / Candidate"><strong>#{{ loop.index }}</strong><br><span class="mono">{{ ranking.candidate_digest }}</span></td>
       <td data-label="Studied parameters"><pre>{{ ranking.studied_parameters|canonical_json }}</pre>{% if trial.value %}<details><summary>Full immutable configuration</summary><pre>{{ trial.value.configuration|canonical_json }}</pre></details>{% endif %}</td>
-      <td data-label="Validation score">{{ ranking.validation_score }}</td>
+      <td data-label="Rank / Candidate"><strong>#{{ loop.index }}</strong><br><span class="mono">{{ ranking.candidate_digest }}</span></td>
+      <td data-label="Validation score and formula"><strong>{{ ranking.validation_score }}</strong><dl class="technical compact-technical"><dt>Formula</dt><dd><code>{{ ranking.explanation.formula }}</code></dd><dt>Components</dt><dd><pre>{{ ranking.explanation.components|canonical_json }}</pre></dd></dl></td>
       <td data-label="Independent metrics"><pre>{{ ranking.independent_metrics|canonical_json }}</pre></td>
-      <td data-label="Eligibility / Constraint reasons"><span class="badge">{{ "Eligible" if ranking.eligible else "Ineligible" }}</span><ul>{% for reason in ranking.explanation.constraint_failures %}<li>{{ reason }}</li>{% else %}<li>No constraint failures</li>{% endfor %}</ul></td>
+      <td data-label="Eligibility evidence"><span class="badge">{{ "Eligible" if ranking.eligible else "Ineligible" }}</span><pre>{{ ranking.constraints|canonical_json }}</pre><ul>{% for reason in ranking.explanation.constraint_failures %}<li>{{ reason }}</li>{% else %}<li>No constraint failures</li>{% endfor %}</ul></td>
+      <td data-label="Ordered tie-break fields"><ol>{% for field in policy.tie_break %}<li><code>{{ field }}</code>: <span class="mono">{{ ranking.tie_break[field] }}</span></li>{% endfor %}</ol></td>
 
       <td data-label="Experiment bindings">{% set matched = namespace(count=0) %}{% for binding in bindings %}{% if binding.candidate_digest == ranking.candidate_digest %}{% set matched.count = matched.count + 1 %}<div class="binding"><strong>{{ binding.role }}</strong><a class="mono" href="/experiments/{{ binding.experiment_id }}">{{ binding.experiment_id }}</a><span>{{ binding.attempt.status }}</span>{% if binding.state == "VERIFIED" and binding.attempt.status == "SUCCEEDED" and binding.attempt.comparison == "CANONICAL" %}<a href="/reports/{{ binding.attempt_id }}">Verified report</a>{% endif %}</div>{% endif %}{% endfor %}{% if matched.count == 0 %}No bindings{% endif %}</td>
     </tr>

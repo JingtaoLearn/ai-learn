@@ -225,6 +225,7 @@ summary { min-height: 44px; display: flex; align-items: center; cursor: pointer;
 pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline-item { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--border); }
 .technical { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px 18px; }
+.compact-technical { grid-template-columns: 80px minmax(0, 1fr); margin-bottom: 0; }
 .technical dt { color: var(--muted); }
 .technical dd { margin: 0; overflow-wrap: anywhere; }
 iframe { width: 100%; min-height: 720px; border: 1px solid var(--border); background: white; }

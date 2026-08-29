@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 import sqlite3
 from threading import Event
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -32,6 +33,7 @@ from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.seed import BUILTINS
 from quant_platform.study_contracts import FOLD_WINDOW_FIELDS, normalize_fold_window
+from quant_platform.study_evaluation import EVALUATION_POLICY_IDENTITY
 from quant_platform.study_datasets import ExecutionDatasetSliceFactory
 from quant_platform.study_suggesters import (
     Exhausted,
@@ -139,6 +141,7 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
             "The champion tied on the frozen primary ranking evidence and won only "
             "through the frozen tie-break; outer-round selections also diverged."
         ),
+        "evaluation_policy": EVALUATION_POLICY_IDENTITY,
     }
 
     eligible_champion = ranking(digests[10], 0.10, 0.01, 12.5) | {
@@ -164,6 +167,64 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
         "The champion was the highest-ranked eligible candidate under the complete "
         "frozen ranking policy, but outer-round selections diverged."
     )
+
+
+def test_decision_summary_ignores_empty_outer_selection_rounds():
+    frozen_plan = {
+        "search": {"space": {"/operators/fit/window_sessions": {"values": [10]}}},
+        "evaluation": {"manifest": EVALUATION_POLICY_IDENTITY},
+    }
+    digest = "1" * 64
+    trial = {
+        "candidate_digest": digest,
+        "configuration": {"operators": {"fit": {"parameters": {"window_sessions": 10}}}},
+    }
+    ranking = {
+        "candidate_digest": digest,
+        "validation_score": 0.14,
+        "eligible": True,
+        "champion_eligible": True,
+        "tie_break": {
+            "lower_maximum_drawdown": 0.001,
+            "lower_annual_turnover": 12.0,
+            "strategy_configuration_digest": digest,
+        },
+    }
+
+    _, empty_summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[trial],
+        rankings=[ranking],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": None}
+            ]
+        },
+    )
+    _, consistent_summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[trial],
+        rankings=[ranking],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": None},
+                {"search_round": "OUTER:2", "selected_candidate_digest": digest},
+            ]
+        },
+    )
+
+    assert empty_summary is not None
+    assert empty_summary["outer_selections"] == []
+    assert empty_summary["outer_stability"] == "NOT_AVAILABLE"
+    assert consistent_summary is not None
+    assert consistent_summary["outer_selections"] == [
+        {
+            "search_round": "OUTER:2",
+            "candidate_digest": digest,
+            "studied_parameters": {"/operators/fit/window_sessions": 10},
+        }
+    ]
+    assert consistent_summary["outer_stability"] == "CONSISTENT"
 
 
 class FixedCalendar:
@@ -525,6 +586,506 @@ def _holdout_identity_digest(frozen_plan: dict) -> str:
     ).hexdigest()
 
 
+def _fixture_candidate(frozen_plan: dict, window_sessions: int) -> dict[str, Any]:
+    candidate = {
+        "template": {
+            "name": frozen_plan["template"]["name"],
+            "version": frozen_plan["template"]["version"],
+            "parameters": deepcopy(frozen_plan["template"]["parameters"]),
+        },
+        "operators": {
+            slot: {
+                "operator_id": operator["operator_id"],
+                "version": operator["resolved_version"],
+                "parameters": deepcopy(operator["parameters"]),
+            }
+            for slot, operator in frozen_plan["operators"].items()
+        },
+    }
+    candidate["operators"]["fit"]["parameters"]["window_sessions"] = window_sessions
+    return candidate
+
+
+def _digest_value(value: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _ordered_fixture_candidates(
+    frozen_plan: dict,
+) -> tuple[dict[int, dict[str, Any]], dict[int, str]]:
+    candidates = {
+        window_sessions: _fixture_candidate(frozen_plan, window_sessions)
+        for window_sessions in (10, 20, 30, 40, 25, 15)
+    }
+
+    def force_less(left: int, right: int) -> None:
+        for salt in range(10_000):
+            candidates[right]["fixture_digest_salt"] = f"{right}-{salt}"
+            if _digest_value(candidates[left]) < _digest_value(candidates[right]):
+                return
+        raise AssertionError("could not shape fixture digest order")
+
+    force_less(10, 20)
+    force_less(25, 15)
+    return candidates, {
+        window_sessions: _digest_value(candidate)
+        for window_sessions, candidate in candidates.items()
+    }
+
+
+def _fixture_evaluation(
+    digest: str,
+    *,
+    score: float,
+    maximum_drawdown: float,
+    annual_turnover: float,
+) -> dict[str, Any]:
+    evaluation = {
+        "policy_digest": "8" * 64,
+        "policy_id": EVALUATION_POLICY_IDENTITY["policy_id"],
+        "version": EVALUATION_POLICY_IDENTITY["version"],
+        "candidate_digest": digest,
+        "evidence_role": "INNER_SCORE",
+        "eligibility": "ELIGIBLE",
+        "eligible": True,
+        "validation_score": score,
+        "independent_metrics": {
+            "fold_net_sharpe": [score],
+            "median_fold_net_sharpe": score,
+            "mad_fold_net_sharpe": 0.0,
+            "maximum_drawdown": maximum_drawdown,
+            "annual_turnover": annual_turnover,
+            "closed_trades": 3,
+            "net_return_by_fold": [score],
+        },
+        "constraints": {
+            "minimum_trades": {"passed": True, "observed": 3, "required": 1},
+            "maximum_drawdown": {
+                "passed": True,
+                "observed": maximum_drawdown,
+                "maximum": None,
+            },
+            "maximum_annual_turnover": {
+                "passed": True,
+                "observed": annual_turnover,
+                "maximum": None,
+            },
+        },
+        "tie_break": {
+            "lower_maximum_drawdown": maximum_drawdown,
+            "lower_annual_turnover": annual_turnover,
+            "strategy_configuration_digest": digest,
+        },
+        "explanation": {
+            "formula": EVALUATION_POLICY_IDENTITY["validation_score"],
+            "components": {
+                "median_fold_net_sharpe": score,
+                "stability_weight": 0.5,
+                "mad_fold_net_sharpe": 0.0,
+                "turnover_weight": 0.05,
+                "annual_turnover": annual_turnover,
+            },
+            "constraint_failures": [],
+        },
+        "metric_document_digests": ["7" * 64],
+    }
+    evaluation["evaluation_digest"] = _digest_value(evaluation)
+    return evaluation
+
+
+def _insert_production_shaped_completed_study(studies: ParameterStudy) -> str:
+    spec = _minimal_orchestration_spec()
+    spec["validation"]["outer_folds"] = 2
+    spec["validation"]["inner_folds"] = 3
+    spec["search"]["space"] = {
+        "/operators/fit/window_sessions": {"values": [10, 20, 30, 40, 25, 15]}
+    }
+    preview = studies.preview(spec)
+    frozen_plan = preview["frozen_plan"]
+    candidates, digests = _ordered_fixture_candidates(frozen_plan)
+    study_id = "168" + "0" * 61
+    now = "2026-08-28T12:00:00Z"
+    evaluations = {
+        10: _fixture_evaluation(
+            digests[10],
+            score=0.14078871462829678,
+            maximum_drawdown=0.0013048117242089319,
+            annual_turnover=12.613481894016266,
+        ),
+        20: _fixture_evaluation(
+            digests[20],
+            score=0.14078871462829678,
+            maximum_drawdown=0.0013048117242089319,
+            annual_turnover=12.613481894016266,
+        ),
+        30: _fixture_evaluation(
+            digests[30],
+            score=0.13,
+            maximum_drawdown=0.002,
+            annual_turnover=12.0,
+        ),
+        40: _fixture_evaluation(
+            digests[40],
+            score=0.12,
+            maximum_drawdown=0.003,
+            annual_turnover=12.0,
+        ),
+        25: _fixture_evaluation(
+            digests[25],
+            score=0.11,
+            maximum_drawdown=0.004,
+            annual_turnover=11.0,
+        ),
+        15: _fixture_evaluation(
+            digests[15],
+            score=0.11,
+            maximum_drawdown=0.004,
+            annual_turnover=11.0,
+        ),
+    }
+    ordered = [10, 20, 30, 40, 25, 15]
+    outer_rounds = [
+        {
+            "search_round": "OUTER:1",
+            "selected_candidate_digest": digests[30],
+            "selected_evaluation_digest": evaluations[30]["evaluation_digest"],
+            "net_daily_returns": [0.01],
+        },
+        {
+            "search_round": "OUTER:2",
+            "selected_candidate_digest": digests[25],
+            "selected_evaluation_digest": evaluations[25]["evaluation_digest"],
+            "net_daily_returns": [-0.002],
+        },
+    ]
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO parameter_studies(
+                study_id, preview_digest, request_digest, frozen_plan_json,
+                operational_metadata_json, phase, control_status,
+                selection_outcome, holdout_outcome, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, '{}', 'COMPLETED', 'ACTIVE',
+                      'CHAMPION_SELECTED', 'PASSED', ?, ?)
+            """,
+            (
+                study_id,
+                preview["preview_digest"],
+                preview["preview_digest"],
+                canonical_json_bytes(frozen_plan).decode(),
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO parameter_study_events(
+                study_id, sequence, event_type, occurred_at, payload_json
+            ) VALUES (?, 1, 'STUDY_SUBMITTED', ?, '{}')
+            """,
+            (study_id, now),
+        )
+        for sequence, window_sessions in enumerate(ordered, start=1):
+            connection.execute(
+                """
+                INSERT INTO parameter_study_trials(
+                    study_id, candidate_digest, configuration_json,
+                    first_search_round, proposal_sequence, classification, created_at
+                ) VALUES (?, ?, ?, 'FINAL', ?, 'IN_RANGE', ?)
+                """,
+                (
+                    study_id,
+                    digests[window_sessions],
+                    canonical_json_bytes(candidates[window_sessions]).decode(),
+                    sequence,
+                    now,
+                ),
+            )
+        evidence_sequence = 1
+        for window_sessions in ordered:
+            payload = {
+                "search_round": "FINAL",
+                "candidate_digest": digests[window_sessions],
+                "champion_eligible": True,
+                "evaluation": evaluations[window_sessions],
+            }
+            connection.execute(
+                """
+                INSERT INTO parameter_study_evidence(
+                    study_id, sequence, evidence_type, candidate_digest,
+                    payload_json, occurred_at
+                ) VALUES (?, ?, 'CANDIDATE_EVALUATED', ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    evidence_sequence,
+                    digests[window_sessions],
+                    canonical_json_bytes(payload).decode(),
+                    now,
+                ),
+            )
+            evidence_sequence += 1
+        for round_payload in outer_rounds:
+            connection.execute(
+                """
+                INSERT INTO parameter_study_evidence(
+                    study_id, sequence, evidence_type, candidate_digest,
+                    payload_json, occurred_at
+                ) VALUES (?, ?, 'OUTER_SELECTION_RECORDED', ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    evidence_sequence,
+                    round_payload["selected_candidate_digest"],
+                    canonical_json_bytes(round_payload).decode(),
+                    now,
+                ),
+            )
+            evidence_sequence += 1
+        champion_payload = {
+            "candidate_digest": digests[10],
+            "evaluation": evaluations[10],
+            "evaluation_digest": evaluations[10]["evaluation_digest"],
+            "outer_evidence": {
+                "account_policy": "FORCE_FLAT_WITH_COST",
+                "rounds": outer_rounds,
+                "ordered_net_daily_returns": [0.01, -0.002],
+            },
+        }
+        connection.execute(
+            """
+            INSERT INTO parameter_study_evidence(
+                study_id, sequence, evidence_type, candidate_digest,
+                payload_json, occurred_at
+            ) VALUES (?, ?, 'CHAMPION_FROZEN', ?, ?, ?)
+            """,
+            (
+                study_id,
+                evidence_sequence,
+                digests[10],
+                canonical_json_bytes(champion_payload).decode(),
+                now,
+            ),
+        )
+        evidence_sequence += 1
+        connection.execute(
+            """
+            INSERT INTO parameter_study_evidence(
+                study_id, sequence, evidence_type, candidate_digest,
+                payload_json, occurred_at
+            ) VALUES (?, ?, 'HOLDOUT_OUTCOME_RECORDED', ?, ?, ?)
+            """,
+            (
+                study_id,
+                evidence_sequence,
+                digests[10],
+                canonical_json_bytes({"candidate_digest": digests[10], "outcome": "PASSED"}).decode(),
+                now,
+            ),
+        )
+        evidence_sequence += 1
+        holdout_identity = _holdout_identity_digest(frozen_plan)
+        binding_specs = [
+            ("FINAL", window_sessions, "INNER_SCORE", fold_sequence, {"role": "INNER_SCORE"})
+            for window_sessions in ordered
+            for fold_sequence in range(1, 4)
+        ]
+        binding_specs += [
+            (search_round, window_sessions, "INNER_SCORE", fold_sequence, {"role": "INNER_SCORE"})
+            for search_round, round_candidates in (
+                ("OUTER:1", (10, 20, 30)),
+                ("OUTER:2", (15, 25, 30)),
+            )
+            for window_sessions in round_candidates
+            for fold_sequence in range(1, 4)
+        ]
+        binding_specs += [
+            ("OUTER:1", 30, "OUTER_AUDIT", 1, {"role": "OUTER_AUDIT"}),
+            ("OUTER:2", 25, "OUTER_AUDIT", 1, {"role": "OUTER_AUDIT"}),
+            ("HOLDOUT", 10, "TERMINAL_HOLDOUT", 1, {"role": "TERMINAL_HOLDOUT"}),
+        ]
+        holdout_fold_window = {
+            "allowed_start": "2026-01-01",
+            "training_through": "2026-01-31",
+            "available_through": "2026-02-28",
+            "scoring_start": "2026-03-20",
+            "scoring_end": "2026-03-20",
+            "information_interval": "CLOSE_TO_NEXT_OPEN",
+            "account_policy": "FORCE_FLAT_WITH_COST",
+            "role": "TERMINAL_HOLDOUT",
+        }
+        holdout_binding_id = ParameterStudy._binding_id(
+            study_id=study_id,
+            search_round="HOLDOUT",
+            candidate_digest=digests[10],
+            role="TERMINAL_HOLDOUT",
+            fold_sequence=1,
+            fold_window=holdout_fold_window,
+        )
+        connection.execute(
+            """
+            INSERT INTO parameter_study_holdout_claims(
+                study_id, holdout_identity_digest, candidate_digest, binding_id,
+                effect_action_id, claimed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                study_id,
+                holdout_identity,
+                digests[10],
+                holdout_binding_id,
+                ParameterStudy._effect_action_id(holdout_binding_id),
+                now,
+            ),
+        )
+        for sequence, event_type in ((1, "GRANTED"), (2, "ACCESSED")):
+            connection.execute(
+                """
+                INSERT INTO parameter_study_holdout_ledger(
+                    study_id, sequence, holdout_identity_digest, event_type,
+                    occurred_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, '{}')
+                """,
+                (study_id, sequence, holdout_identity, event_type, now),
+            )
+        for index, (search_round, window_sessions, role, fold_sequence, extra) in enumerate(
+            binding_specs,
+            start=1,
+        ):
+            fold_window = (
+                holdout_fold_window
+                if role == "TERMINAL_HOLDOUT"
+                else {
+                    "allowed_start": "2026-01-01",
+                    "training_through": "2026-01-31",
+                    "available_through": "2026-02-28",
+                    "scoring_start": f"2026-03-{(index % 20) + 1:02d}",
+                    "scoring_end": f"2026-03-{(index % 20) + 1:02d}",
+                    "information_interval": "CLOSE_TO_NEXT_OPEN",
+                    "account_policy": "FORCE_FLAT_WITH_COST",
+                    **extra,
+                }
+            )
+            binding_id = ParameterStudy._binding_id(
+                study_id=study_id,
+                search_round=search_round,
+                candidate_digest=digests[window_sessions],
+                role=role,
+                fold_sequence=fold_sequence,
+                fold_window=fold_window,
+            )
+            experiment_id = _digest_value({"experiment": binding_id})
+            attempt_id = _digest_value({"attempt": binding_id})
+            result_digest = _digest_value({"result": binding_id})
+            task = ParameterStudy._task_for_candidate(
+                candidate=candidates[window_sessions],
+                instrument=frozen_plan["dataset"]["instrument"],
+                snapshot_id=frozen_plan["dataset"]["snapshot_id"],
+                fold_window=fold_window,
+            )
+            identity = {
+                "dataset": {
+                    key: value
+                    for key, value in frozen_plan["dataset"].items()
+                    if key not in {"effective_start", "effective_end"}
+                },
+                "template": frozen_plan["template"],
+                "operators": frozen_plan["operators"],
+            }
+            metric_document = {
+                "document_digest": _digest_value({"metric": binding_id}),
+                "binding_id": binding_id,
+            }
+            connection.execute(
+                """
+                INSERT INTO experiments(
+                    experiment_id, identity_json, created_at,
+                    canonical_attempt_id, canonical_result_digest
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    experiment_id,
+                    canonical_json_bytes(identity).decode(),
+                    now,
+                    attempt_id,
+                    result_digest,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO attempts(
+                    attempt_id, experiment_id, action_id, sequence, status,
+                    requested_json, resolved_json, created_at, started_at,
+                    finished_at, logs, result_path, result_digest, comparison,
+                    launch_count
+                ) VALUES (?, ?, ?, 1, 'SUCCEEDED', ?, ?, ?, ?, ?, 'ok',
+                          '/tmp/quant-fixture', ?, 'CANONICAL', 1)
+                """,
+                (
+                    attempt_id,
+                    experiment_id,
+                    f"fixture-{index}",
+                    canonical_json_bytes(task).decode(),
+                    canonical_json_bytes(task).decode(),
+                    now,
+                    now,
+                    now,
+                    result_digest,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO parameter_study_bindings(
+                    binding_id, study_id, search_round, candidate_digest, role,
+                    fold_sequence, fold_window_json, task_json, task_digest,
+                    dataset_snapshot_id, experiment_id, submitted_attempt_id,
+                    attempt_id, state, metric_document_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'VERIFIED', ?, ?, ?)
+                """,
+                (
+                    binding_id,
+                    study_id,
+                    search_round,
+                    digests[window_sessions],
+                    role,
+                    fold_sequence,
+                    canonical_json_bytes(fold_window).decode(),
+                    canonical_json_bytes(task).decode(),
+                    _digest_value(task),
+                    frozen_plan["dataset"]["snapshot_id"],
+                    experiment_id,
+                    attempt_id,
+                    attempt_id,
+                    canonical_json_bytes(metric_document).decode(),
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO parameter_study_evidence(
+                    study_id, sequence, evidence_type, candidate_digest,
+                    payload_json, occurred_at
+                ) VALUES (?, ?, 'METRIC_DOCUMENT_VERIFIED', ?, ?, ?)
+                """,
+                (
+                    study_id,
+                    evidence_sequence,
+                    digests[window_sessions],
+                    canonical_json_bytes(
+                        {
+                            "binding_id": binding_id,
+                            "attempt_id": attempt_id,
+                            "metric_document": metric_document,
+                        }
+                    ).decode(),
+                    now,
+                ),
+            )
+            evidence_sequence += 1
+    return study_id
+
+
 def _expire_study_lease(studies: ParameterStudy, study_id: str) -> None:
     current = studies.detail(study_id)["coordination"]["lease"]
     fencing_token = 1 if current is None else current["fencing_token"] + 1
@@ -552,6 +1113,56 @@ def _expire_study_lease(studies: ParameterStudy, study_id: str) -> None:
                 lease["expires_at"],
             ),
         )
+
+
+def test_completed_production_shaped_study_projection_is_decision_readable(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+    study_id = _insert_production_shaped_completed_study(studies)
+
+    detail = studies.detail(study_id)
+
+    assert detail["phase"] == "COMPLETED"
+    assert detail["holdout"]["access"] == "ACCESSED"
+    assert detail["holdout"]["freshness"] == "PREVIOUSLY_EXPOSED"
+    assert detail["holdout"]["outcome"] == "PASSED"
+    assert len(detail["trials"]) == 6
+    assert len(detail["bindings"]) == 39
+    assert all(binding["state"] == "VERIFIED" for binding in detail["bindings"])
+    assert all(binding["attempt"]["status"] == "SUCCEEDED" for binding in detail["bindings"])
+    assert len(
+        [
+            event
+            for event in detail["holdout_ledger"]
+            if event["event_type"] == "ACCESSED"
+        ]
+    ) == 1
+    windows = [
+        ranking["studied_parameters"]["/operators/fit/window_sessions"]
+        for ranking in detail["rankings"]
+    ]
+    assert windows == [10, 20, 30, 40, 25, 15]
+    assert detail["rankings"][0]["validation_score"] == 0.14078871462829678
+    assert (
+        detail["rankings"][0]["independent_metrics"]["maximum_drawdown"]
+        == 0.0013048117242089319
+    )
+    assert (
+        detail["rankings"][0]["independent_metrics"]["annual_turnover"]
+        == 12.613481894016266
+    )
+    assert detail["decision_summary"]["claim"] == "TIE_BROKEN_BY_FROZEN_RULE"
+    assert detail["decision_summary"]["outer_stability"] == "DIVERGENT"
+    assert (
+        detail["decision_summary"]["statistical_significance"]
+        == "NOT_ESTABLISHED"
+    )
+    assert [
+        item["studied_parameters"]["/operators/fit/window_sessions"]
+        for item in detail["decision_summary"]["outer_selections"]
+    ] == [30, 25]
+    assert detail["unranked_trials"] == []
 
 
 def _real_attempt_executor(

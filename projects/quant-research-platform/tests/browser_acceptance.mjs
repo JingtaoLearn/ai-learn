@@ -5,11 +5,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson] =
+const [baseUrl, sessionCookie, chromium, reportExperimentId, completedStudyId, studyFormJson] =
   process.argv.slice(2);
-if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId || !studyFormJson) {
+if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId || !completedStudyId || !studyFormJson) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID COMPLETED_STUDY_ID STUDY_FORM_JSON",
   );
 }
 const studyFormValues = JSON.parse(studyFormJson);
@@ -500,6 +500,55 @@ try {
     await assertLayout("study report", width);
   }
 
+  async function assertCompletedStudyInspection(width) {
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
+      sessionId,
+    );
+    await navigate(`/studies/${completedStudyId}`);
+    await expectPage("study-detail");
+    const completed = await evaluate(`(() => {
+      const text = document.body.textContent;
+      return {
+        hasPath: text.includes("/operators/fit/window_sessions"),
+        hasTie: text.includes("TIE_BROKEN_BY_FROZEN_RULE"),
+        hasDivergence: text.includes("DIVERGENT"),
+        hasSignificance: text.includes("NOT_ESTABLISHED"),
+        hasTerminal: Boolean(document.querySelector('[data-testid="terminal-study-controls"]')),
+        hasActiveControls: Boolean(
+          document.querySelector('form[action$="/advance"], form[action$="/control"]')
+        ),
+        rankingParameterFirst:
+          document.querySelector(".study-ranking-table th:first-child")?.textContent.trim() ===
+          "Studied parameters",
+      };
+    })()`);
+    if (
+      !completed.hasPath ||
+      !completed.hasTie ||
+      !completed.hasDivergence ||
+      !completed.hasSignificance ||
+      !completed.hasTerminal ||
+      completed.hasActiveControls ||
+      !completed.rankingParameterFirst
+    ) {
+      throw new Error(`Completed Study evidence is not decision-readable: ${JSON.stringify(completed)}`);
+    }
+    await assertLayout("completed study detail", width);
+    await keyboardActivate(`a[href="/studies/${completedStudyId}/report"]`);
+    await expectPage("study-report");
+    const report = await evaluate(`(() => {
+      const text = document.body.textContent;
+      return text.includes("/operators/fit/window_sessions") &&
+        text.includes("TIE_BROKEN_BY_FROZEN_RULE") &&
+        text.includes("DIVERGENT") &&
+        text.includes("NOT_ESTABLISHED");
+    })()`);
+    if (!report) throw new Error("Completed Study report navigation lost decision evidence");
+    await assertLayout("completed study report", width);
+  }
+
   const routes = {
     "/": "dashboard",
     "/operators": "operators",
@@ -549,6 +598,7 @@ try {
         }
       }
 
+      await assertCompletedStudyInspection(width);
     }
 
     await navigate("/operators/submit");

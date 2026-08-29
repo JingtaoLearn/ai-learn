@@ -168,7 +168,7 @@ def _parser() -> argparse.ArgumentParser:
     study_submit.add_argument("--action-id", required=True)
     study_list = study_commands.add_parser("list")
     study_list.add_argument("--root", required=True)
-    for name in ("advance", "detail"):
+    for name in ("advance", "detail", "inspect"):
         study_parser = study_commands.add_parser(name)
         study_parser.add_argument("--root", required=True)
         study_parser.add_argument("--study-id", required=True)
@@ -369,7 +369,7 @@ def _execute(args: argparse.Namespace) -> dict:
             )
         if args.study_command == "list":
             return {"studies": studies.list()}
-        if args.study_command == "detail":
+        if args.study_command in {"detail", "inspect"}:
             return {"study": studies.detail(args.study_id)}
         if args.study_command == "advance":
             return _advance_study_until_blocked(studies, args.study_id)

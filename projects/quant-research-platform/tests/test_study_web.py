@@ -10,6 +10,7 @@ from quant_platform.parameter_study import (
     StudyValidationError,
 )
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
+from quant_platform.study_evaluation import EVALUATION_POLICY_IDENTITY
 from quant_platform.web import _json_text, _study_from_form
 
 from test_parameter_study import (
@@ -80,6 +81,7 @@ def _study_detail() -> dict:
                     "scoring_end": "2026-06-30",
                 }
             },
+            "evaluation": {"manifest": EVALUATION_POLICY_IDENTITY},
             "lineage": {
                 "parent_study_ids": ["c" * 64],
                 "prior_unique_candidate_count": 3,
@@ -117,7 +119,25 @@ def _study_detail() -> dict:
                 "validation_score": 1.25,
                 "studied_parameters": {"/operators/fit/window_sessions": 20},
                 "independent_metrics": {"maximum_drawdown": -0.08},
-                "explanation": {"constraint_failures": ["minimum_trades"]},
+                "constraints": {
+                    "minimum_trades": {"passed": False, "observed": 0, "required": 1}
+                },
+                "tie_break": {
+                    "lower_maximum_drawdown": 0.08,
+                    "lower_annual_turnover": 12.5,
+                    "strategy_configuration_digest": "e" * 64,
+                },
+                "explanation": {
+                    "formula": EVALUATION_POLICY_IDENTITY["validation_score"],
+                    "components": {
+                        "median_fold_net_sharpe": 1.9,
+                        "stability_weight": 0.5,
+                        "mad_fold_net_sharpe": 0.3,
+                        "turnover_weight": 0.05,
+                        "annual_turnover": 10.0,
+                    },
+                    "constraint_failures": ["minimum_trades"],
+                },
             }
         ],
         "decision_summary": {
@@ -141,6 +161,7 @@ def _study_detail() -> dict:
             "outer_stability": "DIVERGENT",
             "statistical_significance": "NOT_ESTABLISHED",
             "rationale": "The champion won only through the frozen tie-break.",
+            "evaluation_policy": EVALUATION_POLICY_IDENTITY,
         },
         "bindings": [
             {
@@ -278,6 +299,22 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     incomplete_trial = deepcopy(detail["trials"][0])
     incomplete_trial["candidate_digest"] = "9" * 64
     detail["trials"].append(incomplete_trial)
+    detail["unranked_trials"] = [
+        {
+            "candidate_digest": "9" * 64,
+            "studied_parameters": {"/operators/fit/window_sessions": 20},
+            "configuration": incomplete_trial["configuration"],
+            "missing_canonical_fold_evidence": [
+                {
+                    "search_round": "FINAL",
+                    "role": "INNER_SCORE",
+                    "fold_sequence": 1,
+                    "reason": "NO_BINDING_RENDERED",
+                }
+            ],
+            "rendered_bindings": [],
+        }
+    ]
     monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
     monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
 
@@ -296,13 +333,21 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert "NOT_ESTABLISHED" in study.text
     assert "/operators/fit/window_sessions" in study.text
     assert 'class="study-ranking-table"' in study.text
-    assert "1 Trial is not ranked because complete canonical fold evidence is unavailable" in study.text
+    assert (
+        "1 Trial is not ranked because complete canonical fold evidence is unavailable"
+        in study.text
+    )
+    assert "FINAL INNER_SCORE fold 1" in study.text
+    assert "NO_BINDING_RENDERED" in study.text
     assert all(
         label in study.text
         for label in (
             "Validation score",
+            "Formula",
+            "Components",
+            "Ordered tie-break fields",
             "Independent metrics",
-            "Constraint reasons",
+            "Eligibility evidence",
             "Studied parameters",
             "Experiment bindings",
             "Planned outer OOS windows",
@@ -316,10 +361,32 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert "Verified report" not in study.text
     assert "&lt;Synthetic &amp; safe&gt;" in study.text
     assert "<Synthetic & safe>" not in study.text
+    assert study.text.index("<th>Studied parameters</th>") < study.text.index(
+        "<th>Rank / Candidate</th>"
+    )
     assert report.status_code == 200
     assert 'data-page="study-report"' in report.text
     assert "Planned outer OOS windows" in report.text
     assert "Terminal holdout plan and state" in report.text
+
+
+def test_completed_study_replaces_active_controls_with_terminal_explanation(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    detail["phase"] = "COMPLETED"
+    detail["control_status"] = "ACTIVE"
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+
+    response = client.get(f"/studies/{STUDY_ID}")
+
+    assert response.status_code == 200
+    assert 'data-testid="terminal-study-controls"' in response.text
+    assert "This Study is terminal" in response.text
+    assert f'action="/studies/{STUDY_ID}/advance"' not in response.text
+    assert f'action="/studies/{STUDY_ID}/control"' not in response.text
 
 
 def test_study_detail_and_report_render_optional_suggestion_journal(

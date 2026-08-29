@@ -182,6 +182,41 @@ def test_cli_invalid_input_returns_one_json_error_without_environment(tmp_path: 
     assert "must-not-appear" not in json.dumps(result)
 
 
+def test_study_inspect_cli_uses_read_only_detail_path(tmp_path: Path, capsys, monkeypatch):
+    calls = []
+
+    class Studies:
+        def detail(self, study_id: str) -> dict:
+            calls.append(("detail", study_id))
+            return {"study_id": study_id, "phase": "COMPLETED"}
+
+        def advance(self, study_id: str) -> dict:
+            raise AssertionError("read-only inspect must not advance coordination")
+
+        def control(self, *args, **kwargs) -> dict:
+            raise AssertionError("read-only inspect must not control coordination")
+
+    monkeypatch.setattr(cli_module, "_study_service", lambda root: Studies())
+
+    assert (
+        main(
+            [
+                "study",
+                "inspect",
+                "--root",
+                str(tmp_path / "state"),
+                "--study-id",
+                "1" * 64,
+            ]
+        )
+        == 0
+    )
+    output = _json_output(capsys)
+
+    assert calls == [("detail", "1" * 64)]
+    assert output["study"]["phase"] == "COMPLETED"
+
+
 def test_cli_data_update_backfill_idempotency_and_revision_smoke(tmp_path: Path, capsys):
     root = tmp_path / "state"
     market_csv = tmp_path / "bars.csv"
