@@ -1063,7 +1063,7 @@ try {
       page: "template-detail", task: "Template", mobile: "Operators",
     },
     "/experiments/new": {
-      page: "experiment-new", task: "New experiment", mobile: "New experiment",
+      page: "experiment-new", task: "New experiment", mobile: "New",
     },
     "/studies": { page: "studies", task: "Studies", mobile: "Studies" },
     "/studies/new": { page: "study-new", task: "New Study", mobile: "Studies" },
