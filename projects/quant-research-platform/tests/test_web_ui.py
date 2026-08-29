@@ -885,10 +885,17 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     component_css = css[css.index("* {") :]
     assert re.findall(r"#[0-9a-fA-F]{3,8}\b", component_css) == []
     assert re.findall(r"z-index:\s*-?\d+", css) == []
-    assert "--space-1: 4px" in css
+    assert "--space-1: 2px" in css
     assert "--radius-panel: 6px" in css
     assert "--z-skip-link:" in css
     assert "--shell-text:" in css
+    for raw_component_value in (
+        r"padding:\s*2px\s+var\(--space-2\)\s*;",
+        r"border-radius:\s*50%\s*;",
+        r"gap:\s*2px\s*;",
+        r"margin-bottom:\s*10px\s*;",
+    ):
+        assert re.search(raw_component_value, component_css) is None
     assert "height: 52px" in css
     assert "grid-template-columns: 240px minmax(0, 1fr)" in css
     assert "min-height: 44px" in css
