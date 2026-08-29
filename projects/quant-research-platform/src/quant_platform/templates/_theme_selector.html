@@ -8,7 +8,14 @@
 </label>
 <div class="no-js-theme" aria-label="Theme without JavaScript">
   <span>Choose theme</span>
-  <a href="{{ request.url.path }}?theme=system"{% if theme == "system" %} aria-current="page"{% endif %}>System</a>
-  <a href="{{ request.url.path }}?theme=light"{% if theme == "light" %} aria-current="page"{% endif %}>Light</a>
-  <a href="{{ request.url.path }}?theme=dark"{% if theme == "dark" %} aria-current="page"{% endif %}>Dark</a>
+  {% for choice, label in (("system", "System"), ("light", "Light"), ("dark", "Dark")) %}
+  {% if theme_action and theme_form_values %}
+  <form method="post" action="{{ theme_action }}?theme={{ choice }}" data-no-js-theme="{{ choice }}">
+    {% for name, value in theme_form_values.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <button class="quiet" type="submit"{% if theme == choice %} aria-current="page"{% endif %}>{{ label }}</button>
+  </form>
+  {% else %}
+  <a href="{{ request.url.path }}?theme={{ choice }}"{% if theme == choice %} aria-current="page"{% endif %}>{{ label }}</a>
+  {% endif %}
+  {% endfor %}
 </div>

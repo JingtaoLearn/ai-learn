@@ -7,7 +7,7 @@
   <a class="button quiet" href="/experiments/{{ attempt.experiment_id }}">Back to experiment</a>
 </section>
 <section class="report-toolbar" aria-label="Report state and actions">
-  <div><strong>Verified canonical report</strong><span>Checksum-verified content · scripts isolated without same-origin, network, forms, or parent navigation.</span></div>
+  <div><strong>{{ report_label }}</strong><span>Checksum-verified content · scripts isolated without same-origin, network, forms, or parent navigation.</span></div>
   <button class="quiet" type="button" data-fullscreen-report>Full screen</button>
 </section>
 <iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ attempt_id }}/content" data-testid="report-frame"></iframe>
