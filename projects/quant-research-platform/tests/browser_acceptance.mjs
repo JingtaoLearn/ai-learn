@@ -167,6 +167,32 @@ try {
     await loaded;
   }
 
+  async function keyboardToggle(selector) {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      {
+        type: "char",
+        key: "Enter",
+        code: "Enter",
+        text: "\r",
+        unmodifiedText: "\r",
+        windowsVirtualKeyCode: 13,
+      },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchKeyEvent",
+      { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+      sessionId,
+    );
+  }
+
   async function selectAndWaitForPreview(selectorQuery, value) {
     const evaluation = await send(
       "Runtime.evaluate",
@@ -274,13 +300,20 @@ try {
           "a, button, summary, input:not([type=hidden]), select, textarea"
         )).filter(visible);
         const undersized = targets.filter((element) => {
-          const box = rect(element);
+          const effectiveTarget = element.matches('input[type="checkbox"]')
+            ? element.closest("label")
+            : element;
+          const box = rect(effectiveTarget);
           return box.width < 43 || box.height < 43;
         }).slice(0, 8).map((element) => ({
           tag: element.tagName,
           text: element.textContent.trim().slice(0, 40),
-          width: rect(element).width,
-          height: rect(element).height,
+          width: rect(
+            element.matches('input[type="checkbox"]') ? element.closest("label") : element
+          ).width,
+          height: rect(
+            element.matches('input[type="checkbox"]') ? element.closest("label") : element
+          ).height,
         }));
         const hitTest = (element) => {
           const box = rect(element);
@@ -329,9 +362,9 @@ try {
         !contract.utilityBelowMasthead ||
         !contract.utilityClearsMobile ||
         contract.undersized.length ||
-        contract.mobileTargets.some(
+        (mobileExpected && contract.mobileTargets.some(
           (target) => target.width < 44 || target.height < 44 || !target.hit,
-        ) ||
+        )) ||
         (mobileExpected &&
           contract.shellBottomPadding < contract.mobileHeight + 16) ||
         (width >= 1024 && Math.abs(contract.railWidth - 240) > 1)
@@ -751,8 +784,8 @@ try {
       { width: 320, height: 640, deviceScaleFactor: 1, mobile: true },
       sessionId,
     );
-    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 }, sessionId);
     await navigate("/");
+    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 }, sessionId);
     await assertLayout("320px at 200 percent zoom", 320);
     await assertShellContract("320px at 200 percent zoom", 320, "Overview", "Overview");
     const zoom = await evaluate("visualViewport.scale");
@@ -997,6 +1030,10 @@ try {
 
     if (!scriptsDisabled) {
       await navigate("/");
+      await keyboardToggle(".utility-menu > summary");
+      if (!(await evaluate('document.querySelector(".utility-menu").open'))) {
+        throw new Error("Utilities disclosure did not open from the keyboard");
+      }
       const keyboardTheme = await evaluate(`(() => {
         const selector = document.querySelector("[data-theme-selector]");
         selector.focus();

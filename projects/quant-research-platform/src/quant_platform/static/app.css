@@ -520,6 +520,13 @@ pre,
   padding: var(--space-5) var(--space-5) var(--space-7);
 }
 
+.shell a:not(.button):not(.row) {
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .mobile-nav {
   display: none;
 }
