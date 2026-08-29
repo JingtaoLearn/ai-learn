@@ -385,6 +385,19 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     )
     assert "Ineligible" in ranking
     assert "minimum_trades" in ranking
+    assert study.text.index('data-testid="decision-summary"') < study.text.index(
+        'id="holdout-evidence-heading"'
+    )
+    assert study.text.index('id="holdout-evidence-heading"') < study.text.index(
+        'id="outer-plan-heading"'
+    )
+    assert study.text.index('id="outer-plan-heading"') < study.text.index(
+        'id="trial-ranking-heading"'
+    )
+    assert "Study coordinator lease details" in study.text
+    assert "Study event history" in study.text
+    for label in ("Sequence", "Event", "Occurred"):
+        assert f'data-label="{label}"' in study.text
 
 
 def test_completed_study_replaces_controls_and_identifies_unranked_trials(
@@ -478,6 +491,10 @@ def test_study_detail_and_report_render_optional_suggestion_journal(
         assert "COMPLETE" in response.text
         assert "1.25" in response.text
         assert "FAIL" in response.text
+        complete = response.text.index("COMPLETE")
+        details = response.text.index("Ask/tell event details")
+        changed = response.text.index("/operators/fit/window_sessions")
+        assert complete < details < changed
 
 
 def test_old_studies_without_suggestion_journal_render_safely(tmp_path: Path, monkeypatch):
@@ -882,6 +899,12 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     assert "Candidate capacity" in preview.text
     assert "Minimum Experiment bindings" in preview.text
     assert "Conditional maximum bindings" in preview.text
+    assert "Full immutable Study preview identity" in preview.text
+    identity = preview.text.split("Full immutable Study preview identity", 1)[1]
+    assert re.search(r"[0-9a-f]{64}", identity)
+    assert preview.text.index("Study estimates") < preview.text.index(
+        "Full immutable Study preview identity"
+    )
     values = {
         name: html.unescape(
             re.search(
