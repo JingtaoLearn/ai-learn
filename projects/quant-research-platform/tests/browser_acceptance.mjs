@@ -1111,8 +1111,20 @@ try {
         sessionId,
       );
       await navigate(`/?theme=${theme}`);
+      const appliedTheme = await evaluate("document.documentElement.dataset.theme");
+      if (appliedTheme !== theme) {
+        throw new Error(
+          `Explicit screenshot theme ${theme} was overridden by ${appliedTheme}`,
+        );
+      }
       await capture(`overview-${theme}-${width}.png`);
       await navigate(`/studies/${completedStudyId}?theme=${theme}`);
+      const appliedStudyTheme = await evaluate("document.documentElement.dataset.theme");
+      if (appliedStudyTheme !== theme) {
+        throw new Error(
+          `Explicit Study screenshot theme ${theme} was overridden by ${appliedStudyTheme}`,
+        );
+      }
       await capture(`completed-study-${theme}-${width}.png`);
     }
   }
