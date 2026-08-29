@@ -207,6 +207,15 @@ button:disabled,
   outline-offset: 2px;
 }
 
+.masthead :focus-visible,
+.mobile-nav :focus-visible {
+  outline-color: #ffffff;
+}
+
+.utility-panel :focus-visible {
+  outline-color: var(--focus);
+}
+
 h1,
 h2,
 h3,
