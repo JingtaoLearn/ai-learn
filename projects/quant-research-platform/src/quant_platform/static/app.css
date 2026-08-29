@@ -30,7 +30,8 @@
   --shell-active: #213038;
   --shell-accent: #67d5ea;
   --report-surface: #ffffff;
-  --space-1: 4px;
+  --space-1: 2px;
+  --space-xs: 4px;
   --space-2: 8px;
   --space-3: 16px;
   --space-4: 24px;
@@ -296,7 +297,7 @@ pre,
 
 .eyebrow,
 .nav-label {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-xs);
   color: var(--text-helper);
   font-size: 0.75rem;
   font-weight: 650;
@@ -419,7 +420,7 @@ pre,
 
 .account-identity {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-xs);
   padding: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
@@ -669,7 +670,7 @@ pre,
   justify-content: space-between;
   gap: var(--space-4);
   min-height: 72px;
-  padding: var(--space-2) var(--space-1);
+  padding: var(--space-2) var(--space-xs);
   border-bottom: 1px solid var(--border);
   color: var(--text);
   text-decoration: none;
@@ -702,7 +703,7 @@ pre,
   align-items: center;
   width: fit-content;
   min-height: 24px;
-  padding: 2px var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   color: var(--text-secondary);
@@ -715,7 +716,7 @@ pre,
   width: 7px;
   height: 7px;
   margin-right: var(--space-2);
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--text-helper);
   content: "";
 }
@@ -1110,7 +1111,7 @@ fieldset label + label {
 }
 
 .holdout-dimensions span {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-xs);
   color: var(--text-secondary);
   font-size: 0.75rem;
 }
@@ -1178,7 +1179,7 @@ fieldset label + label {
 }
 
 .context-facts span {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-xs);
   color: var(--text-secondary);
   font-size: 0.75rem;
 }
@@ -1215,7 +1216,7 @@ fieldset label + label {
 
 .report-toolbar > div {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-xs);
 }
 
 .report-toolbar span {
@@ -1224,7 +1225,7 @@ fieldset label + label {
 
 .binding {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-xs);
   min-width: 180px;
   margin-bottom: var(--space-3);
 }
@@ -1377,7 +1378,7 @@ iframe {
   .masthead {
     position: sticky;
     height: 52px;
-    padding-left: var(--space-1);
+    padding-left: var(--space-xs);
   }
 
   .wordmark {
@@ -1505,11 +1506,11 @@ iframe {
 
   .technical {
     grid-template-columns: 1fr;
-    gap: 2px;
+    gap: var(--space-1);
   }
 
   .technical dd {
-    margin-bottom: 10px;
+    margin-bottom: var(--space-technical-gap);
   }
 
   .actions {
@@ -1525,7 +1526,7 @@ iframe {
   .evidence-window,
   .timeline-item {
     grid-template-columns: 1fr;
-    gap: var(--space-1);
+    gap: var(--space-xs);
   }
 
   .holdout-dimensions {
@@ -1547,7 +1548,7 @@ iframe {
 
   .timeline-record > [data-label]::before {
     display: block;
-    margin-bottom: var(--space-1);
+    margin-bottom: var(--space-xs);
     color: var(--text-secondary);
     content: attr(data-label);
     font-size: 0.75rem;
@@ -1602,7 +1603,7 @@ iframe {
   .record-table td::before,
   .study-ranking-table td::before {
     display: block;
-    margin-bottom: var(--space-1);
+    margin-bottom: var(--space-xs);
     color: var(--text-secondary);
     content: attr(data-label);
     font-size: 0.75rem;
@@ -1674,7 +1675,7 @@ iframe {
     justify-content: center;
     min-width: 0;
     min-height: 56px;
-    padding: var(--space-1);
+    padding: var(--space-xs);
     color: var(--shell-text-secondary);
     font-size: 0.75rem;
     font-weight: 600;
