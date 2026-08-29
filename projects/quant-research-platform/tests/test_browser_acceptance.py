@@ -81,7 +81,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         child_environment = os.environ.copy()
         child_environment.pop("NODE_OPTIONS", None)
         requested_scope = os.environ.get("PROOFLINE_BROWSER_SCOPE", "full")
-        if requested_scope not in {"foundation", "report", "study", "full"}:
+        if requested_scope not in {"foundation", "overview", "report", "study", "full"}:
             raise AssertionError(f"unknown PROOFLINE_BROWSER_SCOPE: {requested_scope}")
 
         def run_harness(
@@ -131,6 +131,12 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
             return
 
         snapshot_id = snapshot(app)
+        if requested_scope == "overview":
+            app.state.experiments.submit(
+                _task(snapshot_id), action_id="browser-overview"
+            )
+            run_harness("overview")
+            return
         if requested_scope in {"study", "full"}:
             submit_study = app.state.studies.submit
             stale_previews: set[str] = set()

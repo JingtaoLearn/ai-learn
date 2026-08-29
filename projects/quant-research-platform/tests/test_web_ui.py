@@ -141,8 +141,13 @@ def test_proofline_shell_maps_sections_and_keeps_mobile_utilities_native(
             "</nav>", 1
         )[0]
         assert mobile.count("<a ") == 5
-        for label in ("Overview", "Operators", "New experiment", "Studies", "History"):
+        for label in ("Overview", "Operators", "New", "Studies", "History"):
             assert f">{label}</a>" in mobile
+        assert re.search(
+            r'<a\b(?=[^>]*\bhref="/experiments/new")'
+            r'(?=[^>]*\baria-label="New experiment")[^>]*>New</a>',
+            mobile,
+        )
         assert 'method="post" action="/logout"' in html
         assert 'name="csrf_token"' in html
         assert app.state.auth.verify_session(
@@ -909,7 +914,16 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     assert ".table-wrap thead" in css
     assert "position: sticky" in css
     assert ".mobile-nav a" in css
-    assert "font-size: 0.75rem" in css.split(".mobile-nav a", 1)[1].split("}", 1)[0]
+    mobile_nav_rule = css.split(".mobile-nav a", 1)[1].split("}", 1)[0]
+    assert "font-size: 0.75rem" in mobile_nav_rule
+    assert "min-height: 56px" in mobile_nav_rule
+    identity_cluster_rule = css.split(".identity-cluster {", 1)[1].split("}", 1)[0]
+    assert "display: grid" in identity_cluster_rule
+    assert "grid-template-columns: auto auto minmax(0, 1fr)" in identity_cluster_rule
+    identity_code_rule = css.split(".identity-disclosure code {", 1)[1].split("}", 1)[0]
+    assert "user-select: text" in identity_code_rule
+    assert "overflow-wrap: anywhere" in identity_code_rule
+    assert "word-break: break-word" in identity_code_rule
     assert "linear-gradient" not in css
     assert "radial-gradient" not in css
     assert "backdrop-filter" not in css
@@ -943,9 +957,13 @@ def test_copyable_list_identities_have_accessible_no_js_fallbacks(tmp_path: Path
     dashboard = client.get("/").text
     operators = client.get("/operators").text
 
+    assert dashboard.count('class="identity-cluster"') == 2
     for identity in (created["attempt_id"], created["experiment_id"]):
         assert f'data-copy-value="{identity}"' in dashboard
-        assert identity in dashboard.split("Full ID", 1)[1]
+        assert (
+            f'<details class="identity-disclosure"><summary>Full ID</summary>'
+            f"<code>{identity}</code></details>"
+        ) in dashboard
     assert 'data-copy-value="prior_log_ols"' in operators
     assert "prior_log_ols" in operators.split("Full operator ID", 1)[1]
     assert f'data-copy-value="{operator_digest}"' not in operators
