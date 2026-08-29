@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -117,6 +118,15 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         time.sleep(0.05)
     assert server.started
     try:
+        screenshot_root = Path(
+            os.environ.get(
+                "PROOFLINE_SCREENSHOT_DIR",
+                "/tmp/proofline-browser-artifacts",
+            )
+        )
+        screenshot_root.mkdir(parents=True, exist_ok=True)
+        child_environment = os.environ.copy()
+        child_environment.pop("NODE_OPTIONS", None)
         try:
             subprocess.run(
                 [
@@ -130,11 +140,13 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                         _experiment_form(app, snapshot_id, issued.csrf_token)
                     ),
                     completed_study_id,
+                    str(screenshot_root),
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=180,
+                timeout=300,
+                env=child_environment,
             )
         except subprocess.CalledProcessError as exc:
             raise AssertionError(exc.stderr) from exc

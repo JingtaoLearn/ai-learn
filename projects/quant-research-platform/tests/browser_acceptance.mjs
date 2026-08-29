@@ -1,11 +1,19 @@
 "use strict";
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson, completedStudyId] =
+const [
+  baseUrl,
+  sessionCookie,
+  chromium,
+  reportExperimentId,
+  studyFormJson,
+  completedStudyId,
+  screenshotRoot,
+] =
   process.argv.slice(2);
 if (
   !baseUrl ||
@@ -13,10 +21,11 @@ if (
   !chromium ||
   !reportExperimentId ||
   !studyFormJson ||
-  !completedStudyId
+  !completedStudyId ||
+  !screenshotRoot
 ) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT",
   );
 }
 const studyFormValues = JSON.parse(studyFormJson);
@@ -119,6 +128,15 @@ try {
     const loaded = once("Page.loadEventFired", sessionId);
     await send("Page.navigate", { url: `${baseUrl}${path}` }, sessionId);
     await loaded;
+  }
+
+  async function capture(name) {
+    const image = await send(
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true, captureBeyondViewport: false },
+      sessionId,
+    );
+    await writeFile(join(screenshotRoot, name), Buffer.from(image.data, "base64"));
   }
 
   async function keyboardActivate(selector) {
@@ -233,6 +251,96 @@ try {
     ) {
       throw new Error(`Layout failure for ${label} at ${width}px: ${JSON.stringify(layout)}`);
     }
+  }
+
+  async function assertShellContract(label, width, expectedTask, expectedMobile) {
+      const contract = await evaluate(`(() => {
+        const visible = (element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" &&
+            rect.width > 0 && rect.height > 0;
+        };
+        const rect = (element) => element?.getBoundingClientRect();
+        const rail = document.querySelector(".task-rail");
+        const mobile = document.querySelector(".mobile-nav");
+        const utility = document.querySelector(".utility-menu");
+        utility.open = true;
+        const panel = document.querySelector(".utility-panel");
+        const masthead = document.querySelector(".masthead");
+        const shell = document.querySelector("main.shell");
+        const mobileLinks = Array.from(mobile.querySelectorAll("a"));
+        const targets = Array.from(document.querySelectorAll(
+          "a, button, summary, input:not([type=hidden]), select, textarea"
+        )).filter(visible);
+        const undersized = targets.filter((element) => {
+          const box = rect(element);
+          return box.width < 43 || box.height < 43;
+        }).slice(0, 8).map((element) => ({
+          tag: element.tagName,
+          text: element.textContent.trim().slice(0, 40),
+          width: rect(element).width,
+          height: rect(element).height,
+        }));
+        const hitTest = (element) => {
+          const box = rect(element);
+          const hit = document.elementFromPoint(
+            Math.max(0, Math.min(innerWidth - 1, box.left + box.width / 2)),
+            Math.max(0, Math.min(innerHeight - 1, box.top + box.height / 2)),
+          );
+          return hit === element || element.contains(hit);
+        };
+        const panelBox = rect(panel);
+        const mobileBox = rect(mobile);
+        const mastheadBox = rect(masthead);
+        const utilityBox = rect(utility.querySelector("summary"));
+        return {
+          railVisible: visible(rail),
+          railWidth: rect(rail)?.width,
+          mobileVisible: visible(mobile),
+          mobileCount: mobileLinks.length,
+          mobileTargets: mobileLinks.map((link) => ({
+            width: rect(link).width,
+            height: rect(link).height,
+            hit: hitTest(link),
+          })),
+          taskCurrent: rail.querySelector('[aria-current="page"]')?.textContent.trim(),
+          mobileCurrent: mobile.querySelector('[aria-current="page"]')?.textContent.trim(),
+          utilityVisible: visible(panel),
+          utilityHit: hitTest(utility.querySelector("summary")),
+          utilityHeight: utilityBox.height,
+          utilityBelowMasthead: panelBox.top >= mastheadBox.bottom - 1,
+          utilityClearsMobile: !visible(mobile) || panelBox.bottom <= mobileBox.top + 1,
+          shellBottomPadding: Number.parseFloat(getComputedStyle(shell).paddingBottom),
+          mobileHeight: visible(mobile) ? mobileBox.height : 0,
+          undersized,
+        };
+      })()`);
+      const mobileExpected = width < 768;
+      if (
+        contract.mobileVisible !== mobileExpected ||
+        contract.railVisible === mobileExpected ||
+        contract.mobileCount !== 5 ||
+        contract.taskCurrent !== expectedTask ||
+        contract.mobileCurrent !== expectedMobile ||
+        !contract.utilityVisible ||
+        !contract.utilityHit ||
+        contract.utilityHeight < 44 ||
+        !contract.utilityBelowMasthead ||
+        !contract.utilityClearsMobile ||
+        contract.undersized.length ||
+        contract.mobileTargets.some(
+          (target) => target.width < 44 || target.height < 44 || !target.hit,
+        ) ||
+        (mobileExpected &&
+          contract.shellBottomPadding < contract.mobileHeight + 16) ||
+        (width >= 1024 && Math.abs(contract.railWidth - 240) > 1)
+      ) {
+        throw new Error(
+          `Shell contract failed for ${label} at ${width}px: ${JSON.stringify(contract)}`,
+        );
+      }
+      await evaluate('document.querySelector(".utility-menu").open = false');
   }
 
   async function assertDangerContrast(width) {
@@ -573,13 +681,17 @@ try {
   }
 
   const routes = {
-    "/": "dashboard",
-    "/operators": "operators",
-    "/templates/single_stock_daily_causal/1": "template-detail",
-    "/experiments/new": "experiment-new",
-    "/studies": "studies",
-    "/studies/new": "study-new",
-    "/history": "history",
+    "/": { page: "dashboard", task: "Overview", mobile: "Overview" },
+    "/operators": { page: "operators", task: "Operators", mobile: "Operators" },
+    "/templates/single_stock_daily_causal/1": {
+      page: "template-detail", task: "Template", mobile: "Operators",
+    },
+    "/experiments/new": {
+      page: "experiment-new", task: "New experiment", mobile: "New experiment",
+    },
+    "/studies": { page: "studies", task: "Studies", mobile: "Studies" },
+    "/studies/new": { page: "study-new", task: "New Study", mobile: "Studies" },
+    "/history": { page: "history", task: "History", mobile: "History" },
   };
   for (const scriptsDisabled of [false, true]) {
     console.error(`browser-mode scriptsDisabled=${scriptsDisabled}`);
@@ -594,7 +706,7 @@ try {
         { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
         sessionId,
       );
-      for (const [route, expectedPage] of Object.entries(routes)) {
+      for (const [route, expected] of Object.entries(routes)) {
         await navigate(route);
         const value = await evaluate(`({
               page: document.body.dataset.page,
@@ -609,7 +721,7 @@ try {
               viewportWidth: window.innerWidth
             })`);
         if (
-          value.page !== expectedPage ||
+          value.page !== expected.page ||
           !value.hasMain ||
           !value.hasPrimaryAction ||
           !value.hasThemeSelector
@@ -619,8 +731,51 @@ try {
         if (value.documentWidth > value.viewportWidth) {
           throw new Error(`Horizontal page overflow for ${route} at ${width}px`);
         }
+        await assertShellContract(route, width, expected.task, expected.mobile);
       }
 
+    }
+
+    for (const width of [767, 768, 1023, 1024]) {
+      await send(
+        "Emulation.setDeviceMetricsOverride",
+        { width, height: 844, deviceScaleFactor: 1, mobile: width < 768 },
+        sessionId,
+      );
+      await navigate("/");
+      await assertShellContract("responsive boundary", width, "Overview", "Overview");
+    }
+
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 320, height: 640, deviceScaleFactor: 1, mobile: true },
+      sessionId,
+    );
+    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 }, sessionId);
+    await navigate("/");
+    await assertLayout("320px at 200 percent zoom", 320);
+    await assertShellContract("320px at 200 percent zoom", 320, "Overview", "Overview");
+    const zoom = await evaluate("visualViewport.scale");
+    if (zoom < 1.9) throw new Error(`Expected 200 percent zoom, received ${zoom}`);
+    if (!scriptsDisabled) await capture("overview-320-zoom200.png");
+    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }, sessionId);
+
+    await navigate("/history?search=definitely-not-found");
+    if (!(await evaluate('Boolean(document.querySelector("[data-testid=history-empty]"))'))) {
+      throw new Error("Representative browser empty state is missing");
+    }
+    await navigate("/studies/not-a-study");
+    await expectPage("error");
+    if (!(await evaluate('Boolean(document.querySelector("[data-testid=error-state]"))'))) {
+      throw new Error("Representative browser error state is missing");
+    }
+
+    for (const theme of ["light", "dark", "system"]) {
+      await navigate(`/?theme=${theme}`);
+      const selected = await evaluate("document.documentElement.dataset.theme");
+      if (selected !== theme) {
+        throw new Error(`No-JS theme persistence failed for ${theme}: ${selected}`);
+      }
     }
 
     await navigate("/operators/submit");
@@ -907,6 +1062,21 @@ try {
     for (const width of [390, 1280]) {
       await runStudyLifecycle(width, scriptsDisabled);
       await inspectCompletedStudy(width);
+    }
+  }
+
+  await send("Emulation.setScriptExecutionDisabled", { value: false }, sessionId);
+  for (const theme of ["light", "dark"]) {
+    for (const width of [390, 1440]) {
+      await send(
+        "Emulation.setDeviceMetricsOverride",
+        { width, height: 900, deviceScaleFactor: 1, mobile: width === 390 },
+        sessionId,
+      );
+      await navigate(`/?theme=${theme}`);
+      await capture(`overview-${theme}-${width}.png`);
+      await navigate(`/studies/${completedStudyId}?theme=${theme}`);
+      await capture(`completed-study-${theme}-${width}.png`);
     }
   }
 } finally {
