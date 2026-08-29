@@ -1299,15 +1299,20 @@ def _studied_parameters(
     return result
 
 
-def _primary_ranking_identity(ranking: dict[str, Any]) -> bytes:
-    metrics = ranking.get("independent_metrics", {})
+def _primary_ranking_identity(
+    ranking: dict[str, Any],
+    policy_identity: Mapping[str, Any],
+) -> bytes:
+    tie_break = ranking.get("tie_break", {})
     return canonical_json_bytes(
         {
-            "champion_eligible": ranking.get("champion_eligible"),
             "eligible": ranking.get("eligible"),
             "validation_score": ranking.get("validation_score"),
-            "maximum_drawdown": metrics.get("maximum_drawdown"),
-            "annual_turnover": metrics.get("annual_turnover"),
+            "tie_break": {
+                field: tie_break.get(field)
+                for field in policy_identity["tie_break"]
+                if field != "strategy_configuration_digest"
+            },
         }
     )
 
@@ -1320,6 +1325,10 @@ def _build_decision_summary(
     outer_evidence: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     search_space = frozen_plan.get("search", {}).get("space", {})
+    policy_identity = frozen_plan.get("evaluation", {}).get(
+        "manifest",
+        EVALUATION_POLICY_IDENTITY,
+    )
     trial_by_digest = {item["candidate_digest"]: item for item in trials}
     enriched: list[dict[str, Any]] = []
     for ranking in rankings:
@@ -1333,18 +1342,20 @@ def _build_decision_summary(
         return enriched, None
 
     champion = enriched[0]
-    primary_identity = _primary_ranking_identity(champion)
+    primary_identity = _primary_ranking_identity(champion, policy_identity)
     primary_ties = [
         {
             "candidate_digest": item["candidate_digest"],
             "studied_parameters": deepcopy(item["studied_parameters"]),
         }
         for item in enriched[1:]
-        if _primary_ranking_identity(item) == primary_identity
+        if _primary_ranking_identity(item, policy_identity) == primary_identity
     ]
     outer_selections = []
     for item in (outer_evidence or {}).get("rounds", []):
         selected = item.get("selected_candidate_digest")
+        if selected is None:
+            continue
         trial = trial_by_digest.get(selected)
         outer_selections.append(
             {
@@ -1400,6 +1411,7 @@ def _build_decision_summary(
         "outer_stability": outer_stability,
         "statistical_significance": "NOT_ESTABLISHED",
         "rationale": rationale,
+        "evaluation_policy": deepcopy(policy_identity),
     }
 
 
