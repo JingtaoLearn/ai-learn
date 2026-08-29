@@ -595,21 +595,23 @@ try {
               const prefixBox = prefix?.getBoundingClientRect();
               const copyBox = copy?.getBoundingClientRect();
               const summaryBox = summary?.getBoundingClientRect();
-              const centers = [prefixBox, copyBox, summaryBox]
+              const visibleBoxes = [prefixBox, copyBox, summaryBox].filter(
+                (box) => box && box.width > 0 && box.height > 0
+              );
+              const centers = visibleBoxes
                 .filter(Boolean)
                 .map((box) => box.top + box.height / 2);
+              const compactHeight = cluster.getBoundingClientRect().height <= 44;
               disclosure.open = true;
               const code = disclosure.querySelector("code");
               const codeBox = code.getBoundingClientRect();
               const cellBox = cell.getBoundingClientRect();
               const style = getComputedStyle(code);
               return {
-                controlsVisible: [prefixBox, copyBox, summaryBox].every(
-                  (box) => box && box.width > 0 && box.height > 0
-                ),
-                singleLine: centers.length === 3 &&
+                controlsVisible: visibleBoxes.length === ${scriptsDisabled ? 2 : 3},
+                singleLine: centers.length === ${scriptsDisabled ? 2 : 3} &&
                   Math.max(...centers) - Math.min(...centers) <= 1,
-                compactHeight: cluster.getBoundingClientRect().height <= 44,
+                compactHeight,
                 fullIdVisible: codeBox.width > 0 && codeBox.height > 0,
                 fullIdSelectable: style.userSelect === "text",
                 fullIdWraps: style.whiteSpace !== "nowrap" &&

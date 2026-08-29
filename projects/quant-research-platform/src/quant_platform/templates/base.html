@@ -66,7 +66,7 @@
   <nav class="mobile-nav" aria-label="Mobile primary navigation">
     <a href="/"{% if is_overview %} aria-current="page"{% endif %}>Overview</a>
     <a href="/operators"{% if is_operators or is_template %} aria-current="page"{% endif %}>Operators</a>
-    <a href="/experiments/new"{% if is_new_experiment %} aria-current="page"{% endif %}>New experiment</a>
+    <a href="/experiments/new" aria-label="New experiment"{% if is_new_experiment %} aria-current="page"{% endif %}>New</a>
     <a href="/studies"{% if is_studies %} aria-current="page"{% endif %}>Studies</a>
     <a href="/history"{% if is_history %} aria-current="page"{% endif %}>History</a>
   </nav>
