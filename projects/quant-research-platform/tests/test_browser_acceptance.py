@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 import uvicorn
 
+from quant_platform.datasets import publish_snapshot
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
 from quant_platform.web import create_app
 
 from test_experiment_service import _task
 from test_operator_submission import IMAGE, _passing_validator
+from test_parameter_study import _bars, _persist_production_completed_study
 from test_web_api import snapshot
 from test_web_ui import _experiment_form
 
@@ -70,8 +72,23 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
             action_id=action_id,
         )
 
-    app.state.studies.submit = submit_with_one_stale_preview
     snapshot_id = snapshot(app)
+    publish_snapshot(
+        _bars(),
+        app.state.catalog.state_root,
+        {
+            "instrument": "SYNTH.SS",
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "mixed",
+        },
+    )
+    completed_study_id = _persist_production_completed_study(
+        app.state.studies,
+        app.state.experiments,
+    )
+    app.state.studies.submit = submit_with_one_stale_preview
     report_experiment = app.state.experiments.submit(
         _task(snapshot_id), action_id="browser-report"
     )
@@ -112,6 +129,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                     json.dumps(
                         _experiment_form(app, snapshot_id, issued.csrf_token)
                     ),
+                    completed_study_id,
                 ],
                 check=True,
                 capture_output=True,

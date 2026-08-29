@@ -19,6 +19,7 @@ from quant_platform.catalog import (
     CatalogVersionError,
     initialize_catalog,
 )
+from quant_platform.cli import main as platform_main
 from quant_platform.dataset_service import DatasetCatalogItem, DatasetService
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
@@ -26,12 +27,17 @@ from quant_platform.parameter_study import (
     ParameterStudy,
     StudyNotFoundError,
     StudyValidationError,
+    _build_decision_summary,
 )
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.schemas import canonical_json_bytes
 from quant_platform.seed import BUILTINS
 from quant_platform.study_contracts import FOLD_WINDOW_FIELDS, normalize_fold_window
 from quant_platform.study_datasets import ExecutionDatasetSliceFactory
+from quant_platform.study_evaluation import (
+    METRIC_ENGINE_IDENTITY,
+    _issue_verified_metric_document,
+)
 from quant_platform.study_suggesters import (
     Exhausted,
     GridParameterSuggester,
@@ -50,6 +56,277 @@ EXECUTION_IDENTITY = {
     "runtime": {"python": "3.12.11", "pandas": "2.3.1"},
     "runner_image": "sha256:" + "b" * 64,
 }
+
+
+def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significance():
+    frozen_plan = {
+        "search": {
+            "space": {
+                "/operators/fit/window_sessions": {
+                    "kind": "int",
+                    "low": 10,
+                    "high": 30,
+                    "step": 10,
+                    "log": False,
+                }
+            }
+        }
+    }
+
+    def trial(digest: str, window: int) -> dict:
+        return {
+            "candidate_digest": digest,
+            "configuration": {
+                "operators": {
+                    "fit": {"parameters": {"window_sessions": window}},
+                    "cost": {"parameters": {"commission_rate": 0.0003}},
+                }
+            },
+        }
+
+    def ranking(digest: str, score: float, drawdown: float, turnover: float) -> dict:
+        return {
+            "candidate_digest": digest,
+            "validation_score": score,
+            "independent_metrics": {
+                "maximum_drawdown": drawdown,
+                "annual_turnover": turnover,
+            },
+        }
+
+    digests = {
+        window: hashlib.sha256(str(window).encode()).hexdigest()
+        for window in (10, 20, 25, 30)
+    }
+    enriched, summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[
+            trial(digests[10], 10),
+            trial(digests[20], 20),
+            trial(digests[25], 25),
+            trial(digests[30], 30),
+        ],
+        rankings=[
+            ranking(digests[10], 0.14, 0.01, 12.5),
+            ranking(digests[20], 0.14, 0.01, 12.5),
+            ranking(digests[30], -2.6, 0.08, 12.2),
+        ],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": digests[30]},
+                {"search_round": "OUTER:2", "selected_candidate_digest": digests[25]},
+            ]
+        },
+    )
+
+    assert enriched[0]["studied_parameters"] == {
+        "/operators/fit/window_sessions": 10
+    }
+    assert "commission_rate" not in canonical_json_bytes(enriched[0]).decode()
+    assert summary == {
+        "claim": "TIE_BROKEN_BY_FROZEN_RULE",
+        "champion_candidate_digest": digests[10],
+        "champion_parameters": {"/operators/fit/window_sessions": 10},
+        "validation_score": 0.14,
+        "primary_ties": [
+            {
+                "candidate_digest": digests[20],
+                "studied_parameters": {"/operators/fit/window_sessions": 20},
+            }
+        ],
+        "outer_selections": [
+            {
+                "search_round": "OUTER:1",
+                "candidate_digest": digests[30],
+                "studied_parameters": {"/operators/fit/window_sessions": 30},
+            },
+            {
+                "search_round": "OUTER:2",
+                "candidate_digest": digests[25],
+                "studied_parameters": {"/operators/fit/window_sessions": 25},
+            },
+        ],
+        "outer_stability": "DIVERGENT",
+        "statistical_significance": "NOT_ESTABLISHED",
+        "rationale": (
+            "The champion tied on the frozen primary ranking evidence and won only "
+            "through the frozen tie-break; outer-round selections also diverged."
+        ),
+    }
+
+    eligible_champion = ranking(digests[10], 0.10, 0.01, 12.5) | {
+        "champion_eligible": True,
+        "eligible": True,
+    }
+    higher_score_ineligible = ranking(digests[20], 0.20, 0.01, 12.5) | {
+        "champion_eligible": False,
+        "eligible": False,
+    }
+    _, eligibility_summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[trial(digests[10], 10), trial(digests[20], 20)],
+        rankings=[eligible_champion, higher_score_ineligible],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": digests[20]}
+            ]
+        },
+    )
+    assert eligibility_summary is not None
+    assert eligibility_summary["rationale"] == (
+        "The champion was the highest-ranked eligible candidate under the complete "
+        "frozen ranking policy, but outer-round selections diverged."
+    )
+
+
+def test_decision_summary_ignores_outer_rounds_without_an_actual_selection():
+    champion_digest = "a" * 64
+    frozen_plan = {
+        "search": {
+            "space": {
+                "/operators/fit/window_sessions": {
+                    "kind": "int",
+                    "low": 10,
+                    "high": 20,
+                    "step": 10,
+                    "log": False,
+                }
+            }
+        }
+    }
+    trials = [
+        {
+            "candidate_digest": champion_digest,
+            "configuration": {
+                "operators": {
+                    "fit": {"parameters": {"window_sessions": 10}},
+                }
+            },
+        }
+    ]
+    rankings = [
+        {
+            "candidate_digest": champion_digest,
+            "champion_eligible": True,
+            "eligible": True,
+            "validation_score": 0.14,
+            "independent_metrics": {
+                "maximum_drawdown": 0.01,
+                "annual_turnover": 12.5,
+            },
+        }
+    ]
+
+    _, unavailable = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=trials,
+        rankings=rankings,
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": None},
+                {"search_round": "OUTER:2", "selected_candidate_digest": None},
+            ]
+        },
+    )
+
+    assert unavailable is not None
+    assert unavailable["outer_selections"] == []
+    assert unavailable["outer_stability"] == "NOT_AVAILABLE"
+
+    _, consistent = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=trials,
+        rankings=rankings,
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": None},
+                {
+                    "search_round": "OUTER:2",
+                    "selected_candidate_digest": champion_digest,
+                },
+            ]
+        },
+    )
+
+    assert consistent is not None
+    assert consistent["outer_selections"] == [
+        {
+            "search_round": "OUTER:2",
+            "candidate_digest": champion_digest,
+            "studied_parameters": {"/operators/fit/window_sessions": 10},
+        }
+    ]
+    assert consistent["outer_stability"] == "CONSISTENT"
+
+
+def test_persisted_production_shaped_completed_study_is_read_only_decision_evidence(
+    tmp_path: Path, capsys
+):
+    studies, experiments = _study_service(tmp_path)
+    study_id = _persist_production_completed_study(studies, experiments)
+    before = _study_storage_counts(studies, study_id)
+
+    exit_code = platform_main(
+        [
+            "study",
+            "detail",
+            "--root",
+            str(studies.catalog.state_root),
+            "--study-id",
+            study_id,
+        ]
+    )
+    inspected = json.loads(capsys.readouterr().out)["study"]
+    after = _study_storage_counts(studies, study_id)
+
+    assert exit_code == 0
+    assert before == after
+    assert inspected["phase"] == "COMPLETED"
+    assert len(inspected["trials"]) == 6
+    assert len(inspected["bindings"]) == 39
+    assert all(
+        binding["state"] == "VERIFIED"
+        and binding["attempt"]["status"] == "SUCCEEDED"
+        for binding in inspected["bindings"]
+    )
+    studied_path = "/operators/fit/window_sessions"
+    ordered_windows = [
+        ranking["studied_parameters"][studied_path]
+        for ranking in inspected["rankings"]
+    ]
+    assert ordered_windows == [10, 20, 30, 40, 25, 15]
+    assert inspected["rankings"][0]["validation_score"] == inspected["rankings"][1][
+        "validation_score"
+    ]
+    assert inspected["rankings"][0]["independent_metrics"][
+        "maximum_drawdown"
+    ] == inspected["rankings"][1]["independent_metrics"]["maximum_drawdown"]
+    assert inspected["rankings"][0]["independent_metrics"][
+        "annual_turnover"
+    ] == inspected["rankings"][1]["independent_metrics"]["annual_turnover"]
+    assert inspected["rankings"][4]["validation_score"] == inspected["rankings"][5][
+        "validation_score"
+    ]
+    assert inspected["decision_summary"]["claim"] == "TIE_BROKEN_BY_FROZEN_RULE"
+    assert inspected["decision_summary"]["champion_parameters"] == {studied_path: 10}
+    assert [
+        item["studied_parameters"][studied_path]
+        for item in inspected["decision_summary"]["outer_selections"]
+    ] == [30, 25]
+    assert inspected["decision_summary"]["outer_stability"] == "DIVERGENT"
+    assert (
+        inspected["decision_summary"]["statistical_significance"]
+        == "NOT_ESTABLISHED"
+    )
+    assert inspected["holdout"] == {
+        "access": "ACCESSED",
+        "outcome": "PASSED",
+        "freshness": "PREVIOUSLY_EXPOSED",
+    }
+    assert sum(
+        event["event_type"] == "ACCESSED"
+        for event in inspected["holdout_ledger"]
+    ) == 1
 
 
 class FixedCalendar:
@@ -485,6 +762,206 @@ def _real_attempt_executor(
     return execute
 
 
+def _study_storage_counts(studies: ParameterStudy, study_id: str) -> dict[str, int]:
+    with studies.catalog.connect() as connection:
+        return {
+            "actions": connection.execute(
+                "SELECT COUNT(*) FROM parameter_study_actions WHERE study_id = ?",
+                (study_id,),
+            ).fetchone()[0],
+            "events": connection.execute(
+                "SELECT COUNT(*) FROM parameter_study_events WHERE study_id = ?",
+                (study_id,),
+            ).fetchone()[0],
+            "evidence": connection.execute(
+                "SELECT COUNT(*) FROM parameter_study_evidence WHERE study_id = ?",
+                (study_id,),
+            ).fetchone()[0],
+            "bindings": connection.execute(
+                "SELECT COUNT(*) FROM parameter_study_bindings WHERE study_id = ?",
+                (study_id,),
+            ).fetchone()[0],
+            "holdout_ledger": connection.execute(
+                """
+                SELECT COUNT(*) FROM parameter_study_holdout_ledger
+                WHERE study_id = ?
+                """,
+                (study_id,),
+            ).fetchone()[0],
+            "attempts": connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0],
+        }
+
+
+def _persist_production_completed_study(
+    studies: ParameterStudy,
+    experiments: ExperimentService,
+) -> str:
+    spec = _minimal_orchestration_spec()
+    spec["operators"]["decision"]["parameters"]["buy_threshold_pct_per_day"] = 0.0
+    spec["search"].update(
+        {
+            "suggester": "GRID",
+            "unique_trial_budget": 6,
+            "max_suggestions": 12,
+            "space": {
+                "/operators/fit/window_sessions": {
+                    "values": [10, 20, 30, 40, 25, 15]
+                }
+            },
+        }
+    )
+    spec["validation"].update({"outer_folds": 2, "inner_folds": 2})
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id="submit-production-shaped-study",
+    )
+    study_id = submitted["study_id"]
+    frozen_plan = preview["frozen_plan"]
+    with studies.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO parameter_study_holdout_ledger(
+                study_id, sequence, holdout_identity_digest,
+                event_type, occurred_at, payload_json
+            ) VALUES (?, 1, ?, 'EXPOSURE_RECORDED', '2026-08-28T00:00:00Z', '{}')
+            """,
+            (study_id, _holdout_identity_digest(frozen_plan)),
+        )
+
+    inner_scoring_starts = sorted(
+        {
+            fold_window["scoring_start"]
+            for _, inner_folds, _ in studies._selection_rounds(frozen_plan)
+            for fold_window in inner_folds
+        }
+    )
+    inner_fold_index = {
+        scoring_start: index
+        for index, scoring_start in enumerate(inner_scoring_starts)
+    }
+    fold_sharpes = {
+        10: [0.0, 0.0, 4.0, 4.0],
+        20: [0.0, 0.0, 4.0, 4.0],
+        30: [5.0, 5.0, 1.0, 1.0],
+        40: [1.0, 1.0, 0.5, 0.5],
+        25: [-4.0, 6.0, 6.0, -4.0],
+        15: [-4.0, 6.0, 6.0, -4.0],
+    }
+
+    def metric_document(
+        attempt,
+        *,
+        candidate_digest,
+        candidate_configuration,
+        fold_window,
+    ):
+        window = candidate_configuration["operators"]["fit"]["parameters"][
+            "window_sessions"
+        ]
+        if fold_window["role"] == "INNER_SCORE":
+            net_sharpe = fold_sharpes[window][
+                inner_fold_index[fold_window["scoring_start"]]
+            ]
+        else:
+            net_sharpe = 1.0
+        metrics = {
+            "net_return": 0.01,
+            "net_sharpe": net_sharpe,
+            "maximum_drawdown": 0.1,
+            "annual_turnover": 2.0,
+            "closed_trades": 1,
+            "total_cost_cny": 1.0,
+            "final_equity_cny": 100_001.0,
+        }
+        scored_date = fold_window["scoring_start"]
+        document = {
+            "schema_version": 1,
+            "metric_engine": METRIC_ENGINE_IDENTITY,
+            "candidate_digest": candidate_digest,
+            "candidate_binding": {
+                "strategy_configuration": candidate_configuration,
+                "strategy_configuration_digest": candidate_digest,
+                "experiment_configuration_digest": hashlib.sha256(
+                    canonical_json_bytes(attempt["requested"])
+                ).hexdigest(),
+                "attempt_audit_digest": hashlib.sha256(
+                    canonical_json_bytes(
+                        {
+                            "attempt_id": attempt["attempt_id"],
+                            "result_digest": attempt["result_digest"],
+                        }
+                    )
+                ).hexdigest(),
+            },
+            "experiment_id": attempt["experiment_id"],
+            "attempt_id": attempt["attempt_id"],
+            "result_digest": attempt["result_digest"],
+            "dataset_snapshot_id": attempt["resolved"]["dataset"]["snapshot_id"],
+            "scoring_mask_sha256": hashlib.sha256(
+                canonical_json_bytes(fold_window)
+            ).hexdigest(),
+            "fold_window": fold_window,
+            "artifact_digests": {"synthetic": "a" * 64},
+            "scored_dates": [scored_date],
+            "net_daily_returns": [{"date": scored_date, "net_return": 0.01}],
+            "metrics": metrics,
+            "reported_metrics": metrics,
+            "reconciliation": {
+                "immutable_artifacts": True,
+                "scoring_mask": True,
+                "finite_values": True,
+                "dates": True,
+                "ledger_equity_cost": True,
+                "force_flat_with_cost": True,
+            },
+        }
+        document["document_digest"] = hashlib.sha256(
+            canonical_json_bytes(document)
+        ).hexdigest()
+        return _issue_verified_metric_document(document)
+
+    def execute(effect: dict, action_id: str) -> dict:
+        attempt = experiments.claim_next_attempt()
+        assert attempt is not None
+        assert attempt["attempt_id"] == effect["attempt_id"]
+        experiments.record_physical_launch(
+            attempt["attempt_id"],
+            container_name=f"production-shaped-{attempt['attempt_id'][:12]}",
+        )
+        experiments.record_termination(
+            attempt["attempt_id"],
+            exit_status=0,
+            outcome="SUCCEEDED",
+        )
+        experiments.finish_success(
+            attempt["attempt_id"],
+            result_path=f"synthetic-production/{attempt['attempt_id']}",
+            result_digest=hashlib.sha256(attempt["attempt_id"].encode()).hexdigest(),
+        )
+        return {
+            "experiment_id": effect["experiment_id"],
+            "attempt_id": effect["attempt_id"],
+        }
+
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/production-shaped",
+        effect_executor=execute,
+    )
+    coordinator.metric_documents.from_attempt = metric_document
+    for _ in range(800):
+        result = coordinator.advance(study_id)
+        if coordinator.detail(study_id)["phase"] == "COMPLETED":
+            break
+    else:
+        pytest.fail(f"production-shaped Study did not complete: {result}")
+    return study_id
+
+
 def test_preview_freezes_one_canonical_plan_for_semantically_equivalent_inputs(
     tmp_path: Path,
 ):
@@ -666,6 +1143,10 @@ def test_public_optuna_study_runs_real_adapter_to_completion(tmp_path: Path):
         pytest.fail("real Optuna Study did not complete")
 
     assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    assert detail["decision_summary"] is not None
+    assert detail["decision_summary"]["champion_parameters"]
+    assert detail["decision_summary"]["statistical_significance"] == "NOT_ESTABLISHED"
+    assert all(item["studied_parameters"] for item in detail["rankings"])
     assert detail["holdout"]["access"] == "ACCESSED"
     assert detail["holdout"]["outcome"] in {"PASSED", "FAILED"}
     assert detail["suggestion_journal"]
@@ -2097,6 +2578,7 @@ def test_failed_attempts_progress_to_no_eligible_candidate(tmp_path: Path):
         pytest.fail("failed Study Attempts did not reach a terminal conclusion")
 
     assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert detail["decision_summary"] is None
     assert detail["holdout"] == {
         "access": "SEALED",
         "outcome": "NOT_RUN",
