@@ -83,6 +83,54 @@ def test_primary_pages_have_semantic_browser_selectors(tmp_path: Path):
         assert all(tag in response.text for tag in ("<nav", "<main", "data-testid="))
 
 
+def test_proofline_shell_maps_sections_and_keeps_mobile_utilities_native(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    snapshot(app)
+
+    expected_sections = {
+        "/": "Overview",
+        "/operators": "Operators",
+        "/operators/submit": "Operators",
+        "/templates/single_stock_daily_causal/1": "Template",
+        "/experiments/new": "New experiment",
+        "/history": "History",
+        "/studies": "Studies",
+        "/studies/new": "Studies",
+    }
+    for route, section in expected_sections.items():
+        html = client.get(route).text
+        assert 'class="masthead"' in html
+        assert 'class="task-rail"' in html
+        assert 'class="utility-menu"' in html
+        assert '<summary' in html
+        assert f'>{section}</a>' in html.split('aria-current="page"', 1)[1]
+        mobile = html.split('aria-label="Mobile primary navigation"', 1)[1].split(
+            "</nav>", 1
+        )[0]
+        assert mobile.count("<a ") == 5
+        for label in ("Overview", "Operators", "New experiment", "Studies", "History"):
+            assert f">{label}</a>" in mobile
+        assert 'method="post" action="/logout"' in html
+        assert 'name="csrf_token"' in html
+        assert app.state.auth.verify_session(
+            client.cookies.get("quant_session")
+        ).display_name in html
+
+    themed = client.get("/?theme=dark")
+    assert themed.status_code == 200
+    assert '<html lang="en" data-theme="dark">' in themed.text
+    assert "quant_theme=dark" in themed.headers["set-cookie"]
+    assert 'href="/?theme=light"' in themed.text
+    assert 'href="/?theme=system"' in themed.text
+
+    login = client.get("/login")
+    assert "Proofline" in login.text
+    assert 'data-testid="login-panel"' in login.text
+
+
 def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
