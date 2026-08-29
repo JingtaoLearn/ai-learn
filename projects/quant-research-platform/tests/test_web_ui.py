@@ -1,5 +1,6 @@
 import json
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
@@ -10,6 +11,35 @@ from test_web_api import authenticate, make_app, snapshot
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _FormValuesParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.values: dict[str, str] = {}
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        if tag != "input":
+            return
+        attributes = dict(attrs)
+        name = attributes.get("name")
+        if name:
+            self.values[name] = attributes.get("value") or ""
+
+
+def _no_js_theme_submission(html: str, theme: str) -> tuple[str, dict[str, str]]:
+    match = re.search(
+        rf'<form\b[^>]*action="([^"]+)"[^>]*data-no-js-theme="{theme}"[^>]*>'
+        r"(.*?)</form>",
+        html,
+        re.DOTALL,
+    )
+    assert match is not None, theme
+    parser = _FormValuesParser()
+    parser.feed(match.group(2))
+    return match.group(1), parser.values
 
 
 def _opening_control(html: str, name: str) -> str:
@@ -351,6 +381,42 @@ def test_operator_listing_escapes_user_controlled_text(tmp_path: Path):
     assert "<img src=x" not in response.text
 
 
+def test_operator_validation_error_preserves_submission_and_route_recovery(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = {
+        "csrf_token": issued.csrf_token,
+        "operator_id": "Invalid ID",
+        "version": "1.2.3",
+        "slot": "fit",
+        "source": "SOURCE_MARKER = '<preserved>'",
+        "parameter_schema": (
+            '{"type":"object","properties":{},"required":[],"additionalProperties":false}'
+        ),
+        "defaults": "{}",
+        "title_zh": "Preserved title",
+        "summary_zh": "Preserved summary",
+        "documentation": "# Preserved documentation",
+        "tests": "[]",
+    }
+
+    response = client.post(
+        "/operators/submit",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert 'data-page="operator-submit"' in response.text
+    assert 'data-testid="operator-errors"' in response.text
+    assert 'href="#operator_id"' in response.text
+    assert 'name="operator_id" required value="Invalid ID"' in response.text
+    assert "SOURCE_MARKER = &#39;&lt;preserved&gt;&#39;" in response.text
+    assert 'href="/operators/submit"' in response.text
+
+
 def test_operator_detail_renders_schema_defaults_latest_and_linked_history(
     tmp_path: Path,
 ):
@@ -527,6 +593,61 @@ def test_experiment_workflow_groups_inputs_and_preserves_preview_edits(
     assert created["experiment_id"] in preview.text
 
 
+def test_experiment_validation_error_preserves_submission_and_route_recovery(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form["template_initial_capital_cny"] = "not-a-number"
+
+    response = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 400
+    assert 'data-page="experiment-new"' in response.text
+    assert 'data-testid="experiment-errors"' in response.text
+    assert 'href="#template_initial_capital_cny"' in response.text
+    assert re.search(
+        r'name="template_initial_capital_cny"[^>]*value="not-a-number"'
+        r'[^>]*aria-invalid="true"',
+        response.text,
+    )
+    assert 'href="/experiments/new"' in response.text
+
+
+def test_experiment_preview_no_js_theme_forms_preserve_post_context(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    form["template_initial_capital_cny"] = "123456.5"
+    preview = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+
+    for theme in ("light", "dark", "system"):
+        action, values = _no_js_theme_submission(preview.text, theme)
+        assert action == f"/experiments/preview?theme={theme}"
+        assert values["template_initial_capital_cny"] == "123456.5"
+        themed = client.post(
+            action,
+            data=values,
+            headers={"origin": "https://quant.ai.jingtao.fun"},
+        )
+        assert themed.status_code == 200
+        assert 'data-page="experiment-preview"' in themed.text
+        assert f'<html lang="en" data-theme="{theme}">' in themed.text
+        assert f"quant_theme={theme}" in themed.headers["set-cookie"]
+
+
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
@@ -593,6 +714,36 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert 'class="record-table"' in history.text
     assert 'data-copy-value="' + created["experiment_id"] + '"' in history.text
     assert created["experiment_id"][:12] + "…" in history.text
+
+
+def test_report_wrapper_labels_canonical_and_divergent_attempts_honestly(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="canonical-report"
+    )
+    canonical = app.state.experiments.claim_next_attempt()
+    app.state.experiments.finish_success(
+        canonical["attempt_id"],
+        result_path=str(tmp_path / "canonical"),
+        result_digest="a" * 64,
+    )
+    app.state.experiments.rerun(created["experiment_id"], action_id="divergent-report")
+    divergent = app.state.experiments.claim_next_attempt()
+    app.state.experiments.finish_success(
+        divergent["attempt_id"],
+        result_path=str(tmp_path / "divergent"),
+        result_digest="b" * 64,
+    )
+
+    canonical_wrapper = client.get(f"/reports/{canonical['attempt_id']}")
+    divergent_wrapper = client.get(f"/reports/{divergent['attempt_id']}")
+
+    assert "Verified canonical report" in canonical_wrapper.text
+    assert "Verified divergent rerun report" in divergent_wrapper.text
+    assert "Verified canonical report" not in divergent_wrapper.text
 
 
 def test_history_filters_status_search_and_drift_functionally(tmp_path: Path):
@@ -729,61 +880,15 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     javascript = client.get("/static/app.js").text
     theme_init = client.get("/static/theme-init.js").text
 
-    allowed_colors = {
-        "#00677a",
-        "#005364",
-        "#00424f",
-        "#f4f6f7",
-        "#10191f",
-        "#ffffff",
-        "#e9eef1",
-        "#dde5e9",
-        "#11181c",
-        "#46545d",
-        "#596871",
-        "#ccd6db",
-        "#71808a",
-        "#7127a8",
-        "#146c43",
-        "#e4f7ed",
-        "#7a4d00",
-        "#fff2cc",
-        "#a3212b",
-        "#fce7e8",
-        "#115ea3",
-        "#e5f1ff",
-        "#0b1114",
-        "#081014",
-        "#111a1f",
-        "#18242a",
-        "#213038",
-        "#f1f5f6",
-        "#b7c2c7",
-        "#9eadb4",
-        "#34434b",
-        "#657681",
-        "#67d5ea",
-        "#8de1f0",
-        "#42b8d0",
-        "#062027",
-        "#7cdbee",
-        "#d49cff",
-        "#74d9a7",
-        "#113427",
-        "#ffd080",
-        "#3b2b10",
-        "#ff9da3",
-        "#401b20",
-        "#9cc8ff",
-        "#142e4a",
-    }
     for token in ("#00677a", "#f4f6f7", "#10191f", "#67d5ea", "#0b1114"):
         assert token in css
-    assert {
-        color.lower() for color in re.findall(r"#[0-9a-fA-F]{6}", css)
-    } <= allowed_colors
+    component_css = css[css.index("* {") :]
+    assert re.findall(r"#[0-9a-fA-F]{3,8}\b", component_css) == []
+    assert re.findall(r"z-index:\s*-?\d+", css) == []
     assert "--space-1: 4px" in css
     assert "--radius-panel: 6px" in css
+    assert "--z-skip-link:" in css
+    assert "--shell-text:" in css
     assert "height: 52px" in css
     assert "grid-template-columns: 240px minmax(0, 1fr)" in css
     assert "min-height: 44px" in css
@@ -792,8 +897,12 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     assert "@media (prefers-reduced-motion: reduce)" in css
     assert "@media (forced-colors: active)" in css
     assert ".masthead :focus-visible,\n.mobile-nav :focus-visible" in css
-    assert "outline-color: #ffffff" in css
+    assert "outline-color: var(--shell-text)" in css
     assert "overflow-x: auto" in css
+    assert ".table-wrap thead" in css
+    assert "position: sticky" in css
+    assert ".mobile-nav a" in css
+    assert "font-size: 0.75rem" in css.split(".mobile-nav a", 1)[1].split("}", 1)[0]
     assert "linear-gradient" not in css
     assert "radial-gradient" not in css
     assert "backdrop-filter" not in css
@@ -809,8 +918,61 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     assert 'document.documentElement.classList.add("js")' in theme_init
     assert "matchMedia" in javascript
     assert "localStorage.setItem" in javascript
+    assert "document.cookie" in javascript
     assert "field.dataset.parameterEnum" in javascript
     assert "JSON.parse(field.value)" in javascript
+
+
+def test_copyable_list_identities_have_accessible_no_js_fallbacks(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="copyable-dashboard"
+    )
+    operator_digest = app.state.catalog.operator_detail(
+        "prior_log_ols", "1.0.0"
+    )["content_digest"]
+
+    dashboard = client.get("/").text
+    operators = client.get("/operators").text
+
+    for identity in (created["attempt_id"], created["experiment_id"]):
+        assert f'data-copy-value="{identity}"' in dashboard
+        assert identity in dashboard.split("Full ID", 1)[1]
+    assert 'data-copy-value="prior_log_ols"' in operators
+    assert "prior_log_ols" in operators.split("Full operator ID", 1)[1]
+    assert f'data-copy-value="{operator_digest}"' not in operators
+
+
+def test_browser_harness_names_density_and_text_resize_truthfully_and_covers_gaps():
+    harness = (PROJECT_ROOT / "tests" / "browser_acceptance.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "zoom200" not in harness
+    assert "effectiveScale" not in harness
+    assert "visualViewport.scale *" not in harness
+    assert "320px DPR2 reflow" in harness
+    assert "200% text-resize proxy" in harness
+    for contract in (
+        "focused-login",
+        "focused-empty-dashboard",
+        "focused-report-wrapper",
+        "focused-post-logout",
+        "focused-skip-link",
+        "forced-colors",
+        "prefers-reduced-motion",
+    ):
+        assert contract in harness
+
+
+def test_design_lint_command_is_reproducible_and_pinned():
+    script = PROJECT_ROOT / "scripts" / "design_lint.sh"
+    assert script.is_file()
+    source = script.read_text(encoding="utf-8")
+    assert "@google/design.md@0.4.0" in source
+    assert "DESIGN.md" in source
+    assert "latest" not in source
 
 
 def test_theme_bootstrap_precedes_css_and_selector_is_global(tmp_path: Path):

@@ -18,7 +18,7 @@ from test_parameter_study import (
     _study_service,
 )
 from test_web_api import authenticate, make_app, snapshot
-from test_web_ui import _experiment_form
+from test_web_ui import _experiment_form, _no_js_theme_submission
 
 
 STUDY_ID = "a" * 64
@@ -987,6 +987,60 @@ def test_preview_edit_preserves_complete_wizard_values(tmp_path: Path):
         )
     assert 'name="parent_study_ids"' in edited.text
     assert '<option value="false" selected>' in edited.text
+
+
+def test_study_preview_no_js_theme_forms_preserve_post_context(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    form = _experiment_form(app, snapshot(app), issued.csrf_token)
+    range_field = "search__fit__prior_log_ols__1.0.0__window_sessions"
+    form.update(
+        {
+            "study__fit__prior_log_ols__1.0.0__window_sessions": "int",
+            range_field: "[2,3]",
+            "unique_trial_budget": "2",
+            "max_suggestions": "3",
+            "parent_study_ids": "",
+            "prior_unique_candidate_count": "7",
+            "lineage_complete": "false",
+        }
+    )
+    preview = client.post(
+        "/studies/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+
+    for theme in ("light", "dark", "system"):
+        action, values = _no_js_theme_submission(preview.text, theme)
+        assert action == f"/studies/preview?theme={theme}"
+        assert values[range_field] == "[2,3]"
+        themed = client.post(
+            action,
+            data=values,
+            headers={"origin": "https://quant.ai.jingtao.fun"},
+        )
+        assert themed.status_code == 200
+        assert 'data-page="study-preview"' in themed.text
+        assert f'<html lang="en" data-theme="{theme}">' in themed.text
+        assert f"quant_theme={theme}" in themed.headers["set-cookie"]
+
+
+def test_study_list_identity_is_copyable_with_no_js_fallback(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
+
+    response = client.get("/studies")
+
+    assert response.status_code == 200
+    assert f'data-copy-value="{STUDY_ID}"' in response.text
+    assert "Full Study ID" in response.text
+    assert STUDY_ID in response.text.split("Full Study ID", 1)[1]
 
 
 def test_stale_study_submit_returns_a_fresh_reviewable_preview(
