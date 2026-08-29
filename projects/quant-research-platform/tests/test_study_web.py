@@ -491,9 +491,10 @@ def test_study_detail_and_report_render_optional_suggestion_journal(
         assert "COMPLETE" in response.text
         assert "1.25" in response.text
         assert "FAIL" in response.text
-        complete = response.text.index("COMPLETE")
-        details = response.text.index("Ask/tell event details")
-        changed = response.text.index("/operators/fit/window_sessions")
+        journal = response.text.split('data-testid="suggestion-journal"', 1)[1]
+        complete = journal.index("COMPLETE")
+        details = journal.index("Ask/tell event details")
+        changed = journal.index("/operators/fit/window_sessions")
         assert complete < details < changed
 
 
