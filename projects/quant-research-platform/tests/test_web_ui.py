@@ -618,20 +618,83 @@ def test_report_content_rejects_top_level_navigation(tmp_path: Path):
     assert response.status_code == 403
 
 
-def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: Path):
+def test_static_assets_match_proofline_tokens_and_accessibility_contract(
+    tmp_path: Path,
+):
     _, client = make_app(tmp_path)
 
     css = client.get("/static/app.css").text
     javascript = client.get("/static/app.js").text
     theme_init = client.get("/static/theme-init.js").text
 
-    for token in ("#08090a", "#0f1011", "#5e6ad2", "#f7f8fa", "#ffffff"):
+    allowed_colors = {
+        "#00677a",
+        "#005364",
+        "#00424f",
+        "#f4f6f7",
+        "#10191f",
+        "#ffffff",
+        "#e9eef1",
+        "#dde5e9",
+        "#11181c",
+        "#46545d",
+        "#596871",
+        "#ccd6db",
+        "#71808a",
+        "#7127a8",
+        "#146c43",
+        "#e4f7ed",
+        "#7a4d00",
+        "#fff2cc",
+        "#a3212b",
+        "#fce7e8",
+        "#115ea3",
+        "#e5f1ff",
+        "#0b1114",
+        "#081014",
+        "#111a1f",
+        "#18242a",
+        "#213038",
+        "#f1f5f6",
+        "#b7c2c7",
+        "#9eadb4",
+        "#34434b",
+        "#657681",
+        "#67d5ea",
+        "#8de1f0",
+        "#42b8d0",
+        "#062027",
+        "#7cdbee",
+        "#d49cff",
+        "#74d9a7",
+        "#113427",
+        "#ffd080",
+        "#3b2b10",
+        "#ff9da3",
+        "#401b20",
+        "#9cc8ff",
+        "#142e4a",
+    }
+    for token in ("#00677a", "#f4f6f7", "#10191f", "#67d5ea", "#0b1114"):
         assert token in css
+    assert {
+        color.lower() for color in re.findall(r"#[0-9a-fA-F]{6}", css)
+    } <= allowed_colors
+    assert "--space-1: 4px" in css
+    assert "--radius-panel: 6px" in css
+    assert "height: 52px" in css
+    assert "grid-template-columns: 240px minmax(0, 1fr)" in css
     assert "min-height: 44px" in css
+    assert "min-height: 56px" in css
+    assert "env(safe-area-inset-bottom)" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "@media (forced-colors: active)" in css
     assert "overflow-x: auto" in css
     assert "linear-gradient" not in css
+    assert "radial-gradient" not in css
     assert "backdrop-filter" not in css
+    assert "box-shadow:" not in css
+    assert "url(" not in css
     assert "innerHTML" not in javascript
     assert "quant:preview-settled" in javascript
     assert "new AbortController()" in javascript
@@ -639,6 +702,7 @@ def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: 
     assert "quant-theme" in theme_init
     assert "localStorage.getItem" in theme_init
     assert 'document.documentElement.dataset.theme = theme' in theme_init
+    assert 'document.documentElement.classList.add("js")' in theme_init
     assert "matchMedia" in javascript
     assert "localStorage.setItem" in javascript
     assert "field.dataset.parameterEnum" in javascript
