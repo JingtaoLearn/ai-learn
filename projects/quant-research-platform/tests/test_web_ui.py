@@ -791,6 +791,8 @@ def test_static_assets_match_proofline_tokens_and_accessibility_contract(
     assert "env(safe-area-inset-bottom)" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
     assert "@media (forced-colors: active)" in css
+    assert ".masthead :focus-visible,\n.mobile-nav :focus-visible" in css
+    assert "outline-color: #ffffff" in css
     assert "overflow-x: auto" in css
     assert "linear-gradient" not in css
     assert "radial-gradient" not in css
