@@ -26,6 +26,7 @@ from quant_platform.parameter_study import (
     ParameterStudy,
     StudyNotFoundError,
     StudyValidationError,
+    _build_decision_summary,
 )
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.schemas import canonical_json_bytes
@@ -50,6 +51,119 @@ EXECUTION_IDENTITY = {
     "runtime": {"python": "3.12.11", "pandas": "2.3.1"},
     "runner_image": "sha256:" + "b" * 64,
 }
+
+
+def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significance():
+    frozen_plan = {
+        "search": {
+            "space": {
+                "/operators/fit/window_sessions": {
+                    "kind": "int",
+                    "low": 10,
+                    "high": 30,
+                    "step": 10,
+                    "log": False,
+                }
+            }
+        }
+    }
+
+    def trial(digest: str, window: int) -> dict:
+        return {
+            "candidate_digest": digest,
+            "configuration": {
+                "operators": {
+                    "fit": {"parameters": {"window_sessions": window}},
+                    "cost": {"parameters": {"commission_rate": 0.0003}},
+                }
+            },
+        }
+
+    def ranking(digest: str, score: float, drawdown: float, turnover: float) -> dict:
+        return {
+            "candidate_digest": digest,
+            "validation_score": score,
+            "independent_metrics": {
+                "maximum_drawdown": drawdown,
+                "annual_turnover": turnover,
+            },
+        }
+
+    digests = {window: str(window) * 64 for window in (10, 20, 30)}
+    enriched, summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[trial(digests[10], 10), trial(digests[20], 20), trial(digests[30], 30)],
+        rankings=[
+            ranking(digests[10], 0.14, 0.01, 12.5),
+            ranking(digests[20], 0.14, 0.01, 12.5),
+            ranking(digests[30], -2.6, 0.08, 12.2),
+        ],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": digests[30]},
+                {"search_round": "OUTER:2", "selected_candidate_digest": digests[20]},
+            ]
+        },
+    )
+
+    assert enriched[0]["studied_parameters"] == {
+        "/operators/fit/window_sessions": 10
+    }
+    assert "commission_rate" not in canonical_json_bytes(enriched[0]).decode()
+    assert summary == {
+        "claim": "TIE_BROKEN_BY_FROZEN_RULE",
+        "champion_candidate_digest": digests[10],
+        "champion_parameters": {"/operators/fit/window_sessions": 10},
+        "validation_score": 0.14,
+        "primary_ties": [
+            {
+                "candidate_digest": digests[20],
+                "studied_parameters": {"/operators/fit/window_sessions": 20},
+            }
+        ],
+        "outer_selections": [
+            {
+                "search_round": "OUTER:1",
+                "candidate_digest": digests[30],
+                "studied_parameters": {"/operators/fit/window_sessions": 30},
+            },
+            {
+                "search_round": "OUTER:2",
+                "candidate_digest": digests[20],
+                "studied_parameters": {"/operators/fit/window_sessions": 20},
+            },
+        ],
+        "outer_stability": "DIVERGENT",
+        "statistical_significance": "NOT_ESTABLISHED",
+        "rationale": (
+            "The champion tied on the frozen primary ranking evidence and won only "
+            "through the frozen tie-break; outer-round selections also diverged."
+        ),
+    }
+
+    eligible_champion = ranking(digests[10], 0.10, 0.01, 12.5) | {
+        "champion_eligible": True,
+        "eligible": True,
+    }
+    higher_score_ineligible = ranking(digests[20], 0.20, 0.01, 12.5) | {
+        "champion_eligible": False,
+        "eligible": False,
+    }
+    _, eligibility_summary = _build_decision_summary(
+        frozen_plan=frozen_plan,
+        trials=[trial(digests[10], 10), trial(digests[20], 20)],
+        rankings=[eligible_champion, higher_score_ineligible],
+        outer_evidence={
+            "rounds": [
+                {"search_round": "OUTER:1", "selected_candidate_digest": digests[20]}
+            ]
+        },
+    )
+    assert eligibility_summary is not None
+    assert eligibility_summary["rationale"] == (
+        "The champion was the highest-ranked eligible candidate under the complete "
+        "frozen ranking policy, but outer-round selections diverged."
+    )
 
 
 class FixedCalendar:
@@ -666,6 +780,10 @@ def test_public_optuna_study_runs_real_adapter_to_completion(tmp_path: Path):
         pytest.fail("real Optuna Study did not complete")
 
     assert detail["selection_outcome"] == "CHAMPION_SELECTED"
+    assert detail["decision_summary"] is not None
+    assert detail["decision_summary"]["champion_parameters"]
+    assert detail["decision_summary"]["statistical_significance"] == "NOT_ESTABLISHED"
+    assert all(item["studied_parameters"] for item in detail["rankings"])
     assert detail["holdout"]["access"] == "ACCESSED"
     assert detail["holdout"]["outcome"] in {"PASSED", "FAILED"}
     assert detail["suggestion_journal"]
@@ -2097,6 +2215,7 @@ def test_failed_attempts_progress_to_no_eligible_candidate(tmp_path: Path):
         pytest.fail("failed Study Attempts did not reach a terminal conclusion")
 
     assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert detail["decision_summary"] is None
     assert detail["holdout"] == {
         "access": "SEALED",
         "outcome": "NOT_RUN",

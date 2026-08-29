@@ -1280,6 +1280,129 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def _studied_parameters(
+    configuration: dict[str, Any],
+    search_space: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for path in sorted(search_space):
+        parts = path.split("/")
+        if len(parts) != 4 or parts[:2] != ["", "operators"]:
+            continue
+        slot, parameter = parts[2], parts[3]
+        try:
+            result[path] = deepcopy(
+                configuration["operators"][slot]["parameters"][parameter]
+            )
+        except KeyError:
+            continue
+    return result
+
+
+def _primary_ranking_identity(ranking: dict[str, Any]) -> bytes:
+    metrics = ranking.get("independent_metrics", {})
+    return canonical_json_bytes(
+        {
+            "champion_eligible": ranking.get("champion_eligible"),
+            "eligible": ranking.get("eligible"),
+            "validation_score": ranking.get("validation_score"),
+            "maximum_drawdown": metrics.get("maximum_drawdown"),
+            "annual_turnover": metrics.get("annual_turnover"),
+        }
+    )
+
+
+def _build_decision_summary(
+    *,
+    frozen_plan: dict[str, Any],
+    trials: list[dict[str, Any]],
+    rankings: list[dict[str, Any]],
+    outer_evidence: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    search_space = frozen_plan.get("search", {}).get("space", {})
+    trial_by_digest = {item["candidate_digest"]: item for item in trials}
+    enriched: list[dict[str, Any]] = []
+    for ranking in rankings:
+        item = deepcopy(ranking)
+        trial = trial_by_digest.get(item["candidate_digest"])
+        item["studied_parameters"] = (
+            _studied_parameters(trial["configuration"], search_space) if trial else {}
+        )
+        enriched.append(item)
+    if not enriched:
+        return enriched, None
+
+    champion = enriched[0]
+    primary_identity = _primary_ranking_identity(champion)
+    primary_ties = [
+        {
+            "candidate_digest": item["candidate_digest"],
+            "studied_parameters": deepcopy(item["studied_parameters"]),
+        }
+        for item in enriched[1:]
+        if _primary_ranking_identity(item) == primary_identity
+    ]
+    outer_selections = []
+    for item in (outer_evidence or {}).get("rounds", []):
+        selected = item.get("selected_candidate_digest")
+        trial = trial_by_digest.get(selected)
+        outer_selections.append(
+            {
+                "search_round": item.get("search_round"),
+                "candidate_digest": selected,
+                "studied_parameters": (
+                    _studied_parameters(trial["configuration"], search_space)
+                    if trial
+                    else {}
+                ),
+            }
+        )
+    if not outer_selections:
+        outer_stability = "NOT_AVAILABLE"
+    elif all(
+        item["candidate_digest"] == champion["candidate_digest"]
+        for item in outer_selections
+    ):
+        outer_stability = "CONSISTENT"
+    else:
+        outer_stability = "DIVERGENT"
+
+    if primary_ties and outer_stability == "DIVERGENT":
+        rationale = (
+            "The champion tied on the frozen primary ranking evidence and won only "
+            "through the frozen tie-break; outer-round selections also diverged."
+        )
+    elif primary_ties:
+        rationale = (
+            "The champion tied on the frozen primary ranking evidence and won only "
+            "through the frozen tie-break."
+        )
+    elif outer_stability == "DIVERGENT":
+        rationale = (
+            "The champion was the highest-ranked eligible candidate under the complete "
+            "frozen ranking policy, but outer-round selections diverged."
+        )
+    else:
+        rationale = (
+            "The champion was the highest-ranked eligible candidate under the complete "
+            "frozen ranking policy."
+        )
+
+    return enriched, {
+        "claim": (
+            "TIE_BROKEN_BY_FROZEN_RULE" if primary_ties else "OBSERVED_BEST"
+        ),
+        "champion_candidate_digest": champion["candidate_digest"],
+        "champion_parameters": deepcopy(champion["studied_parameters"]),
+        "validation_score": champion["validation_score"],
+        "primary_ties": primary_ties,
+        "outer_selections": outer_selections,
+        "outer_stability": outer_stability,
+        "statistical_significance": "NOT_ESTABLISHED",
+        "rationale": rationale,
+    }
+
+
 def _strict_json_value(value: Any, path: str) -> Any:
     if not isinstance(value, str):
         raise RuntimeError(f"{path} is not JSON text")
@@ -7117,6 +7240,19 @@ class ParameterStudy:
             raise RuntimeError(
                 "Study holdout projection disagrees with canonical evidence"
             )
+        public_outer_evidence = (
+            champion_evidence["outer_evidence"]
+            if champion_evidence is not None
+            else derived_outer_evidence
+        )
+        rankings, decision_summary = _build_decision_summary(
+            frozen_plan=frozen_plan,
+            trials=trial_views,
+            rankings=rankings,
+            outer_evidence=public_outer_evidence,
+        )
+        if champion_evidence is None:
+            decision_summary = None
         result = {
             "study_id": study["study_id"],
             "preview_digest": study["preview_digest"],
@@ -7173,6 +7309,7 @@ class ParameterStudy:
             "trials": trial_views,
             "bindings": binding_views,
             "rankings": rankings,
+            "decision_summary": decision_summary,
             "verified_metrics": [
                 binding["metric_document"]
                 for binding in binding_views
@@ -7181,11 +7318,7 @@ class ParameterStudy:
             "evaluations": final_evaluations,
             "champion_evidence": champion_evidence,
             "holdout_evidence": holdout_evidence,
-            "outer_evidence": (
-                champion_evidence["outer_evidence"]
-                if champion_evidence is not None
-                else derived_outer_evidence
-            ),
+            "outer_evidence": public_outer_evidence,
             "evidence": evidence_items,
         }
         if len(canonical_json_bytes(result)) > MAX_STUDY_DETAIL_BYTES:

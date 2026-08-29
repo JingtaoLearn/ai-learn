@@ -115,10 +115,33 @@ def _study_detail() -> dict:
                 "champion_eligible": False,
                 "eligible": False,
                 "validation_score": 1.25,
+                "studied_parameters": {"/operators/fit/window_sessions": 20},
                 "independent_metrics": {"maximum_drawdown": -0.08},
                 "explanation": {"constraint_failures": ["minimum_trades"]},
             }
         ],
+        "decision_summary": {
+            "claim": "TIE_BROKEN_BY_FROZEN_RULE",
+            "champion_candidate_digest": "e" * 64,
+            "champion_parameters": {"/operators/fit/window_sessions": 20},
+            "validation_score": 1.25,
+            "primary_ties": [
+                {
+                    "candidate_digest": "2" * 64,
+                    "studied_parameters": {"/operators/fit/window_sessions": 10},
+                }
+            ],
+            "outer_selections": [
+                {
+                    "search_round": "OUTER:1",
+                    "candidate_digest": "3" * 64,
+                    "studied_parameters": {"/operators/fit/window_sessions": 30},
+                }
+            ],
+            "outer_stability": "DIVERGENT",
+            "statistical_significance": "NOT_ESTABLISHED",
+            "rationale": "The champion won only through the frozen tie-break.",
+        },
         "bindings": [
             {
                 "candidate_digest": "e" * 64,
@@ -267,6 +290,11 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert study.status_code == 200
     assert 'data-page="study-detail"' in study.text
     assert "Trial ranking" in study.text
+    assert "Best observed parameters" in study.text
+    assert "TIE_BROKEN_BY_FROZEN_RULE" in study.text
+    assert "DIVERGENT" in study.text
+    assert "NOT_ESTABLISHED" in study.text
+    assert "/operators/fit/window_sessions" in study.text
     assert 'class="study-ranking-table"' in study.text
     assert "1 Trial is not ranked because complete canonical fold evidence is unavailable" in study.text
     assert all(
@@ -275,7 +303,7 @@ def test_study_pages_expose_research_evidence_and_escape_values(
             "Validation score",
             "Independent metrics",
             "Constraint reasons",
-            "Parameter identity",
+            "Studied parameters",
             "Experiment bindings",
             "Planned outer OOS windows",
             "Terminal holdout plan and state",
