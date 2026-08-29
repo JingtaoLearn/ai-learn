@@ -1461,19 +1461,28 @@ def create_app(
             },
         )
 
+    async def experiment_form_context(
+        form_values: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        grouped = _operator_groups(operators)
+        dataset_options = await run_in_threadpool(datasets.list_available)
+        values = form_values or {}
+        return {
+            "datasets": dataset_options,
+            "grouped": grouped,
+            "template": catalog.template_detail("single_stock_daily_causal", "1"),
+            "action_id": values.get("action_id") or secrets.token_hex(16),
+            "form_values": values,
+        }
+
     @app.get("/experiments/new")
     async def experiment_new(request: Request):
         session = _session(request)
-        grouped = _operator_groups(operators)
-        dataset_options = await run_in_threadpool(datasets.list_available)
         return _render(
             request,
             "experiment_new.html",
             session=session,
-            datasets=dataset_options,
-            grouped=grouped,
-            template=catalog.template_detail("single_stock_daily_causal", "1"),
-            action_id=secrets.token_hex(16),
+            **await experiment_form_context(),
         )
 
     @app.post("/experiments/preview")
@@ -1488,6 +1497,7 @@ def create_app(
             "experiment_preview.html",
             session=session,
             preview=preview,
+            form_values=form,
         )
 
     @app.post("/experiments/new")
@@ -1495,6 +1505,16 @@ def create_app(
         session = _session(request)
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
+        intent = form.pop("intent", None)
+        if intent is not None:
+            if intent != "edit":
+                raise ValueError("experiment form intent is invalid")
+            return _render(
+                request,
+                "experiment_new.html",
+                session=session,
+                **await experiment_form_context(form),
+            )
         result = await run_in_threadpool(
             experiments.submit,
             _task_from_form(form, catalog=catalog),
@@ -1871,11 +1891,13 @@ def create_app(
     @app.get("/reports/{attempt_id}")
     async def report(request: Request, attempt_id: str):
         session = _session(request)
+        attempt = experiments.attempt_detail(attempt_id)
         return _render(
             request,
             "report_wrapper.html",
             session=session,
             attempt_id=attempt_id,
+            attempt=attempt,
         )
 
     @app.get("/reports/{attempt_id}/content")

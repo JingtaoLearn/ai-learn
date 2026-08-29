@@ -1,95 +1,100 @@
 {% extends "base.html" %}
-{% block title %}Experiment {{ experiment.experiment_id[:8] }}{% endblock %}
+{% block title %}{{ experiment.dataset.name if experiment.dataset.dataset_id else experiment.dataset.instrument }} · Experiment{% endblock %}
 {% block page %}experiment-detail{% endblock %}
 {% block content %}
 <section class="page-heading">
   <p class="eyebrow">IMMUTABLE EXPERIMENT</p>
-  <h1 class="mono">{{ experiment.experiment_id }}</h1>
-  <p>{{ "Version drift detected" if experiment.has_drift else "No version drift" }} · {{ experiment.attempt_count }} attempt{% if experiment.attempt_count != 1 %}s{% endif %}</p>
-  <div class="chips"><span class="status">{{ experiment.current_status }}</span>{% if experiment.has_divergent_attempt %}<span class="badge">Divergent result</span>{% endif %}</div>
+  <h1>{{ experiment.dataset.name if experiment.dataset.dataset_id else experiment.dataset.instrument }}</h1>
+  <p>{{ experiment.template.name }}@{{ experiment.template.version }} · <span class="mono">{{ experiment.experiment_id[:12] }}…</span></p>
 </section>
 
-<section class="panel" data-testid="experiment-dataset">
-  <h2>Dataset identity</h2>
-  <dl class="technical">
-    {% if experiment.dataset.dataset_id %}
-    <dt>Catalog item</dt><dd>{{ experiment.dataset.name }} · {{ experiment.dataset.dataset_id }}</dd>
-    <dt>Requested range</dt><dd>{{ experiment.dataset.requested_start }} to {{ experiment.dataset.requested_end }}</dd>
-    {% if experiment.dataset.requested_start != experiment.dataset.effective_start or experiment.dataset.requested_end != experiment.dataset.effective_end %}
-    <dt>Effective sessions</dt><dd>{{ experiment.dataset.effective_start }} to {{ experiment.dataset.effective_end }}</dd>
-    {% endif %}
-    {% endif %}
-    <dt>Instrument</dt><dd>{{ experiment.dataset.instrument }}</dd>
-    <dt>Snapshot</dt><dd>{{ experiment.dataset.snapshot_id }}</dd>
-    <dt>Canonical digest</dt><dd>{{ experiment.dataset.canonical_sha256 }}</dd>
-  </dl>
-</section>
-
-<section class="panel" data-testid="template-parameters">
-  <h2>Template and parameters</h2>
-  <p><span class="badge">{{ experiment.template.name }}@{{ experiment.template.version }}</span></p>
-  <dl class="technical">{% for name, value in experiment.template.parameters.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
-</section>
-
-<section class="panel" data-testid="operator-resolution">
-  <h2>Operator resolution and current drift</h2>
-  <div class="resolution-list">{% for slot, operator in experiment.operators.items() %}
-    <article class="resolution-card" data-slot="{{ slot }}">
-      <div class="section-heading">
-        <h3>{{ slot }}</h3>
-        <span class="badge">{{ "Drifted" if operator.drifted else "Current" }}</span>
-      </div>
-      <dl class="technical">
-        <dt>Operator</dt><dd><a href="/operators/{{ operator.operator_id }}/{{ operator.resolved_version }}">{{ operator.operator_id }}</a></dd>
-        <dt>Requested selector</dt><dd>{{ operator.selector_mode }} · {{ operator.requested_version }}</dd>
-        <dt>Latest at submission</dt><dd>{{ operator.latest_version_at_submission }} · {{ operator.latest_content_digest_at_submission }}</dd>
-        <dt>Resolved version</dt><dd>{{ operator.resolved_version }}</dd>
-        <dt>Resolved digest</dt><dd>{{ operator.content_digest }}</dd>
-        <dt>Current latest</dt><dd>{{ operator.current_latest_version }} · {{ operator.current_latest_digest }}</dd>
-        <dt>Parameters</dt><dd>{% if operator.parameters %}{% for name, value in operator.parameters.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</dd>
-      </dl>
-    </article>
-  {% endfor %}</div>
-</section>
-
-<section class="panel" data-testid="canonical-metrics">
-  <h2>Canonical result</h2>
-  {% if canonical_attempt and canonical_metrics %}
-  <dl class="technical">
-    <dt>Canonical attempt</dt><dd>{{ canonical_attempt.attempt_id }}</dd>
-    <dt>Result digest</dt><dd>{{ canonical_attempt.result_digest }}</dd>
-    <dt>Comparison</dt><dd>{{ canonical_attempt.comparison }}</dd>
-    {% for name, value in canonical_metrics.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
-  </dl>
-  <a class="button quiet" href="/reports/{{ canonical_attempt.attempt_id }}">Open sandboxed report</a>
-  {% else %}<div class="empty">No canonical successful result is available yet.</div>{% endif %}
-</section>
-
-<section class="panel" data-testid="attempt-timeline">
-  <div class="section-heading">
-    <div><h2>Attempt timeline</h2><p>Each attempt is a single physical launch with immutable resolution audit.</p></div>
+<section class="panel experiment-context" data-testid="experiment-context" aria-labelledby="experiment-context-heading">
+  <div class="section-heading"><div><p class="eyebrow">CURRENT STATE</p><h2 id="experiment-context-heading">Experiment status and actions</h2></div><span class="status" data-status="{{ experiment.current_status }}">{{ experiment.current_status }}</span></div>
+  <div class="context-facts">
+    <div><span>Attempts</span><strong>{{ experiment.attempt_count }}</strong></div>
+    <div><span>Version state</span><strong>{{ "Drift detected" if experiment.has_drift else "No version drift" }}</strong></div>
+    <div><span>Result comparison</span><strong>{{ "Divergent result recorded" if experiment.has_divergent_attempt else "No divergent result" }}</strong></div>
+  </div>
+  <div class="actions">
+    {% if canonical_attempt %}<a class="button quiet" href="/reports/{{ canonical_attempt.attempt_id }}">Open sandboxed report</a>{% endif %}
     <form method="post" action="/experiments/{{ experiment.experiment_id }}/rerun" data-testid="rerun-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action_id" value="{{ rerun_action_id }}">
       <button type="submit">Rerun frozen experiment</button>
     </form>
   </div>
+</section>
+
+<section class="panel" data-testid="canonical-metrics">
+  <h2>Canonical result</h2>
+  {% if canonical_attempt and canonical_metrics %}
+  <p>The first successful immutable Attempt remains canonical for this experiment.</p>
+  <dl class="technical">
+    <dt>Canonical attempt</dt><dd>{{ canonical_attempt.attempt_id[:12] }}…</dd>
+    <dt>Result digest</dt><dd>{{ canonical_attempt.result_digest[:12] }}…</dd>
+    <dt>Comparison</dt><dd>{{ canonical_attempt.comparison }}</dd>
+    {% for name, value in canonical_metrics.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
+  </dl>
+  <details><summary>Full canonical result identity</summary><dl class="technical"><dt>Attempt ID</dt><dd>{{ canonical_attempt.attempt_id }}</dd><dt>Result digest</dt><dd>{{ canonical_attempt.result_digest }}</dd></dl></details>
+  {% else %}<div class="empty">No canonical successful result is available yet. The current Attempt state remains visible below.</div>{% endif %}
+</section>
+
+<details class="panel audit-disclosure">
+  <summary>Full experiment identity and resolution audit</summary>
+  <section data-testid="experiment-dataset">
+    <h2>Dataset identity</h2>
+    <dl class="technical">
+      {% if experiment.dataset.dataset_id %}
+      <dt>Catalog item</dt><dd>{{ experiment.dataset.name }} · {{ experiment.dataset.dataset_id }}</dd>
+      <dt>Requested range</dt><dd>{{ experiment.dataset.requested_start }} to {{ experiment.dataset.requested_end }}</dd>
+      {% if experiment.dataset.requested_start != experiment.dataset.effective_start or experiment.dataset.requested_end != experiment.dataset.effective_end %}<dt>Effective sessions</dt><dd>{{ experiment.dataset.effective_start }} to {{ experiment.dataset.effective_end }}</dd>{% endif %}
+      {% endif %}
+      <dt>Experiment ID</dt><dd>{{ experiment.experiment_id }}</dd>
+      <dt>Instrument</dt><dd>{{ experiment.dataset.instrument }}</dd>
+      <dt>Snapshot</dt><dd>{{ experiment.dataset.snapshot_id }}</dd>
+      <dt>Canonical digest</dt><dd>{{ experiment.dataset.canonical_sha256 }}</dd>
+    </dl>
+  </section>
+  <section data-testid="template-parameters">
+    <h2>Template and parameters</h2>
+    <p><span class="badge">{{ experiment.template.name }}@{{ experiment.template.version }}</span></p>
+    <dl class="technical">{% for name, value in experiment.template.parameters.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+  </section>
+  <section data-testid="operator-resolution">
+    <h2>Operator resolution and current drift</h2>
+    <div class="resolution-list">{% for slot, operator in experiment.operators.items() %}
+      <article class="resolution-card" data-slot="{{ slot }}">
+        <div class="section-heading"><h3>{{ slot }}</h3><span class="badge">{{ "Drifted" if operator.drifted else "Current" }}</span></div>
+        <dl class="technical">
+          <dt>Operator</dt><dd><a href="/operators/{{ operator.operator_id }}/{{ operator.resolved_version }}">{{ operator.operator_id }}</a></dd>
+          <dt>Requested selector</dt><dd>{{ operator.selector_mode }} · {{ operator.requested_version }}</dd>
+          <dt>Latest at submission</dt><dd>{{ operator.latest_version_at_submission }} · {{ operator.latest_content_digest_at_submission }}</dd>
+          <dt>Resolved version</dt><dd>{{ operator.resolved_version }}</dd>
+          <dt>Resolved digest</dt><dd>{{ operator.content_digest }}</dd>
+          <dt>Current latest</dt><dd>{{ operator.current_latest_version }} · {{ operator.current_latest_digest }}</dd>
+          <dt>Parameters</dt><dd>{% if operator.parameters %}{% for name, value in operator.parameters.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</dd>
+        </dl>
+      </article>
+    {% endfor %}</div>
+  </section>
+</details>
+
+<section class="panel" data-testid="attempt-timeline">
+  <div class="section-heading"><div><p class="eyebrow">EXECUTION HISTORY</p><h2>Attempt timeline</h2><p>Each Attempt is one physical launch with immutable resolution evidence.</p></div></div>
   {% for attempt in experiment.attempts %}
-  <article class="timeline-item">
-    <span class="status">{{ attempt.status }}</span>
-    <span class="mono">#{{ attempt.sequence }} · {{ attempt.attempt_id[:12] }}</span>
-    <span>{{ attempt.created_at }}{% if attempt.finished_at %} → {{ attempt.finished_at }}{% endif %}</span>
-    {% if attempt.result_digest %}<span class="mono">{{ attempt.comparison }} · {{ attempt.result_digest[:12] }}</span>{% endif %}
-    {% if attempt.status == "SUCCEEDED" %}<a href="/reports/{{ attempt.attempt_id }}">Report</a>{% endif %}
-    <details class="wide"><summary>Resolution audit</summary>
-      <div class="resolution-list">{% for slot, operator in attempt.resolved.operators.items() %}
-        <div><strong>{{ slot }}</strong> · requested {{ operator.selector_mode }} {{ operator.requested_version }} · latest {{ operator.latest_version_at_submission }} · resolved {{ operator.resolved_version }}</div>
-      {% endfor %}</div>
+  <article class="timeline-item timeline-record">
+    <span data-label="Status"><span class="status" data-status="{{ attempt.status }}">{{ attempt.status }}</span></span>
+    <span data-label="Attempt" class="mono">#{{ attempt.sequence }} · {{ attempt.attempt_id[:12] }}</span>
+    <span data-label="Timing">{{ attempt.created_at }}{% if attempt.finished_at %} → {{ attempt.finished_at }}{% endif %}</span>
+    {% if attempt.result_digest %}<span data-label="Result" class="mono">{{ attempt.comparison }} · {{ attempt.result_digest[:12] }}</span>{% endif %}
+    {% if attempt.status == "SUCCEEDED" %}<a data-label="Action" href="/reports/{{ attempt.attempt_id }}">Open report</a>{% endif %}
+    <details><summary>Attempt resolution and logs</summary>
+      <div class="resolution-list">{% for slot, operator in attempt.resolved.operators.items() %}<div><strong>{{ slot }}</strong> · requested {{ operator.selector_mode }} {{ operator.requested_version }} · latest {{ operator.latest_version_at_submission }} · resolved {{ operator.resolved_version }}</div>{% endfor %}</div>
       {% if attempt.logs %}<pre>{{ attempt.logs }}</pre>{% endif %}
     </details>
   </article>
   {% endfor %}
 </section>
 
-{% if report_attempt %}<section class="panel"><h2>Embedded canonical report</h2><iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ report_attempt.attempt_id }}/content"></iframe></section>{% endif %}
+{% if report_attempt %}<section class="panel"><h2>Embedded canonical report</h2><p>The opaque sandbox cannot access the parent application origin.</p><iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ report_attempt.attempt_id }}/content"></iframe></section>{% endif %}
 {% endblock %}

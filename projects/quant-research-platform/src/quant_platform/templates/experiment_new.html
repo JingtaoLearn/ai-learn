@@ -1,48 +1,71 @@
 {% extends "base.html" %}
 {% from "_parameter_control.html" import parameter_control %}
-{% block title %}New experiment · Quant Research{% endblock %}
+{% block title %}New experiment · Proofline{% endblock %}
 {% block page %}experiment-new{% endblock %}
 {% block content %}
-<section class="page-heading"><p class="eyebrow">RESOLVED EXECUTION</p><h1>New experiment</h1><p>Select published versions and set only declared parameters.</p></section>
-<form class="form-grid" method="post" action="/experiments/new" data-testid="experiment-form">
+<section class="page-heading"><p class="eyebrow">RESOLVED EXECUTION</p><h1>New experiment</h1><p>Define a reproducible dataset window, declared parameters, and published operator versions.</p></section>
+<form method="post" action="/experiments/new" data-testid="experiment-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="action_id" value="{{ action_id }}">
   <input type="hidden" name="template_name" value="{{ template.name }}">
   <input type="hidden" name="template_version" value="{{ template.version }}">
-  <label class="wide">Dataset<select name="dataset_id" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.dataset_id }}" data-default-start="{{ dataset.default_start }}" data-latest-close="{{ dataset.latest_available_close }}">{{ dataset.name }} · {{ dataset.dataset_id }}</option>{% endfor %}</select></label>
-  {% if not datasets %}<div class="empty wide" data-testid="dataset-empty">No verified dataset catalog items are available.</div>{% endif %}
-  <label>Start date<input name="start_date" type="date" required value="{{ datasets[0].default_start if datasets else '' }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-start-date></label>
-  <label>End date<input name="end_date" type="date" required value="{{ datasets[0].latest_available_close if datasets else '' }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-end-date></label>
-  {% for name, schema in template.parameter_schema.properties.items() %}
-  {% if name not in ("evaluation_start", "evaluation_end") %}
-  <label>{{ name }}{{ parameter_control("template_" ~ name, template.defaults[name], schema, "template-parameter", name) }}</label>
-  {% endif %}
-  {% endfor %}
-  {% for slot, items in grouped.items() %}
-  <fieldset class="wide slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
-    <label>Published selector<select name="operator_{{ slot }}_selector" data-operator-selector="{{ slot }}">{% for operator in items %}<option value="{{ operator.operator_id }}@latest" data-resolved-version="{{ operator.latest_version }}" data-resolved-digest="{{ operator.content_digest }}">{{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}" data-resolved-version="{{ version.version }}" data-resolved-digest="{{ version.content_digest }}">{{ operator.operator_id }} · Explicit {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
-    {% for operator in items %}{% for version in operator.versions %}
-    <div class="parameter-set" data-parameter-set="{{ slot }}" data-selector="{{ operator.operator_id }}@{{ version.version }}" data-testid="generated-params-{{ slot }}-{{ operator.operator_id }}-{{ version.version }}">
-      <p class="mono">{{ operator.operator_id }}@{{ version.version }} parameters</p>
-      {% if version.parameter_schema.properties %}
-      {% for name, schema in version.parameter_schema.properties.items() %}
-      <label>{{ name }}{{ parameter_control("operator_" ~ slot ~ "_param__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name, version.defaults[name], schema, "parameter-name", name) }}</label>
-      {% endfor %}
-      {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
+
+  <section class="form-section" aria-labelledby="experiment-data-heading">
+    <p class="eyebrow">1 · DATA</p><h2 id="experiment-data-heading">Dataset and evaluation range</h2>
+    <p class="muted">Select a verified catalog item. Immutable snapshot identity resolves during preview or submission.</p>
+    <div class="form-grid">
+      <label class="wide">Dataset<select name="dataset_id" required data-dataset-selector>{% for dataset in datasets %}<option value="{{ dataset.dataset_id }}" data-default-start="{{ dataset.default_start }}" data-latest-close="{{ dataset.latest_available_close }}"{% if form_values.get("dataset_id", datasets[0].dataset_id) == dataset.dataset_id %} selected{% endif %}>{{ dataset.name }} · {{ dataset.dataset_id }}</option>{% endfor %}</select></label>
+      {% if not datasets %}<div class="empty wide" data-testid="dataset-empty">No verified dataset catalog items are available. Publish a dataset snapshot before creating an experiment.</div>{% endif %}
+      <label>Start date<input name="start_date" type="date" required value="{{ form_values.get('start_date', datasets[0].default_start if datasets else '') }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-start-date></label>
+      <label>End date<input name="end_date" type="date" required value="{{ form_values.get('end_date', datasets[0].latest_available_close if datasets else '') }}" max="{{ datasets[0].latest_available_close if datasets else '' }}" data-end-date></label>
     </div>
-    {% endfor %}{% endfor %}
-  </fieldset>
-  {% endfor %}
-  <section class="panel wide" data-testid="resolved-summary" aria-live="polite">
-    <h2>Live resolved-version summary</h2>
-    <p>Template <strong>{{ template.name }}@{{ template.version }}</strong></p>
-    <p data-summary-dataset>{% if datasets %}{{ datasets[0].name }} · {{ datasets[0].dataset_id }} · {{ datasets[0].default_start }} to {{ datasets[0].latest_available_close }}{% else %}Dataset required{% endif %}</p>
-    <div data-summary-operators>{% for slot, items in grouped.items() %}<p><span class="mono">{{ slot }}</span> · {{ items[0].operator_id }} · latest resolves to {{ items[0].latest_version }} · {{ items[0].content_digest[:12] }}</p>{% endfor %}</div>
   </section>
-  <section class="notice wide" data-testid="live-duplicate-preview" aria-live="polite" data-state="idle">
-    Duplicate preview is waiting for a complete dataset, date range, and parameter selection.
+
+  <section class="form-section" aria-labelledby="experiment-template-heading">
+    <p class="eyebrow">2 · PARAMETERS</p><h2 id="experiment-template-heading">Template parameters</h2>
+    <p><strong>{{ template.name }}@{{ template.version }}</strong> owns the experiment-level parameters below.</p>
+    <div class="form-grid">
+      {% for name, schema in template.parameter_schema.properties.items() %}
+      {% if name not in ("evaluation_start", "evaluation_end") %}
+      {% set field_name = "template_" ~ name %}
+      <label>{{ name }}{{ parameter_control(field_name, template.defaults[name], schema, "template-parameter", name, form_values.get(field_name), field_name in form_values) }}</label>
+      {% endif %}
+      {% endfor %}
+    </div>
   </section>
-  <noscript><p class="notice wide">JavaScript is disabled. All selectors and generated parameter controls remain available for primary submission.</p></noscript>
-  <div class="wide actions"><button type="submit" formaction="/experiments/preview" data-testid="preview-experiment" {% if not datasets %}disabled{% endif %}>Preview duplicate</button><button type="submit" {% if not datasets %}disabled{% endif %}>Create experiment</button></div>
+
+  <section class="form-section" aria-labelledby="experiment-operators-heading">
+    <p class="eyebrow">3 · RESOLUTION</p><h2 id="experiment-operators-heading">Published operators</h2>
+    <p class="muted">Latest selectors freeze to the version resolved at submission. Explicit selectors remain pinned.</p>
+    {% for slot, items in grouped.items() %}
+    <fieldset class="slot-field" data-slot="{{ slot }}"><legend>{{ slot }}</legend>
+      {% set selector_name = "operator_" ~ slot ~ "_selector" %}
+      <label>Published selector<select name="{{ selector_name }}" data-operator-selector="{{ slot }}">{% for operator in items %}<option value="{{ operator.operator_id }}@latest" data-resolved-version="{{ operator.latest_version }}" data-resolved-digest="{{ operator.content_digest }}"{% if form_values.get(selector_name, items[0].operator_id ~ "@latest") == operator.operator_id ~ "@latest" %} selected{% endif %}>{{ operator.title_zh }} · {{ operator.operator_id }} · Latest ({{ operator.latest_version }})</option>{% for version in operator.versions %}<option value="{{ operator.operator_id }}@{{ version.version }}" data-resolved-version="{{ version.version }}" data-resolved-digest="{{ version.content_digest }}"{% if form_values.get(selector_name) == operator.operator_id ~ "@" ~ version.version %} selected{% endif %}>{{ operator.title_zh }} · {{ operator.operator_id }} · Explicit {{ version.version }}</option>{% endfor %}{% endfor %}</select></label>
+      {% for operator in items %}{% for version in operator.versions %}
+      <div class="parameter-set" data-parameter-set="{{ slot }}" data-selector="{{ operator.operator_id }}@{{ version.version }}" data-testid="generated-params-{{ slot }}-{{ operator.operator_id }}-{{ version.version }}">
+        <p><strong>{{ operator.title_zh }}</strong><br><span class="mono">{{ operator.operator_id }}@{{ version.version }}</span></p>
+        {% if version.parameter_schema.properties %}
+        {% for name, schema in version.parameter_schema.properties.items() %}
+        {% set field_name = "operator_" ~ slot ~ "_param__" ~ operator.operator_id ~ "__" ~ version.version ~ "__" ~ name %}
+        <label>{{ name }}{{ parameter_control(field_name, version.defaults[name], schema, "parameter-name", name, form_values.get(field_name), field_name in form_values) }}</label>
+        {% endfor %}
+        {% else %}<p class="notice">This operator declares no parameters.</p>{% endif %}
+      </div>
+      {% endfor %}{% endfor %}
+    </fieldset>
+    {% endfor %}
+  </section>
+
+  <section class="form-section resolved-summary" aria-labelledby="experiment-review-heading">
+    <p class="eyebrow">4 · REVIEW</p><h2 id="experiment-review-heading">Review and submit</h2>
+    <div data-testid="resolved-summary" aria-live="polite">
+      <p>Template <strong>{{ template.name }}@{{ template.version }}</strong></p>
+      <p data-summary-dataset>{% if datasets %}{{ datasets[0].name }} · {{ datasets[0].dataset_id }} · {{ form_values.get('start_date', datasets[0].default_start) }} to {{ form_values.get('end_date', datasets[0].latest_available_close) }}{% else %}Dataset required{% endif %}</p>
+      <div data-summary-operators>{% for slot, items in grouped.items() %}<p><span class="mono">{{ slot }}</span> · {{ items[0].title_zh }} · {{ items[0].operator_id }} · latest resolves to {{ items[0].latest_version }} · {{ items[0].content_digest[:12] }}</p>{% endfor %}</div>
+    </div>
+    <div class="notice" data-testid="live-duplicate-preview" aria-live="polite" data-state="idle">Duplicate preview is waiting for a complete dataset, date range, and parameter selection.</div>
+    <noscript><p class="notice">JavaScript is disabled. Preview and creation remain complete server-rendered form submissions.</p></noscript>
+    <div class="actions"><button class="quiet" type="submit" formaction="/experiments/preview" data-testid="preview-experiment" {% if not datasets %}disabled{% endif %}>Preview duplicate</button><button type="submit" {% if not datasets %}disabled{% endif %}>Create experiment</button></div>
+  </section>
 </form>
 {% endblock %}

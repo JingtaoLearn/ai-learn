@@ -1084,6 +1084,65 @@ fieldset label + label {
   margin-left: 0;
 }
 
+.context-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.context-facts > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.context-facts span,
+.context-facts strong {
+  display: block;
+}
+
+.context-facts span {
+  margin-bottom: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.audit-disclosure > summary {
+  font-size: 1rem;
+}
+
+.audit-disclosure > section {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--border);
+}
+
+.copy-button {
+  margin: var(--space-2) 0 0;
+}
+
+.report-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--success);
+  background: var(--success-surface);
+}
+
+.report-toolbar > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.report-toolbar span {
+  color: var(--text-secondary);
+}
+
 .binding {
   display: grid;
   gap: var(--space-1);
@@ -1392,6 +1451,30 @@ iframe {
 
   .holdout-dimensions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .context-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .report-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-toolbar button {
+    width: 100%;
+  }
+
+  .timeline-record > [data-label]::before {
+    display: block;
+    margin-bottom: var(--space-1);
+    color: var(--text-secondary);
+    content: attr(data-label);
+    font-size: 0.75rem;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .record-wrap {

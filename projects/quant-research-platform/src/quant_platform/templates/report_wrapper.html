@@ -1,11 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Experiment report · Quant Research{% endblock %}
+{% block title %}Experiment report · Proofline{% endblock %}
 {% block page %}report-wrapper{% endblock %}
 {% block content %}
-<section class="page-heading">
-  <p class="eyebrow">UNTRUSTED REPORT</p>
-  <h1>Sandboxed experiment report</h1>
-  <p>Report scripts run in an opaque origin with no network, forms, or navigation privileges.</p>
+<section class="page-heading split">
+  <div><p class="eyebrow">VERIFIED OPAQUE SANDBOX</p><h1>Experiment report</h1><p><a href="/experiments/{{ attempt.experiment_id }}">Experiment {{ attempt.experiment_id[:12] }}…</a> · Attempt <span class="mono">{{ attempt_id }}</span></p></div>
+  <a class="button quiet" href="/experiments/{{ attempt.experiment_id }}">Back to experiment</a>
+</section>
+<section class="report-toolbar" aria-label="Report state and actions">
+  <div><strong>Verified canonical report</strong><span>Checksum-verified content · scripts isolated without same-origin, network, forms, or parent navigation.</span></div>
+  <button class="quiet" type="button" data-fullscreen-report>Full screen</button>
 </section>
 <iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ attempt_id }}/content" data-testid="report-frame"></iframe>
 {% endblock %}

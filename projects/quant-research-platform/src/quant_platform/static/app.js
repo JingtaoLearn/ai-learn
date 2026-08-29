@@ -46,6 +46,20 @@ for (const wrapper of document.querySelectorAll(".table-wrap")) {
   window.addEventListener("resize", update, { passive: true });
 }
 
+for (const button of document.querySelectorAll("[data-copy-value]")) {
+  button.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(button.dataset.copyValue);
+    button.textContent = "Copied";
+  });
+}
+
+for (const button of document.querySelectorAll("[data-fullscreen-report]")) {
+  button.addEventListener("click", async () => {
+    const frame = document.querySelector("[data-testid='report-frame']");
+    if (frame?.requestFullscreen) await frame.requestFullscreen();
+  });
+}
+
 const experimentForm = document.querySelector(
   'form[data-testid="experiment-form"]',
 );

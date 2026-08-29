@@ -1,31 +1,48 @@
 {% extends "base.html" %}
-{% block title %}Experiment preview · Quant Research{% endblock %}
+{% block title %}Experiment preview · Proofline{% endblock %}
 {% block page %}experiment-preview{% endblock %}
 {% block content %}
 <section class="page-heading" data-testid="duplicate-preview">
   <p class="eyebrow">DUPLICATE PREVIEW</p>
   <h1>{{ "Existing experiment" if preview.duplicate else "New experiment identity" }}</h1>
-  <p>{{ "Submitting these exact resolved inputs returns the existing experiment without another attempt." if preview.duplicate else "These resolved inputs do not yet exist." }}</p>
-  <div class="chips"><span class="status">{{ "DUPLICATE" if preview.duplicate else "NEW" }}</span></div>
+  <p>{{ "These exact resolved inputs already have a canonical experiment. Submission returns it without creating another attempt." if preview.duplicate else "These resolved inputs do not yet have a canonical experiment." }}</p>
+  <span class="status" data-status="{{ 'DUPLICATE' if preview.duplicate else 'NEW' }}">{{ "DUPLICATE" if preview.duplicate else "NEW" }}</span>
 </section>
 
+<div class="actions preview-actions">
+  {% if preview.duplicate %}<a class="button" href="/experiments/{{ preview.experiment_id }}">Open existing experiment</a>{% else %}
+  <form method="post" action="/experiments/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for name, value in form_values.items() %}{% if name != "csrf_token" %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
+    <button type="submit">Create experiment</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/experiments/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="intent" value="edit">
+    {% for name, value in form_values.items() %}{% if name != "csrf_token" %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}
+    <button class="quiet" type="submit">Edit selections</button>
+  </form>
+</div>
+
 <section class="panel" data-testid="preview-identity">
-  <h2>Canonical identity</h2>
+  <h2>Resolved research context</h2>
   <dl class="technical">
-    <dt>Experiment ID</dt><dd>{{ preview.experiment_id }}</dd>
+    <dt>Experiment</dt><dd>{{ preview.experiment_id[:12] }}…</dd>
     <dt>Template</dt><dd>{{ preview.resolved.template.name }}@{{ preview.resolved.template.version }}</dd>
-    <dt>Template digest</dt><dd>{{ preview.resolved.template.content_digest }}</dd>
     {% if preview.resolved.dataset.dataset_id %}
     <dt>Dataset</dt><dd>{{ preview.resolved.dataset.name }} · {{ preview.resolved.dataset.dataset_id }}</dd>
     <dt>Requested range</dt><dd>{{ preview.resolved.dataset.requested_start }} to {{ preview.resolved.dataset.requested_end }}</dd>
-    {% if preview.resolved.dataset.requested_start != preview.resolved.dataset.effective_start or preview.resolved.dataset.requested_end != preview.resolved.dataset.effective_end %}
-    <dt>Effective sessions</dt><dd>{{ preview.resolved.dataset.effective_start }} to {{ preview.resolved.dataset.effective_end }}</dd>
-    {% endif %}
+    {% if preview.resolved.dataset.requested_start != preview.resolved.dataset.effective_start or preview.resolved.dataset.requested_end != preview.resolved.dataset.effective_end %}<dt>Effective sessions</dt><dd>{{ preview.resolved.dataset.effective_start }} to {{ preview.resolved.dataset.effective_end }}</dd>{% endif %}
     {% endif %}
     <dt>Dataset instrument</dt><dd>{{ preview.resolved.dataset.instrument }}</dd>
+  </dl>
+  <details><summary>Full canonical identity and dataset evidence</summary><dl class="technical">
+    <dt>Experiment ID</dt><dd>{{ preview.experiment_id }}</dd>
+    <dt>Template digest</dt><dd>{{ preview.resolved.template.content_digest }}</dd>
     <dt>Dataset snapshot</dt><dd>{{ preview.resolved.dataset.snapshot_id }}</dd>
     <dt>Dataset digest</dt><dd>{{ preview.resolved.dataset.canonical_sha256 }}</dd>
-  </dl>
+  </dl></details>
 </section>
 
 <section class="panel">
@@ -38,19 +55,9 @@
   <div class="resolution-list">{% for slot, operator in preview.resolved.operators.items() %}
     <article class="resolution-card" data-preview-slot="{{ slot }}">
       <div class="section-heading"><h3>{{ slot }}</h3><a href="/operators/{{ operator.operator_id }}/{{ operator.resolved_version }}">{{ operator.operator_id }}</a></div>
-      <dl class="technical">
-        <dt>Requested selector</dt><dd>{{ operator.selector_mode }} · {{ operator.requested_version }}</dd>
-        <dt>Latest at submission</dt><dd>{{ operator.latest_version_at_submission }} · {{ operator.latest_content_digest_at_submission }}</dd>
-        <dt>Resolved version</dt><dd>{{ operator.resolved_version }}</dd>
-        <dt>Resolved digest</dt><dd>{{ operator.content_digest }}</dd>
-        <dt>Parameters</dt><dd>{% if operator.parameters %}{% for name, value in operator.parameters.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</dd>
-      </dl>
+      <dl class="technical"><dt>Requested selector</dt><dd>{{ operator.selector_mode }} · {{ operator.requested_version }}</dd><dt>Resolved version</dt><dd>{{ operator.resolved_version }}</dd><dt>Parameters</dt><dd>{% if operator.parameters %}{% for name, value in operator.parameters.items() %}{{ name }}={{ value }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}None{% endif %}</dd></dl>
+      <details><summary>Resolution audit</summary><dl class="technical"><dt>Latest at submission</dt><dd>{{ operator.latest_version_at_submission }} · {{ operator.latest_content_digest_at_submission }}</dd><dt>Resolved digest</dt><dd>{{ operator.content_digest }}</dd></dl></details>
     </article>
   {% endfor %}</div>
 </section>
-
-<div class="actions">
-  <a class="button quiet" href="/experiments/new">Return to experiment form</a>
-  {% if preview.duplicate %}<a class="button" href="/experiments/{{ preview.experiment_id }}">Open existing experiment</a>{% endif %}
-</div>
 {% endblock %}
