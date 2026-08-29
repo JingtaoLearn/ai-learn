@@ -3,18 +3,36 @@
 {% block page %}operator-submit{% endblock %}
 {% block content %}
 <section class="page-heading"><p class="eyebrow">ISOLATED VALIDATION</p><h1>Submit operator</h1><p>Source is compiled and tested only inside the hardened runner.</p></section>
-<form class="form-grid" method="post" action="/operators/submit" data-testid="operator-form">
+<form method="post" action="/operators/submit" data-testid="operator-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label>Operator ID<input name="operator_id" required pattern="[a-z][a-z0-9_]{1,63}"></label>
-  <label>Semantic version<input name="version" required placeholder="1.0.0"></label>
-  <label>Slot<select name="slot">{% for slot in ["fit","smoothing","statistic","decision","sizing","cost","report"] %}<option>{{ slot }}</option>{% endfor %}</select></label>
-  <label>Chinese title<input name="title_zh" required></label>
-  <label class="wide">Chinese summary<textarea name="summary_zh" required></textarea></label>
-  <label class="wide">operator.py<textarea class="code" name="source" required spellcheck="false"></textarea></label>
-  <label class="wide">Parameter schema JSON<textarea class="code" name="parameter_schema" required>{"type":"object","properties":{},"required":[],"additionalProperties":false}</textarea></label>
-  <label class="wide">Default parameters JSON<textarea class="code" name="defaults" required>{}</textarea></label>
-  <label class="wide">Deterministic tests JSON<textarea class="code" name="tests" required>[]</textarea></label>
-  <label class="wide">Markdown documentation<textarea name="documentation" required></textarea></label>
-  <div class="wide actions"><button type="submit">Validate and publish</button></div>
+  <section class="form-section" aria-labelledby="operator-identity-heading">
+    <p class="eyebrow">1 · IDENTITY</p><h2 id="operator-identity-heading">Operator identity</h2>
+    <p class="muted">Choose the immutable catalog key, semantic version, slot, and human-facing description.</p>
+    <div class="form-grid">
+      <label>Operator ID<input name="operator_id" required pattern="[a-z][a-z0-9_]{1,63}"></label>
+      <label>Semantic version<input name="version" required placeholder="1.0.0"></label>
+      <label>Slot<select name="slot">{% for slot in ["fit","smoothing","statistic","decision","sizing","cost","report"] %}<option>{{ slot }}</option>{% endfor %}</select></label>
+      <label>Chinese title<input name="title_zh" required></label>
+      <label class="wide">Chinese summary<textarea name="summary_zh" required></textarea></label>
+    </div>
+  </section>
+  <section class="form-section" aria-labelledby="operator-source-heading">
+    <p class="eyebrow">2 · IMPLEMENTATION</p><h2 id="operator-source-heading">Implementation source</h2>
+    <p class="muted">Source is treated as untrusted input and evaluated only by isolated validation.</p>
+    <label>operator.py<textarea class="code" name="source" required spellcheck="false"></textarea></label>
+  </section>
+  <section class="form-section" aria-labelledby="operator-contract-heading">
+    <p class="eyebrow">3 · CONTRACT</p><h2 id="operator-contract-heading">Contract and deterministic tests</h2>
+    <div class="form-grid">
+      <label class="wide">Parameter schema JSON<textarea class="code" name="parameter_schema" required>{"type":"object","properties":{},"required":[],"additionalProperties":false}</textarea></label>
+      <label class="wide">Default parameters JSON<textarea class="code" name="defaults" required>{}</textarea></label>
+      <label class="wide">Deterministic tests JSON<textarea class="code" name="tests" required>[]</textarea></label>
+    </div>
+  </section>
+  <section class="form-section" aria-labelledby="operator-docs-heading">
+    <p class="eyebrow">4 · REFERENCE</p><h2 id="operator-docs-heading">Documentation</h2>
+    <label>Markdown documentation<textarea name="documentation" required></textarea></label>
+  </section>
+  <div class="actions"><a class="button quiet" href="/operators">Cancel</a><button type="submit">Validate and publish</button></div>
 </form>
 {% endblock %}

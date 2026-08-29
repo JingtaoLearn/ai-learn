@@ -8,7 +8,7 @@
   <p>{{ operator.summary_zh }}</p>
   <div class="chips">
     <span class="badge">Selected version {{ operator.version }}</span>
-    <span class="status">{{ operator.status }}</span>
+    <span class="status" data-status="{{ operator.status }}">{{ operator.status }}</span>
     {% if is_latest %}<span class="badge">Latest</span>{% else %}<span class="badge">Older version</span>{% endif %}
   </div>
 </section>
@@ -17,22 +17,22 @@
   <h2>Current version context</h2>
   <dl class="technical">
     <dt>Selected version</dt><dd>{{ operator.version }}</dd>
-    <dt>Selected digest</dt><dd>{{ operator.content_digest }}</dd>
+    <dt>Selected digest</dt><dd>{{ operator.content_digest[:12] }}…</dd>
     <dt>Latest version</dt><dd><a href="/operators/{{ operator.operator_id }}/{{ latest.version }}">{{ latest.version }}</a></dd>
-    <dt>Latest digest</dt><dd>{{ latest.content_digest }}</dd>
+    <dt>Latest digest</dt><dd>{{ latest.content_digest[:12] }}…</dd>
   </dl>
 </section>
 
 <section class="panel" data-testid="operator-parameter-schema">
   <h2>Parameter schema</h2>
   {% if operator.parameter_schema.properties %}
-  <div class="table-wrap"><table>
+  <div class="table-wrap record-wrap"><table class="record-table"><caption>Declared operator parameters</caption>
     <thead><tr><th>Parameter</th><th>Type</th><th>Constraints</th></tr></thead>
     <tbody>{% for name, schema in operator.parameter_schema.properties.items() %}
       <tr>
-        <td class="mono">{{ name }}</td>
-        <td>{{ schema.type }}</td>
-        <td class="mono">{% if schema.enum %}enum={{ schema.enum|join(", ") }}{% endif %}{% if schema.minimum is defined %} min={{ schema.minimum }}{% endif %}{% if schema.maximum is defined %} max={{ schema.maximum }}{% endif %}</td>
+        <td data-label="Parameter" class="mono">{{ name }}</td>
+        <td data-label="Type">{{ schema.type }}</td>
+        <td data-label="Constraints" class="mono">{% if schema.enum %}enum={{ schema.enum|join(", ") }}{% endif %}{% if schema.minimum is defined %} min={{ schema.minimum }}{% endif %}{% if schema.maximum is defined %} max={{ schema.maximum }}{% endif %}</td>
       </tr>
     {% endfor %}</tbody>
   </table></div>
@@ -53,9 +53,10 @@
 
 <section class="panel" data-testid="operator-validation-evidence">
   <h2>Publication validation</h2>
-  <dl class="technical">
+  <p>Validation completed before this immutable version was published.</p>
+  <details><summary>Technical validation evidence</summary><dl class="technical">
     {% for name, value in operator.validation_evidence.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
-  </dl>
+  </dl></details>
 </section>
 
 <section class="panel" data-testid="operator-version-history">
@@ -70,11 +71,12 @@
 
 <section class="panel">
   <h2>Immutable identity</h2>
-  <dl class="technical">
+  <p>Use the full values below only for audit and exact reproduction.</p>
+  <details><summary>Full immutable operator identity</summary><dl class="technical">
     <dt>Operator ID</dt><dd>{{ operator.operator_id }}</dd>
     <dt>Slot</dt><dd>{{ operator.slot }}</dd>
     <dt>Digest</dt><dd>{{ operator.content_digest }}</dd>
     <dt>Created</dt><dd>{{ operator.created_at }}</dd>
-  </dl>
+  </dl></details>
 </section>
 {% endblock %}

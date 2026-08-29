@@ -733,6 +733,13 @@ table {
   background: var(--surface);
 }
 
+caption {
+  padding: 12px var(--space-3);
+  color: var(--text);
+  font-weight: 650;
+  text-align: left;
+}
+
 th,
 td {
   min-width: 0;

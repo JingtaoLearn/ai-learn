@@ -2,10 +2,11 @@
 {% block title %}Overview · Quant Research{% endblock %}
 {% block page %}dashboard{% endblock %}
 {% block content %}
-<section class="page-heading">
-  <p class="eyebrow">PLATFORM STATUS</p>
+<section class="page-heading split">
+  <div><p class="eyebrow">PLATFORM STATUS</p>
   <h1>Research overview</h1>
-  <p>Immutable strategy experiments and isolated operator execution.</p>
+  <p>Immutable strategy experiments and isolated operator execution.</p></div>
+  <a class="button" href="/experiments/new">New experiment</a>
 </section>
 <section class="metrics" aria-label="Platform totals" data-testid="dashboard-metrics">
   <div><span>Experiments</span><strong>{{ experiment_count }}</strong></div>
@@ -16,8 +17,8 @@
 <section>
   <div class="section-heading"><h2>Recent attempts</h2><a href="/history">View history</a></div>
   {% if attempts %}
-  <div class="table-wrap" data-testid="recent-attempts"><table><thead><tr><th>Attempt</th><th>Experiment</th><th>Status</th><th>Created</th></tr></thead>
-  <tbody>{% for attempt in attempts %}<tr><td class="mono">{{ attempt.attempt_id[:12] }}</td><td><a class="mono" href="/experiments/{{ attempt.experiment_id }}">{{ attempt.experiment_id[:12] }}</a></td><td><span class="status">{{ attempt.status }}</span></td><td>{{ attempt.created_at }}</td></tr>{% endfor %}</tbody></table></div>
+  <div class="table-wrap record-wrap" data-testid="recent-attempts"><table class="record-table"><caption>Recent experiment attempts</caption><thead><tr><th>Attempt</th><th>Experiment</th><th>Status</th><th>Created</th></tr></thead>
+  <tbody>{% for attempt in attempts %}<tr><td data-label="Attempt" class="mono">{{ attempt.attempt_id[:12] }}</td><td data-label="Experiment"><a class="mono" href="/experiments/{{ attempt.experiment_id }}">{{ attempt.experiment_id[:12] }}</a></td><td data-label="Status"><span class="status" data-status="{{ attempt.status }}">{{ attempt.status }}</span></td><td data-label="Created">{{ attempt.created_at }}</td></tr>{% endfor %}</tbody></table></div>
   {% else %}<div class="empty" data-testid="dashboard-empty">No attempts yet. <a href="/experiments/new">Create the first experiment.</a></div>{% endif %}
 </section>
 {% endblock %}
