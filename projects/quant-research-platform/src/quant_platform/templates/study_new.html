@@ -4,7 +4,7 @@
 {% block page %}study-new{% endblock %}
 {% block content %}
 <section class="page-heading"><p class="eyebrow">FROZEN STUDY PLAN</p><h1>New Parameter Study</h1><p>Define the dataset, fixed defaults, finite search space, budgets, chronological splits, and complete Study Lineage before any Trial is proposed.</p></section>
-{% if errors %}<section class="validation-summary danger" role="alert" aria-labelledby="study-errors-heading" tabindex="-1"><h2 id="study-errors-heading">Correct the following error</h2><ul>{% for error in errors %}<li><a href="#{{ error.field }}">{{ error.message }}</a></li>{% endfor %}</ul></section>{% endif %}
+{% if errors %}<section id="study-errors" class="validation-summary danger" role="alert" aria-labelledby="study-errors-heading" tabindex="-1" autofocus><h2 id="study-errors-heading">Correct the following error</h2><ul>{% for error in errors %}<li><a href="#{{ error.field }}">{{ error.message }}</a></li>{% endfor %}</ul></section>{% endif %}
 <form id="study-form" class="study-wizard" method="post" action="/studies/preview" data-testid="study-form" novalidate>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="action_id" value="{{ action_id }}">

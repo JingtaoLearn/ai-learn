@@ -22,13 +22,14 @@ if (
   !sessionCookie ||
   !chromium ||
   !screenshotRoot ||
-  !new Set(["foundation", "report", "full"]).has(scope) ||
+  !new Set(["foundation", "report", "study", "full"]).has(scope) ||
   (scope === "report" && (!reportExperimentId || !reportAttemptId)) ||
+  (new Set(["study", "full"]).has(scope) && !studyFormJson) ||
   (scope === "full" &&
     (!reportExperimentId || !reportAttemptId || !studyFormJson || !completedStudyId))
 ) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID REPORT_ATTEMPT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT [foundation|report|full]",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID REPORT_ATTEMPT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT [foundation|report|study|full]",
   );
 }
 const studyFormValues = studyFormJson ? JSON.parse(studyFormJson) : {};
@@ -715,23 +716,27 @@ try {
     const invalidField = await evaluate(`(() => {
       const name = "search__fit__prior_log_ols__1.0.0__window_sessions";
       const field = document.getElementById(name);
+      const summary = document.getElementById("study-errors");
       const link = document.querySelector('.validation-summary a[href="#' + name + '"]');
+      const describedBy = field?.getAttribute("aria-describedby");
       return {
         invalid: field?.getAttribute("aria-invalid"),
-        describedBy: field?.getAttribute("aria-describedby"),
+        describedBy,
+        described: Boolean(describedBy && document.getElementById(describedBy)),
         linked: Boolean(link),
-        focused: document.activeElement === field,
+        summaryFocused: document.activeElement === summary,
       };
     })()`);
     if (
       invalidField.invalid !== "true" ||
       invalidField.describedBy !==
         "search__fit__prior_log_ols__1.0.0__window_sessions-error" ||
+      !invalidField.described ||
       !invalidField.linked ||
-      !invalidField.focused
+      !invalidField.summaryFocused
     ) {
       throw new Error(
-        `Finite-range error is not field-accessible at ${width}px: ${JSON.stringify(invalidField)}`,
+        `Finite-range error summary is not focused and field-accessible at ${width}px: ${JSON.stringify(invalidField)}`,
       );
     }
     const loaded = once("Page.loadEventFired", sessionId);
@@ -915,6 +920,19 @@ try {
     for (const scriptsDisabled of [false, true]) {
       await runReportScenario(scriptsDisabled);
       await runViewportProxies(scriptsDisabled);
+    }
+  }
+
+  if (scope === "study") {
+    for (const scriptsDisabled of [false, true]) {
+      await send(
+        "Emulation.setScriptExecutionDisabled",
+        { value: scriptsDisabled },
+        sessionId,
+      );
+      for (const width of [390, 1280]) {
+        await runStudyLifecycle(width, scriptsDisabled);
+      }
     }
   }
 

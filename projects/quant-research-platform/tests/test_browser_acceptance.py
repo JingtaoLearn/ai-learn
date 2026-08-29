@@ -81,7 +81,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
         child_environment = os.environ.copy()
         child_environment.pop("NODE_OPTIONS", None)
         requested_scope = os.environ.get("PROOFLINE_BROWSER_SCOPE", "full")
-        if requested_scope not in {"foundation", "report", "full"}:
+        if requested_scope not in {"foundation", "report", "study", "full"}:
             raise AssertionError(f"unknown PROOFLINE_BROWSER_SCOPE: {requested_scope}")
 
         def run_harness(
@@ -131,8 +131,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
             return
 
         snapshot_id = snapshot(app)
-        completed_study_id = ""
-        if requested_scope == "full":
+        if requested_scope in {"study", "full"}:
             submit_study = app.state.studies.submit
             stale_previews: set[str] = set()
 
@@ -149,6 +148,17 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                     action_id=action_id,
                 )
 
+            app.state.studies.submit = submit_with_one_stale_preview
+        if requested_scope == "study":
+            run_harness(
+                "study",
+                study_form_json=json.dumps(
+                    _experiment_form(app, snapshot_id, issued.csrf_token)
+                ),
+            )
+            return
+        completed_study_id = ""
+        if requested_scope == "full":
             publish_snapshot(
                 _bars(),
                 app.state.catalog.state_root,
@@ -164,7 +174,6 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 app.state.studies,
                 app.state.experiments,
             )
-            app.state.studies.submit = submit_with_one_stale_preview
         report_experiment = app.state.experiments.submit(
             _task(snapshot_id), action_id="browser-report"
         )
