@@ -9,10 +9,10 @@
 {% if studies %}
 <div class="rows" data-testid="study-list">
   {% for study in studies %}
-  <a class="row study-row" href="/studies/{{ study.study_id }}">
-    <span><strong>{{ study.frozen_plan.dataset.name }}</strong><small class="mono">{{ study.study_id[:12] }} · {{ study.frozen_plan.dataset.requested_start }} to {{ study.frozen_plan.dataset.requested_end }}</small></span>
+<article class="row study-row">
+   <span><strong><a href="/studies/{{ study.study_id }}">{{ study.frozen_plan.dataset.name }}</a></strong><small class="mono">{{ study.study_id[:12] }}… · {{ study.frozen_plan.dataset.requested_start }} to {{ study.frozen_plan.dataset.requested_end }}</small><button class="quiet copy-button" type="button" data-copy-value="{{ study.study_id }}" aria-label="Copy full Study ID">Copy ID</button><details><summary>Full Study ID</summary><code>{{ study.study_id }}</code></details></span>
     <span class="chips"><span class="badge">{{ study.phase }}</span><span class="badge">{{ study.control_status }}</span><span class="badge">Holdout {{ study.holdout.access }}</span></span>
-  </a>
+</article>
   {% endfor %}
 </div>
 {% else %}

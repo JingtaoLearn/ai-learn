@@ -17,6 +17,9 @@ function applyThemePreference(theme, persist) {
     } catch (error) {
       console.warn("Theme preference could not be persisted.", error.name);
     }
+    document.cookie =
+      `quant_theme=${encodeURIComponent(selected)}; Max-Age=31536000; Path=/; SameSite=Lax` +
+      (location.protocol === "https:" ? "; Secure" : "");
   }
 }
 
