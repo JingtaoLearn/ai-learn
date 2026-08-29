@@ -482,6 +482,51 @@ def test_preview_renders_complete_resolved_audit_and_duplicate_link(tmp_path: Pa
     assert f'href="/experiments/{created["experiment_id"]}"' in response.text
 
 
+def test_experiment_workflow_groups_inputs_and_preserves_preview_edits(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    snapshot_id = snapshot(app)
+    form = _experiment_form(app, snapshot_id, issued.csrf_token)
+    form["template_initial_capital_cny"] = "123456.5"
+    task = _task_from_form(form, catalog=app.state.catalog)
+    created = app.state.experiments.submit(task, action_id="preview-preservation")
+
+    new_page = client.get("/experiments/new").text
+    for heading in (
+        "Dataset and evaluation range",
+        "Template parameters",
+        "Published operators",
+        "Review and submit",
+    ):
+        assert heading in new_page
+
+    preview = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+    assert preview.text.index("Open existing experiment") < preview.text.index(
+        "Edit selections"
+    )
+    assert 'method="post" action="/experiments/new"' in preview.text
+    assert 'name="intent" value="edit"' in preview.text
+    assert 'name="template_initial_capital_cny" value="123456.5"' in preview.text
+
+    edited = client.post(
+        "/experiments/new",
+        data=form | {"intent": "edit"},
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert edited.status_code == 200
+    assert 'data-page="experiment-new"' in edited.text
+    capital = _opening_control(edited.text, "template_initial_capital_cny")
+    assert 'value="123456.5"' in capital
+    assert created["experiment_id"] in preview.text
+
+
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
@@ -513,6 +558,10 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert '<iframe sandbox="allow-scripts"' in detail.text
     assert wrapper.status_code == 200
     assert 'data-page="report-wrapper"' in wrapper.text
+    assert f'href="/experiments/{created["experiment_id"]}"' in wrapper.text
+    assert attempt["attempt_id"] in wrapper.text
+    assert "Verified canonical report" in wrapper.text
+    assert 'data-fullscreen-report' in wrapper.text
     assert report.status_code == 200
     report_csp = report.headers["content-security-policy"]
     assert report_csp.startswith("sandbox allow-scripts")
@@ -533,6 +582,17 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert "latest" in detail.text
     assert "1.0.0" in detail.text
     assert "final_equity_cny" in detail.text
+    assert 'data-testid="experiment-context"' in detail.text
+    assert detail.text.index('data-testid="experiment-context"') < detail.text.index(
+        'data-testid="experiment-dataset"'
+    )
+    assert "Full experiment identity and resolution audit" in detail.text
+    assert 'data-label="Attempt"' in detail.text
+    assert 'data-label="Status"' in detail.text
+    assert "<caption>Canonical experiment history</caption>" in history.text
+    assert 'class="record-table"' in history.text
+    assert 'data-copy-value="' + created["experiment_id"] + '"' in history.text
+    assert created["experiment_id"][:12] + "…" in history.text
 
 
 def test_history_filters_status_search_and_drift_functionally(tmp_path: Path):
