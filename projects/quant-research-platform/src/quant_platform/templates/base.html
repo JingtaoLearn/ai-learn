@@ -8,26 +8,43 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
-<body data-page="{% block page %}base{% endblock %}">
+{% set current_path = request.url.path %}
+{% macro current_for(paths) -%}{% if current_path in paths or (current_path.startswith('/experiments/') and current_path != '/experiments/new' and '/history' in paths) or (current_path.startswith('/operators/') and current_path != '/operators/submit' and '/operators' in paths) or (current_path.startswith('/studies/') and current_path != '/studies/new' and '/studies' in paths) %} aria-current="page"{% endif %}{%- endmacro %}
+<body class="app-shell" data-page="{% block page %}base{% endblock %}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <header class="shell-header">
-    <a class="wordmark" href="/">Quant Research</a>
-    <nav aria-label="Primary" data-testid="primary-nav">
-      <a href="/">Overview</a>
-      <a href="/operators">Operators</a>
-      <a href="/templates/single_stock_daily_causal/1">Template</a>
-      <a href="/experiments/new">New experiment</a>
-      <a href="/studies">Studies</a>
-      <a href="/history">History</a>
-    </nav>
-    {% include "_theme_selector.html" %}
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="quiet" type="submit">Log out</button>
-    </form>
+  <header class="shell-masthead" data-testid="masthead">
+    <a class="wordmark" href="/" aria-label="Quant Research overview"><span>Quant</span><strong>Proofline</strong></a>
+    <div class="masthead-spacer" aria-hidden="true"></div>
+    <details class="utility-disclosure" data-testid="utility-disclosure">
+      <summary>Utilities</summary>
+      <nav class="utility-links" aria-label="Utility">
+        <a href="/templates/single_stock_daily_causal/1">Template</a>
+      </nav>
+      {% include "_theme_selector.html" %}
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="quiet" type="submit">Log out</button>
+      </form>
+    </details>
   </header>
-  <main id="main-content" class="shell" data-testid="main-content" tabindex="-1">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="workbench-frame">
+    <nav class="task-rail" aria-label="Primary" data-testid="primary-nav">
+      <div class="nav-group"><p>Overview</p><a class="rail-link" href="/"{{ current_for(['/']) }}>Overview</a></div>
+      <div class="nav-group"><p>Create</p><a class="rail-link" href="/experiments/new"{{ current_for(['/experiments/new']) }}>New experiment</a><a class="rail-link" href="/studies/new"{{ current_for(['/studies/new']) }}>New Study</a></div>
+      <div class="nav-group"><p>Research</p><a class="rail-link" href="/studies"{{ current_for(['/studies']) }}>Studies</a><a class="rail-link" href="/history"{{ current_for(['/history']) }}>History</a></div>
+      <div class="nav-group"><p>Catalog</p><a class="rail-link" href="/operators"{{ current_for(['/operators']) }}>Operators</a><a class="rail-link" href="/operators/submit"{{ current_for(['/operators/submit']) }}>Submit operator</a></div>
+      <div class="nav-group"><p>Evidence</p><a class="rail-link" href="/templates/single_stock_daily_causal/1"{{ current_for(['/templates/single_stock_daily_causal/1']) }}>Template</a></div>
+    </nav>
+    <main id="main-content" class="shell" data-testid="main-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <nav class="mobile-bottom-nav" aria-label="Mobile primary">
+    <a class="mobile-nav-link" href="/"{{ current_for(['/']) }}>Overview</a>
+    <a class="mobile-nav-link" href="/operators"{{ current_for(['/operators']) }}>Operators</a>
+    <a class="mobile-nav-link" href="/experiments/new"{{ current_for(['/experiments/new']) }}>New experiment</a>
+    <a class="mobile-nav-link" href="/studies"{{ current_for(['/studies']) }}>Studies</a>
+    <a class="mobile-nav-link" href="/history"{{ current_for(['/history']) }}>History</a>
+  </nav>
 </body>
 </html>

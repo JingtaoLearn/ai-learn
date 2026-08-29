@@ -83,6 +83,58 @@ def test_primary_pages_have_semantic_browser_selectors(tmp_path: Path):
         assert all(tag in response.text for tag in ("<nav", "<main", "data-testid="))
 
 
+def test_proofline_design_contract_and_semantic_tokens_are_committed(tmp_path: Path):
+    _, client = make_app(tmp_path)
+
+    design = (PROJECT_ROOT / "DESIGN.md").read_text(encoding="utf-8")
+    css = client.get("/static/app.css").text
+
+    assert "name: Proofline" in design
+    assert "Carbon-inspired discipline" in design
+    assert "#00677A" in design
+    for token in (
+        "--color-primary: #00677A",
+        "--color-shell: #10191F",
+        "--color-canvas: #F4F6F7",
+        "--color-focus: #7127A8",
+        "--space-xl: 32px",
+        "--radius-panel: 6px",
+    ):
+        assert token in css
+    assert "Inter," not in css
+    assert "#5e6ad2" not in css
+
+
+def test_authenticated_shell_uses_workbench_navigation_and_no_js_utilities(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+
+    dashboard = client.get("/")
+    experiment = client.get("/experiments/new")
+
+    for response in (dashboard, experiment):
+        assert 'class="app-shell"' in response.text
+        assert 'class="shell-masthead"' in response.text
+        assert 'class="task-rail"' in response.text
+        assert 'class="mobile-bottom-nav"' in response.text
+        assert response.text.count('class="mobile-nav-link"') == 5
+        assert 'href="/templates/single_stock_daily_causal/1"' in response.text
+        assert "<details" in response.text and 'data-testid="utility-disclosure"' in response.text
+        assert 'method="post" action="/logout"' in response.text
+        assert 'name="csrf_token"' in response.text
+    assert '<a class="rail-link" href="/" aria-current="page">' in dashboard.text
+    assert (
+        '<a class="rail-link" href="/experiments/new" aria-current="page">'
+        in experiment.text
+    )
+    assert (
+        '<a class="mobile-nav-link" href="/experiments/new" aria-current="page">'
+        in experiment.text
+    )
+
+
 def test_new_experiment_primary_action_works_without_javascript(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
@@ -577,7 +629,7 @@ def test_static_assets_match_linear_tokens_and_accessibility_contract(tmp_path: 
     javascript = client.get("/static/app.js").text
     theme_init = client.get("/static/theme-init.js").text
 
-    for token in ("#08090a", "#0f1011", "#5e6ad2", "#f7f8fa", "#ffffff"):
+    for token in ("#00677A", "#10191F", "#F4F6F7", "#11181C", "#67D5EA"):
         assert token in css
     assert "min-height: 44px" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
