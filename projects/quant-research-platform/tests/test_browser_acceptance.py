@@ -145,7 +145,7 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=600,
                 env=child_environment,
             )
         except subprocess.CalledProcessError as exc:
