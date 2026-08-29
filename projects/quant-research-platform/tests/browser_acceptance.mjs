@@ -788,8 +788,20 @@ try {
     await send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 }, sessionId);
     await assertLayout("320px at 200 percent zoom", 320);
     await assertShellContract("320px at 200 percent zoom", 320, "Overview", "Overview");
-    const zoom = await evaluate("visualViewport.scale");
-    if (zoom < 1.9) throw new Error(`Expected 200 percent zoom, received ${zoom}`);
+    const zoomViewport = await evaluate(`({
+      scale: visualViewport.scale,
+      width: visualViewport.width,
+      height: visualViewport.height,
+      layoutWidth: innerWidth,
+    })`);
+    if (
+      zoomViewport.scale < 1.9 ||
+      Math.abs(zoomViewport.width - 320) > 2
+    ) {
+      throw new Error(
+        `Expected an effective 320px viewport at 200 percent zoom: ${JSON.stringify(zoomViewport)}`,
+      );
+    }
     if (!scriptsDisabled) await capture("overview-320-zoom200.png");
     await send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }, sessionId);
 
