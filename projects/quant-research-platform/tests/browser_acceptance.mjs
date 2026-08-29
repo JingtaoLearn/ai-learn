@@ -781,11 +781,11 @@ try {
 
     await send(
       "Emulation.setDeviceMetricsOverride",
-      { width: 320, height: 640, deviceScaleFactor: 1, mobile: true },
+      { width: 320, height: 640, deviceScaleFactor: 2, mobile: true },
       sessionId,
     );
     await navigate("/");
-    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 }, sessionId);
+    await send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 }, sessionId);
     await assertLayout("320px at 200 percent zoom", 320);
     await assertShellContract("320px at 200 percent zoom", 320, "Overview", "Overview");
     const zoomViewport = await evaluate(`({
@@ -793,13 +793,19 @@ try {
       width: visualViewport.width,
       height: visualViewport.height,
       layoutWidth: innerWidth,
+      devicePixelRatio,
     })`);
+    const effectiveScale =
+      zoomViewport.scale * zoomViewport.devicePixelRatio;
     if (
-      zoomViewport.scale < 1.9 ||
+      effectiveScale < 1.9 ||
       Math.abs(zoomViewport.width - 320) > 2
     ) {
       throw new Error(
-        `Expected an effective 320px viewport at 200 percent zoom: ${JSON.stringify(zoomViewport)}`,
+        `Expected an effective 320px viewport at 200 percent zoom: ${JSON.stringify({
+          ...zoomViewport,
+          effectiveScale,
+        })}`,
       );
     }
     if (!scriptsDisabled) await capture("overview-320-zoom200.png");
