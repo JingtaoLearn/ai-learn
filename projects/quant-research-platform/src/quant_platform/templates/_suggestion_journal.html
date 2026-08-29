@@ -5,11 +5,11 @@
   {% if journal %}
   <ol class="suggestion-journal">
     {% for entry in journal %}
-    {% set changed = entry.get("changed_parameters", entry.get("ask", {}).get("changed_parameters", entry.get("candidate", {}))) %}
-    {% set tell = entry.get("tell", {}) %}
+    {% set changed = entry.get("sampled_parameters", {}) %}
+    {% set state = entry.get("tell_state") or entry.get("event_type", "PENDING") %}
     <li class="suggestion-entry">
-      <div class="suggestion-heading"><span class="badge">{{ entry.get("search_round", entry.get("round", "UNSPECIFIED")) }}</span><strong>Ask #{{ entry.get("proposal_sequence", loop.index) }}</strong><span class="status" data-status="{{ tell.get('state', tell.get('status', 'PENDING')) }}">{{ tell.get("state", tell.get("status", "PENDING")) }}</span></div>
-      <details><summary>Ask/tell event details</summary><dl class="technical"><dt>Changed parameters</dt><dd><pre>{{ changed|canonical_json }}</pre></dd><dt>Objective</dt><dd>{{ tell.get("objective") if tell.get("objective") is not none else "Not available" }}</dd></dl></details>
+      <div class="suggestion-heading"><span class="badge">{{ entry.get("search_round", entry.get("round", "UNSPECIFIED")) }}</span><strong>Ask #{{ entry.get("proposal_sequence", loop.index) }}</strong><span class="status" data-status="{{ state }}">{{ state }}</span></div>
+      <details><summary>Ask/tell event details</summary><dl class="technical"><dt>Changed parameters</dt><dd><pre>{{ changed|canonical_json }}</pre></dd><dt>Objective</dt><dd>{{ entry.get("objective") if entry.get("objective") is not none else "Not available" }}</dd></dl></details>
     </li>
     {% endfor %}
   </ol>
