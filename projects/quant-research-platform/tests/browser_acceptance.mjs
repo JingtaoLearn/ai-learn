@@ -5,11 +5,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson] =
+const [baseUrl, sessionCookie, chromium, reportExperimentId, studyFormJson, completedStudyId] =
   process.argv.slice(2);
-if (!baseUrl || !sessionCookie || !chromium || !reportExperimentId || !studyFormJson) {
+if (
+  !baseUrl ||
+  !sessionCookie ||
+  !chromium ||
+  !reportExperimentId ||
+  !studyFormJson ||
+  !completedStudyId
+) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID",
   );
 }
 const studyFormValues = JSON.parse(studyFormJson);
@@ -500,6 +507,71 @@ try {
     await assertLayout("study report", width);
   }
 
+  async function inspectCompletedStudy(width) {
+    await send(
+      "Emulation.setDeviceMetricsOverride",
+      { width, height: 844, deviceScaleFactor: 1, mobile: width === 390 },
+      sessionId,
+    );
+    const detailPath = `/studies/${completedStudyId}`;
+    await navigate(detailPath);
+    await expectPage("study-detail");
+    const detail = await evaluate(`(() => {
+      const firstRanking = document.querySelector('[data-testid="ranking-1"]');
+      const text = document.body.textContent;
+      return {
+        terminal: Boolean(document.querySelector('[data-testid="terminal-study-state"]')),
+        activeControls: Boolean(document.querySelector(
+          'form[action$="/advance"], form[action$="/control"]'
+        )),
+        rankingCount: document.querySelectorAll('[data-testid^="ranking-"]').length,
+        bindingCount: document.querySelectorAll('.study-ranking-table .binding').length,
+        studiedValuesLead:
+          firstRanking?.cells[0]?.textContent.includes("/operators/fit/window_sessions"),
+        evidence:
+          text.includes("TIE_BROKEN_BY_FROZEN_RULE") &&
+          text.includes("DIVERGENT") &&
+          text.includes("NOT_ESTABLISHED"),
+      };
+    })()`);
+    if (
+      !detail.terminal ||
+      detail.activeControls ||
+      detail.rankingCount !== 6 ||
+      detail.bindingCount !== 39 ||
+      !detail.studiedValuesLead ||
+      !detail.evidence
+    ) {
+      throw new Error(
+        `Completed Study evidence is incomplete at ${width}px: ${JSON.stringify(detail)}`,
+      );
+    }
+    await assertLayout("completed study detail", width);
+    await keyboardActivate(`a[href="${detailPath}/report"]`);
+    await expectPage("study-report");
+    const report = await evaluate(`(() => {
+      const text = document.body.textContent;
+      return {
+        evidence:
+          text.includes("/operators/fit/window_sessions") &&
+          text.includes("TIE_BROKEN_BY_FROZEN_RULE") &&
+          text.includes("DIVERGENT") &&
+          text.includes("NOT_ESTABLISHED"),
+        activeControls: Boolean(document.querySelector(
+          'form[action$="/advance"], form[action$="/control"]'
+        )),
+      };
+    })()`);
+    if (!report.evidence || report.activeControls) {
+      throw new Error(
+        `Completed Study report is incomplete at ${width}px: ${JSON.stringify(report)}`,
+      );
+    }
+    await assertLayout("completed study report", width);
+    await keyboardActivate(`a[href="${detailPath}"]`);
+    await expectPage("study-detail");
+  }
+
   const routes = {
     "/": "dashboard",
     "/operators": "operators",
@@ -834,6 +906,7 @@ try {
     }
     for (const width of [390, 1280]) {
       await runStudyLifecycle(width, scriptsDisabled);
+      await inspectCompletedStudy(width);
     }
   }
 } finally {

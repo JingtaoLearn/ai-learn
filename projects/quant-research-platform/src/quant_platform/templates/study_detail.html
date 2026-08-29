@@ -8,10 +8,14 @@
 {% if outcome_message %}<div class="validation-summary" role="status" tabindex="-1" data-testid="study-outcome">{{ outcome_message }}</div>{% endif %}
 <section class="metrics"><div><span>Phase</span><strong>{{ study.phase }}</strong></div><div><span>Control</span><strong>{{ study.control_status }}</strong></div><div><span>Selection</span><strong>{{ study.selection_outcome }}</strong></div><div><span>Holdout access</span><strong>{{ study.holdout.access }}</strong></div></section>
 <section class="panel" aria-labelledby="study-controls-heading"><div class="section-heading"><div><p class="eyebrow">COORDINATION</p><h2 id="study-controls-heading">Study controls</h2></div></div>
+  {% if study.phase == "COMPLETED" %}
+  <p class="notice" data-testid="terminal-study-state">This Study is complete. Its frozen evidence is read-only. Coordination controls are no longer available.</p>
+  {% else %}
   <div class="actions control-actions">
     <form method="post" action="/studies/{{ study.study_id }}/advance"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Advance</button></form>
     {% for operation in ("PAUSE", "RESUME", "CANCEL") %}<form method="post" action="/studies/{{ study.study_id }}/control"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="{{ operation }}"><input type="hidden" name="action_id" value="{{ control_action_id }}-{{ operation|lower }}"><button class="{{ 'quiet' if operation != 'CANCEL' else 'danger-button' }}" type="submit">{{ operation|title }}</button></form>{% endfor %}
   </div>
+  {% endif %}
   <h3>Study coordinator lease</h3>
   {% if study.coordination.lease %}<dl class="technical"><dt>Coordinator</dt><dd>{{ study.coordination.lease.owner }}</dd><dt>Lease expires</dt><dd>{{ study.coordination.lease.expires_at }}</dd><dt>Fencing token</dt><dd>{{ study.coordination.lease.fencing_token }}</dd></dl>{% else %}<p class="notice">No coordinator lease is active.</p>{% endif %}
 </section>

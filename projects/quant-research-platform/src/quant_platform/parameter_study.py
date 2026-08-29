@@ -1345,6 +1345,8 @@ def _build_decision_summary(
     outer_selections = []
     for item in (outer_evidence or {}).get("rounds", []):
         selected = item.get("selected_candidate_digest")
+        if selected is None:
+            continue
         trial = trial_by_digest.get(selected)
         outer_selections.append(
             {
@@ -7224,6 +7226,60 @@ class ParameterStudy:
                     "metric_document": stored_metric,
                 }
             )
+        ranked_candidate_digests = {
+            ranking["candidate_digest"] for ranking in rankings
+        }
+        final_fold_count = len(
+            frozen_plan["validation"]["final_search_round"]["inner_folds"]
+        )
+        final_bindings = {
+            (binding["candidate_digest"], binding["fold_sequence"]): binding
+            for binding in binding_views
+            if binding["search_round"] == "FINAL"
+            and binding["role"] == "INNER_SCORE"
+        }
+        unranked_trials = []
+        for trial in trial_views:
+            if trial["candidate_digest"] in ranked_candidate_digests:
+                continue
+            missing_evidence = []
+            for fold_sequence in range(1, final_fold_count + 1):
+                binding = final_bindings.get(
+                    (trial["candidate_digest"], fold_sequence)
+                )
+                if binding is None:
+                    missing_evidence.append(
+                        {
+                            "search_round": "FINAL",
+                            "role": "INNER_SCORE",
+                            "fold_sequence": fold_sequence,
+                            "status": "NO_BINDING",
+                            "binding_id": None,
+                            "attempt_id": None,
+                        }
+                    )
+                elif binding["state"] != "VERIFIED":
+                    missing_evidence.append(
+                        {
+                            "search_round": "FINAL",
+                            "role": "INNER_SCORE",
+                            "fold_sequence": fold_sequence,
+                            "status": binding["state"],
+                            "binding_id": binding["binding_id"],
+                            "attempt_id": binding["attempt_id"],
+                        }
+                    )
+            unranked_trials.append(
+                {
+                    "candidate_digest": trial["candidate_digest"],
+                    "proposal_sequence": trial["proposal_sequence"],
+                    "studied_parameters": _studied_parameters(
+                        trial["configuration"],
+                        frozen_plan["search"]["space"],
+                    ),
+                    "missing_canonical_fold_evidence": missing_evidence,
+                }
+            )
         if (
             study["selection_outcome"] == "CHAMPION_SELECTED"
         ) != (champion_evidence is not None):
@@ -7309,6 +7365,7 @@ class ParameterStudy:
             "trials": trial_views,
             "bindings": binding_views,
             "rankings": rankings,
+            "unranked_trials": unranked_trials,
             "decision_summary": decision_summary,
             "verified_metrics": [
                 binding["metric_document"]

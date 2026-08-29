@@ -116,10 +116,40 @@ def _study_detail() -> dict:
                 "eligible": False,
                 "validation_score": 1.25,
                 "studied_parameters": {"/operators/fit/window_sessions": 20},
-                "independent_metrics": {"maximum_drawdown": -0.08},
-                "explanation": {"constraint_failures": ["minimum_trades"]},
+                "independent_metrics": {
+                    "maximum_drawdown": -0.08,
+                    "annual_turnover": 12.5,
+                },
+                "policy_identity": {
+                    "tie_break": [
+                        "lower_maximum_drawdown",
+                        "lower_annual_turnover",
+                        "strategy_configuration_digest",
+                    ]
+                },
+                "tie_break": {
+                    "lower_maximum_drawdown": -0.08,
+                    "lower_annual_turnover": 12.5,
+                    "strategy_configuration_digest": "e" * 64,
+                },
+                "explanation": {
+                    "formula": (
+                        "median(fold_net_sharpe)"
+                        "-stability_weight*MAD(fold_net_sharpe)"
+                        "-turnover_weight*annual_turnover"
+                    ),
+                    "components": {
+                        "median_fold_net_sharpe": 2.0,
+                        "stability_weight": 0.5,
+                        "mad_fold_net_sharpe": 0.5,
+                        "turnover_weight": 0.05,
+                        "annual_turnover": 12.5,
+                    },
+                    "constraint_failures": ["minimum_trades"],
+                },
             }
         ],
+        "unranked_trials": [],
         "decision_summary": {
             "claim": "TIE_BROKEN_BY_FROZEN_RULE",
             "champion_candidate_digest": "e" * 64,
@@ -278,6 +308,23 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     incomplete_trial = deepcopy(detail["trials"][0])
     incomplete_trial["candidate_digest"] = "9" * 64
     detail["trials"].append(incomplete_trial)
+    detail["unranked_trials"].append(
+        {
+            "candidate_digest": incomplete_trial["candidate_digest"],
+            "proposal_sequence": incomplete_trial["proposal_sequence"],
+            "studied_parameters": {"/operators/fit/window_sessions": 20},
+            "missing_canonical_fold_evidence": [
+                {
+                    "search_round": "FINAL",
+                    "role": "INNER_SCORE",
+                    "fold_sequence": 1,
+                    "status": "NO_BINDING",
+                    "binding_id": None,
+                    "attempt_id": None,
+                }
+            ],
+        }
+    )
     monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
     monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
 
@@ -296,7 +343,8 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert "NOT_ESTABLISHED" in study.text
     assert "/operators/fit/window_sessions" in study.text
     assert 'class="study-ranking-table"' in study.text
-    assert "1 Trial is not ranked because complete canonical fold evidence is unavailable" in study.text
+    assert "Unranked Trial 1" in study.text
+    assert "FINAL INNER_SCORE fold 1" in study.text
     assert all(
         label in study.text
         for label in (
@@ -320,6 +368,83 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert 'data-page="study-report"' in report.text
     assert "Planned outer OOS windows" in report.text
     assert "Terminal holdout plan and state" in report.text
+    ranking = study.text.split('data-testid="ranking-1"', 1)[1].split("</tr>", 1)[0]
+    assert ranking.index("/operators/fit/window_sessions") < ranking.index("#1")
+    assert ranking.index("#1") < ranking.index("e" * 64)
+    assert "Score formula" in ranking
+    assert (
+        "median(fold_net_sharpe)-stability_weight*MAD(fold_net_sharpe)"
+        "-turnover_weight*annual_turnover"
+    ) in ranking
+    assert "Score components" in ranking
+    assert ranking.index("lower_maximum_drawdown") < ranking.index(
+        "lower_annual_turnover"
+    )
+    assert ranking.index("lower_annual_turnover") < ranking.index(
+        "strategy_configuration_digest"
+    )
+    assert "Ineligible" in ranking
+    assert "minimum_trades" in ranking
+
+
+def test_completed_study_replaces_controls_and_identifies_unranked_trials(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    detail.update(
+        phase="COMPLETED",
+        control_status="ACTIVE",
+        selection_outcome="CHAMPION_SELECTED",
+    )
+    incomplete_trial = deepcopy(detail["trials"][0])
+    incomplete_trial.update(
+        candidate_digest="9" * 64,
+        proposal_sequence=2,
+    )
+    detail["trials"].append(incomplete_trial)
+    detail["unranked_trials"] = [
+        {
+            "candidate_digest": incomplete_trial["candidate_digest"],
+            "proposal_sequence": 2,
+            "studied_parameters": {"/operators/fit/window_sessions": 40},
+            "missing_canonical_fold_evidence": [
+                {
+                    "search_round": "FINAL",
+                    "role": "INNER_SCORE",
+                    "fold_sequence": 1,
+                    "status": "FAILED",
+                    "binding_id": "8" * 64,
+                    "attempt_id": "7" * 64,
+                },
+                {
+                    "search_round": "FINAL",
+                    "role": "INNER_SCORE",
+                    "fold_sequence": 2,
+                    "status": "NO_BINDING",
+                    "binding_id": None,
+                    "attempt_id": None,
+                },
+            ],
+        }
+    ]
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+
+    response = client.get(f"/studies/{STUDY_ID}")
+
+    assert response.status_code == 200
+    assert "This Study is complete. Its frozen evidence is read-only." in response.text
+    assert f'action="/studies/{STUDY_ID}/advance"' not in response.text
+    assert f'action="/studies/{STUDY_ID}/control"' not in response.text
+    assert "Unranked Trial 2" in response.text
+    assert incomplete_trial["candidate_digest"] in response.text
+    assert "/operators/fit/window_sessions" in response.text
+    assert "FINAL INNER_SCORE fold 1" in response.text
+    assert "FAILED" in response.text
+    assert "FINAL INNER_SCORE fold 2" in response.text
+    assert "NO_BINDING" in response.text
+    assert "Trial and binding records remain visible" not in response.text
 
 
 def test_study_detail_and_report_render_optional_suggestion_journal(
