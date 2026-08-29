@@ -603,12 +603,19 @@ def test_invalid_finite_range_identifies_the_search_field(tmp_path: Path):
     )
 
     assert response.status_code == 400
+    summary = re.search(
+        r'<section[^>]*class="validation-summary danger"[^>]*>',
+        response.text,
+    ).group(0)
+    assert 'id="study-errors"' in summary
+    assert 'tabindex="-1"' in summary
+    assert "autofocus" in summary
     assert f'href="#{field}"' in response.text
     control = re.search(rf'<input[^>]*id="{field}"[^>]*>', response.text).group(0)
     assert 'value="[2,"' in control
     assert 'aria-invalid="true"' in control
     assert f'aria-describedby="{field}-error"' in control
-    assert "autofocus" in control
+    assert "autofocus" not in control
     assert f'id="{field}-error"' in response.text
 
 
