@@ -22,14 +22,14 @@ if (
   !sessionCookie ||
   !chromium ||
   !screenshotRoot ||
-  !new Set(["foundation", "report", "study", "full"]).has(scope) ||
+  !new Set(["foundation", "overview", "report", "study", "full"]).has(scope) ||
   (scope === "report" && (!reportExperimentId || !reportAttemptId)) ||
   (new Set(["study", "full"]).has(scope) && !studyFormJson) ||
   (scope === "full" &&
     (!reportExperimentId || !reportAttemptId || !studyFormJson || !completedStudyId))
 ) {
   throw new Error(
-    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID REPORT_ATTEMPT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT [foundation|report|study|full]",
+    "usage: browser_acceptance.mjs BASE_URL SESSION_COOKIE CHROMIUM REPORT_EXPERIMENT_ID REPORT_ATTEMPT_ID STUDY_FORM_JSON COMPLETED_STUDY_ID SCREENSHOT_ROOT [foundation|overview|report|study|full]",
   );
 }
 const studyFormValues = studyFormJson ? JSON.parse(studyFormJson) : {};
@@ -546,6 +546,119 @@ try {
     }
   }
 
+  async function runOverviewScenarios() {
+    for (const scriptsDisabled of [false, true]) {
+      await send(
+        "Emulation.setScriptExecutionDisabled",
+        { value: scriptsDisabled },
+        sessionId,
+      );
+      for (const width of [320, 390, 1280]) {
+        await send(
+          "Emulation.setDeviceMetricsOverride",
+          { width, height: 844, deviceScaleFactor: 1, mobile: width < 768 },
+          sessionId,
+        );
+        await navigate("/");
+        await expectPage("dashboard");
+        await assertLayout(`overview identity ${width}px`, width);
+        await assertShellContract(
+          `overview identity ${width}px`,
+          width,
+          "Overview",
+          "Overview",
+        );
+
+        const contract = await evaluate(`(() => {
+          const create = document.querySelector('.mobile-nav a[href="/experiments/new"]');
+          const createBox = create.getBoundingClientRect();
+          const clusters = Array.from(document.querySelectorAll(".identity-cluster"));
+          const result = {
+            create: {
+              href: create.getAttribute("href"),
+              visibleLabel: create.textContent.trim(),
+              accessibleName: create.getAttribute("aria-label"),
+              fontSize: Number.parseFloat(getComputedStyle(create).fontSize),
+              width: createBox.width,
+              height: createBox.height,
+            },
+            clusterCount: clusters.length,
+            clusters: [],
+          };
+          if (${width} >= 768) {
+            result.clusters = clusters.map((cluster) => {
+              const prefix = cluster.querySelector(".identity-prefix");
+              const copy = cluster.querySelector(".copy-button");
+              const disclosure = cluster.querySelector(".identity-disclosure");
+              const summary = disclosure?.querySelector("summary");
+              const cell = cluster.closest("td");
+              const prefixBox = prefix?.getBoundingClientRect();
+              const copyBox = copy?.getBoundingClientRect();
+              const summaryBox = summary?.getBoundingClientRect();
+              const centers = [prefixBox, copyBox, summaryBox]
+                .filter(Boolean)
+                .map((box) => box.top + box.height / 2);
+              disclosure.open = true;
+              const code = disclosure.querySelector("code");
+              const codeBox = code.getBoundingClientRect();
+              const cellBox = cell.getBoundingClientRect();
+              const style = getComputedStyle(code);
+              return {
+                controlsVisible: [prefixBox, copyBox, summaryBox].every(
+                  (box) => box && box.width > 0 && box.height > 0
+                ),
+                singleLine: centers.length === 3 &&
+                  Math.max(...centers) - Math.min(...centers) <= 1,
+                compactHeight: cluster.getBoundingClientRect().height <= 44,
+                fullIdVisible: codeBox.width > 0 && codeBox.height > 0,
+                fullIdSelectable: style.userSelect === "text",
+                fullIdWraps: style.whiteSpace !== "nowrap" &&
+                  code.scrollWidth <= code.clientWidth + 1,
+                fullIdContained: codeBox.left >= cellBox.left - 1 &&
+                  codeBox.right <= cellBox.right + 1,
+              };
+            });
+          }
+          return result;
+        })()`);
+        if (
+          width < 768 &&
+          (
+            contract.create.href !== "/experiments/new" ||
+            contract.create.visibleLabel !== "New" ||
+            contract.create.accessibleName !== "New experiment" ||
+            contract.create.fontSize < 12 ||
+            contract.create.width < 44 ||
+            contract.create.height < 44
+          )
+        ) {
+          throw new Error(
+            `Mobile create navigation failed at ${width}px: ${JSON.stringify(contract.create)}`,
+          );
+        }
+        if (
+          width >= 768 &&
+          (
+            contract.clusterCount !== 2 ||
+            contract.clusters.some((cluster) =>
+              !cluster.controlsVisible ||
+              !cluster.singleLine ||
+              !cluster.compactHeight ||
+              !cluster.fullIdVisible ||
+              !cluster.fullIdSelectable ||
+              !cluster.fullIdWraps ||
+              !cluster.fullIdContained
+            )
+          )
+        ) {
+          throw new Error(
+            `Dashboard identity cluster failed at ${width}px: ${JSON.stringify(contract)}`,
+          );
+        }
+      }
+    }
+  }
+
   async function runReportScenario(scriptsDisabled) {
     await send(
       "Emulation.setScriptExecutionDisabled",
@@ -914,6 +1027,10 @@ try {
 
   if (scope === "foundation") {
     await runFoundationScenarios();
+  }
+
+  if (scope === "overview") {
+    await runOverviewScenarios();
   }
 
   if (scope === "report") {
