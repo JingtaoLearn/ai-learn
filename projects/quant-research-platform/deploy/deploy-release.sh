@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_ID="${1:-}"
 RELEASE_ROOT="${QUANT_DEPLOY_RELEASE_ROOT:-/home/feng/quant-platform/releases}"
+RUNTIME_ROOT="${QUANT_DEPLOY_RUNTIME_ROOT:-/home/feng/quant-platform/runtime}"
 UNIT_PATH="${QUANT_DEPLOY_UNIT_PATH:-/home/feng/.config/systemd/user/quant-research-ui.service}"
 ENV_PATH="${QUANT_DEPLOY_ENV_PATH:-/home/feng/.config/quant-research-ui.env}"
 STATE_ROOT="${QUANT_DEPLOY_STATE_ROOT:-/home/feng/quant-platform/state/platform}"
@@ -17,6 +18,8 @@ PUBLIC_URL="${QUANT_DEPLOY_PUBLIC_URL:-https://${PRODUCTION_HOST}}"
 EXPECTED_SCHEMA_VERSION=9
 CATALOG_PATH="${STATE_ROOT}/catalog.sqlite3"
 RELEASE_DIR="${RELEASE_ROOT}/${RELEASE_ID}"
+RUNTIME_DIR="${RUNTIME_ROOT}/venv-ui-${RELEASE_ID}"
+RUNTIME_PYTHON="${RUNTIME_DIR}/bin/python"
 UNIT_TEMPLATE="${QUANT_DEPLOY_UNIT_TEMPLATE:-${SCRIPT_DIR}/quant-research-ui.service}"
 UNIT_BACKUP="${ROLLBACK_DIR}/quant-research-ui.service"
 ENV_BACKUP="${ROLLBACK_DIR}/quant-research-ui.env"
@@ -128,8 +131,11 @@ fi
 if [[ ! -d "$RELEASE_DIR" ]] || [[ -L "$RELEASE_DIR" ]]; then
   fail "release directory is missing or is a symlink"
 fi
-if [[ ! -x "${RELEASE_DIR}/.venv/bin/python" ]]; then
-  fail "release Python executable is missing"
+if [[ ! -d "$RUNTIME_DIR" ]] || [[ -L "$RUNTIME_DIR" ]]; then
+  fail "release runtime directory is missing or is a symlink"
+fi
+if [[ ! -x "$RUNTIME_PYTHON" ]]; then
+  fail "release runtime Python executable is missing"
 fi
 for required_file in "$UNIT_TEMPLATE" "$UNIT_PATH" "$ENV_PATH" "$CATALOG_PATH"; do
   if [[ ! -f "$required_file" ]] || [[ -L "$required_file" ]]; then
@@ -242,6 +248,14 @@ working_directory="$(
 )"
 if [[ "$working_directory" != "$RELEASE_DIR" ]]; then
   fail "systemd WorkingDirectory does not match the release"
+fi
+
+exec_start="$(
+  systemctl --user show "$SERVICE_NAME" --property=ExecStart --value
+)"
+expected_exec_start_prefix="{ path=${RUNTIME_PYTHON} ; argv[]=${RUNTIME_PYTHON} -m quant_platform.web ; "
+if [[ "$exec_start" != "$expected_exec_start_prefix"* ]]; then
+  fail "systemd ExecStart does not match the release runtime"
 fi
 
 public_request_succeeded=false
