@@ -258,12 +258,16 @@ digest-pinned runner image are configured. The app binds only `127.0.0.1:8090`. 
 only from verified immutable attempt artifacts and embedded without script, same-origin,
 navigation, popup, or download privileges.
 
-Reviewed code-only deployment files are under [`deploy/`](deploy/). The unit and environment
-templates use `/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID`; deployment must
-substitute the exact immutable release ID in both settings. Do not use the `current` symlink:
-project-root validation intentionally rejects every symlink component.
+Reviewed code-only deployment files are under [`deploy/`](deploy/). The unit `WorkingDirectory`
+and environment template use
+`/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID`, while `ExecStart` uses
+`/home/feng/quant-platform/runtime/venv-ui-REPLACE_WITH_RELEASE_ID/bin/python`. Deployment must
+substitute the exact immutable release ID in both the source and runtime settings.
+Do not use the `current` symlink. Project-root validation intentionally rejects every symlink
+component.
 
-After an immutable release directory and its virtual environment have been prepared, deploy it with:
+After an immutable source release and its matching per-release runtime have been prepared, deploy
+it with:
 
 ```bash
 ./deploy/deploy-release.sh EXACT_RELEASE_ID
@@ -274,9 +278,10 @@ The helper backs up the active user unit, private environment file, and SQLite c
 an existing rollback directory. Any failed verification restores all three backups and restarts the
 previous unit. A successful deployment retains the backup for operator review; archive or remove it
 deliberately before deploying another release. Verification requires schema 9, the exact immutable
-systemd `WorkingDirectory`, local and public health, unauthenticated public redirect/API boundaries,
-and `NRestarts=0`. The local probe sends `Host: quant.ai.jingtao.fun`, truncates its response file
-before every request, and accepts the body only after a current curl succeeds.
+systemd `WorkingDirectory`, the exact per-release runtime `ExecStart`, local and public health,
+unauthenticated public redirect/API boundaries, and `NRestarts=0`. The local probe sends
+`Host: quant.ai.jingtao.fun`, truncates its response file before every request, and accepts the body
+only after a current curl succeeds.
 
 This project helper is intentionally self-contained rather than sourcing
 `vm/scripts/lib/common.sh`; [`deploy/README.md`](deploy/README.md) documents that exception and the

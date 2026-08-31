@@ -36,16 +36,18 @@ def test_ui_user_service_is_loopback_only_non_root_and_fail_closed():
     service = (ROOT / "deploy" / "quant-research-ui.service").read_text()
     environment = (ROOT / "deploy" / "quant-research-ui.env.example").read_text()
     release = "/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID"
+    runtime = (
+        "/home/feng/quant-platform/runtime/"
+        "venv-ui-REPLACE_WITH_RELEASE_ID/bin/python"
+    )
 
     assert "User=root" not in service
     assert f"WorkingDirectory={release}" in service
-    assert (
-        f"ExecStart={release}/.venv/bin/python -m quant_platform.web"
-    ) in service
+    assert f"ExecStart={runtime} -m quant_platform.web" in service
     assert f"QUANT_PROJECT_ROOT={release}" in environment
     assert "/home/feng/quant-platform/current" not in service
     assert "/home/feng/quant-platform/current" not in environment
-    assert "/home/feng/quant-platform/.venv/bin/python" not in service
+    assert f"{release}/.venv/bin/python" not in service
     assert "127.0.0.1:8090" not in service
     assert "PrivateTmp=true" in service
     assert "QUANT_FORWARDED_ALLOW_IPS=127.0.0.1" in environment
@@ -160,6 +162,10 @@ def test_documentation_uses_the_authoritative_shared_platform_root():
         / "docs/plans/2026-08-27-operator-registry-ui.md"
     ).read_text()
     release = "/home/feng/quant-platform/releases/REPLACE_WITH_RELEASE_ID"
+    runtime = (
+        "/home/feng/quant-platform/runtime/"
+        "venv-ui-REPLACE_WITH_RELEASE_ID/bin/python"
+    )
 
     assert "--root state/platform" in readme
     assert "--root state/ui" not in readme
@@ -167,6 +173,8 @@ def test_documentation_uses_the_authoritative_shared_platform_root():
     assert "/home/feng/quant-platform/state/ui" not in plan
     assert release in readme
     assert release in plan
+    assert runtime in readme
+    assert runtime in plan
     assert "substitute the exact immutable release ID" in readme
     assert "substitute the exact immutable release ID" in plan
     assert "Do not use the `current` symlink" in readme
@@ -221,9 +229,12 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
     platform_root = tmp_path / "quant-platform"
     release_root = platform_root / "releases"
     release_dir = release_root / release_id
-    release_python = release_dir / ".venv" / "bin" / "python"
-    release_python.parent.mkdir(parents=True)
-    _write_executable(release_python, "#!/usr/bin/env bash\nexit 0\n")
+    release_dir.mkdir(parents=True)
+    runtime_root = platform_root / "runtime"
+    runtime_dir = runtime_root / f"venv-ui-{release_id}"
+    runtime_python = runtime_dir / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    _write_executable(runtime_python, "#!/usr/bin/env bash\nexit 0\n")
 
     live_root = tmp_path / "live"
     live_root.mkdir()
@@ -234,6 +245,7 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
         (ROOT / "deploy" / "quant-research-ui.service")
         .read_text(encoding="utf-8")
         .replace("/home/feng/quant-platform/releases", str(release_root))
+        .replace("/home/feng/quant-platform/runtime", str(runtime_root))
         .replace(
             "/home/feng/.config/quant-research-ui.env",
             str(env_path),
@@ -241,12 +253,13 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
         encoding="utf-8",
     )
     old_release = release_root / "previous-release"
+    old_runtime = runtime_root / "venv-ui-previous-release"
     old_unit = textwrap.dedent(
         f"""\
         [Service]
         WorkingDirectory={old_release}
         EnvironmentFile={env_path}
-        ExecStart={old_release}/.venv/bin/python -m quant_platform.web
+        ExecStart={old_runtime}/bin/python -m quant_platform.web
         """
     )
     secret = "fixture-secret-must-not-be-printed"
@@ -315,6 +328,16 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
           else
             sed -n 's/^WorkingDirectory=//p' "$QUANT_DEPLOY_UNIT_PATH"
           fi
+          exit 0
+        fi
+        if [[ "$*" == *"--property=ExecStart --value" ]]; then
+          command="$(
+            sed -n 's/^ExecStart=//p' "$QUANT_DEPLOY_UNIT_PATH"
+          )"
+          command="${FAKE_EXEC_START_COMMAND:-$command}"
+          executable="${command%% *}"
+          printf '{ path=%s ; argv[]=%s ; ignore_errors=no ; }\n' \
+            "$executable" "$command"
           exit 0
         fi
         if [[ "$*" == *"--property=NRestarts --value" ]]; then
@@ -388,6 +411,7 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "QUANT_DEPLOY_RELEASE_ROOT": str(release_root),
+        "QUANT_DEPLOY_RUNTIME_ROOT": str(runtime_root),
         "QUANT_DEPLOY_UNIT_TEMPLATE": str(unit_template),
         "QUANT_DEPLOY_UNIT_PATH": str(unit_path),
         "QUANT_DEPLOY_ENV_PATH": str(env_path),
@@ -405,6 +429,9 @@ def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
     return {
         "release_id": release_id,
         "release_dir": release_dir,
+        "runtime_root": runtime_root,
+        "runtime_dir": runtime_dir,
+        "runtime_python": runtime_python,
         "unit_template": unit_template,
         "unit_path": unit_path,
         "env_path": env_path,
@@ -457,6 +484,51 @@ def _assert_rollback_restored(
     assert "--user stop quant-research-ui.service" in systemctl_calls
     assert systemctl_calls.count("--user restart quant-research-ui.service") == 2
     _assert_secrets_were_not_printed(fixture, result)
+
+
+def test_release_deployment_uses_immutable_source_and_exact_separate_runtime(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    release_dir = fixture["release_dir"]
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert not (release_dir / ".venv").exists()
+    service = fixture["unit_path"].read_text(encoding="utf-8")
+    assert f"WorkingDirectory={release_dir}" in service
+    assert f"ExecStart={fixture['runtime_python']} -m quant_platform.web" in service
+    assert f"ExecStart={release_dir}/.venv/bin/python" not in service
+
+
+def test_release_deployment_fails_closed_for_missing_symlinked_or_wrong_runtime(
+    tmp_path: Path,
+):
+    for runtime_state in ("missing", "symlink", "wrong"):
+        fixture = _deployment_fixture(tmp_path / runtime_state)
+        runtime_root = fixture["runtime_root"]
+        runtime_dir = fixture["runtime_dir"]
+        if runtime_state == "symlink":
+            runtime_target = runtime_root / "venv-ui-symlink-target"
+            runtime_dir.rename(runtime_target)
+            runtime_dir.symlink_to(runtime_target, target_is_directory=True)
+        elif runtime_state == "wrong":
+            runtime_dir.rename(runtime_root / "venv-ui-wrong-release")
+        else:
+            fixture["runtime_python"].unlink()
+
+        result = _run_deployment(fixture)
+
+        assert result.returncode != 0, runtime_state
+        assert not fixture["rollback_dir"].exists()
+        assert fixture["unit_path"].read_text(encoding="utf-8") == fixture["old_unit"]
+        assert fixture["env_path"].read_text(encoding="utf-8") == fixture["old_env"]
+        assert _catalog_state(fixture["catalog_path"]) == (
+            list(range(1, 9)),
+            ["before-deploy"],
+        )
+        assert not fixture["systemctl_log"].exists()
 
 
 def test_stale_success_probe_with_only_current_curl_failures_rolls_back(
@@ -569,6 +641,18 @@ def test_release_deployment_requires_exact_systemd_working_directory(
     _assert_rollback_restored(fixture, result)
 
 
+def test_release_deployment_requires_exact_systemd_exec_start(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_EXEC_START_COMMAND"] = (
+        "/wrong/runtime/venv-ui-release-175/bin/python -m quant_platform.web"
+    )
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
 def test_release_deployment_requires_exact_public_health_response(tmp_path: Path):
     fixture = _deployment_fixture(tmp_path)
     fixture["environment"]["FAKE_PUBLIC_HEALTH_BODY"] = '{"status":"not-ok"}'
@@ -647,6 +731,7 @@ def test_release_deployment_preserves_checked_rollback_backup_and_secret_hygiene
     assert "https://quant.ai.jingtao.fun/api/operators" in curl_calls
     systemctl_calls = fixture["systemctl_log"].read_text(encoding="utf-8")
     assert "--property=WorkingDirectory --value" in systemctl_calls
+    assert "--property=ExecStart --value" in systemctl_calls
     assert "--property=NRestarts --value" in systemctl_calls
     assert set(
         fixture["probe_mode_log"].read_text(encoding="utf-8").splitlines()
