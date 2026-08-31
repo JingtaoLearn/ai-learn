@@ -1,6 +1,8 @@
-# Gold Quant Research
+# Quantitative Research Decision System
 
-A reproducible, research-only vertical slice for daily gold strategy analysis. It is designed for both human researchers and agents, uses transparent pandas code, and contains no broker integration or live-order path.
+A private, research-only system shared by Jingtao and Agents. The shipped system provides reproducible Experiments and governed Parameter Studies; the accepted product path extends it with explicit research-intent memory, evidence-first Spikes, daily evidence, decision-readable reports, and explicitly approved signal production. It contains no broker integration or automatic order path.
+
+The accepted purpose, role contract, development principles, capability goals, and stage gates are defined in [`docs/product-constitution.md`](docs/product-constitution.md). That document governs roadmap and implementation choices; this README describes the current shipped system.
 
 ## Generic platform foundation
 

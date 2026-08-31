@@ -1,5 +1,43 @@
 # Quantitative Research Platform Domain
 
+## Product Constitution
+
+This project is Jingtao and Agents' private quantitative research and decision system. It governs evidence-first hypothesis validation, reproducible Experiments, parameter training, independent evaluation, daily evidence, and explicitly approved signal production. It never creates or executes orders.
+
+The authoritative product purpose, role split, principles, capabilities, and stage gates are in [`docs/product-constitution.md`](docs/product-constitution.md). Domain and implementation decisions must support that constitution rather than optimize code volume, Experiment count, or headline backtest return.
+
+## Investment Objective
+
+The decision need, asset scope, horizon, return intent, and risk preference that motivate research. It is owned by Jingtao and is not an Experiment configuration.
+
+## Research Question
+
+One falsifiable question derived from an Investment Objective. It defines what evidence could change a decision.
+
+## Research Hypothesis
+
+A predeclared, testable claim with an observable success/failure threshold. Parameter search cannot retroactively redefine it after results are seen.
+
+## Research Route
+
+One economic or behavioral mechanism and its proposed strategy family for answering a Research Question. Related Studies retain route lineage so a failed route cannot be restarted under a new identity to erase prior testing.
+
+## Spike Verdict
+
+The evidence-first result for an unvalidated idea: `VALIDATED`, `PARTIAL`, `INVALIDATED`, or `INCONCLUSIVE`. Formal production implementation begins only after a validated or explicitly accepted partial verdict.
+
+## Research Decision
+
+The evidence-level conclusion after independent evaluation: `REJECTED`, `INSUFFICIENT_EVIDENCE`, or `QUALIFIED`. Qualification permits review; it never authorizes signal production.
+
+## Parameter Training
+
+The user-facing process of proposing and evaluating operator parameter configurations under one frozen route, data, cost, evaluation, and evidence protocol. It seeks a defensible stable region or no eligible candidate, not one fragile historical maximum. A Parameter Study is the concrete frozen plan plus append-only evolving record of this process.
+
+## Daily Research Protocol
+
+A versioned after-close monitoring contract that appends new evidence to a frozen research decision. It never silently retrains parameters, forks a Study, resets exposure history, or converts observed data into a pristine holdout.
+
 ## Parameter Study
 
 A frozen parameter-search and chronological-validation protocol together with every Trial, Experiment binding, evaluation, control event, and conclusion it produces.
