@@ -13,5 +13,6 @@ These ADRs record hard-to-reverse decisions behind trustworthy research evidence
 9. Keep production authorization signal-only.
 10. Derive Release Stage from append-only exact-digest decisions.
 11. Serialize cross-environment Active Deployment changes per asset-and-purpose Deployment Channel.
+12. Preserve authoritative A-share cash-dividend and tax evidence without upgrading unknown coverage.
 
 Read the project [`CONTEXT.md`](../../CONTEXT.md) first so ADR terms retain their canonical meanings.

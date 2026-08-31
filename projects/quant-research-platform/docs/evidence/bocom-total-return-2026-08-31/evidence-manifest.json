@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "manifest_role": "RESEARCH_AUDIT_ONLY_NOT_PRODUCTION_EVIDENCE",
+  "preservation_root": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/",
+  "note": "Exact bytes are preserved on the development host and were independently re-downloaded/hash-checked. This repository manifest is not an accepted platform evidence store and cannot issue a total-return claim.",
+  "artifacts": [
+    {
+      "artifact": "BOCOM 临2025-079 issuer PDF",
+      "official_url": "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=94697c067ebe4427a4165910712df44d",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/corporate-actions/bocom_2025H1_dividend.pdf",
+      "retrieved_at": "2026-08-31T15:06:07Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "application/pdf",
+      "bytes": 149588,
+      "body_sha256": "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6",
+      "status": "VERIFIED_OFFICIAL_SOURCE"
+    },
+    {
+      "artifact": "BOCOM 2026-026 issuer PDF",
+      "official_url": "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=0aba78fdf863447ab12a7068f7714ccf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/corporate-actions/bocom_2025FY_dividend_issuer.pdf",
+      "retrieved_at": "2026-08-31T15:08:24Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "application/pdf",
+      "bytes": 149101,
+      "body_sha256": "e33ef7d991f3fcc4a8dba338db431c474d5ed50283b5c1ed241e3987ca4913b9",
+      "status": "VERIFIED_OFFICIAL_SOURCE"
+    },
+    {
+      "artifact": "SSE 临2025-079 locator retrieval",
+      "official_url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2025-12-19/601328_20251219_V61A.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/corporate-actions/bocom_2025H1_sse-waf-response.html",
+      "retrieved_at": "2026-08-31T15:41:46Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "text/html",
+      "bytes": 7373,
+      "body_sha256": "c183dfc0ace2279c520f6dd7bf4ae5337ab03fae5692ea53607458a296af121a",
+      "status": "REJECTED_MEDIA_TYPE_HTML_CHALLENGE"
+    },
+    {
+      "artifact": "SSE 2026-026 locator retrieval",
+      "official_url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-07-06/601328_20260706_SZOE.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/corporate-actions/bocom_2025FY_sse-waf-response.html",
+      "retrieved_at": "2026-08-31T15:41:46Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "text/html",
+      "bytes": 7373,
+      "body_sha256": "0ff6a0fe27b0fee9020b1ca6e8869a175ce7fae39e9fda2fc5e6a6e1b279a6e9",
+      "status": "REJECTED_MEDIA_TYPE_HTML_CHALLENGE"
+    },
+    {
+      "artifact": "财税〔2015〕101号 HTML",
+      "official_url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5203902/content.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/tax-policy/c5203902-2015-101.html",
+      "retrieved_at": "2026-08-31T15:28:11Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "text/html",
+      "bytes": 38314,
+      "body_sha256": "9eadaaa4693282e4a9b65ca5f02b0b2ab4720e6b0cfe6da97be4c1f1faa9845b",
+      "status": "VERIFIED_OFFICIAL_SOURCE"
+    },
+    {
+      "artifact": "财税〔2012〕85号 HTML",
+      "official_url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5204415/content.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/tax-policy/c5204415-2012-85.html",
+      "retrieved_at": "2026-08-31T15:28:12Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "text/html",
+      "bytes": 41373,
+      "body_sha256": "5cce33fece6d57c9de662086927a822092b66e0f92cfeec23e59e469e16d04e8",
+      "status": "VERIFIED_OFFICIAL_SOURCE"
+    },
+    {
+      "artifact": "ChinaClear 2012 dividend-tax operations PDF",
+      "official_url": "http://www.chinaclear.cn/old_files/1354262382580.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/tax-policy/chinaclear-2012-dividend-tax-operations.pdf",
+      "retrieved_at": "2026-08-31T15:28:12Z",
+      "retrieval_time_source": "preserved_file_mtime",
+      "media_type": "application/pdf",
+      "bytes": 116151,
+      "body_sha256": "6ed1598a2bf5d841d95a149b88543eaf8f8375f8acb53e8d8369fb329016b5ae",
+      "status": "VERIFIED_OFFICIAL_SOURCE"
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+{
+  "algorithm": "sha256(UTF8(domain_tag) || 0x00 || payload_bytes)",
+  "domain_tags": {
+    "artifact": "quant-platform/source-artifact/v1",
+    "coverage": "quant-platform/corporate-action-coverage/v1",
+    "event_revision": "quant-platform/corporate-action-revision/v1",
+    "event_series": "quant-platform/corporate-action-series/v1",
+    "request": "quant-platform/source-request/v1",
+    "retrieval": "quant-platform/source-retrieval/v1",
+    "tax_policy": "quant-platform/tax-policy/v1"
+  },
+  "json_canonicalization": "UTF-8, ensure_ascii=false, object keys sorted, separators comma/colon, arrays ordered, strings/integers/booleans/null only, no duplicate keys",
+  "raw_artifact_vector": {
+    "body_bytes": 149588,
+    "body_sha256": "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6",
+    "domain_tag": "quant-platform/source-artifact/v1",
+    "expected_artifact_id": "142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a",
+    "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/sources/corporate-actions/bocom_2025H1_dividend.pdf"
+  },
+  "schema_version": 1,
+  "tax_source_artifact_ids": {
+    "CHINACLEAR-2012-11-30": "8d66656959a6d24afe8eee860700d319b8d52eaa18dea4f72115d421cd4235a3",
+    "财税〔2012〕85号": "cfde8e517c8d5989eef3ffed8fb203e5e5aadfc793f61b6ec345c22f72a85363",
+    "财税〔2015〕101号": "4f2bc55a4899497d2a7e1bec59f9fd71b7437fc29e8a343be9d4f09bbc129e62"
+  },
+  "vectors": [
+    {
+      "canonical_json_utf8": "{\"headers\":{\"accept\":\"application/pdf\"},\"method\":\"GET\",\"query\":{\"fileId\":\"94697c067ebe4427a4165910712df44d\"},\"schema_version\":1,\"url\":\"https://www.bankcomm.com/BankCommSite/file/fileDownload.html\"}",
+      "domain_tag": "quant-platform/source-request/v1",
+      "expected_sha256": "46ea178afb7903f1f42d87567f9b607132d2cbd24e321f5fd6e66a667f27b547",
+      "name": "bocom_request",
+      "payload": {
+        "headers": {
+          "accept": "application/pdf"
+        },
+        "method": "GET",
+        "query": {
+          "fileId": "94697c067ebe4427a4165910712df44d"
+        },
+        "schema_version": 1,
+        "url": "https://www.bankcomm.com/BankCommSite/file/fileDownload.html"
+      }
+    },
+    {
+      "canonical_json_utf8": "{\"artifact_id\":\"142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a\",\"attempt\":1,\"completed_at\":\"2026-08-31T15:06:07Z\",\"final_status\":200,\"final_url\":\"https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=94697c067ebe4427a4165910712df44d\",\"media_type\":\"application/pdf\",\"redirects\":[],\"request_id\":\"46ea178afb7903f1f42d87567f9b607132d2cbd24e321f5fd6e66a667f27b547\",\"schema_version\":1,\"started_at\":\"2026-08-31T15:06:07Z\"}",
+      "domain_tag": "quant-platform/source-retrieval/v1",
+      "expected_sha256": "4597787c599a4c476c3ad7e1bfa45fb1b633cf73f01a7e4ff28284fd87a04747",
+      "name": "bocom_retrieval",
+      "payload": {
+        "artifact_id": "142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a",
+        "attempt": 1,
+        "completed_at": "2026-08-31T15:06:07Z",
+        "final_status": 200,
+        "final_url": "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=94697c067ebe4427a4165910712df44d",
+        "media_type": "application/pdf",
+        "redirects": [],
+        "request_id": "46ea178afb7903f1f42d87567f9b607132d2cbd24e321f5fd6e66a667f27b547",
+        "schema_version": 1,
+        "started_at": "2026-08-31T15:06:07Z"
+      }
+    },
+    {
+      "canonical_json_utf8": "{\"event_class\":\"CASH_DIVIDEND\",\"instrument\":\"601328.SS\",\"market\":\"XSHG\",\"root_notice_id\":\"临2025-079\",\"schema_version\":1}",
+      "domain_tag": "quant-platform/corporate-action-series/v1",
+      "expected_sha256": "9a5ff0fe100d7f79593c1ca79aa80caca3134e1e01ab78b25bb3383c9e7852b3",
+      "name": "bocom_event_series",
+      "payload": {
+        "event_class": "CASH_DIVIDEND",
+        "instrument": "601328.SS",
+        "market": "XSHG",
+        "root_notice_id": "临2025-079",
+        "schema_version": 1
+      }
+    },
+    {
+      "canonical_json_utf8": "{\"contributing_notice_ids\":[\"临2025-079\"],\"correction_links\":[],\"event_class\":\"CASH_DIVIDEND\",\"ex_date\":\"2025-12-25\",\"gross_cash_per_share\":\"0.1563\",\"instrument\":\"601328.SS\",\"logical_event_id\":\"9a5ff0fe100d7f79593c1ca79aa80caca3134e1e01ab78b25bb3383c9e7852b3\",\"market\":\"XSHG\",\"normalized_currency\":\"CNY\",\"parser_version\":\"bocom-dividend-pdf@1\",\"pay_date\":\"2025-12-25\",\"record_date\":\"2025-12-24\",\"schema_version\":1,\"source_artifact_ids\":[\"142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a\"]}",
+      "domain_tag": "quant-platform/corporate-action-revision/v1",
+      "expected_sha256": "2e02b9f67d5561bb5bf199233fb011d58fb98b22b02ea4f91ca0e0d22630ba3a",
+      "name": "bocom_event_revision",
+      "payload": {
+        "contributing_notice_ids": [
+          "临2025-079"
+        ],
+        "correction_links": [],
+        "event_class": "CASH_DIVIDEND",
+        "ex_date": "2025-12-25",
+        "gross_cash_per_share": "0.1563",
+        "instrument": "601328.SS",
+        "logical_event_id": "9a5ff0fe100d7f79593c1ca79aa80caca3134e1e01ab78b25bb3383c9e7852b3",
+        "market": "XSHG",
+        "normalized_currency": "CNY",
+        "parser_version": "bocom-dividend-pdf@1",
+        "pay_date": "2025-12-25",
+        "record_date": "2025-12-24",
+        "schema_version": 1,
+        "source_artifact_ids": [
+          "142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a"
+        ]
+      }
+    },
+    {
+      "canonical_json_utf8": "{\"checked_as_of\":\"2026-08-31T15:28:12Z\",\"coverage_state\":\"VERIFIED_EVENTS\",\"event_revision_ids\":[\"2e02b9f67d5561bb5bf199233fb011d58fb98b22b02ea4f91ca0e0d22630ba3a\"],\"instrument\":\"601328.SS\",\"interval_end\":\"2026-06-30\",\"interval_start\":\"2025-08-15\",\"limitations\":[\"NO_COMPLETE_AUTHORITATIVE_ENUMERATION\"],\"market\":\"XSHG\",\"query_retrieval_ids\":[],\"schema_version\":1}",
+      "domain_tag": "quant-platform/corporate-action-coverage/v1",
+      "expected_sha256": "cfc3f55919fe62cb85a0afcefd16dd5d8d7cae29475deefab74c95275ebe3385",
+      "name": "bocom_coverage",
+      "payload": {
+        "checked_as_of": "2026-08-31T15:28:12Z",
+        "coverage_state": "VERIFIED_EVENTS",
+        "event_revision_ids": [
+          "2e02b9f67d5561bb5bf199233fb011d58fb98b22b02ea4f91ca0e0d22630ba3a"
+        ],
+        "instrument": "601328.SS",
+        "interval_end": "2026-06-30",
+        "interval_start": "2025-08-15",
+        "limitations": [
+          "NO_COMPLETE_AUTHORITATIVE_ENUMERATION"
+        ],
+        "market": "XSHG",
+        "query_retrieval_ids": [],
+        "schema_version": 1
+      }
+    },
+    {
+      "canonical_json_utf8": "{\"account_scope\":\"PER_SECURITIES_ACCOUNT_WITH_SEPARATE_CUSTODIAN_PARTITIONS\",\"acquisition_scope\":\"SUPPORTED_PUBLIC_OR_TRANSFER_MARKET_A_SHARE\",\"assumptions\":{\"currency_rounding\":\"ROUND_HALF_UP_RESEARCH_ASSUMPTION\"},\"brackets\":[{\"actual_burden\":\"0.20\",\"holding_period\":\"UP_TO_AND_INCLUDING_ONE_NATURAL_MONTH\"},{\"actual_burden\":\"0.10\",\"holding_period\":\"OVER_ONE_NATURAL_MONTH_THROUGH_ONE_NATURAL_YEAR\"},{\"actual_burden\":\"0.00\",\"holding_period\":\"OVER_ONE_NATURAL_YEAR\"}],\"checked_at\":\"2026-08-31T15:28:12Z\",\"collection\":\"AFTER_TRANSFER_SETTLEMENT_NEXT_TRADING_DAY_PROCESS\",\"effective_record_date_start\":\"2015-09-09\",\"fifo\":\"PER_SECURITIES_ACCOUNT_END_OF_DAY_NET_CHANGE\",\"holding_period_endpoint\":\"DAY_BEFORE_TRANSFER_SETTLEMENT\",\"policy_family\":\"CN-INDIVIDUAL-A-2015-101\",\"policy_version\":1,\"schema_version\":1,\"source_artifact_ids\":[\"8d66656959a6d24afe8eee860700d319b8d52eaa18dea4f72115d421cd4235a3\",\"cfde8e517c8d5989eef3ffed8fb203e5e5aadfc793f61b6ec345c22f72a85363\",\"4f2bc55a4899497d2a7e1bec59f9fd71b7437fc29e8a343be9d4f09bbc129e62\"],\"taxpayer_scope\":\"ORDINARY_MAINLAND_INDIVIDUAL\",\"unknowns\":[\"OFFICIAL_CURRENCY_ROUNDING\",\"TRADE_DATE_TO_SETTLEMENT_MAPPING\"]}",
+      "domain_tag": "quant-platform/tax-policy/v1",
+      "expected_sha256": "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223",
+      "name": "tax_policy",
+      "payload": {
+        "account_scope": "PER_SECURITIES_ACCOUNT_WITH_SEPARATE_CUSTODIAN_PARTITIONS",
+        "acquisition_scope": "SUPPORTED_PUBLIC_OR_TRANSFER_MARKET_A_SHARE",
+        "assumptions": {
+          "currency_rounding": "ROUND_HALF_UP_RESEARCH_ASSUMPTION"
+        },
+        "brackets": [
+          {
+            "actual_burden": "0.20",
+            "holding_period": "UP_TO_AND_INCLUDING_ONE_NATURAL_MONTH"
+          },
+          {
+            "actual_burden": "0.10",
+            "holding_period": "OVER_ONE_NATURAL_MONTH_THROUGH_ONE_NATURAL_YEAR"
+          },
+          {
+            "actual_burden": "0.00",
+            "holding_period": "OVER_ONE_NATURAL_YEAR"
+          }
+        ],
+        "checked_at": "2026-08-31T15:28:12Z",
+        "collection": "AFTER_TRANSFER_SETTLEMENT_NEXT_TRADING_DAY_PROCESS",
+        "effective_record_date_start": "2015-09-09",
+        "fifo": "PER_SECURITIES_ACCOUNT_END_OF_DAY_NET_CHANGE",
+        "holding_period_endpoint": "DAY_BEFORE_TRANSFER_SETTLEMENT",
+        "policy_family": "CN-INDIVIDUAL-A-2015-101",
+        "policy_version": 1,
+        "schema_version": 1,
+        "source_artifact_ids": [
+          "8d66656959a6d24afe8eee860700d319b8d52eaa18dea4f72115d421cd4235a3",
+          "cfde8e517c8d5989eef3ffed8fb203e5e5aadfc793f61b6ec345c22f72a85363",
+          "4f2bc55a4899497d2a7e1bec59f9fd71b7437fc29e8a343be9d4f09bbc129e62"
+        ],
+        "taxpayer_scope": "ORDINARY_MAINLAND_INDIVIDUAL",
+        "unknowns": [
+          "OFFICIAL_CURRENCY_ROUNDING",
+          "TRADE_DATE_TO_SETTLEMENT_MAPPING"
+        ]
+      }
+    }
+  ]
+}
