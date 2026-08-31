@@ -99,3 +99,97 @@ A historical evidence assessment: `NO_RECORDED_PLATFORM_EXPOSURE`, `PREVIOUSLY_E
 ## Study Control Status
 
 An orthogonal control state: active, paused, cancelled, or failed. Control status does not overwrite the Study phase or fabricate selection/holdout outcomes.
+
+## Model Release
+
+An immutable, promotable record of one exact strategy configuration, its execution identity, and the verified evidence from which it was accepted. A native Model Release is derived from a Parameter Study's canonical successful Attempt and Metric Document; a legacy import has separate provenance.
+
+**Distinguish from:** a Study champion, Experiment, or Attempt. A standalone Experiment or Attempt is not natively promotable, and qualifying Study evidence never becomes a Model Release automatically.
+
+## Release Digest
+
+The content identity of a Model Release against which every approval, deployment, and runtime verification is made.
+
+## Release Stage
+
+The current governance classification of a Model Release: `EXPERIMENTAL`, `PAPER_FROZEN`, `PRODUCTION_FROZEN`, or `RETIRED`. A stage expresses authorization, not research quality or deployment activity.
+
+## Promotion Approval
+
+An immutable decision by an identified authority to move one exact Release Digest through a permitted Release Stage transition.
+
+**Distinguish from:** evidence eligibility. Passing research gates permits review but never supplies approval.
+
+## Deployment Channel
+
+The unique combination of asset and operational signal purpose. A channel is the cross-environment exclusivity scope within which at most one Deployment is active.
+
+**Distinguish from:** a Deployment. Environment, schedule, runtime, and release identity belong to the Deployment and do not change channel identity.
+
+## Deployment
+
+An immutable binding of one approved Model Release to a Deployment Channel, environment, schedule, and runtime identity.
+
+**Distinguish from:** a Model Release, which can exist without any operational binding, and an Active Deployment, which selects which binding is authoritative now.
+
+## Active Deployment
+
+The single authoritative Deployment selected for a Deployment Channel at a point in its audited activation history, regardless of that Deployment's environment.
+
+## Runtime Identity
+
+The immutable content identity of the operational source, dependencies, runner image, and protocol used for Signal Production.
+
+**Distinguish from:** Execution Identity, which is frozen research evidence; a Deployment separately binds the operational Runtime Identity it will execute.
+
+## Signal Output Contract
+
+The closed vocabulary and validation rules for one Deployment's recommendations, target states, reason codes, measurement keys, numeric ranges, and units.
+
+## Producer Adapter Binding
+
+The exact identity of a source-reviewed trusted implementation authorized to produce a signal under one Runtime Identity and Signal Output Contract.
+
+## Delivery Contract
+
+The closed at-least-once delivery semantics, logical non-secret destination reference, payload contract, and trusted destination-adapter identity bound by a Deployment.
+
+## Authority Context
+
+An immutable server-derived statement of an authenticated human or machine principal and its explicit roles; callers cannot assert it themselves.
+
+## Idempotency Conflict
+
+An immutable record that a caller ID or canonical invocation identity was presented inconsistently with its first accepted claim; it grants no operational authority.
+
+## Signal Production
+
+Operational generation and delivery of a model-derived recommendation or target state without submitting, routing, or executing an order.
+
+**Distinguish from:** paper trading and live trading, both of which create order or fill state and remain outside this platform.
+
+## Signal Invocation
+
+One canonical scheduled or requested signal action, identified independently of whether a Deployment is active. It records an idempotent pre-run outcome such as `NO_ACTIVE_DEPLOYMENT` when no Signal Run can begin.
+
+**Distinguish from:** a Signal Run, which exists only after the invocation binds an Active Deployment.
+
+## Signal Run
+
+One attempt, created only after a Signal Invocation binds an Active Deployment, to verify and produce a signal under that exact runtime binding. A failed Signal Run produces no new confirmed signal.
+
+## Confirmed Signal State
+
+The most recent signal output whose Active Deployment and release, approval, evidence, parameter, data, and runtime identities all passed verification. Failed or interrupted Signal Runs never replace it.
+
+## Signal Delivery
+
+An external delivery attempt for one immutable logical outbox event created with a confirmed Signal Run. The platform creates that event once; external transport is at least once and can duplicate delivery after a crash.
+
+## Rollback
+
+A new audited activation that restores a previously created immutable Deployment; it does not reverse or edit history.
+
+## Legacy Promotion Evidence
+
+The available pre-registry manifests, digests, review records, and runtime bindings preserved as the provenance of an imported Model Release without claiming missing approval or native Study, Experiment, or Attempt lineage.
