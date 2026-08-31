@@ -1,4 +1,7 @@
 import os
+import sqlite3
+import subprocess
+import textwrap
 from pathlib import Path
 
 
@@ -171,3 +174,500 @@ def test_documentation_uses_the_authoritative_shared_platform_root():
         "`/home/feng/quant-platform/current` is never accepted as the project root"
         in plan
     )
+
+
+def test_release_documentation_explains_project_script_convention_exception():
+    deployment = (ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+
+    assert "project-level exception" in deployment
+    assert "vm/scripts/lib/common.sh" in deployment
+    assert "Issue #175" in deployment
+    assert "subsequent invocation fails" in deployment
+
+
+DEPLOY_SCRIPT = ROOT / "deploy" / "deploy-release.sh"
+PRODUCTION_HOST = "quant.ai.jingtao.fun"
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _catalog_state(path: Path) -> tuple[list[int], list[str]]:
+    with sqlite3.connect(path) as connection:
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+        values = [
+            row[0]
+            for row in connection.execute(
+                "SELECT value FROM deployment_probe ORDER BY value"
+            )
+        ]
+    return versions, values
+
+
+def _catalog_user_version(path: Path) -> int:
+    with sqlite3.connect(path) as connection:
+        return connection.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _deployment_fixture(tmp_path: Path) -> dict[str, object]:
+    release_id = "release-175"
+    platform_root = tmp_path / "quant-platform"
+    release_root = platform_root / "releases"
+    release_dir = release_root / release_id
+    release_python = release_dir / ".venv" / "bin" / "python"
+    release_python.parent.mkdir(parents=True)
+    _write_executable(release_python, "#!/usr/bin/env bash\nexit 0\n")
+
+    live_root = tmp_path / "live"
+    live_root.mkdir()
+    unit_path = live_root / "quant-research-ui.service"
+    env_path = live_root / "quant-research-ui.env"
+    unit_template = tmp_path / "quant-research-ui.service.template"
+    unit_template.write_text(
+        (ROOT / "deploy" / "quant-research-ui.service")
+        .read_text(encoding="utf-8")
+        .replace("/home/feng/quant-platform/releases", str(release_root))
+        .replace(
+            "/home/feng/.config/quant-research-ui.env",
+            str(env_path),
+        ),
+        encoding="utf-8",
+    )
+    old_release = release_root / "previous-release"
+    old_unit = textwrap.dedent(
+        f"""\
+        [Service]
+        WorkingDirectory={old_release}
+        EnvironmentFile={env_path}
+        ExecStart={old_release}/.venv/bin/python -m quant_platform.web
+        """
+    )
+    secret = "fixture-secret-must-not-be-printed"
+    old_env = textwrap.dedent(
+        f"""\
+        QUANT_ENVIRONMENT=production
+        QUANT_PROJECT_ROOT={old_release}
+        AUTH_SHARED_SECRET={secret}
+        QUANT_SESSION_SECRET=another-{secret}
+        """
+    )
+    unit_path.write_text(old_unit, encoding="utf-8")
+    env_path.write_text(old_env, encoding="utf-8")
+    env_path.chmod(0o600)
+
+    state_root = platform_root / "state" / "platform"
+    state_root.mkdir(parents=True)
+    catalog_path = state_root / "catalog.sqlite3"
+    with sqlite3.connect(catalog_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            [(version, f"2026-08-{version:02d}T00:00:00Z") for version in range(1, 9)],
+        )
+        connection.execute("CREATE TABLE deployment_probe(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO deployment_probe(value) VALUES ('before-deploy')")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    systemctl_log = tmp_path / "systemctl.log"
+    curl_log = tmp_path / "curl.log"
+    rm_log = tmp_path / "rm.log"
+    _write_executable(
+        fake_bin / "systemctl",
+        r"""
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        printf '%s\n' "$*" >> "$FAKE_SYSTEMCTL_LOG"
+        if [[ "$*" == "--user stop quant-research-ui.service" ]] \
+            && [[ "${FAKE_FAIL_ROLLBACK_STOP:-0}" == "1" ]]; then
+          exit 1
+        fi
+        if [[ "$*" == "--user restart quant-research-ui.service" ]]; then
+          if grep -Fqx "WorkingDirectory=$FAKE_NEW_WORKING_DIRECTORY" \
+              "$QUANT_DEPLOY_UNIT_PATH" \
+              && [[ "${FAKE_MIGRATE_SCHEMA:-1}" == "1" ]]; then
+            python3 - "$QUANT_DEPLOY_STATE_ROOT/catalog.sqlite3" <<'PY'
+        import sqlite3
+        import sys
+
+        with sqlite3.connect(sys.argv[1]) as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) "
+                "VALUES (9, '2026-08-31T00:00:00Z')"
+            )
+        PY
+          fi
+          exit 0
+        fi
+        if [[ "$*" == *"--property=WorkingDirectory --value" ]]; then
+          if [[ -n "${FAKE_WORKING_DIRECTORY:-}" ]]; then
+            printf '%s\n' "$FAKE_WORKING_DIRECTORY"
+          else
+            sed -n 's/^WorkingDirectory=//p' "$QUANT_DEPLOY_UNIT_PATH"
+          fi
+          exit 0
+        fi
+        if [[ "$*" == *"--property=NRestarts --value" ]]; then
+          printf '%s\n' "${FAKE_NRESTARTS:-0}"
+          exit 0
+        fi
+        """,
+    )
+    _write_executable(
+        fake_bin / "rm",
+        r"""
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        for argument in "$@"; do
+          if [[ "${FAKE_FAIL_STAGED_CLEANUP:-0}" == "1" ]] \
+              && [[ "$argument" == *.new.* ]]; then
+            printf '%s\n' "$*" >> "$FAKE_RM_LOG"
+            exit 1
+          fi
+        done
+        exec /usr/bin/rm "$@"
+        """,
+    )
+    _write_executable(
+        fake_bin / "curl",
+        r"""
+        #!/usr/bin/env python3
+        import os
+        import stat
+        import sys
+        from pathlib import Path
+
+        arguments = sys.argv[1:]
+        with Path(os.environ["FAKE_CURL_LOG"]).open("a", encoding="utf-8") as log:
+            log.write(" ".join(arguments) + "\n")
+        if os.environ.get("FAKE_CURL_MODE") == "all-fail":
+            raise SystemExit(7)
+
+        url = arguments[-1]
+        output_path = arguments[arguments.index("--output") + 1]
+        status = 200
+        body = ""
+        if url == "http://127.0.0.1:8090/health":
+            body = os.environ.get("FAKE_LOCAL_HEALTH_BODY", '{"status":"ok"}')
+        elif url.endswith("/health"):
+            body = os.environ.get("FAKE_PUBLIC_HEALTH_BODY", '{"status":"ok"}')
+        elif url.endswith("/api/operators"):
+            status = int(os.environ.get("FAKE_API_STATUS", "401"))
+        else:
+            status = int(os.environ.get("FAKE_ROOT_STATUS", "303"))
+
+        if output_path != "/dev/null":
+            with Path(os.environ["FAKE_PROBE_MODE_LOG"]).open(
+                "a", encoding="utf-8"
+            ) as mode_log:
+                mode = stat.S_IMODE(Path(output_path).stat().st_mode)
+                mode_log.write(f"{mode:04o}\n")
+            Path(output_path).write_text(body, encoding="utf-8")
+        if "--write-out" in arguments:
+            sys.stdout.write(str(status))
+        if "--fail" in arguments and status >= 400:
+            raise SystemExit(22)
+        """,
+    )
+
+    rollback_dir = platform_root / "rollback"
+    probe_path = tmp_path / "health-response.json"
+    probe_mode_log = tmp_path / "probe-mode.log"
+    environment = {
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "QUANT_DEPLOY_RELEASE_ROOT": str(release_root),
+        "QUANT_DEPLOY_UNIT_TEMPLATE": str(unit_template),
+        "QUANT_DEPLOY_UNIT_PATH": str(unit_path),
+        "QUANT_DEPLOY_ENV_PATH": str(env_path),
+        "QUANT_DEPLOY_STATE_ROOT": str(state_root),
+        "QUANT_DEPLOY_ROLLBACK_DIR": str(rollback_dir),
+        "QUANT_DEPLOY_PROBE_FILE": str(probe_path),
+        "QUANT_DEPLOY_HEALTH_ATTEMPTS": "3",
+        "QUANT_DEPLOY_HEALTH_INTERVAL_SECONDS": "0",
+        "FAKE_NEW_WORKING_DIRECTORY": str(release_dir),
+        "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        "FAKE_CURL_LOG": str(curl_log),
+        "FAKE_RM_LOG": str(rm_log),
+        "FAKE_PROBE_MODE_LOG": str(probe_mode_log),
+    }
+    return {
+        "release_id": release_id,
+        "release_dir": release_dir,
+        "unit_template": unit_template,
+        "unit_path": unit_path,
+        "env_path": env_path,
+        "old_unit": old_unit,
+        "old_env": old_env,
+        "secret": secret,
+        "catalog_path": catalog_path,
+        "rollback_dir": rollback_dir,
+        "probe_path": probe_path,
+        "probe_mode_log": probe_mode_log,
+        "systemctl_log": systemctl_log,
+        "curl_log": curl_log,
+        "rm_log": rm_log,
+        "environment": environment,
+    }
+
+
+def _run_deployment(fixture: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(DEPLOY_SCRIPT), str(fixture["release_id"])],
+        cwd=ROOT,
+        env=fixture["environment"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_secrets_were_not_printed(
+    fixture: dict[str, object],
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    output = result.stdout + result.stderr
+    assert fixture["secret"] not in output
+    assert "AUTH_SHARED_SECRET" not in output
+    assert "QUANT_SESSION_SECRET" not in output
+
+
+def _assert_rollback_restored(
+    fixture: dict[str, object],
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    assert fixture["unit_path"].read_text(encoding="utf-8") == fixture["old_unit"]
+    assert fixture["env_path"].read_text(encoding="utf-8") == fixture["old_env"]
+    assert _catalog_state(fixture["catalog_path"]) == (
+        list(range(1, 9)),
+        ["before-deploy"],
+    )
+    systemctl_calls = fixture["systemctl_log"].read_text(encoding="utf-8")
+    assert "--user stop quant-research-ui.service" in systemctl_calls
+    assert systemctl_calls.count("--user restart quant-research-ui.service") == 2
+    _assert_secrets_were_not_printed(fixture, result)
+
+
+def test_stale_success_probe_with_only_current_curl_failures_rolls_back(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["probe_path"].write_text('{"status":"ok"}', encoding="utf-8")
+    fixture["environment"]["FAKE_CURL_MODE"] = "all-fail"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    assert not fixture["probe_path"].exists()
+    assert len(fixture["curl_log"].read_text(encoding="utf-8").splitlines()) == 3
+    _assert_rollback_restored(fixture, result)
+
+
+def test_legacy_probe_symlink_cannot_overwrite_its_target(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    protected = tmp_path / "protected.txt"
+    protected.write_text("must remain intact", encoding="utf-8")
+    fixture["probe_path"].symlink_to(protected)
+    fixture["environment"]["FAKE_CURL_MODE"] = "all-fail"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    assert protected.read_text(encoding="utf-8") == "must remain intact"
+    assert not fixture["probe_path"].exists()
+    assert not list(fixture["rollback_dir"].glob("health-response.*"))
+    _assert_rollback_restored(fixture, result)
+
+
+def test_rollback_attempts_every_recovery_step_after_stop_failure(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_CURL_MODE"] = "all-fail"
+    fixture["environment"]["FAKE_FAIL_ROLLBACK_STOP"] = "1"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+    assert "Rollback completed with errors; manual recovery is required." in result.stderr
+
+
+def test_exit_cleanup_failure_cannot_skip_rollback(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["unit_template"].write_text("[Service]\n", encoding="utf-8")
+    fixture["environment"]["FAKE_FAIL_STAGED_CLEANUP"] = "1"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    assert fixture["rm_log"].exists()
+    systemctl_calls = fixture["systemctl_log"].read_text(encoding="utf-8")
+    assert "--user stop quant-research-ui.service" in systemctl_calls
+    assert systemctl_calls.count("--user restart quant-research-ui.service") == 1
+    assert "Staged-file cleanup failed; continuing rollback." in result.stderr
+    _assert_secrets_were_not_printed(fixture, result)
+
+
+def test_local_health_probe_sends_the_production_host_header(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode == 0, result.stderr
+    local_call = next(
+        call
+        for call in fixture["curl_log"].read_text(encoding="utf-8").splitlines()
+        if "http://127.0.0.1:8090/health" in call
+    )
+    assert f"--header Host: {PRODUCTION_HOST}" in local_call
+
+
+def test_release_deployment_requires_exact_schema_migration_and_rolls_back(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_MIGRATE_SCHEMA"] = "0"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_uses_schema_migrations_when_user_version_is_zero(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    assert _catalog_user_version(fixture["catalog_path"]) == 0
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert _catalog_state(fixture["catalog_path"])[0] == list(range(1, 10))
+    assert _catalog_user_version(fixture["catalog_path"]) == 0
+
+
+def test_release_deployment_requires_exact_systemd_working_directory(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_WORKING_DIRECTORY"] = "/wrong/release"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_requires_exact_public_health_response(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_PUBLIC_HEALTH_BODY"] = '{"status":"not-ok"}'
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_requires_public_root_to_redirect_unauthenticated_users(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_ROOT_STATUS"] = "200"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_requires_public_api_to_reject_unauthenticated_users(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_API_STATUS"] = "200"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_requires_zero_systemd_restarts(tmp_path: Path):
+    fixture = _deployment_fixture(tmp_path)
+    fixture["environment"]["FAKE_NRESTARTS"] = "1"
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    _assert_rollback_restored(fixture, result)
+
+
+def test_release_deployment_preserves_checked_rollback_backup_and_secret_hygiene(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"WorkingDirectory={fixture['release_dir']}"
+        in fixture["unit_path"].read_text(encoding="utf-8")
+    )
+    deployed_env = fixture["env_path"].read_text(encoding="utf-8")
+    assert f"QUANT_PROJECT_ROOT={fixture['release_dir']}" in deployed_env
+    assert fixture["secret"] in deployed_env
+    assert _catalog_state(fixture["catalog_path"])[0] == list(range(1, 10))
+
+    rollback_dir = fixture["rollback_dir"]
+    assert (rollback_dir / "quant-research-ui.service").read_text(
+        encoding="utf-8"
+    ) == fixture["old_unit"]
+    assert (rollback_dir / "quant-research-ui.env").read_text(
+        encoding="utf-8"
+    ) == fixture["old_env"]
+    assert _catalog_state(rollback_dir / "catalog.sqlite3") == (
+        list(range(1, 9)),
+        ["before-deploy"],
+    )
+    assert not list(rollback_dir.glob("health-response.*"))
+    curl_calls = fixture["curl_log"].read_text(encoding="utf-8")
+    assert "https://quant.ai.jingtao.fun/health" in curl_calls
+    assert "https://quant.ai.jingtao.fun/api/operators" in curl_calls
+    systemctl_calls = fixture["systemctl_log"].read_text(encoding="utf-8")
+    assert "--property=WorkingDirectory --value" in systemctl_calls
+    assert "--property=NRestarts --value" in systemctl_calls
+    assert set(
+        fixture["probe_mode_log"].read_text(encoding="utf-8").splitlines()
+    ) == {"0600"}
+    _assert_secrets_were_not_printed(fixture, result)
+
+
+def test_release_deployment_refuses_to_overwrite_existing_rollback_backup(
+    tmp_path: Path,
+):
+    fixture = _deployment_fixture(tmp_path)
+    rollback_dir = fixture["rollback_dir"]
+    rollback_dir.mkdir()
+    marker = rollback_dir / "operator-owned-backup"
+    marker.write_text("keep", encoding="utf-8")
+
+    result = _run_deployment(fixture)
+
+    assert result.returncode != 0
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert fixture["unit_path"].read_text(encoding="utf-8") == fixture["old_unit"]
+    assert fixture["env_path"].read_text(encoding="utf-8") == fixture["old_env"]
+    assert _catalog_state(fixture["catalog_path"])[0] == list(range(1, 9))
+    assert not fixture["systemctl_log"].exists()
