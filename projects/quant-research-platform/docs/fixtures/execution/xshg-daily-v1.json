@@ -1,0 +1,351 @@
+{
+  "schema_version": "xshg-daily-execution-decision-v1",
+  "scope": {
+    "account": "ORDINARY_MAINLAND_INDIVIDUAL_CASH_ACCOUNT_REPLAY",
+    "instrument": "601328.XSHG",
+    "market": "XSHG",
+    "unsupported": [
+      "SZSE",
+      "BSE",
+      "MARGIN_OR_SECURITIES_LENDING",
+      "BROKER_ORDER_ROUTING",
+      "AUTOMATIC_TRADING"
+    ]
+  },
+  "research_verdict": {
+    "value": "PARTIAL",
+    "accepted_constraint": "A deterministic daily-open account-replay approximation is useful for research, but daily OHLC cannot prove attainable or full execution. Every approximate fill is ineligible for deployment qualification."
+  },
+  "rule_versions": [
+    {
+      "rule_id": "SSE-TRADING-RULES-2023-32",
+      "source_document": "上海证券交易所交易规则（2023年修订）",
+      "covered_interval": {
+        "from": "2023_MAIN_BOARD_REGISTRATION_FIRST_LISTING",
+        "through": "2026-07-05"
+      },
+      "bocom_spike_applicable": true
+    },
+    {
+      "rule_id": "SSE-TRADING-RULES-2026-41",
+      "source_document": "上海证券交易所交易规则（2026年修订）",
+      "covered_interval": {
+        "from": "2026-07-06",
+        "through": null
+      },
+      "bocom_spike_applicable": false
+    }
+  ],
+  "current_bocom_source": {
+    "dataset_snapshot_id": "562d375baf4f831cca39bd6cc697d454a4aefd9593a0710153325b14d4ff0100",
+    "provider": "yahoo-chart-api",
+    "available_fields": [
+      "Date",
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "AdjustedClose"
+    ],
+    "missing_required_execution_evidence": [
+      "OFFICIAL_SUSPENSION_RESUMPTION_STATE",
+      "FIRST_TRADE_TIMESTAMP",
+      "RULE_AND_SPECIAL_REGIME_IDENTITY",
+      "ORDER_TYPE_LIMIT_AND_QUANTITY",
+      "EXCHANGE_HOST_RECEIPT_TIME",
+      "QUEUE_POSITION",
+      "AUCTION_MATCHED_AND_UNMATCHED_QUANTITY",
+      "BROKER_EXECUTION_REPORT",
+      "BROKER_COMMISSION_SCHEDULE",
+      "CASH_REUSE_OR_WITHDRAWAL_RECORD"
+    ],
+    "official_suspension_evidence": {
+      "authority_page": "https://www.sse.com.cn/disclosure/dealinstruc/suspension/stock/",
+      "endpoint": "https://query.sse.com.cn/commonSoaQuery.do",
+      "sql_id": "GW_PL_JYTS_TFPXX",
+      "required_request_fields": [
+        "productCode",
+        "startStopDate",
+        "endStopDate"
+      ],
+      "bocom_spike_request_record": "../../evidence/xshg-execution-2026-08-31/sse-601328-suspension-query-record.json",
+      "bounded_result": "ZERO_ROWS_FOR_601328_2025-08-15_THROUGH_2026-06-30",
+      "proves_unbounded_completeness": false
+    }
+  },
+  "policies": {
+    "fill": {
+      "id": "XSHG_DAILY_OPEN_FULL_FILL_RESEARCH_APPROXIMATION_V1",
+      "qualification": "RESEARCH_ONLY",
+      "order_type": "HYPOTHETICAL_OPENING_CALL_LIMIT_ORDER",
+      "full_quantity": "ASSUMED_NOT_OBSERVED",
+      "reported_open": "OBSERVED_FIRST_DAILY_TRADE_PRICE_WITH_UNKNOWN_PHASE_AND_TIME"
+    },
+    "limit_queue": {
+      "id": "XSHG_DAILY_LIMIT_QUEUE_FAIL_CLOSED_V1",
+      "buy_at_upper_limit": "NO_FILL_CONSERVATIVE_LIMIT_QUEUE",
+      "sell_at_lower_limit": "NO_FILL_CONSERVATIVE_LIMIT_QUEUE",
+      "known_bias": "FALSE_NEGATIVES_ARE_POSSIBLE"
+    },
+    "delayed_intent": {
+      "id": "DELAYED_UNTIL_ELIGIBLE_SESSION_V1",
+      "preserve_original_requested_session": true,
+      "rename_as_next_open": false
+    },
+    "settlement": {
+      "id": "ORDINARY_XSHG_A_SHARE_CONSERVATIVE_T1_V1",
+      "same_day_sale_of_purchased_lot": "REJECTED_SETTLEMENT_RESTRICTION",
+      "purchased_lot_saleable": "NEXT_ELIGIBLE_TRADING_SESSION",
+      "sale_proceeds_reuse": "NEXT_ELIGIBLE_TRADING_SESSION_RESEARCH_ASSUMPTION",
+      "sale_proceeds_withdrawal": "UNKNOWN_REQUIRES_BROKER_ACCOUNT_EVIDENCE",
+      "dividend_tax_trade_to_settlement_mapping": "UNKNOWN_OWNED_BY_ISSUES_201_AND_197"
+    },
+    "charges": {
+      "id": "BOCOM_XSHG_RESEARCH_CHARGES_V1",
+      "currency": "CNY",
+      "money_representation": "INTEGER_FEN",
+      "rounding": "ROUND_HALF_UP_TO_FEN_RESEARCH_ASSUMPTION",
+      "commission": {
+        "rate": "0.0003",
+        "minimum_cny_per_trade": "5.00",
+        "status": "BROKER_SPECIFIC_RESEARCH_ASSUMPTION",
+        "includes_exchange_handling_and_regulatory_fees": true
+      },
+      "transfer_fee": {
+        "rate": "0.00001",
+        "sides": "BUY_AND_SELL",
+        "status": "CURRENT_OFFICIAL_FACT"
+      },
+      "stamp_tax": {
+        "rate": "0.0005",
+        "sides": "SELL_ONLY",
+        "applicable_from": "2023-08-28",
+        "status": "CURRENT_OFFICIAL_FACT"
+      },
+      "slippage": {
+        "buy_bps": "5",
+        "sell_bps": "5",
+        "interpretation": "COMBINED_SPREAD_AND_SLIPPAGE_ORDER_LEVEL_CASH_FRICTION",
+        "reference_open_tick_cny": "0.01",
+        "formula": {
+          "friction_fen": "ROUND_HALF_UP(open_cny * quantity * 100 * bps / 10000)",
+          "buy_execution_value_fen": "open_notional_fen + friction_fen",
+          "sell_execution_value_fen": "open_notional_fen - friction_fen",
+          "display_average_price": "execution_value_cny / quantity"
+        },
+        "display_average_price_is_exchange_order_price": false,
+        "status": "MODEL_RESEARCH_ASSUMPTION"
+      },
+      "separate_exchange_handling_charge": false,
+      "separate_regulatory_fee_charge": false
+    }
+  },
+  "cases": [
+    {
+      "case": "ordinary_interior_daily_open",
+      "input": {
+        "bar_fresh": true,
+        "direction": "BUY",
+        "official_status": "TRADING_ELIGIBLE",
+        "open": "8.42",
+        "open_limit_state": "INTERIOR",
+        "quantity": 10000,
+        "requested_session": "2026-08-31",
+        "rule_version_known": true
+      },
+      "expected": {
+        "actual_execution_session": "2026-08-31",
+        "charges": {
+          "commission_cny": "25.27",
+          "stamp_tax_cny": "0.00",
+          "total_cny": "26.11",
+          "transfer_fee_cny": "0.84"
+        },
+        "cash_decrease_cny": "84268.21",
+        "fill_state": "RESEARCH_APPROXIMATE_FILL",
+        "friction_cny": "42.10",
+        "open_notional_cny": "84200.00",
+        "synthetic_average_fill_price_cny": "8.42421",
+        "synthetic_execution_value_cny": "84242.10",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "confirmed_full_day_suspension",
+      "input": {
+        "official_status": "SUSPENDED_FULL_DAY",
+        "vendor_open": "8.42"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_CONFIRMED_INELIGIBLE",
+        "ignore_vendor_open": true,
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "buy_at_upper_limit",
+      "input": {
+        "direction": "BUY",
+        "official_status": "TRADING_ELIGIBLE",
+        "open_limit_state": "AT_UPPER_LIMIT"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_CONSERVATIVE_LIMIT_QUEUE",
+        "known_bias": "MAY_REJECT_AN_ACTUALLY_FILLABLE_ORDER",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "sell_at_lower_limit",
+      "input": {
+        "direction": "SELL",
+        "official_status": "TRADING_ELIGIBLE",
+        "open_limit_state": "AT_LOWER_LIMIT"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_CONSERVATIVE_LIMIT_QUEUE",
+        "known_bias": "MAY_REJECT_AN_ACTUALLY_FILLABLE_ORDER",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "missing_or_synthetic_open",
+      "input": {
+        "official_status": "TRADING_ELIGIBLE",
+        "open": null,
+        "vendor_fill_policy": "PREVIOUS_CLOSE"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_MISSING_REQUIRED_EVIDENCE",
+        "synthetic_open_allowed": false,
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "stale_bar",
+      "input": {
+        "bar_fresh": false,
+        "official_status": "TRADING_ELIGIBLE",
+        "open": "8.42"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_MISSING_REQUIRED_EVIDENCE",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "conflicting_status_sources",
+      "input": {
+        "official_status": "SUSPENDED",
+        "provider_status": "TRADING",
+        "open": "8.42"
+      },
+      "expected": {
+        "fill_state": "NO_FILL_MISSING_REQUIRED_EVIDENCE",
+        "conflict_preserved": true,
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "delayed_reopening_with_interior_open",
+      "input": {
+        "direction": "BUY",
+        "next_verified_eligible_session": "2026-09-01",
+        "requested_session_status": "SUSPENDED",
+        "requested_session": "2026-08-31",
+        "quantity": 10000,
+        "next_verified_eligible_session_open": "8.55",
+        "next_session_open_limit_state": "INTERIOR"
+      },
+      "expected": {
+        "actual_execution_session": "2026-09-01",
+        "charges": {
+          "commission_cny": "25.66",
+          "stamp_tax_cny": "0.00",
+          "total_cny": "26.52",
+          "transfer_fee_cny": "0.86"
+        },
+        "cash_decrease_cny": "85569.27",
+        "fill_state": "DELAYED_RESEARCH_APPROXIMATE_FILL",
+        "friction_cny": "42.75",
+        "open_notional_cny": "85500.00",
+        "requested_session_preserved": true,
+        "synthetic_average_fill_price_cny": "8.554275",
+        "synthetic_execution_value_cny": "85542.75",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "same_day_sale_after_purchase",
+      "input": {
+        "instrument_type": "ORDINARY_A_SHARE",
+        "purchase_session": "2026-08-31",
+        "requested_sale_session": "2026-08-31"
+      },
+      "expected": {
+        "fill_state": "REJECTED_SETTLEMENT_RESTRICTION",
+        "earliest_sale_session": "NEXT_ELIGIBLE_TRADING_SESSION",
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "sale_proceeds_same_day_reuse_without_broker_evidence",
+      "input": {
+        "sale_session": "2026-08-31",
+        "requested_reuse_session": "2026-08-31",
+        "broker_account_evidence": null
+      },
+      "expected": {
+        "fill_state": "REJECTED_SETTLEMENT_RESTRICTION",
+        "earliest_reuse_session": "NEXT_ELIGIBLE_TRADING_SESSION",
+        "assumption_disclosed": true,
+        "deployment_qualification": false
+      }
+    },
+    {
+      "case": "imported_exact_execution_report",
+      "input": {
+        "broker_execution_report": "PRESENT_AND_IDENTITY_VERIFIED",
+        "fill_quantity": 11800,
+        "fill_price": "8.42",
+        "execution_time": "09:25:00",
+        "fees_reconciled_to_account": true
+      },
+      "expected": {
+        "fill_state": "ATTAINABLE_EXECUTION_VERIFIED",
+        "deployment_qualification": "MAY_PROCEED_TO_OTHER_INDEPENDENT_GATES"
+      }
+    }
+  ],
+  "charge_examples": [
+    {
+      "transaction_amount_cny": "10000.00",
+      "buy": {
+        "commission_cny": "5.00",
+        "transfer_fee_cny": "0.10",
+        "total_charge_cny": "5.10"
+      },
+      "sell": {
+        "commission_cny": "5.00",
+        "transfer_fee_cny": "0.10",
+        "stamp_tax_cny": "5.00",
+        "total_charge_cny": "10.10"
+      }
+    },
+    {
+      "transaction_amount_cny": "100000.00",
+      "buy": {
+        "commission_cny": "30.00",
+        "transfer_fee_cny": "1.00",
+        "total_charge_cny": "31.00"
+      },
+      "sell": {
+        "commission_cny": "30.00",
+        "transfer_fee_cny": "1.00",
+        "stamp_tax_cny": "50.00",
+        "total_charge_cny": "81.00"
+      }
+    }
+  ]
+}

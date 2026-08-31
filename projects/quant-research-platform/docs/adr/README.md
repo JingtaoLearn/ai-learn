@@ -14,5 +14,6 @@ These ADRs record hard-to-reverse decisions behind trustworthy research evidence
 10. Derive Release Stage from append-only exact-digest decisions.
 11. Serialize cross-environment Active Deployment changes per asset-and-purpose Deployment Channel.
 12. Preserve authoritative A-share cash-dividend and tax evidence without upgrading unknown coverage.
+13. Bound XSHG daily execution and market-friction claims; permit only disclosed research approximations when daily OHLC cannot prove an attainable fill.
 
 Read the project [`CONTEXT.md`](../../CONTEXT.md) first so ADR terms retain their canonical meanings.

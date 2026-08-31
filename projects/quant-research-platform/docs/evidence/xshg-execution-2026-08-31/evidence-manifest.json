@@ -1,0 +1,209 @@
+{
+  "artifacts": [
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 65302,
+      "name": "sse-trading-rules-2026.docx",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-trading-rules-2026.docx",
+      "role": "current exchange execution rules from 2026-07-06",
+      "sha256": "fc922c433438b2636cb631eab25cca405209712acbb6aaded768c45456ff8888",
+      "source_url": "https://www.sse.com.cn/lawandrules/sselawsrules2025/trade/universal/c/10816492/files/704204728fe74fff89de4f16efda4791.docx"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 34823,
+      "name": "sse-trading-rules-page.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-trading-rules-page.html",
+      "role": "current-rule effective/repeal notice",
+      "sha256": "4cd3e985fb8fde7283c30b88987465f04a09c209721332948c7f1336522711d1",
+      "source_url": "https://www.sse.com.cn/lawandrules/sselawsrules2025/trade/universal/c/c_20260424_10816492.shtml"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 51948,
+      "name": "sse-trading-rules-2023.docx",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-trading-rules-2023.docx",
+      "role": "historical exchange execution rules for the BOCOM Spike interval",
+      "sha256": "7aa2319f6dcf597be1e86b3b69d7c2ad0e6acb2a5d0cc6be48a01af602fded40",
+      "source_url": "https://www.sse.com.cn/lawandrules/sselawsrules2025/repeal/rules/c/10824490/files/dcbe58edb194451d93f19b1f7dd8fb4c.docx"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 35712,
+      "name": "sse-trading-rules-2023-archive-page.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-trading-rules-2023-archive-page.html",
+      "role": "official archive and superseded status for 2023 rules",
+      "sha256": "77e750449b5b654ced15d4d0f7263d980cb997ded0e434b2985b71194e244805",
+      "source_url": "https://www.sse.com.cn/lawandrules/sselawsrules2025/repeal/rules/c/c_20250612_10824490.shtml"
+    },
+    {
+      "authority": "www.chinaclear.cn",
+      "bytes": 269259,
+      "name": "chinaclear-settlement-rules-2022.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/chinaclear-settlement-rules-2022.pdf",
+      "role": "securities/funds clearing and settlement rules",
+      "sha256": "637c99e28c2142296bd0b23719662d805f79617ac7e96d038a9024983928874a",
+      "source_url": "http://www.chinaclear.cn/zdjs/editor_file/20220620141248275.pdf"
+    },
+    {
+      "authority": "www.chinaclear.cn",
+      "bytes": 920482,
+      "name": "chinaclear-shanghai-funds-guide-2025.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/chinaclear-shanghai-funds-guide-2025.pdf",
+      "role": "Shanghai participant funds-settlement guide",
+      "sha256": "ab2f84be473e2bfde84091435898187cb6f716d32200c26319d8eb005ad2cc3a",
+      "source_url": "http://www.chinaclear.cn/zdjs/qsh/202512/33b9a35aa34645759ec29093b3391aa8/files/%E4%B8%AD%E5%9B%BD%E8%AF%81%E5%88%B8%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E6%9C%89%E9%99%90%E8%B4%A3%E4%BB%BB%E5%85%AC%E5%8F%B8%E4%B8%8A%E6%B5%B7%E5%88%86%E5%85%AC%E5%8F%B8%E7%BB%93%E7%AE%97%E8%B4%A6%E6%88%B7%E7%AE%A1%E7%90%86%E5%8F%8A%E8%B5%84%E9%87%91%E7%BB%93%E7%AE%97%E4%B8%9A%E5%8A%A1%E6%8C%87%E5%8D%97.pdf"
+    },
+    {
+      "authority": "www.chinaclear.cn",
+      "bytes": 139671,
+      "name": "chinaclear-shanghai-fees-2026.pdf",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/chinaclear-shanghai-fees-2026.pdf",
+      "role": "current Shanghai investor transfer-fee table",
+      "sha256": "84a99e563cb8e84e264c88e3bea2df5f4ac50b1e95330417ec30e2b2566d862f",
+      "source_url": "http://www.chinaclear.cn/zdjs/fbzyls/202512/922adc26c2ff4865930c7fb77688bb8a/files/%E4%B8%8A%E6%B5%B7%E5%B8%82%E5%9C%BA%E8%AF%81%E5%88%B8%E7%99%BB%E8%AE%B0%E7%BB%93%E7%AE%97%E4%B8%9A%E5%8A%A1%E6%94%B6%E8%B4%B9%E5%8F%8A%E4%BB%A3%E6%94%B6%E7%A8%8E%E8%B4%B9%E4%B8%80%E8%A7%88%E8%A1%A8.pdf"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 41658,
+      "name": "sse-current-fees-page.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-current-fees-page.html",
+      "role": "current SSE handling-fee table",
+      "sha256": "c3f762ca29f759c3b853f5c5310bbe6db9be344783a88edf261e7904d8090a53",
+      "source_url": "http://www.sse.com.cn/services/tradingservice/charge/ssecharge/"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 28950,
+      "name": "sse-current-collected-taxes-page.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-current-collected-taxes-page.html",
+      "role": "current SSE-collected regulatory fee table",
+      "sha256": "a5f3fa058e8d8eb8ffdedc05fa2bfde4d106e6f3f6c26d3979f5d9302226a0fe",
+      "source_url": "http://www.sse.com.cn/services/tradingservice/charge/taxfee/"
+    },
+    {
+      "authority": "www.chinaclear.cn",
+      "bytes": 30696,
+      "name": "chinaclear-transfer-fee-2022.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/chinaclear-transfer-fee-2022.html",
+      "role": "A-share transfer-fee effective notice",
+      "sha256": "68763b8fe13f7fb90f378b077033b692aafc4eca851c78c18a306b001d591a60",
+      "source_url": "https://www.chinaclear.cn/zdjs/gszb/202204/837e3c5031104aa099d6597ba381342a.shtml"
+    },
+    {
+      "authority": "www.chinaclear.cn",
+      "bytes": 29228,
+      "name": "chinaclear-dvp-2022.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/chinaclear-dvp-2022.html",
+      "role": "DVP implementation and retail-impact boundary",
+      "sha256": "3ad0471b358e22da1f921f83bd5dceab71420f9355c01d98cd79e9d90fd06686",
+      "source_url": "http://www.chinaclear.cn/zdjs/gsdtnew/202301/e3cf86e2bea04625adb07c0eadf00cef.shtml"
+    },
+    {
+      "authority": "fgk.chinatax.gov.cn",
+      "bytes": 36736,
+      "name": "stamp-tax-half-2023.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/stamp-tax-half-2023.html",
+      "role": "current half-rate notice",
+      "sha256": "bdad8369ee854d205de9a1e355beecc4fa7841f7293e332997e6cadd2b923c35",
+      "source_url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5211343/content.html"
+    },
+    {
+      "authority": "www.npc.gov.cn",
+      "bytes": 12332,
+      "name": "stamp-tax-law-2021.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/stamp-tax-law-2021.html",
+      "role": "seller-only statutory tax base",
+      "sha256": "ba117e7be4f7e48f44c3f7e79e3f2363844eb6844738c3210f2f8f9dcef635c3",
+      "source_url": "http://www.npc.gov.cn/c2/c30834/202106/t20210610_311898.html"
+    },
+    {
+      "authority": "www.chinatax.gov.cn",
+      "bytes": 28800,
+      "name": "broker-commission-cap-2002.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/broker-commission-cap-2002.html",
+      "role": "commission cap/minimum and broker-specific schedule boundary",
+      "sha256": "cf021cd77d560641c6fda0621ddbf8da2fb2097d57877f48aaed7bbd55bfc79a",
+      "source_url": "https://www.chinatax.gov.cn/chinatax/n810341/n810765/n812203/200202/c1209808/content.html"
+    },
+    {
+      "authority": "www.csrc.gov.cn",
+      "bytes": 18953,
+      "name": "csrc-dividend-fifo-2024.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/csrc-dividend-fifo-2024.html",
+      "role": "FIFO dividend-tax investor example; supporting, not settlement law",
+      "sha256": "f210b275621c79889a7420f4ff56e9be740d545d1040f2b716138944777271b3",
+      "source_url": "https://www.csrc.gov.cn/shenzhen/c105614/c7521964/content.shtml"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 27195,
+      "content_type": "text/html",
+      "http_status": 200,
+      "name": "sse-suspension-page.html",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-suspension-page.html",
+      "role": "official suspension/resumption user-facing authority",
+      "sha256": "901418905223d0ea05a432784e0e285eb597185136b84397864229e57a046b6f",
+      "source_url": "https://www.sse.com.cn/disclosure/dealinstruc/suspension/stock/"
+    },
+    {
+      "authority": "www.sse.com.cn",
+      "bytes": 39627,
+      "content_type": "application/javascript",
+      "http_status": 200,
+      "name": "sse-suspension-query-script.js",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-suspension-query-script.js",
+      "role": "official page query endpoint, SQL ID, parameters, and result-field contract",
+      "sha256": "32fc98ea41e599f457609247ba68defb82e6d855aa2551da6923dbf7e44153a7",
+      "source_url": "https://www.sse.com.cn/xhtml/home/2021public/querySearch/search_tradeTip_2021.js?v=ssesite_V3.8.0_20260828"
+    },
+    {
+      "authority": "query.sse.com.cn",
+      "bytes": 512,
+      "content_type": "application/json;charset=UTF-8",
+      "http_status": 200,
+      "name": "sse-601328-suspension-20250815-20260630.jsonp",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-601328-suspension-20250815-20260630.jsonp",
+      "role": "bounded BOCOM Spike-interval official suspension query response",
+      "sha256": "08cb1c31e8862d6fa111ff1e4fd07eca326f7b08f0a03aa7742050e139ac52c0",
+      "source_url": "https://query.sse.com.cn/commonSoaQuery.do"
+    }
+  ],
+  "claim_catalog": "claims-v1.json",
+  "current_bocom_snapshot": {
+    "columns": [
+      "Date",
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "AdjustedClose"
+    ],
+    "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/inputs/state/datasets/601328.SS/562d375baf4f831cca39bd6cc697d454a4aefd9593a0710153325b14d4ff0100/manifest.json",
+    "provider": "yahoo-chart-api",
+    "sha256": "51c1a3e3632b327fb036b6a088de0b61dd23edf27aa2f6d8555695af0ba520ec",
+    "snapshot_id": "562d375baf4f831cca39bd6cc697d454a4aefd9593a0710153325b14d4ff0100"
+  },
+  "manifest_role": "RESEARCH_AUDIT_ONLY_NOT_PRODUCTION_EVIDENCE",
+  "preservation_root": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/",
+  "query_records": [
+    {
+      "bytes": 1348,
+      "name": "sse-601328-suspension-query-record.json",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-601328-suspension-query-record.json",
+      "role": "exact request parameters, header names, response identity, and bounded interpretation",
+      "repository_record": "sse-601328-suspension-query-record.json",
+      "sha256": "77043bc97347c1f1f9b6bb4fab9a9e4c7ae34405be34ddd6c37d902b08fe7639"
+    }
+  ],
+  "retrieval_policy": {
+    "authentication": "NONE",
+    "method": "GET",
+    "redirects": "FOLLOW",
+    "request_profile": "fixed evidence-retrieval User-Agent; SSE query also binds the official suspension-page Referer",
+    "retrieved_at": "2026-08-31T16:08:21Z"
+  },
+  "retrieved_at": "2026-08-31T16:08:21Z",
+  "schema_version": 1
+}
