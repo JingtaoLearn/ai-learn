@@ -1,20 +1,20 @@
 # Domain Docs
 
-This repository uses a multi-context domain layout.
+`ai-learn` is multi-context. Read [`CONTEXT-MAP.md`](../../CONTEXT-MAP.md) first, then load only the `CONTEXT.md` and ADRs for the project or infrastructure domain being changed.
 
 ## Before exploring
 
-1. Read root `CONTEXT-MAP.md`.
-2. Read the `CONTEXT.md` for every context relevant to the task.
-3. Read the ADRs referenced by that context and any system-wide ADRs under root `docs/adr/`.
+1. Read the relevant row in `CONTEXT-MAP.md`.
+2. Read that context's `CONTEXT.md` glossary.
+3. Read ADRs in that context's declared decisions directory.
+4. For cross-context changes, read every affected context plus system-wide ADRs under `docs/adr/` when present.
 
-If a referenced file does not yet exist, proceed silently. Domain modeling creates glossaries and ADRs only when real terms or hard-to-reverse decisions have been resolved.
+If a context or ADR directory does not yet exist, proceed silently. The `domain-modeling` skill creates them lazily when vocabulary or a hard-to-reverse decision is resolved.
 
-## Layout
+## Rules
 
-- Root `CONTEXT-MAP.md` indexes contexts.
-- Each self-contained project may keep its glossary at `projects/<project>/CONTEXT.md`.
-- Context-specific decisions live at `projects/<project>/docs/adr/`.
-- System-wide decisions live at root `docs/adr/`.
-
-A `CONTEXT.md` is a glossary only. It must not contain implementation plans, file layouts, task status, or mutable release details. Use glossary vocabulary in issues, tests, code, and reports. Surface ADR conflicts explicitly rather than silently overriding them.
+- Use glossary terms exactly in issues, specifications, interfaces, tests, and reviews.
+- Keep implementation details out of `CONTEXT.md`.
+- Record only hard-to-reverse, surprising trade-offs as ADRs.
+- Surface an ADR conflict instead of silently overriding it.
+- Add a `CONTEXT-MAP.md` row when a project develops stable independent vocabulary.

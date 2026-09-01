@@ -81,9 +81,9 @@ environment:
 
 **Required files:**
 - Source code in appropriate structure
-- `Dockerfile` for custom build
-- `docker-compose.yml` for deployment
 - `README.md` with project documentation
+- For deployable applications: `Dockerfile` and `docker-compose.yml`
+- CLI/library projects may omit deployment files until a real deployment is designed; their README must state that they are not deployed
 
 **Integration**: Projects also use nginx-proxy for HTTPS (same pattern as docker-services)
 
@@ -195,6 +195,20 @@ environment:
 5. Update `vm/host-services/README.md` service table
 
 **Example**: See `vm/host-services/open-claw/` for multi-file documentation structure
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues in `JingtaoLearn/ai-learn` are the canonical tracker. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The repository uses the canonical Matt triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a multi-context layout rooted at `CONTEXT-MAP.md`. See `docs/agents/domain.md`.
 
 ## Common Patterns
 

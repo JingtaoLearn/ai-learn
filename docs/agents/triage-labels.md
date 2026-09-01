@@ -1,11 +1,13 @@
 # Triage Labels
 
-| Canonical role | GitHub label | Meaning |
+The Matt engineering skills use these canonical roles, which map directly to the existing GitHub labels.
+
+| Matt role | GitHub label | Meaning |
 |---|---|---|
-| `needs-triage` | `needs-triage` | Maintainer evaluation is required |
-| `needs-info` | `needs-info` | Waiting for reporter information |
-| `ready-for-agent` | `ready-for-agent` | Fully specified and safe for an autonomous implementation agent |
-| `ready-for-human` | `ready-for-human` | Requires direct human implementation or intervention |
+| `needs-triage` | `needs-triage` | Maintainer evaluation required |
+| `needs-info` | `needs-info` | Waiting for information |
+| `ready-for-agent` | `ready-for-agent` | Fully specified and ready for an autonomous agent |
+| `ready-for-human` | `ready-for-human` | Requires direct human action |
 | `wontfix` | `wontfix` | Will not be actioned |
 
-Engineering skills must use the right-hand GitHub labels for these roles and must not invent synonyms.
+Use the right-hand label exactly when a skill names a Matt role.

@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "artifact_role": "bootstrap_revision_payload",
+  "activation": "authenticated_bootstrap_user_decision",
+  "active_by_file_presence": false,
+  "immutable_revision_payload": true,
+  "profile_id": "matt-native-multi-venue-v1",
+  "status": "provisional",
+  "autonomy": {
+    "user_manages_execution": false,
+    "enabled_modes": ["replay", "shadow"],
+    "automatic_merge": false,
+    "automatic_deploy": false
+  },
+  "method_policy": {
+    "cognitive_actions_require_matt_receipt": true,
+    "unknown_action_class": "cognitive",
+    "fixed_global_skill_sequence": false
+  },
+  "synchronization": {
+    "primary_briefs_per_day": 1,
+    "interrupt_only_for_material_harm": true,
+    "silence_is_approval": false
+  },
+  "venues": {
+    "local_hermes": {
+      "role": "control-plane",
+      "heavy_tests_allowed": false
+    },
+    "local_copilot": {
+      "role": "planning",
+      "enabled_mode": "shadow",
+      "requires_resource_isolation": true
+    },
+    "github_copilot_cloud": {
+      "role": "bounded-builder",
+      "enabled_mode": "shadow",
+      "requires_custom_agent": "matt-builder"
+    },
+    "feng": {
+      "role": "authoritative-verification",
+      "required_tests_authoritative": true,
+      "max_concurrency": 1
+    }
+  },
+  "routing": {
+    "exact_allows_fallback": false,
+    "capability_class_requires_pinned_candidates": true,
+    "actual_route_receipt_required": true
+  },
+  "budgets": {
+    "local_hermes": {
+      "enforcement": "hard",
+      "max_wall_seconds": 120,
+      "max_turns": 20,
+      "max_concurrency": 1,
+      "max_paid_units": 0,
+      "exact_eligible": true
+    },
+    "local_copilot": {
+      "enforcement": "external_watchdog",
+      "watchdog_policy_id": "local-planner-watchdog-v1",
+      "max_wall_seconds": 600,
+      "max_concurrency": 1,
+      "max_paid_units": 0,
+      "exact_eligible": false
+    },
+    "github_copilot_cloud": {
+      "enforcement": "none",
+      "max_concurrency": 1,
+      "max_paid_units": 0,
+      "exact_eligible": false
+    },
+    "feng": {
+      "enforcement": "hard",
+      "max_wall_seconds": 1200,
+      "max_concurrency": 1,
+      "max_memory_mb": 2048,
+      "max_disk_mb": 4096,
+      "max_paid_units": 0,
+      "exact_eligible": true
+    }
+  }
+}
