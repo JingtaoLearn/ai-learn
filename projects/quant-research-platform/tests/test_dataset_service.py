@@ -712,6 +712,34 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     assert result.source_identity["provider"] == "yahoo-chart-api"
 
 
+def test_yahoo_source_preserves_raw_and_canonical_content_identities():
+    payload = _yahoo_payload()
+    alternate_payload = json.dumps(
+        json.loads(payload),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ).encode()
+    responses = iter([FakeResponse(payload), FakeResponse(alternate_payload)])
+    source = YahooChartSource(http_get=lambda *args, **kwargs: next(responses))
+
+    first = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+    repeated = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert first.source_identity["response_sha256"] != repeated.source_identity[
+        "response_sha256"
+    ]
+    expected_canonical_sha256 = hashlib.sha256(
+        canonical_json_bytes(json.loads(payload))
+    ).hexdigest()
+    assert first.source_identity["canonical_content_sha256"] == (
+        expected_canonical_sha256
+    )
+    assert repeated.source_identity["canonical_content_sha256"] == (
+        expected_canonical_sha256
+    )
+
+
 def test_yahoo_latest_close_excludes_the_current_unfinished_xshg_session():
     payload = _yahoo_payload()
     source = YahooChartSource(

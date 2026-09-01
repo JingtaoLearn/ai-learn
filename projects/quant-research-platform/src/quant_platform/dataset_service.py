@@ -624,6 +624,9 @@ class YahooChartSource:
                 "instrument": instrument,
                 "request_url": url,
                 "response_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+                "canonical_content_sha256": hashlib.sha256(
+                    canonical_json_bytes(payload)
+                ).hexdigest(),
             },
         )
 
