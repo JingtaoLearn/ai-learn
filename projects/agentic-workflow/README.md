@@ -4,16 +4,18 @@ A goal-driven, Matt-native workflow kernel that continuously reconciles user-own
 
 ## Status
 
-V1 is in the proof-Spike and specification phase. Only Replay and Shadow are eligible; automatic merge and deployment are disabled.
+Ticket #211 implements the first bounded V1 slice: authenticated project bootstrap through
+`WorkflowKernel.record`, durable SQLite intent state, and read-only `ProjectView` projections
+through `WorkflowKernel.view`. Other event types, planning, and external effects remain unimplemented.
+Only Replay and Shadow are eligible; automatic merge and deployment are disabled.
 
 ## User surface
 
 The public product surface is intentionally small:
 
 ```text
-record(event) -> receipt
-advance(project) -> progress | legal stop
-view(project) -> current goal + daily brief + pending decisions
+record(BOOTSTRAP_PROJECT UserDecision) -> RecordReceipt
+view(project) -> ProjectView
 ```
 
 ## Architecture
@@ -53,7 +55,17 @@ This sequence describes the current build handoff, not a global runtime state ma
 
 ## Runtime and deployment
 
-The V1 package will use Python 3.12 and the standard library for runtime behavior. No network service, Docker image, or production deployment exists yet. Deployment artifacts will be added only after the Replay/Shadow implementation proves a need and passes its gates.
+The package requires Python 3.12 and uses only the standard library at runtime. It is a local
+library with no network service, CLI, Docker image, or production deployment. Deployment
+artifacts will be added only after the Replay/Shadow implementation proves a need and passes
+its gates.
+
+Run the local verification suite from this directory:
+
+```text
+python3.12 -m pytest
+ruff check .
+```
 
 ## Safety boundary
 
