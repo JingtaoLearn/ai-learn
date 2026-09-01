@@ -2,6 +2,8 @@
 
 from .kernel import WorkflowKernel
 from .model import (
+    AdvanceResult,
+    IntentBinding,
     ProjectView,
     RecordReceipt,
     UserDecision,
@@ -9,6 +11,8 @@ from .model import (
 )
 
 __all__ = [
+    "AdvanceResult",
+    "IntentBinding",
     "ProjectView",
     "RecordReceipt",
     "UserDecision",

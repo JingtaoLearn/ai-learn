@@ -500,7 +500,12 @@ def test_concurrent_kernel_initialization_serializes_migrations(database_path: P
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+            (1,),
+            (2,),
+            (3,),
+            (4,),
+        ]
 
 
 def test_revision_history_is_immutable_and_view_verifies_digests(

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
+
+_PRIVATE_TRANSACTION_BEGIN_HOOK: Callable[[], None] | None = None
 
 
 class ControlStore:
@@ -34,7 +36,12 @@ class ControlStore:
                 applied = {
                     row[0] for row in connection.execute("SELECT version FROM schema_migrations")
                 }
-                migrations = ((1, "0001_initial.sql"),)
+                migrations = (
+                    (1, "0001_initial.sql"),
+                    (2, "0002_action_envelopes.sql"),
+                    (3, "0003_operation_records.sql"),
+                    (4, "0004_compatibility_decisions.sql"),
+                )
                 for version, filename in migrations:
                     if version in applied:
                         continue
@@ -68,7 +75,16 @@ class ControlStore:
         connection.row_factory = sqlite3.Row
         try:
             self._configure(connection)
-            connection.execute("BEGIN IMMEDIATE")
+            begin_hook = _PRIVATE_TRANSACTION_BEGIN_HOOK
+            if begin_hook is not None:
+                connection.set_trace_callback(
+                    lambda statement: begin_hook() if statement == "BEGIN IMMEDIATE" else None
+                )
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            finally:
+                if begin_hook is not None:
+                    connection.set_trace_callback(None)
             yield connection
             connection.commit()
         except BaseException:

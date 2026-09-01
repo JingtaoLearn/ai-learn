@@ -36,6 +36,27 @@ class RecordReceipt:
 
 
 @dataclass(frozen=True)
+class IntentBinding:
+    constitution_revision: int
+    goal_revision: int
+    operating_profile_revision: int
+    active_intent_digest: str
+
+
+@dataclass(frozen=True)
+class AdvanceResult:
+    project_id: str
+    outcome: str
+    intent_binding: IntentBinding
+    action_id: str
+    action_envelope_id: str
+    action_envelope_digest: str
+    predecessor_action_envelope_id: str | None
+    operation_id: str | None
+    operation_digest: str | None
+
+
+@dataclass(frozen=True)
 class ProjectView:
     current_goal: dict[str, Any]
     daily_brief: dict[str, Any]
