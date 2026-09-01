@@ -7,7 +7,9 @@ import re
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from importlib.metadata import version
+from numbers import Number
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import urlsplit
@@ -657,6 +659,332 @@ class YahooChartSource:
                 "Yahoo response contains no completed daily close"
             )
         return str(complete["Date"].max().date())
+
+
+class AuditedXshgDailySource:
+    provider = "xshg-audited-daily-v1"
+    policy_version = "sse-whole-t-yahoo-history-v1"
+    history_provider = "yahoo-chart-api"
+    current_provider = "sse-current-ashare-report"
+    columns = ("Date", "Open", "High", "Low", "Close", "Volume")
+    price_columns = ("Open", "High", "Low", "Close")
+    price_tick = Decimal("0.01")
+    price_tolerance = Decimal("0.000001")
+
+    def __init__(
+        self,
+        *,
+        history_source: DailyBarsSource,
+        current_source: DailyBarsSource,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        self.history_source = history_source
+        self.current_source = current_source
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def _decision_date(self) -> str:
+        now = self.clock()
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() is None
+        ):
+            raise DatasetResolutionError("audited XSHG source clock must be timezone-aware")
+        return str(now.astimezone(ZoneInfo("Asia/Shanghai")).date())
+
+    @staticmethod
+    def _validate_instrument(instrument: str) -> None:
+        if not isinstance(instrument, str) or re.fullmatch(r"[0-9]{6}\.SS", instrument) is None:
+            raise DatasetResolutionError(
+                "audited XSHG instrument must be an ordinary six-digit .SS symbol"
+            )
+
+    @staticmethod
+    def _require_component_provider(
+        source: DailyBarsSource, expected_provider: str
+    ) -> None:
+        actual_provider = getattr(source, "provider", None)
+        if type(actual_provider) is not str or actual_provider != expected_provider:
+            raise DatasetResolutionError(
+                f"configured component provider must be {expected_provider}"
+            )
+
+    @staticmethod
+    def _component_identity(
+        fetched: FetchedDailyBars,
+        *,
+        provider: str,
+        instrument: str,
+    ) -> dict[str, Any]:
+        identity = fetched.source_identity
+        if not isinstance(identity, dict):
+            raise DatasetResolutionError("component source identity must be a finite dictionary")
+        try:
+            canonical_identity = canonical_json_bytes(identity)
+            detached = json.loads(
+                canonical_identity,
+                object_pairs_hook=_strict_object,
+                parse_constant=lambda item: (_ for _ in ()).throw(
+                    ValueError(f"non-finite identity value: {item}")
+                ),
+            )
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise DatasetResolutionError(
+                "component source identity must be finite canonical JSON"
+            ) from exc
+        if type(detached) is not dict:
+            raise DatasetResolutionError("component source identity must be a finite dictionary")
+        if detached.get("provider") != provider:
+            raise DatasetResolutionError(
+                f"component source identity provider must be {provider}"
+            )
+        if detached.get("instrument") != instrument:
+            raise DatasetResolutionError(
+                "component source identity instrument does not match the request"
+            )
+        return detached
+
+    @classmethod
+    def _normalize_component_frame(
+        cls,
+        fetched: FetchedDailyBars,
+        *,
+        start: str,
+        end: str,
+        history: bool,
+    ) -> pd.DataFrame:
+        frame = fetched.bars
+        if not isinstance(frame, pd.DataFrame):
+            raise DatasetResolutionError("component source schema must be a data frame")
+        missing = [column for column in cls.columns if column not in frame.columns]
+        if missing:
+            raise DatasetResolutionError(
+                f"component source schema is missing required columns: {missing}"
+            )
+        if not history and tuple(frame.columns) != cls.columns:
+            raise DatasetResolutionError(
+                "current source schema must be exactly Date, Open, High, Low, Close, Volume"
+            )
+        projected = frame.loc[:, cls.columns].copy()
+        try:
+            raw_dates = [pd.Timestamp(value) for value in projected["Date"]]
+            if raw_dates and not any(pd.isna(value) for value in raw_dates):
+                raw_dates_are_sorted = pd.Index(raw_dates).is_monotonic_increasing
+            else:
+                raw_dates_are_sorted = True
+        except (TypeError, ValueError, OverflowError):
+            raw_dates_are_sorted = True
+        if not raw_dates_are_sorted:
+            raise DatasetResolutionError("component source dates must be sorted")
+        if history:
+            normalized_prices: dict[str, list[float]] = {}
+            for column in cls.price_columns:
+                prices: list[float] = []
+                for value in projected[column]:
+                    if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                        raise DatasetResolutionError(
+                            "Yahoo history price values must be numeric, finite, and positive"
+                        )
+                    try:
+                        decimal_value = Decimal(str(value))
+                    except (InvalidOperation, ValueError) as exc:
+                        raise DatasetResolutionError(
+                            "Yahoo history price values must be numeric, finite, and positive"
+                        ) from exc
+                    if not decimal_value.is_finite() or decimal_value <= 0:
+                        raise DatasetResolutionError(
+                            "Yahoo history price values must be finite and positive"
+                        )
+                    try:
+                        tick_value = decimal_value.quantize(
+                            cls.price_tick, rounding=ROUND_HALF_UP
+                        )
+                    except InvalidOperation as exc:
+                        raise DatasetResolutionError(
+                            "Yahoo history price cannot be normalized to the CNY 0.01 tick"
+                        ) from exc
+                    if abs(decimal_value - tick_value) > cls.price_tolerance:
+                        raise DatasetResolutionError(
+                            "Yahoo history price is materially outside the CNY 0.01 tick"
+                        )
+                    prices.append(float(tick_value))
+                normalized_prices[column] = prices
+            for column, prices in normalized_prices.items():
+                projected[column] = prices
+
+            normalized_volumes: list[float] = []
+            for value in projected["Volume"]:
+                if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be a numeric non-negative integer"
+                    )
+                try:
+                    decimal_value = Decimal(str(value))
+                except (InvalidOperation, ValueError) as exc:
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be a numeric non-negative integer"
+                    ) from exc
+                if (
+                    not decimal_value.is_finite()
+                    or decimal_value < 0
+                    or decimal_value != decimal_value.to_integral_value()
+                ):
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be a finite non-negative integer"
+                    )
+                if decimal_value > 2**53:
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be losslessly representable as float64"
+                    )
+                integer_value = int(decimal_value)
+                try:
+                    float_value = float(integer_value)
+                except OverflowError as exc:
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be losslessly representable as float64"
+                    ) from exc
+                if not math.isfinite(float_value) or int(float_value) != integer_value:
+                    raise DatasetResolutionError(
+                        "Yahoo history Volume must be losslessly representable as float64"
+                    )
+                normalized_volumes.append(float_value)
+            projected["Volume"] = normalized_volumes
+
+        try:
+            normalized = _normalize_frame(projected)
+        except DatasetValidationError as exc:
+            raise DatasetResolutionError(f"component source data is invalid: {exc}") from exc
+        if normalized["Date"].duplicated().any():
+            raise DatasetResolutionError("component source contains duplicate dates")
+        if not normalized["Date"].is_monotonic_increasing:
+            raise DatasetResolutionError("component source dates must be sorted")
+        if (
+            normalized["Date"].min() < pd.Timestamp(start)
+            or normalized["Date"].max() > pd.Timestamp(end)
+        ):
+            raise DatasetResolutionError("component source contains dates outside its request")
+        return normalized
+
+    def _validated_component(
+        self,
+        source: DailyBarsSource,
+        *,
+        expected_provider: str,
+        instrument: str,
+        start: str,
+        end: str,
+        history: bool,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        self._require_component_provider(source, expected_provider)
+        fetched = source.fetch(instrument, start, end)
+        if not isinstance(fetched, FetchedDailyBars):
+            raise DatasetResolutionError("component source returned an invalid generation")
+        identity = self._component_identity(
+            fetched,
+            provider=expected_provider,
+            instrument=instrument,
+        )
+        frame = self._normalize_component_frame(
+            fetched,
+            start=start,
+            end=end,
+            history=history,
+        )
+        return frame, identity
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        self._validate_instrument(instrument)
+        start = _date(start, "audited XSHG request start")
+        end = _date(end, "audited XSHG request end")
+        if start > end:
+            raise DatasetResolutionError("audited XSHG request start is after its end")
+        decision_date = self._decision_date()
+        if end > decision_date:
+            raise DatasetResolutionError("audited XSHG request cannot include a future date")
+
+        components: list[dict[str, Any]]
+        if end < decision_date:
+            self._require_component_provider(
+                self.history_source, self.history_provider
+            )
+            bars, history_identity = self._validated_component(
+                self.history_source,
+                expected_provider=self.history_provider,
+                instrument=instrument,
+                start=start,
+                end=end,
+                history=True,
+            )
+            components = [history_identity]
+        else:
+            self._require_component_provider(
+                self.current_source, self.current_provider
+            )
+            if start < decision_date:
+                self._require_component_provider(
+                    self.history_source, self.history_provider
+                )
+            current_bars, current_identity = self._validated_component(
+                self.current_source,
+                expected_provider=self.current_provider,
+                instrument=instrument,
+                start=decision_date,
+                end=decision_date,
+                history=False,
+            )
+            if start == decision_date:
+                bars = current_bars
+                components = [current_identity]
+            else:
+                history_end = str(pd.Timestamp(decision_date).date() - timedelta(days=1))
+                history_bars, history_identity = self._validated_component(
+                    self.history_source,
+                    expected_provider=self.history_provider,
+                    instrument=instrument,
+                    start=start,
+                    end=history_end,
+                    history=True,
+                )
+                try:
+                    bars = _normalize_frame(
+                        pd.concat([history_bars, current_bars], ignore_index=True)
+                    )
+                except DatasetValidationError as exc:
+                    raise DatasetResolutionError(
+                        f"audited XSHG source generations conflict: {exc}"
+                    ) from exc
+                components = [history_identity, current_identity]
+
+        identity = {
+            "provider": self.provider,
+            "instrument": instrument,
+            "policy_version": self.policy_version,
+            "decision_date": decision_date,
+            "requested_start": start,
+            "requested_end": end,
+            "components": components,
+        }
+        try:
+            canonical_json_bytes(identity)
+        except SchemaValidationError as exc:
+            raise DatasetResolutionError(
+                "audited XSHG source identity must be finite canonical JSON"
+            ) from exc
+        return FetchedDailyBars(bars=bars, source_identity=identity)
+
+    def latest_available_close(self, instrument: str) -> str:
+        self._validate_instrument(instrument)
+        decision_date = self._decision_date()
+        self._require_component_provider(self.current_source, self.current_provider)
+        latest = _date(
+            self.current_source.latest_available_close(instrument),
+            "audited XSHG current latest close",
+        )
+        if latest > decision_date:
+            raise DatasetResolutionError(
+                "audited XSHG current latest close cannot be in the future"
+            )
+        return latest
 
 
 class DatasetService:
