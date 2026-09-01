@@ -506,6 +506,7 @@ def test_concurrent_kernel_initialization_serializes_migrations(database_path: P
             (3,),
             (4,),
             (5,),
+            (6,),
         ]
 
 

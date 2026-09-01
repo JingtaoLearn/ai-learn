@@ -42,6 +42,7 @@ class ControlStore:
                     (3, "0003_operation_records.sql"),
                     (4, "0004_compatibility_decisions.sql"),
                     (5, "0005_matt_receipts.sql"),
+                    (6, "0006_route_handoffs.sql"),
                 )
                 for version, filename in migrations:
                     if version in applied:

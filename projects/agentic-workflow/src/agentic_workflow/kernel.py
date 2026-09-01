@@ -7,18 +7,39 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from .model import (
     AdvanceResult,
+    CapabilityRequest,
+    CapabilitySnapshot,
+    HandoffExecutionAttestation,
+    HandoffPackage,
+    HandoffRetryCommand,
+    HandoffSourceContext,
     IntentBinding,
     ProjectView,
     RecordReceipt,
+    RouteExecutionAttestation,
+    RoutePlan,
+    RouteRequest,
     UserDecision,
+    WatchdogAuthority,
     WorkflowError,
+)
+from .routing import (
+    build_capability_matrix,
+    freeze_capability_snapshot,
+    freeze_route_plan,
+    validate_and_freeze_route_envelope,
+    validate_route_envelope,
+)
+from .routing import (
+    canonical_json as _route_canonical_json,
 )
 from .store import ControlStore
 
@@ -80,11 +101,70 @@ class _MattExecutionAttestation:
     completion_classification: str
 
 
+class TrustedRouteAdapter(Protocol):
+    adapter_id: str
+    executor_id: str
+
+    def observe_capabilities(self, request: CapabilityRequest) -> CapabilitySnapshot: ...
+
+    def plan_route(self, request: RouteRequest) -> RoutePlan: ...
+
+    def dispatch(self, handoff: object, invocation: object) -> HandoffExecutionAttestation: ...
+
+
+class WatchdogProofVerifier(Protocol):
+    """Independent trust boundary for externally attested budget enforcement."""
+
+    verifier_id: str
+    provenance: Mapping[str, Any]
+
+    def verify(
+        self,
+        *,
+        authority: Mapping[str, Any],
+        expected_claims: Mapping[str, Any],
+        proof: Mapping[str, Any],
+    ) -> bool: ...
+
+
 @dataclass(frozen=True)
 class _PendingMattExecution:
     invocation: _MattInvocation
     attempt_id: str
     attempt_digest: str
+    observed: bool = False
+
+
+@dataclass(frozen=True)
+class _PendingRoutedExecution:
+    invocation: _MattInvocation
+    handoff: HandoffPackage
+    matt_execution: _PendingMattExecution
+
+
+@dataclass(frozen=True)
+class _PreparedRoute:
+    binding: IntentBinding
+    action_id: str
+    snapshot_json: str
+    snapshot_digest: str
+    matrix_json: str
+    matrix_digest: str
+    matrix_id: str
+    matrix_version: int
+    plan_json: str
+    plan_digest: str
+    plan_id: str
+    route_envelope: Mapping[str, Any]
+    route_envelope_digest: str
+
+
+@dataclass(frozen=True)
+class _WatchdogVerificationRequest:
+    authority: Mapping[str, Any]
+    expected_claims: Mapping[str, Any]
+    proof: Mapping[str, Any]
+    watchdog_digest: str
 
 
 class Clock(Protocol):
@@ -110,6 +190,11 @@ class WorkflowKernel:
         *,
         decision_authenticator: DecisionAuthenticator | None = None,
         external_effects: _ExternalEffects | None = None,
+        route_adapter: TrustedRouteAdapter | None = None,
+        source_context: HandoffSourceContext | None = None,
+        watchdog_authorities: tuple[WatchdogAuthority, ...] = (),
+        watchdog_proof_verifier: WatchdogProofVerifier | None = None,
+        max_route_attempts: int = 1,
         clock: Clock | None = None,
     ) -> None:
         self._store = ControlStore(database_path)
@@ -122,6 +207,39 @@ class WorkflowKernel:
             not isinstance(self._matt_executor_id, str) or not self._matt_executor_id.strip()
         ):
             raise WorkflowError("INVALID_MATT_EXECUTOR", "trusted executor identity is invalid")
+        self._route_adapter = route_adapter
+        self._route_adapter_id = route_adapter.adapter_id if route_adapter is not None else None
+        self._route_executor_id = route_adapter.executor_id if route_adapter is not None else None
+        if route_adapter is not None and external_effects is not None:
+            raise WorkflowError(
+                "INVALID_ROUTE_ADAPTER", "one trusted adapter must own routed execution"
+            )
+        if route_adapter is not None and any(
+            not isinstance(value, str) or not value.strip()
+            for value in (self._route_adapter_id, self._route_executor_id)
+        ):
+            raise WorkflowError(
+                "INVALID_ROUTE_ADAPTER", "trusted route adapter identity is invalid"
+            )
+        self._source_context = _freeze_source_context(source_context)
+        self._watchdog_authorities = _freeze_watchdog_authorities(watchdog_authorities)
+        self._watchdog_proof_verifier = watchdog_proof_verifier
+        self._watchdog_verifier_identity = _freeze_watchdog_verifier(watchdog_proof_verifier)
+        if watchdog_proof_verifier is not None and watchdog_proof_verifier is route_adapter:
+            raise WorkflowError(
+                "INVALID_WATCHDOG_VERIFIER",
+                "watchdog verifier must be a separate trusted object from the route adapter",
+            )
+        if self._watchdog_verifier_identity is not None and self._watchdog_verifier_identity[
+            "verifier_id"
+        ] in {self._route_adapter_id, self._route_executor_id}:
+            raise WorkflowError(
+                "INVALID_WATCHDOG_VERIFIER",
+                "watchdog verifier identity must be independent from the route adapter",
+            )
+        if type(max_route_attempts) is not int or max_route_attempts < 1:
+            raise WorkflowError("INVALID_RETRY_POLICY", "route attempt limit must be positive")
+        self._max_route_attempts = max_route_attempts
         self._clock = clock or SystemClock()
 
     def record(self, event: UserDecision) -> RecordReceipt:
@@ -504,7 +622,8 @@ class WorkflowKernel:
         recorded_at = self._clock.now()
         action_id = str(uuid.uuid4())
         action_envelope_id = str(uuid.uuid4())
-        pending: _PendingMattExecution | None = None
+        prepared_route = self._prepare_initial_route(project_id, action_id, recorded_at)
+        pending: _PendingMattExecution | _PendingRoutedExecution | None = None
         created: AdvanceResult | None = None
         try:
             with self._store.writer() as connection:
@@ -525,6 +644,12 @@ class WorkflowKernel:
                             connection, current, compatible, recorded_at
                         )
                     binding = _binding_from_row(current)
+                    if prepared_route is not None and (
+                        prepared_route.binding != binding or prepared_route.action_id != action_id
+                    ):
+                        raise WorkflowError(
+                            "STALE_INTENT", "prepared route is not bound to the current intent"
+                        )
                     goal = json.loads(current["goal_json"])
                     action_json = _canonical_json(
                         {
@@ -553,6 +678,10 @@ class WorkflowKernel:
                             recorded_at,
                         ),
                     )
+                    if prepared_route is not None:
+                        self._persist_prepared_route(
+                            connection, current, prepared_route, recorded_at
+                        )
                     envelope_json = _canonical_json(
                         {
                             "acceptance": goal["success_evidence"],
@@ -562,6 +691,11 @@ class WorkflowKernel:
                             "intent_binding": asdict(binding),
                             "method": _method_contract_for_action_kind("GOAL_WORK"),
                             "predecessor_action_envelope_id": None,
+                            "route": (
+                                dict(prepared_route.route_envelope)
+                                if prepared_route is not None
+                                else None
+                            ),
                             "stop_conditions": ["ACTIVE_INTENT_CHANGED"],
                         }
                     )
@@ -586,6 +720,10 @@ class WorkflowKernel:
                             recorded_at,
                         ),
                     )
+                    if prepared_route is not None:
+                        self._persist_route_envelope(
+                            connection, current, prepared_route, action_envelope_id
+                        )
                     created = AdvanceResult(
                         project_id=project_id,
                         outcome="ACTION_ENVELOPED",
@@ -597,16 +735,717 @@ class WorkflowKernel:
                         operation_id=None,
                         operation_digest=None,
                         action_class="cognitive",
+                        capability_matrix_digest=(
+                            prepared_route.matrix_digest if prepared_route is not None else None
+                        ),
+                        route_envelope_digest=(
+                            prepared_route.route_envelope_digest
+                            if prepared_route is not None
+                            else None
+                        ),
                     )
         except WorkflowError:
             raise
         except sqlite3.DatabaseError as error:
             raise WorkflowError("LEDGER_ERROR", "advance transaction failed") from error
         if pending is not None:
+            if isinstance(pending, _PendingRoutedExecution):
+                return self._dispatch_and_accept(pending)
             return self._execute_and_accept_matt(pending)
         if created is None:
             raise WorkflowError("LEDGER_INTEGRITY", "advance produced no durable transition")
         return created
+
+    def deliver_handoff(
+        self, project_id: str, *, delivery_id: str, idempotency_key: str
+    ) -> AdvanceResult:
+        """Replay only a verified receipt for an exact canonical delivery identity."""
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in (project_id, delivery_id, idempotency_key)
+        ):
+            raise WorkflowError("INVALID_DELIVERY_IDENTITY", "delivery identity is incomplete")
+        try:
+            with self._store.reader() as connection:
+                current = _current_intent_row(connection, project_id)
+                if current is None:
+                    raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+                _verify_current_intent(current)
+                matches = connection.execute(
+                    "SELECT h.*, a.attempt_number, "
+                    "a.parent_handoff_id AS attempt_parent_handoff_id, "
+                    "r.executor_id AS run_executor_id "
+                    "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+                    "JOIN runs AS r ON r.run_id = h.run_id WHERE h.project_id = ? "
+                    "AND (h.delivery_id = ? OR h.idempotency_key = ?)",
+                    (project_id, delivery_id, idempotency_key),
+                ).fetchall()
+                if len(matches) != 1:
+                    raise WorkflowError(
+                        "HANDOFF_IDENTITY_MISMATCH",
+                        "delivery identity does not resolve to one canonical Handoff",
+                    )
+                handoff_row = matches[0]
+                if (
+                    handoff_row["delivery_id"] != delivery_id
+                    or handoff_row["idempotency_key"] != idempotency_key
+                ):
+                    raise WorkflowError(
+                        "HANDOFF_IDENTITY_MISMATCH",
+                        "delivery and idempotency identities name different Handoffs",
+                    )
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (handoff_row["action_envelope_id"],),
+                ).fetchone()
+                if envelope is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "Handoff Action Envelope is missing")
+                invocation = _verify_matt_invocation(envelope)
+                handoff = _verify_handoff(handoff_row, envelope, invocation, self._source_context)
+                if handoff.intent_binding != _binding_from_row(current):
+                    raise WorkflowError("STALE_INTENT", "Handoff is not bound to current intent")
+                return self._verified_routed_result(connection, current, envelope, handoff)
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "delivery replay lookup failed") from error
+
+    def _verified_routed_result(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        envelope: sqlite3.Row,
+        handoff: HandoffPackage,
+    ) -> AdvanceResult:
+        events = _verify_handoff_events(connection, handoff)
+        receipt = connection.execute(
+            "SELECT rr.*, ra.project_id AS attestation_project_id, "
+            "ra.handoff_id AS attestation_handoff_id, "
+            "ra.attempt_id AS attestation_attempt_id, ra.run_id AS attestation_run_id, "
+            "ra.adapter_id, ra.attestation_json AS route_attestation_json, "
+            "ra.attestation_digest AS route_attestation_digest "
+            "FROM route_receipts AS rr JOIN route_executor_attestations AS ra "
+            "ON ra.attestation_id = rr.attestation_id WHERE rr.handoff_id = ?",
+            (handoff.handoff_id,),
+        ).fetchone()
+        if receipt is None:
+            raise WorkflowError(
+                "HANDOFF_RECEIPT_UNAVAILABLE",
+                "duplicate delivery has no verified stored Route Receipt",
+            )
+        if events != ("OFFERED", "ACCEPTED", "RUNNING", "RESULT_RECORDED", "VERIFIED"):
+            raise WorkflowError("LEDGER_INTEGRITY", "verified Handoff event lineage is invalid")
+        if self._route_adapter_id is None or receipt["adapter_id"] != self._route_adapter_id:
+            raise WorkflowError("LEDGER_INTEGRITY", "Route Receipt adapter identity changed")
+        receipt_payload = _verify_canonical_artifact(
+            receipt["receipt_json"], receipt["receipt_digest"], "Route Receipt"
+        )
+        attestation_payload = _verify_canonical_artifact(
+            receipt["route_attestation_json"],
+            receipt["route_attestation_digest"],
+            "route executor attestation",
+        )
+        try:
+            stored_attestation = HandoffExecutionAttestation(
+                acceptance=attestation_payload["acceptance"],
+                route=RouteExecutionAttestation(**attestation_payload["route"]),
+                matt=attestation_payload["matt"],
+            )
+        except (KeyError, TypeError) as error:
+            raise WorkflowError(
+                "LEDGER_INTEGRITY", "stored route executor attestation schema is invalid"
+            ) from error
+        route = _frozen_route(envelope)
+        if route is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "stored Route Receipt lost its route")
+        _assert_live_route_capabilities(
+            connection,
+            route,
+            receipt["accepted_at"],
+            envelope["action_envelope_id"],
+        )
+        candidate = _route_candidate(connection, route, stored_attestation)
+        if (
+            _validated_route_attestation_json(
+                stored_attestation,
+                handoff,
+                route,
+                candidate,
+                receipt["adapter_id"],
+                matt_attestation_json=_canonical_json(attestation_payload["matt"]),
+                watchdog_verification=receipt_payload.get("watchdog_verification"),
+            )
+            != receipt["route_attestation_json"]
+        ):
+            raise WorkflowError("LEDGER_INTEGRITY", "stored route attestation changed")
+        _verify_stored_route_receipt(
+            receipt, receipt_payload, attestation_payload, handoff, envelope
+        )
+        _verify_matt_receipt_chain(envelope)
+        if envelope["operation_id"] is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "verified Handoff has no reserved Operation")
+        result = _existing_operation_result(connection, envelope)
+        if result.intent_binding != _binding_from_row(current):
+            raise WorkflowError("STALE_INTENT", "Route Receipt is not bound to current intent")
+        return replace(
+            result,
+            handoff_id=handoff.handoff_id,
+            handoff_package_digest=handoff.handoff_package_digest,
+            attempt_id=handoff.attempt_id,
+            run_id=handoff.run_id,
+            route_receipt_id=receipt["receipt_id"],
+            route_receipt_digest=receipt["receipt_digest"],
+        )
+
+    def retry_handoff(self, command: HandoffRetryCommand) -> AdvanceResult:
+        command_payload, command_json, command_digest = _freeze_retry_command(command)
+        replay_delivery: tuple[str, str] | None = None
+        pending: _PendingRoutedExecution | None = None
+        recorded_at = self._clock.now()
+        try:
+            with self._store.writer() as connection:
+                existing_command = connection.execute(
+                    "SELECT * FROM handoff_retry_commands WHERE command_id = ?",
+                    (command.command_id,),
+                ).fetchone()
+                if existing_command is not None:
+                    _verify_retry_command_row(
+                        existing_command, command_payload, command_json, command_digest
+                    )
+                    retry_handoff = connection.execute(
+                        "SELECT project_id, parent_handoff_id, delivery_id, idempotency_key "
+                        "FROM handoffs WHERE handoff_id = ?",
+                        (existing_command["retry_handoff_id"],),
+                    ).fetchone()
+                    if (
+                        retry_handoff is None
+                        or retry_handoff["project_id"] != command.project_id
+                        or retry_handoff["parent_handoff_id"] != command.handoff_id
+                    ):
+                        raise WorkflowError(
+                            "LEDGER_INTEGRITY", "retry command child Handoff link is invalid"
+                        )
+                    replay_delivery = (
+                        retry_handoff["delivery_id"],
+                        retry_handoff["idempotency_key"],
+                    )
+                else:
+                    current = _current_intent_row(connection, command.project_id)
+                    if current is None:
+                        raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+                    _verify_current_intent(current)
+                    handoff_row = connection.execute(
+                        "SELECT h.*, a.attempt_number, "
+                        "a.parent_handoff_id AS attempt_parent_handoff_id, "
+                        "r.executor_id AS run_executor_id "
+                        "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+                        "JOIN runs AS r ON r.run_id = h.run_id WHERE h.handoff_id = ?",
+                        (command.handoff_id,),
+                    ).fetchone()
+                    if handoff_row is None or handoff_row["project_id"] != command.project_id:
+                        raise WorkflowError(
+                            "HANDOFF_IDENTITY_MISMATCH",
+                            "retry command does not name a canonical project Handoff",
+                        )
+                    envelope = connection.execute(
+                        _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                        (handoff_row["action_envelope_id"],),
+                    ).fetchone()
+                    if envelope is None:
+                        raise WorkflowError(
+                            "LEDGER_INTEGRITY", "retry Handoff Action Envelope is missing"
+                        )
+                    original_invocation = _verify_matt_invocation(envelope)
+                    original = _verify_handoff(
+                        handoff_row, envelope, original_invocation, self._source_context
+                    )
+                    if original.intent_binding != _binding_from_row(current):
+                        raise WorkflowError(
+                            "STALE_INTENT", "retry Handoff is not bound to current intent"
+                        )
+                    latest_attempt = connection.execute(
+                        "SELECT MAX(attempt_number) FROM attempts WHERE action_id = ?",
+                        (original.action_id,),
+                    ).fetchone()[0]
+                    if (
+                        handoff_row["attempt_number"] != command.expected_attempt_number
+                        or latest_attempt != command.expected_attempt_number
+                    ):
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_CONFLICT",
+                            "retry expected attempt is not the latest Handoff attempt",
+                        )
+                    if command.max_attempts != self._max_route_attempts:
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_POLICY_MISMATCH",
+                            "retry command does not match the trusted attempt limit",
+                        )
+                    if command.expected_attempt_number >= command.max_attempts:
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_EXHAUSTED", "Handoff retry attempt limit is exhausted"
+                        )
+                    events = _verify_handoff_events(connection, original)
+                    if events not in {
+                        ("OFFERED", "ACCEPTED", "RUNNING", "FAILED"),
+                        ("OFFERED", "ACCEPTED", "RUNNING", "AMBIGUOUS"),
+                    }:
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_NOT_ALLOWED",
+                            "only a terminal failed Handoff can be retried",
+                        )
+                    if connection.execute(
+                        "SELECT 1 FROM route_receipts WHERE handoff_id = ?",
+                        (original.handoff_id,),
+                    ).fetchone():
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_NOT_ALLOWED",
+                            "a verified Handoff receipt cannot be retried",
+                        )
+                    _assert_live_route_capabilities(
+                        connection,
+                        _frozen_route(envelope),
+                        recorded_at,
+                        envelope["action_envelope_id"],
+                    )
+                    retry_invocation, retry_handoff = self._freeze_retry_attempt(
+                        connection,
+                        current,
+                        envelope,
+                        original,
+                        command.expected_attempt_number + 1,
+                        command_digest,
+                        recorded_at,
+                    )
+                    _append_handoff_event(
+                        connection,
+                        original.handoff_id,
+                        len(events) + 1,
+                        "RETRY_REQUESTED",
+                        original.handoff_package_digest,
+                        recorded_at,
+                    )
+                    connection.execute(
+                        "INSERT INTO handoff_retry_commands "
+                        "(command_id, project_id, handoff_id, retry_handoff_id, command_json, "
+                        "command_digest, expected_attempt_number, max_attempts, recorded_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            command.command_id,
+                            command.project_id,
+                            command.handoff_id,
+                            retry_handoff.handoff_id,
+                            command_json,
+                            command_digest,
+                            command.expected_attempt_number,
+                            command.max_attempts,
+                            recorded_at,
+                        ),
+                    )
+                    pending = _PendingRoutedExecution(
+                        invocation=retry_invocation,
+                        handoff=retry_handoff,
+                        matt_execution=self._claim_matt_execution(
+                            connection, retry_invocation, recorded_at
+                        ),
+                    )
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Handoff retry transaction failed") from error
+        if replay_delivery is not None:
+            return self.deliver_handoff(
+                command.project_id,
+                delivery_id=replay_delivery[0],
+                idempotency_key=replay_delivery[1],
+            )
+        if pending is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "Handoff retry produced no durable attempt")
+        return self._dispatch_and_accept(pending)
+
+    def _freeze_retry_attempt(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        envelope: sqlite3.Row,
+        original: HandoffPackage,
+        attempt_number: int,
+        command_digest: str,
+        recorded_at: str,
+    ) -> tuple[_MattInvocation, HandoffPackage]:
+        if self._route_executor_id is None:
+            raise WorkflowError("MATT_EXECUTOR_UNAVAILABLE", "trusted route executor is missing")
+        method = _frozen_matt_method(envelope)
+        if method is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "retry Action has no frozen Matt method")
+        binding = _binding_from_row(current)
+        attempt_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:attempt:{envelope['action_envelope_digest']}:{attempt_number}",
+            )
+        )
+        run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-workflow:run:{attempt_id}"))
+        invocation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "agentic-workflow:matt-invocation:"
+                f"{envelope['action_envelope_digest']}:{attempt_number}",
+            )
+        )
+        input_evidence_digest = _digest(
+            _canonical_json(
+                {
+                    "action_digest": envelope["action_digest"],
+                    "action_envelope_digest": envelope["action_envelope_digest"],
+                }
+            )
+        )
+        invocation_payload = {
+            "action_envelope_digest": envelope["action_envelope_digest"],
+            "action_envelope_id": envelope["action_envelope_id"],
+            "action_id": envelope["action_id"],
+            "completion_criterion": method["completion_criterion"],
+            "created_at": recorded_at,
+            "executor_id": self._route_executor_id,
+            "expected_artifact": method["expected_artifact"],
+            "gates": method["gates"],
+            "input_evidence_digest": input_evidence_digest,
+            "intent_binding": asdict(binding),
+            "invocation_id": invocation_id,
+            "project_id": current["project_id"],
+            "route": _matt_route(self._route_executor_id, run_id),
+            "run_id": run_id,
+            "skill_digest": method["skill_digest"],
+            "skill_name": method["skill_name"],
+        }
+        invocation_json = _canonical_json(invocation_payload)
+        invocation_digest = _digest(invocation_json)
+        connection.execute(
+            "INSERT INTO attempts "
+            "(attempt_id, project_id, action_id, attempt_number, parent_handoff_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                attempt_id,
+                current["project_id"],
+                envelope["action_id"],
+                attempt_number,
+                original.handoff_id,
+                recorded_at,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, project_id, attempt_id, executor_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (run_id, current["project_id"], attempt_id, self._route_executor_id, recorded_at),
+        )
+        connection.execute(
+            "INSERT INTO matt_invocations "
+            "(invocation_id, project_id, action_id, action_envelope_id, invocation_json, "
+            "invocation_digest, skill_name, skill_digest, executor_id, run_id, "
+            "constitution_revision, goal_revision, operating_profile_revision, "
+            "active_intent_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                invocation_id,
+                current["project_id"],
+                envelope["action_id"],
+                envelope["action_envelope_id"],
+                invocation_json,
+                invocation_digest,
+                method["skill_name"],
+                method["skill_digest"],
+                self._route_executor_id,
+                run_id,
+                binding.constitution_revision,
+                binding.goal_revision,
+                binding.operating_profile_revision,
+                binding.active_intent_digest,
+                recorded_at,
+            ),
+        )
+        invocation = _MattInvocation(
+            invocation_id=invocation_id,
+            invocation_digest=invocation_digest,
+            project_id=current["project_id"],
+            action_id=envelope["action_id"],
+            action_envelope_id=envelope["action_envelope_id"],
+            action_envelope_digest=envelope["action_envelope_digest"],
+            skill_name=method["skill_name"],
+            skill_digest=method["skill_digest"],
+            executor_id=self._route_executor_id,
+            run_id=run_id,
+            input_evidence_digest=input_evidence_digest,
+            gates=tuple(method["gates"]),
+            completion_criterion=method["completion_criterion"],
+            expected_artifact=method["expected_artifact"],
+            intent_binding=binding,
+        )
+        handoff_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-workflow:handoff:{attempt_id}"))
+        delivery_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-workflow:delivery:{attempt_id}"))
+        idempotency_key = _digest(
+            _canonical_json(
+                {
+                    "command_digest": command_digest,
+                    "attempt_id": attempt_id,
+                    "invocation_digest": invocation_digest,
+                    "parent_handoff_id": original.handoff_id,
+                }
+            )
+        )
+        package = dict(original.payload)
+        package.pop("handoff_package_digest", None)
+        package.update(
+            {
+                "handoff_id": handoff_id,
+                "matt_invocation_digest": invocation_digest,
+                "attempt_id": attempt_id,
+                "run_id": run_id,
+                "delivery_id": delivery_id,
+                "idempotency_key": idempotency_key,
+                "fencing_epoch": attempt_number,
+                "parent_handoff_id": original.handoff_id,
+            }
+        )
+        package_digest = _digest(_canonical_json(package))
+        package_json = _canonical_json({**package, "handoff_package_digest": package_digest})
+        connection.execute(
+            "INSERT INTO handoffs "
+            "(handoff_id, project_id, action_id, action_envelope_id, attempt_id, run_id, "
+            "parent_handoff_id, delivery_id, idempotency_key, package_json, "
+            "handoff_package_digest, constitution_revision, goal_revision, "
+            "operating_profile_revision, active_intent_digest, offered_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                handoff_id,
+                current["project_id"],
+                envelope["action_id"],
+                envelope["action_envelope_id"],
+                attempt_id,
+                run_id,
+                original.handoff_id,
+                delivery_id,
+                idempotency_key,
+                package_json,
+                package_digest,
+                binding.constitution_revision,
+                binding.goal_revision,
+                binding.operating_profile_revision,
+                binding.active_intent_digest,
+                recorded_at,
+                original.expires_at,
+            ),
+        )
+        _append_handoff_event(connection, handoff_id, 1, "OFFERED", package_digest, recorded_at)
+        stored = connection.execute(
+            "SELECT h.*, a.attempt_number, "
+            "a.parent_handoff_id AS attempt_parent_handoff_id, "
+            "r.executor_id AS run_executor_id "
+            "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+            "JOIN runs AS r ON r.run_id = h.run_id WHERE h.handoff_id = ?",
+            (handoff_id,),
+        ).fetchone()
+        if stored is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "retry Handoff was not stored")
+        return invocation, _verify_handoff(stored, envelope, invocation, self._source_context)
+
+    def _prepare_initial_route(
+        self, project_id: str, action_id: str, recorded_at: str
+    ) -> _PreparedRoute | None:
+        adapter = self._route_adapter
+        if adapter is None:
+            return None
+        with self._store.reader() as connection:
+            current = _current_intent_row(connection, project_id)
+            if current is None:
+                raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+            _verify_current_intent(current)
+            if _latest_live_envelope(connection, current) is not None:
+                return None
+            binding = _binding_from_row(current)
+            goal = json.loads(current["goal_json"])
+            matrix_version = connection.execute(
+                "SELECT COALESCE(MAX(matrix_version), 0) + 1 FROM capability_matrices "
+                "WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+        capability_request = CapabilityRequest(
+            project_id=project_id,
+            action_id=action_id,
+            action_kind="GOAL_WORK",
+            objective=goal["outcome"],
+            acceptance=tuple(goal["success_evidence"]),
+            constraints=tuple(goal["constraints"]),
+            intent_binding=binding,
+            requested_at=recorded_at,
+        )
+        try:
+            observed = adapter.observe_capabilities(capability_request)
+        except WorkflowError:
+            raise
+        except Exception as error:
+            raise WorkflowError(
+                "CAPABILITY_OBSERVATION_FAILED", "trusted capability adapter failed"
+            ) from error
+        snapshot, snapshot_digest = freeze_capability_snapshot(
+            observed,
+            adapter_id=self._route_adapter_id or "",
+            project_id=project_id,
+            accepted_now=recorded_at,
+        )
+        matrix, matrix_digest = build_capability_matrix(
+            project_id=project_id,
+            matrix_version=matrix_version,
+            snapshot_payloads=((snapshot, snapshot_digest),),
+            created_at=recorded_at,
+        )
+        route_request = RouteRequest(
+            project_id=project_id,
+            action_id=action_id,
+            action_kind="GOAL_WORK",
+            objective=goal["outcome"],
+            acceptance=tuple(goal["success_evidence"]),
+            constraints=tuple(goal["constraints"]),
+            intent_binding=binding,
+            matrix_id=matrix["matrix_id"],
+            matrix_version=matrix_version,
+            matrix_digest=matrix_digest,
+            candidates=tuple(
+                json.loads(_route_canonical_json(entry)) for entry in matrix["candidates"]
+            ),
+        )
+        try:
+            planned = adapter.plan_route(route_request)
+        except WorkflowError:
+            raise
+        except Exception as error:
+            raise WorkflowError("ROUTE_PLANNING_FAILED", "trusted route planner failed") from error
+        plan, plan_digest = freeze_route_plan(planned, project_id=project_id, action_id=action_id)
+        route_envelope, route_envelope_digest = validate_and_freeze_route_envelope(
+            plan,
+            plan_digest,
+            matrix,
+            matrix_digest,
+            route_adapter_executor_id=self._route_executor_id or "",
+            watchdog_authorities=self._watchdog_authorities,
+        )
+        if (
+            any(
+                enforcement.get("kind") == "external_watchdog"
+                for enforcement in route_envelope["candidate_limits"].values()
+            )
+            and self._watchdog_proof_verifier is None
+        ):
+            raise WorkflowError(
+                "WATCHDOG_VERIFIER_UNAVAILABLE",
+                "external watchdog route requires an independent trusted verifier",
+            )
+        return _PreparedRoute(
+            binding=binding,
+            action_id=action_id,
+            snapshot_json=_route_canonical_json(snapshot),
+            snapshot_digest=snapshot_digest,
+            matrix_json=_route_canonical_json(matrix),
+            matrix_digest=matrix_digest,
+            matrix_id=matrix["matrix_id"],
+            matrix_version=matrix_version,
+            plan_json=_route_canonical_json(plan),
+            plan_digest=plan_digest,
+            plan_id=plan["plan_id"],
+            route_envelope=route_envelope,
+            route_envelope_digest=route_envelope_digest,
+        )
+
+    @staticmethod
+    def _persist_prepared_route(
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        prepared: _PreparedRoute,
+        recorded_at: str,
+    ) -> None:
+        snapshot = json.loads(prepared.snapshot_json)
+        connection.execute(
+            "INSERT INTO capability_snapshots "
+            "(snapshot_id, project_id, adapter_id, snapshot_json, snapshot_digest, "
+            "accepted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                snapshot["snapshot_id"],
+                current["project_id"],
+                snapshot["adapter_id"],
+                prepared.snapshot_json,
+                prepared.snapshot_digest,
+                snapshot["accepted_at"],
+                snapshot["expires_at"],
+            ),
+        )
+        connection.execute(
+            "INSERT INTO capability_matrices "
+            "(matrix_id, project_id, matrix_version, matrix_json, matrix_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                prepared.matrix_id,
+                current["project_id"],
+                prepared.matrix_version,
+                prepared.matrix_json,
+                prepared.matrix_digest,
+                recorded_at,
+            ),
+        )
+        matrix = json.loads(prepared.matrix_json)
+        for candidate_number, entry in enumerate(matrix["candidates"], 1):
+            connection.execute(
+                "INSERT INTO capability_matrix_candidates "
+                "(matrix_id, project_id, candidate_number, candidate_digest, "
+                "snapshot_digest, candidate_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    prepared.matrix_id,
+                    current["project_id"],
+                    candidate_number,
+                    entry["candidate_digest"],
+                    entry["snapshot_digest"],
+                    _route_canonical_json(entry["candidate"]),
+                ),
+            )
+        connection.execute(
+            "INSERT INTO route_plans "
+            "(plan_id, project_id, action_id, matrix_id, matrix_digest, plan_json, "
+            "plan_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                prepared.plan_id,
+                current["project_id"],
+                prepared.action_id,
+                prepared.matrix_id,
+                prepared.matrix_digest,
+                prepared.plan_json,
+                prepared.plan_digest,
+                recorded_at,
+            ),
+        )
+
+    @staticmethod
+    def _persist_route_envelope(
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        prepared: _PreparedRoute,
+        action_envelope_id: str,
+    ) -> None:
+        route = dict(prepared.route_envelope)
+        connection.execute(
+            "INSERT INTO route_envelopes "
+            "(route_envelope_digest, project_id, action_id, action_envelope_id, plan_id, "
+            "plan_digest, matrix_id, matrix_digest, route_envelope_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                prepared.route_envelope_digest,
+                current["project_id"],
+                prepared.action_id,
+                action_envelope_id,
+                route["plan_id"],
+                route["plan_digest"],
+                route["matrix_id"],
+                route["matrix_digest"],
+                _route_canonical_json(route),
+            ),
+        )
 
     def _reenvelope_compatible(
         self,
@@ -674,6 +1513,7 @@ class WorkflowKernel:
                 "intent_binding": asdict(binding),
                 "method": _method_contract_for_action_kind("GOAL_WORK"),
                 "predecessor_action_envelope_id": source["action_envelope_id"],
+                "route": None,
                 "stop_conditions": ["ACTIVE_INTENT_CHANGED"],
             }
         )
@@ -716,7 +1556,7 @@ class WorkflowKernel:
         current: sqlite3.Row,
         envelope: sqlite3.Row,
         recorded_at: str,
-    ) -> AdvanceResult | _PendingMattExecution:
+    ) -> AdvanceResult | _PendingMattExecution | _PendingRoutedExecution:
         envelope_binding = _verify_action_envelope(envelope)
         if envelope_binding != _binding_from_row(current):
             raise WorkflowError("LEDGER_INTEGRITY", "live Action Envelope binding is not current")
@@ -727,19 +1567,41 @@ class WorkflowKernel:
                     "MATT_METHOD_UNAVAILABLE",
                     "cognitive Action has no applicable frozen Matt method",
                 )
-            if self._external_effects is None:
+            route = _frozen_route(envelope)
+            expected_executor_id = (
+                self._route_executor_id if route is not None else self._matt_executor_id
+            )
+            if (
+                expected_executor_id is None
+                or (route is not None and self._route_adapter is None)
+                or (route is None and self._external_effects is None)
+            ):
                 raise WorkflowError(
-                    "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires a trusted Matt executor"
+                    "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires its trusted executor"
                 )
             invocation = (
                 _verify_matt_invocation(envelope)
                 if envelope["matt_invocation_id"] is not None
                 else self._freeze_matt_invocation(connection, current, envelope, recorded_at)
             )
-            if invocation.executor_id != self._matt_executor_id:
+            if invocation.executor_id != expected_executor_id:
                 raise WorkflowError(
                     "MATT_EXECUTOR_MISMATCH",
                     "frozen Matt Invocation route does not match the trusted executor",
+                )
+            if route is not None:
+                handoff = self._load_or_freeze_handoff(
+                    connection, current, envelope, invocation, recorded_at
+                )
+                execution = (
+                    self._pending_matt_execution(envelope, invocation)
+                    if envelope["matt_attempt_id"] is not None
+                    else self._claim_matt_execution(connection, invocation, recorded_at)
+                )
+                return _PendingRoutedExecution(
+                    invocation=invocation,
+                    handoff=handoff,
+                    matt_execution=execution,
                 )
             if envelope["matt_attempt_id"] is not None:
                 _verify_matt_attempt(envelope, invocation)
@@ -764,7 +1626,12 @@ class WorkflowKernel:
         envelope: sqlite3.Row,
         recorded_at: str,
     ) -> _MattInvocation:
-        if self._matt_executor_id is None:
+        executor_id = (
+            self._route_executor_id
+            if _frozen_route(envelope) is not None
+            else self._matt_executor_id
+        )
+        if executor_id is None:
             raise WorkflowError(
                 "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires a trusted Matt executor"
             )
@@ -795,14 +1662,14 @@ class WorkflowKernel:
             "action_id": envelope["action_id"],
             "completion_criterion": method["completion_criterion"],
             "created_at": recorded_at,
-            "executor_id": self._matt_executor_id,
+            "executor_id": executor_id,
             "expected_artifact": method["expected_artifact"],
             "gates": method["gates"],
             "input_evidence_digest": input_evidence_digest,
             "intent_binding": asdict(binding),
             "invocation_id": invocation_id,
             "project_id": current["project_id"],
-            "route": _matt_route(self._matt_executor_id, run_id),
+            "route": _matt_route(executor_id, run_id),
             "run_id": run_id,
             "skill_digest": method["skill_digest"],
             "skill_name": method["skill_name"],
@@ -825,7 +1692,7 @@ class WorkflowKernel:
                 invocation_digest,
                 method["skill_name"],
                 method["skill_digest"],
-                self._matt_executor_id,
+                executor_id,
                 run_id,
                 binding.constitution_revision,
                 binding.goal_revision,
@@ -843,7 +1710,7 @@ class WorkflowKernel:
             action_envelope_digest=envelope["action_envelope_digest"],
             skill_name=method["skill_name"],
             skill_digest=method["skill_digest"],
-            executor_id=self._matt_executor_id,
+            executor_id=executor_id,
             run_id=run_id,
             input_evidence_digest=input_evidence_digest,
             gates=tuple(method["gates"]),
@@ -912,6 +1779,758 @@ class WorkflowKernel:
             invocation=invocation,
             attempt_id=attempt_id,
             attempt_digest=attempt_digest,
+        )
+
+    @staticmethod
+    def _pending_matt_execution(
+        envelope: sqlite3.Row, invocation: _MattInvocation
+    ) -> _PendingMattExecution:
+        _verify_matt_attempt(envelope, invocation)
+        observed = envelope["matt_observation_id"] is not None
+        if observed:
+            _verify_matt_observation(envelope)
+        return _PendingMattExecution(
+            invocation=invocation,
+            attempt_id=envelope["matt_attempt_id"],
+            attempt_digest=envelope["attempt_digest"],
+            observed=observed,
+        )
+
+    def _load_or_freeze_handoff(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        envelope: sqlite3.Row,
+        invocation: _MattInvocation,
+        recorded_at: str,
+    ) -> HandoffPackage:
+        route = _frozen_route(envelope)
+        if route is None or self._route_executor_id is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "routed Action has no frozen route")
+        if self._source_context is None:
+            raise WorkflowError(
+                "SOURCE_CONTEXT_UNAVAILABLE",
+                "routed Handoff requires authoritative source context",
+            )
+        existing = connection.execute(
+            "SELECT h.*, a.attempt_number, "
+            "a.parent_handoff_id AS attempt_parent_handoff_id, "
+            "r.executor_id AS run_executor_id "
+            "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+            "JOIN runs AS r ON r.run_id = h.run_id WHERE h.action_envelope_id = ? "
+            "ORDER BY a.attempt_number DESC LIMIT 1",
+            (envelope["action_envelope_id"],),
+        ).fetchone()
+        if existing is not None:
+            return _verify_handoff(existing, envelope, invocation, self._source_context)
+
+        matrix = connection.execute(
+            "SELECT matrix_json, matrix_digest FROM capability_matrices WHERE matrix_digest = ?",
+            (route["matrix_digest"],),
+        ).fetchone()
+        if matrix is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "frozen route Capability Matrix is missing")
+        matrix_payload = _verify_canonical_artifact(
+            matrix["matrix_json"], matrix["matrix_digest"], "Capability Matrix"
+        )
+        snapshot_digests = matrix_payload.get("snapshot_digests")
+        if not isinstance(snapshot_digests, list) or not snapshot_digests:
+            raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix snapshots are invalid")
+        expirations: list[str] = []
+        for snapshot_digest in snapshot_digests:
+            snapshot = connection.execute(
+                "SELECT snapshot_json, snapshot_digest, expires_at FROM capability_snapshots "
+                "WHERE snapshot_digest = ?",
+                (snapshot_digest,),
+            ).fetchone()
+            if snapshot is None:
+                raise WorkflowError("LEDGER_INTEGRITY", "Capability Snapshot is missing")
+            snapshot_payload = _verify_canonical_artifact(
+                snapshot["snapshot_json"], snapshot["snapshot_digest"], "Capability Snapshot"
+            )
+            if snapshot_payload.get("expires_at") != snapshot["expires_at"]:
+                raise WorkflowError("LEDGER_INTEGRITY", "Capability Snapshot expiry mismatch")
+            expirations.append(snapshot["expires_at"])
+        expires_at = min(expirations, key=datetime.fromisoformat)
+        if datetime.fromisoformat(recorded_at) >= datetime.fromisoformat(expires_at):
+            raise WorkflowError("ROUTE_EXPIRED", "frozen route capabilities have expired")
+
+        attempt_number = 1
+        attempt_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:attempt:{envelope['action_envelope_digest']}:{attempt_number}",
+            )
+        )
+        handoff_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-workflow:handoff:{attempt_id}"))
+        delivery_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-workflow:delivery:{attempt_id}"))
+        idempotency_key = _digest(
+            _canonical_json(
+                {
+                    "action_envelope_digest": envelope["action_envelope_digest"],
+                    "attempt_id": attempt_id,
+                    "invocation_digest": invocation.invocation_digest,
+                    "route_envelope_digest": route["route_envelope_digest"],
+                }
+            )
+        )
+        envelope_payload = json.loads(envelope["envelope_json"])
+        goal = json.loads(current["goal_json"])
+        binding = invocation.intent_binding
+        source_context = json.loads(_canonical_json(dict(self._source_context)))
+        package = {
+            "schema_version": 1,
+            "handoff_id": handoff_id,
+            "project_id": invocation.project_id,
+            "action_id": invocation.action_id,
+            "action_envelope_id": invocation.action_envelope_id,
+            "action_envelope_digest": invocation.action_envelope_digest,
+            "route_envelope_digest": route["route_envelope_digest"],
+            "route_envelope": dict(route),
+            "matt_invocation_digest": invocation.invocation_digest,
+            "attempt_id": attempt_id,
+            "run_id": invocation.run_id,
+            "delivery_id": delivery_id,
+            "idempotency_key": idempotency_key,
+            "fencing_epoch": attempt_number,
+            "executor_id": self._route_executor_id,
+            "expires_at": expires_at,
+            "parent_handoff_id": None,
+            "intent_binding": asdict(binding),
+            "objective": json.loads(envelope["action_json"])["objective"],
+            "acceptance": envelope_payload["acceptance"],
+            "constraints": envelope_payload["constraints"],
+            "limits": {
+                "route_budget": dict(route["budget"]),
+                "candidate_limits": dict(route["candidate_limits"]),
+            },
+            "source_identity": {
+                "exact_base_sha": source_context["exact_base_sha"],
+                "expected_merge_base": source_context["expected_merge_base"],
+                "expected_remote_version": source_context["expected_remote_version"],
+                "owned_paths": source_context["owned_paths"],
+                "non_goals": goal["non_goals"],
+            },
+            "source_context_digest": _digest(_canonical_json(source_context)),
+            "tool_policy": source_context["tool_policy"],
+            "test_profile": source_context["test_profile"],
+            "side_effect_policy": "NO_AUTOMATIC_MERGE_OR_DEPLOY",
+            "stop_conditions": envelope_payload["stop_conditions"],
+        }
+        package_digest = _digest(_canonical_json(package))
+        package = {**package, "handoff_package_digest": package_digest}
+        package_json = _canonical_json(package)
+        connection.execute(
+            "INSERT INTO attempts "
+            "(attempt_id, project_id, action_id, attempt_number, parent_handoff_id, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, ?)",
+            (attempt_id, invocation.project_id, invocation.action_id, attempt_number, recorded_at),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, project_id, attempt_id, executor_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                invocation.run_id,
+                invocation.project_id,
+                attempt_id,
+                self._route_executor_id,
+                recorded_at,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO handoffs "
+            "(handoff_id, project_id, action_id, action_envelope_id, attempt_id, run_id, "
+            "parent_handoff_id, delivery_id, idempotency_key, package_json, "
+            "handoff_package_digest, constitution_revision, goal_revision, "
+            "operating_profile_revision, active_intent_digest, offered_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                handoff_id,
+                invocation.project_id,
+                invocation.action_id,
+                invocation.action_envelope_id,
+                attempt_id,
+                invocation.run_id,
+                delivery_id,
+                idempotency_key,
+                package_json,
+                package_digest,
+                binding.constitution_revision,
+                binding.goal_revision,
+                binding.operating_profile_revision,
+                binding.active_intent_digest,
+                recorded_at,
+                expires_at,
+            ),
+        )
+        _append_handoff_event(connection, handoff_id, 1, "OFFERED", package_digest, recorded_at)
+        stored = connection.execute(
+            "SELECT h.*, a.attempt_number, "
+            "a.parent_handoff_id AS attempt_parent_handoff_id, "
+            "r.executor_id AS run_executor_id "
+            "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+            "JOIN runs AS r ON r.run_id = h.run_id WHERE h.handoff_id = ?",
+            (handoff_id,),
+        ).fetchone()
+        if stored is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "frozen Handoff is missing")
+        return _verify_handoff(stored, envelope, invocation, self._source_context)
+
+    def _dispatch_and_accept(self, pending: _PendingRoutedExecution) -> AdvanceResult:
+        adapter = self._route_adapter
+        if (
+            adapter is None
+            or self._route_adapter_id is None
+            or self._route_executor_id != pending.invocation.executor_id
+            or self._route_executor_id != pending.handoff.executor_id
+        ):
+            raise WorkflowError(
+                "MATT_EXECUTOR_MISMATCH",
+                "frozen routed execution does not match the trusted adapter",
+            )
+        claimed_at = self._clock.now()
+        recovered_ambiguous = False
+        try:
+            with self._store.writer() as connection:
+                current = _current_intent_row(connection, pending.invocation.project_id)
+                if current is None:
+                    raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+                _verify_current_intent(current)
+                if _binding_from_row(current) != pending.invocation.intent_binding:
+                    raise WorkflowError("STALE_INTENT", "Handoff is not bound to current intent")
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (pending.invocation.action_envelope_id,),
+                ).fetchone()
+                if envelope is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                _assert_live_route_capabilities(
+                    connection,
+                    _frozen_route(envelope),
+                    claimed_at,
+                    envelope["action_envelope_id"],
+                )
+                events = connection.execute(
+                    "SELECT event_type FROM handoff_events WHERE handoff_id = ? "
+                    "ORDER BY event_number",
+                    (pending.handoff.handoff_id,),
+                ).fetchall()
+                event_types = [event[0] for event in events]
+                if event_types == ["OFFERED", "ACCEPTED", "RUNNING"]:
+                    if connection.execute(
+                        "SELECT 1 FROM route_receipts WHERE handoff_id = ?",
+                        (pending.handoff.handoff_id,),
+                    ).fetchone():
+                        raise WorkflowError(
+                            "LEDGER_INTEGRITY",
+                            "RUNNING Handoff has a receipt without terminal events",
+                        )
+                    _append_handoff_event(
+                        connection,
+                        pending.handoff.handoff_id,
+                        4,
+                        "AMBIGUOUS",
+                        pending.handoff.handoff_package_digest,
+                        claimed_at,
+                    )
+                    recovered_ambiguous = True
+                elif event_types != ["OFFERED"]:
+                    if event_types[-1:] in (["FAILED"], ["AMBIGUOUS"]):
+                        raise WorkflowError(
+                            "HANDOFF_RETRY_REQUIRED",
+                            "failed Handoff requires an explicit bounded retry command",
+                        )
+                    raise WorkflowError(
+                        "HANDOFF_ALREADY_CLAIMED", "Handoff delivery is already in progress"
+                    )
+                if not recovered_ambiguous:
+                    _append_handoff_event(
+                        connection,
+                        pending.handoff.handoff_id,
+                        2,
+                        "ACCEPTED",
+                        pending.handoff.handoff_package_digest,
+                        claimed_at,
+                    )
+                    _append_handoff_event(
+                        connection,
+                        pending.handoff.handoff_id,
+                        3,
+                        "RUNNING",
+                        pending.handoff.handoff_package_digest,
+                        claimed_at,
+                    )
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Handoff claim transaction failed") from error
+        if recovered_ambiguous:
+            if not pending.matt_execution.observed:
+                self._record_matt_observation(
+                    pending.matt_execution,
+                    outcome="AMBIGUOUS",
+                    evidence_digest=None,
+                    error_type="RecoveredAmbiguousHandoff",
+                    observed_at=claimed_at,
+                )
+            raise WorkflowError(
+                "HANDOFF_RETRY_REQUIRED",
+                "ambiguous Handoff requires an explicit bounded retry command",
+            )
+
+        dispatch_at = self._clock.now()
+        try:
+            with self._store.reader() as connection:
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (pending.invocation.action_envelope_id,),
+                ).fetchone()
+                if envelope is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                _assert_live_route_capabilities(
+                    connection,
+                    _frozen_route(envelope),
+                    dispatch_at,
+                    envelope["action_envelope_id"],
+                )
+        except WorkflowError as error:
+            if error.code == "ROUTE_EXPIRED":
+                self._record_handoff_terminal(pending.handoff, "EXPIRED", dispatch_at)
+                if not pending.matt_execution.observed:
+                    self._record_matt_observation(
+                        pending.matt_execution,
+                        outcome="REJECTED",
+                        evidence_digest=None,
+                        error_type=None,
+                        observed_at=dispatch_at,
+                    )
+            raise
+        try:
+            attestation = adapter.dispatch(pending.handoff, pending.invocation)
+        except Exception as error:
+            failed_at = self._clock.now()
+            self._record_matt_observation(
+                pending.matt_execution,
+                outcome="AMBIGUOUS",
+                evidence_digest=None,
+                error_type=type(error).__name__,
+                observed_at=failed_at,
+            )
+            self._record_handoff_terminal(pending.handoff, "FAILED", failed_at)
+            raise WorkflowError("ROUTE_EXECUTION_FAILED", "trusted route adapter failed") from error
+        returned_at = self._clock.now()
+        try:
+            if not isinstance(attestation, HandoffExecutionAttestation):
+                raise WorkflowError(
+                    "ROUTE_RECEIPT_REJECTED", "trusted route adapter returned no attestation"
+                )
+            matt_attestation = _coerce_matt_attestation(attestation.matt)
+            matt_attestation_json = _validated_attestation_json(
+                matt_attestation, pending.invocation, returned_at
+            )
+        except WorkflowError as error:
+            self._record_matt_observation(
+                pending.matt_execution,
+                outcome="REJECTED",
+                evidence_digest=None,
+                error_type=None,
+                observed_at=returned_at,
+            )
+            self._record_rejected_attestation(pending.handoff, attestation, error)
+            raise
+        matt_attestation_digest = _digest(matt_attestation_json)
+        self._record_matt_observation(
+            pending.matt_execution,
+            outcome="RETURNED",
+            evidence_digest=matt_attestation_digest,
+            error_type=None,
+            observed_at=returned_at,
+        )
+        accepted_at = self._clock.now()
+        watchdog_request: _WatchdogVerificationRequest | None = None
+        try:
+            with self._store.reader() as connection:
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (pending.invocation.action_envelope_id,),
+                ).fetchone()
+                if envelope is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                route = _frozen_route(envelope)
+                _assert_live_route_capabilities(
+                    connection, route, accepted_at, envelope["action_envelope_id"]
+                )
+                if route is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action lost its route")
+                candidate = _route_candidate(connection, route, attestation)
+                _validated_route_attestation_json(
+                    attestation,
+                    pending.handoff,
+                    route,
+                    candidate,
+                    self._route_adapter_id,
+                    matt_attestation_json=matt_attestation_json,
+                    require_watchdog_verification=False,
+                )
+                watchdog_request = _watchdog_verification_request(
+                    attestation, pending.handoff, route
+                )
+        except WorkflowError as error:
+            if error.code == "ROUTE_EXPIRED":
+                self._record_handoff_terminal(pending.handoff, "EXPIRED", accepted_at)
+            else:
+                self._record_rejected_attestation(pending.handoff, attestation, error)
+            raise
+        try:
+            watchdog_verification = self._verify_watchdog_proof(watchdog_request)
+        except WorkflowError as error:
+            self._record_rejected_attestation(pending.handoff, attestation, error)
+            raise
+        try:
+            with self._store.writer() as connection:
+                current = _current_intent_row(connection, pending.invocation.project_id)
+                if current is None:
+                    raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+                _verify_current_intent(current)
+                if _binding_from_row(current) != pending.invocation.intent_binding:
+                    raise WorkflowError(
+                        "STALE_INTENT", "Handoff result is not bound to current intent"
+                    )
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (pending.invocation.action_envelope_id,),
+                ).fetchone()
+                if (
+                    envelope is None
+                    or _verify_action_envelope(envelope) != pending.invocation.intent_binding
+                ):
+                    raise WorkflowError("STALE_INTENT", "routed Action Envelope is not current")
+                stored_invocation = _verify_matt_invocation(envelope)
+                if stored_invocation != pending.invocation:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Matt Invocation changed")
+                _verify_matt_attempt(envelope, stored_invocation)
+                _verify_matt_observation(
+                    envelope,
+                    expected_outcome="RETURNED",
+                    expected_evidence_digest=matt_attestation_digest,
+                )
+                handoff_row = connection.execute(
+                    "SELECT h.*, a.attempt_number, "
+                    "a.parent_handoff_id AS attempt_parent_handoff_id, "
+                    "r.executor_id AS run_executor_id "
+                    "FROM handoffs AS h JOIN attempts AS a ON a.attempt_id = h.attempt_id "
+                    "JOIN runs AS r ON r.run_id = h.run_id WHERE h.handoff_id = ?",
+                    (pending.handoff.handoff_id,),
+                ).fetchone()
+                if handoff_row is None or (
+                    _verify_handoff(handoff_row, envelope, stored_invocation, self._source_context)
+                    != pending.handoff
+                ):
+                    raise WorkflowError("LEDGER_INTEGRITY", "frozen Handoff changed")
+                route = _frozen_route(envelope)
+                if route is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action lost its route")
+                _assert_live_route_capabilities(
+                    connection, route, accepted_at, envelope["action_envelope_id"]
+                )
+                candidate = _route_candidate(connection, route, attestation)
+                route_attestation_json = _validated_route_attestation_json(
+                    attestation,
+                    pending.handoff,
+                    route,
+                    candidate,
+                    self._route_adapter_id,
+                    matt_attestation_json=matt_attestation_json,
+                    watchdog_verification=watchdog_verification,
+                )
+                route_attestation_digest = _digest(route_attestation_json)
+                route_attestation_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:route-attestation:{route_attestation_digest}",
+                    )
+                )
+                connection.execute(
+                    "INSERT INTO route_executor_attestations "
+                    "(attestation_id, project_id, handoff_id, attempt_id, run_id, adapter_id, "
+                    "attestation_json, attestation_digest, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        route_attestation_id,
+                        pending.handoff.project_id,
+                        pending.handoff.handoff_id,
+                        pending.handoff.attempt_id,
+                        pending.handoff.run_id,
+                        self._route_adapter_id,
+                        route_attestation_json,
+                        route_attestation_digest,
+                        accepted_at,
+                    ),
+                )
+                route_receipt_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:route-receipt:{pending.handoff.handoff_package_digest}",
+                    )
+                )
+                route_evidence = attestation.route
+                route_receipt_payload = {
+                    "receipt_id": route_receipt_id,
+                    "project_id": pending.handoff.project_id,
+                    "handoff_id": pending.handoff.handoff_id,
+                    "attempt_id": pending.handoff.attempt_id,
+                    "run_id": pending.handoff.run_id,
+                    "action_envelope_id": pending.handoff.action_envelope_id,
+                    "action_envelope_digest": pending.handoff.action_envelope_digest,
+                    "route_envelope_digest": pending.handoff.route_envelope_digest,
+                    "handoff_package_digest": pending.handoff.handoff_package_digest,
+                    "candidate_digest": route_evidence.candidate_digest,
+                    "requested_route": dict(route_evidence.requested_route),
+                    "actual_route": dict(route_evidence.actual_route),
+                    "requested_parent_identity": dict(route_evidence.requested_parent_identity),
+                    "actual_parent_identity": dict(route_evidence.actual_parent_identity),
+                    "requested_subagent_identity": dict(route_evidence.requested_subagent_identity),
+                    "actual_subagent_identity": dict(route_evidence.actual_subagent_identity),
+                    "usage": dict(route_evidence.usage),
+                    "telemetry_provenance": dict(route_evidence.telemetry_provenance),
+                    "watchdog_proof": (
+                        dict(route_evidence.watchdog_proof)
+                        if route_evidence.watchdog_proof is not None
+                        else None
+                    ),
+                    "watchdog_verification": watchdog_verification,
+                    "attestation_digest": route_attestation_digest,
+                    "intent_binding": asdict(pending.handoff.intent_binding),
+                    "accepted_at": accepted_at,
+                }
+                route_receipt_json = _canonical_json(route_receipt_payload)
+                route_receipt_digest = _digest(route_receipt_json)
+                binding = pending.handoff.intent_binding
+                connection.execute(
+                    "INSERT INTO route_receipts "
+                    "(receipt_id, project_id, handoff_id, attempt_id, run_id, attestation_id, "
+                    "action_envelope_id, receipt_json, receipt_digest, constitution_revision, "
+                    "goal_revision, operating_profile_revision, active_intent_digest, accepted_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        route_receipt_id,
+                        pending.handoff.project_id,
+                        pending.handoff.handoff_id,
+                        pending.handoff.attempt_id,
+                        pending.handoff.run_id,
+                        route_attestation_id,
+                        pending.handoff.action_envelope_id,
+                        route_receipt_json,
+                        route_receipt_digest,
+                        binding.constitution_revision,
+                        binding.goal_revision,
+                        binding.operating_profile_revision,
+                        binding.active_intent_digest,
+                        accepted_at,
+                    ),
+                )
+                _append_handoff_event(
+                    connection,
+                    pending.handoff.handoff_id,
+                    4,
+                    "RESULT_RECORDED",
+                    pending.handoff.handoff_package_digest,
+                    accepted_at,
+                )
+                method = _frozen_matt_method(envelope)
+                if method is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "routed Action has no Matt method")
+                matt_attestation_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:matt-attestation:{matt_attestation_digest}",
+                    )
+                )
+                connection.execute(
+                    "INSERT INTO matt_executor_attestations "
+                    "(attestation_id, invocation_id, attestation_json, attestation_digest, "
+                    "executor_id, run_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        matt_attestation_id,
+                        stored_invocation.invocation_id,
+                        matt_attestation_json,
+                        matt_attestation_digest,
+                        stored_invocation.executor_id,
+                        stored_invocation.run_id,
+                        returned_at,
+                    ),
+                )
+                matt_receipt_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:matt-receipt:{stored_invocation.invocation_digest}",
+                    )
+                )
+                matt_receipt_payload = {
+                    "accepted_at": accepted_at,
+                    "action_envelope_digest": stored_invocation.action_envelope_digest,
+                    "action_envelope_id": stored_invocation.action_envelope_id,
+                    "action_id": stored_invocation.action_id,
+                    "actual_skill_digest": matt_attestation.skill_digest,
+                    "allowed_next_methods": method["allowed_next_methods"],
+                    "artifact_digest": matt_attestation.artifact_digest,
+                    "attestation_digest": matt_attestation_digest,
+                    "completion_classification": matt_attestation.completion_classification,
+                    "executor_id": stored_invocation.executor_id,
+                    "gate_outcomes": dict(matt_attestation.gate_outcomes),
+                    "intent_binding": asdict(stored_invocation.intent_binding),
+                    "invocation_digest": stored_invocation.invocation_digest,
+                    "load_proof": dict(matt_attestation.load_proof),
+                    "project_id": stored_invocation.project_id,
+                    "receipt_id": matt_receipt_id,
+                    "route": _matt_route(stored_invocation.executor_id, stored_invocation.run_id),
+                    "run_id": stored_invocation.run_id,
+                    "skill_name": stored_invocation.skill_name,
+                }
+                _validate_matt_receipt_payload(
+                    matt_receipt_payload,
+                    stored_invocation,
+                    matt_attestation,
+                    matt_attestation_digest,
+                    method,
+                )
+                matt_receipt_json = _canonical_json(matt_receipt_payload)
+                matt_receipt_digest = _digest(matt_receipt_json)
+                connection.execute(
+                    "INSERT INTO matt_receipts "
+                    "(receipt_id, project_id, invocation_id, attestation_id, action_envelope_id, "
+                    "receipt_json, receipt_digest, constitution_revision, goal_revision, "
+                    "operating_profile_revision, active_intent_digest, accepted_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        matt_receipt_id,
+                        stored_invocation.project_id,
+                        stored_invocation.invocation_id,
+                        matt_attestation_id,
+                        stored_invocation.action_envelope_id,
+                        matt_receipt_json,
+                        matt_receipt_digest,
+                        binding.constitution_revision,
+                        binding.goal_revision,
+                        binding.operating_profile_revision,
+                        binding.active_intent_digest,
+                        accepted_at,
+                    ),
+                )
+                _append_handoff_event(
+                    connection,
+                    pending.handoff.handoff_id,
+                    5,
+                    "VERIFIED",
+                    pending.handoff.handoff_package_digest,
+                    accepted_at,
+                )
+                accepted = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (stored_invocation.action_envelope_id,),
+                ).fetchone()
+                if accepted is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "accepted routed Action is missing")
+                _verify_matt_receipt_chain(accepted)
+                result = self._reserve_existing(connection, current, accepted, accepted_at)
+                return replace(
+                    result,
+                    handoff_id=pending.handoff.handoff_id,
+                    handoff_package_digest=pending.handoff.handoff_package_digest,
+                    attempt_id=pending.handoff.attempt_id,
+                    run_id=pending.handoff.run_id,
+                    route_receipt_id=route_receipt_id,
+                    route_receipt_digest=route_receipt_digest,
+                )
+        except WorkflowError as error:
+            self._record_rejected_attestation(pending.handoff, attestation, error)
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "routed receipt transaction failed") from error
+
+    def _verify_watchdog_proof(
+        self,
+        request: _WatchdogVerificationRequest | None,
+    ) -> dict[str, Any] | None:
+        if request is None:
+            return None
+        verifier = self._watchdog_proof_verifier
+        identity = self._watchdog_verifier_identity
+        if verifier is None or identity is None:
+            raise WorkflowError(
+                "WATCHDOG_VERIFIER_UNAVAILABLE",
+                "external watchdog route requires an independent trusted verifier",
+            )
+        try:
+            authority = json.loads(_canonical_json(dict(request.authority)))
+            expected_claims = json.loads(_canonical_json(dict(request.expected_claims)))
+            proof = json.loads(_canonical_json(dict(request.proof)))
+            verified = verifier.verify(
+                authority=authority,
+                expected_claims=expected_claims,
+                proof=proof,
+            )
+            current_identity = _freeze_watchdog_verifier(verifier)
+        except WorkflowError:
+            raise
+        except Exception as error:
+            raise WorkflowError(
+                "ROUTE_RECEIPT_REJECTED", "independent watchdog verification failed"
+            ) from error
+        if verified is not True or current_identity != identity:
+            raise WorkflowError(
+                "ROUTE_RECEIPT_REJECTED", "independent watchdog verifier rejected the proof"
+            )
+        authority = request.authority
+        return {
+            "authority_id": authority["authority_id"],
+            "authority_provenance": dict(authority["provenance"]),
+            "attestor_id": authority["attestor_id"],
+            "verifier_id": identity["verifier_id"],
+            "verifier_provenance": dict(identity["provenance"]),
+            "watchdog_digest": request.watchdog_digest,
+        }
+
+    def _record_handoff_terminal(
+        self,
+        handoff: HandoffPackage,
+        event_type: str,
+        recorded_at: str,
+        *,
+        failure: Mapping[str, Any] | None = None,
+    ) -> None:
+        try:
+            with self._store.writer() as connection:
+                events = connection.execute(
+                    "SELECT event_type FROM handoff_events WHERE handoff_id = ? "
+                    "ORDER BY event_number",
+                    (handoff.handoff_id,),
+                ).fetchall()
+                if any(event[0] == event_type for event in events):
+                    return
+                _append_handoff_event(
+                    connection,
+                    handoff.handoff_id,
+                    len(events) + 1,
+                    event_type,
+                    handoff.handoff_package_digest,
+                    recorded_at,
+                    details={"failure": dict(failure)} if failure is not None else None,
+                )
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Handoff terminal event failed") from error
+
+    def _record_rejected_attestation(
+        self,
+        handoff: HandoffPackage,
+        attestation: object,
+        error: WorkflowError,
+    ) -> None:
+        self._record_handoff_terminal(
+            handoff,
+            "FAILED",
+            self._clock.now(),
+            failure=_rejected_attestation_failure(attestation, error.code),
         )
 
     def _execute_and_accept_matt(self, pending: _PendingMattExecution) -> AdvanceResult:
@@ -1895,6 +3514,7 @@ _ENVELOPE_SELECT = (
     "mi.invocation_json, mi.invocation_digest, "
     "mi.skill_name AS invocation_skill_name, mi.skill_digest AS invocation_skill_digest, "
     "mi.executor_id AS invocation_executor_id, mi.run_id AS invocation_run_id, "
+    "ia.attempt_number AS invocation_attempt_number, "
     "mi.constitution_revision AS invocation_constitution_revision, "
     "mi.goal_revision AS invocation_goal_revision, "
     "mi.operating_profile_revision AS invocation_profile_revision, "
@@ -1928,7 +3548,12 @@ _ENVELOPE_SELECT = (
     "o.operating_profile_revision AS operation_profile_revision, "
     "o.active_intent_digest AS operation_intent_digest "
     "FROM action_envelopes AS e JOIN actions AS a ON a.action_id = e.action_id "
-    "LEFT JOIN matt_invocations AS mi ON mi.action_envelope_id = e.action_envelope_id "
+    "LEFT JOIN matt_invocations AS mi ON mi.invocation_id = "
+    "(SELECT latest.invocation_id FROM matt_invocations AS latest "
+    "WHERE latest.action_envelope_id = e.action_envelope_id "
+    "ORDER BY latest.rowid DESC LIMIT 1) "
+    "LEFT JOIN runs AS ir ON ir.run_id = mi.run_id "
+    "LEFT JOIN attempts AS ia ON ia.attempt_id = ir.attempt_id "
     "LEFT JOIN matt_execution_attempts AS mx ON mx.invocation_id = mi.invocation_id "
     "LEFT JOIN matt_execution_observations AS mo ON mo.attempt_id = mx.attempt_id "
     "LEFT JOIN matt_executor_attestations AS ma ON ma.invocation_id = mi.invocation_id "
@@ -2166,6 +3791,7 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
             "intent_binding",
             "method",
             "predecessor_action_envelope_id",
+            "route",
             "stop_conditions",
         }
         or row["envelope_action_id"] != row["action_id"]
@@ -2180,6 +3806,8 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
         )
     ):
         raise WorkflowError("LEDGER_INTEGRITY", "Action Envelope fields are invalid")
+    if envelope["route"] is not None:
+        validate_route_envelope(envelope["route"])
     envelope_binding = _binding_from_payload(envelope, "Action Envelope")
     indexed_envelope_binding = _binding_from_artifact_row(row)
     if envelope_binding != indexed_envelope_binding or envelope_binding != action_binding:
@@ -2204,6 +3832,739 @@ def _frozen_matt_method(row: Mapping[str, Any] | sqlite3.Row) -> Mapping[str, An
     envelope = json.loads(row["envelope_json"])
     method = envelope["method"]
     return method if isinstance(method, Mapping) else None
+
+
+def _frozen_route(row: Mapping[str, Any] | sqlite3.Row) -> Mapping[str, Any] | None:
+    envelope = json.loads(row["envelope_json"])
+    route = envelope.get("route")
+    if route is None:
+        return None
+    validate_route_envelope(route)
+    return MappingProxyType(route)
+
+
+def _verify_handoff(
+    row: Mapping[str, Any] | sqlite3.Row,
+    envelope: Mapping[str, Any] | sqlite3.Row,
+    invocation: _MattInvocation,
+    source_context: Mapping[str, Any] | None,
+) -> HandoffPackage:
+    try:
+        payload = json.loads(row["package_json"])
+        if not isinstance(payload, dict) or _canonical_json(payload) != row["package_json"]:
+            raise TypeError
+        unsigned = dict(payload)
+        package_digest = unsigned.pop("handoff_package_digest")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff Package is not canonical") from error
+    route = _frozen_route(envelope)
+    binding = _binding_from_payload(payload, "Handoff Package")
+    if source_context is None:
+        raise WorkflowError("SOURCE_CONTEXT_UNAVAILABLE", "Handoff source authority is missing")
+    expected_source = json.loads(_canonical_json(dict(source_context)))
+    source_identity = payload.get("source_identity")
+    source_matches = (
+        isinstance(source_identity, dict)
+        and source_identity.get("exact_base_sha") == expected_source["exact_base_sha"]
+        and source_identity.get("expected_merge_base") == expected_source["expected_merge_base"]
+        and source_identity.get("expected_remote_version")
+        == expected_source["expected_remote_version"]
+        and source_identity.get("owned_paths") == expected_source["owned_paths"]
+        and payload.get("tool_policy") == expected_source["tool_policy"]
+        and payload.get("test_profile") == expected_source["test_profile"]
+        and payload.get("source_context_digest") == _digest(_canonical_json(expected_source))
+    )
+    if (
+        _digest(_canonical_json(unsigned)) != package_digest
+        or package_digest != row["handoff_package_digest"]
+        or payload.get("schema_version") != 1
+        or payload.get("handoff_id") != row["handoff_id"]
+        or payload.get("project_id") != row["project_id"]
+        or payload.get("action_id") != row["action_id"]
+        or payload.get("action_envelope_id") != row["action_envelope_id"]
+        or payload.get("action_envelope_digest") != envelope["action_envelope_digest"]
+        or payload.get("route_envelope_digest")
+        != (route["route_envelope_digest"] if route is not None else None)
+        or payload.get("route_envelope") != (dict(route) if route is not None else None)
+        or payload.get("matt_invocation_digest") != invocation.invocation_digest
+        or payload.get("attempt_id") != row["attempt_id"]
+        or payload.get("run_id") != row["run_id"]
+        or payload.get("delivery_id") != row["delivery_id"]
+        or payload.get("idempotency_key") != row["idempotency_key"]
+        or payload.get("fencing_epoch") != row["attempt_number"]
+        or payload.get("executor_id") != row["run_executor_id"]
+        or payload.get("expires_at") != row["expires_at"]
+        or payload.get("parent_handoff_id") != row["parent_handoff_id"]
+        or payload.get("parent_handoff_id") != row["attempt_parent_handoff_id"]
+        or binding != invocation.intent_binding
+        or binding != _binding_from_artifact_row(row)
+        or not source_matches
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff Package fields are inconsistent")
+    return HandoffPackage(
+        handoff_id=payload["handoff_id"],
+        handoff_package_digest=package_digest,
+        project_id=payload["project_id"],
+        action_id=payload["action_id"],
+        action_envelope_id=payload["action_envelope_id"],
+        action_envelope_digest=payload["action_envelope_digest"],
+        route_envelope_digest=payload["route_envelope_digest"],
+        invocation_digest=payload["matt_invocation_digest"],
+        attempt_id=payload["attempt_id"],
+        run_id=payload["run_id"],
+        delivery_id=payload["delivery_id"],
+        idempotency_key=payload["idempotency_key"],
+        fencing_epoch=payload["fencing_epoch"],
+        executor_id=payload["executor_id"],
+        expires_at=payload["expires_at"],
+        parent_handoff_id=payload["parent_handoff_id"],
+        intent_binding=binding,
+        payload=MappingProxyType(payload),
+    )
+
+
+def _rejected_attestation_failure(
+    attestation: object,
+    error_code: str,
+) -> dict[str, Any]:
+    rejected: object | None = None
+    rejected_digest: str | None = None
+    try:
+        candidate = (
+            asdict(attestation)
+            if isinstance(attestation, HandoffExecutionAttestation)
+            else attestation
+        )
+        rejected_json = _canonical_json(candidate)
+        rejected = json.loads(rejected_json)
+        rejected_digest = _digest(rejected_json)
+    except (TypeError, ValueError, WorkflowError):
+        pass
+    return {
+        "error_code": error_code,
+        "phase": "POST_DISPATCH_ATTESTATION_VALIDATION",
+        "rejected_attestation": rejected,
+        "rejected_attestation_digest": rejected_digest,
+    }
+
+
+def _append_handoff_event(
+    connection: sqlite3.Connection,
+    handoff_id: str,
+    event_number: int,
+    event_type: str,
+    package_digest: str,
+    recorded_at: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    payload = {
+        "event_type": event_type,
+        "handoff_package_digest": package_digest,
+        "recorded_at": recorded_at,
+    }
+    if details is not None:
+        payload.update(details)
+    event_json = _canonical_json(payload)
+    connection.execute(
+        "INSERT INTO handoff_events "
+        "(handoff_id, event_number, event_type, event_json, event_digest, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (handoff_id, event_number, event_type, event_json, _digest(event_json), recorded_at),
+    )
+
+
+def _verify_handoff_events(
+    connection: sqlite3.Connection, handoff: HandoffPackage
+) -> tuple[str, ...]:
+    rows = connection.execute(
+        "SELECT event_number, event_type, event_json, event_digest, recorded_at "
+        "FROM handoff_events WHERE handoff_id = ? ORDER BY event_number",
+        (handoff.handoff_id,),
+    ).fetchall()
+    event_types: list[str] = []
+    for expected_number, row in enumerate(rows, 1):
+        payload = _verify_canonical_artifact(
+            row["event_json"], row["event_digest"], "Handoff event"
+        )
+        expected_payload: dict[str, Any] = {
+            "event_type": row["event_type"],
+            "handoff_package_digest": handoff.handoff_package_digest,
+            "recorded_at": row["recorded_at"],
+        }
+        failure = payload.get("failure")
+        if failure is not None:
+            rejected = failure.get("rejected_attestation") if isinstance(failure, Mapping) else None
+            rejected_digest = (
+                failure.get("rejected_attestation_digest") if isinstance(failure, Mapping) else None
+            )
+            if (
+                row["event_type"] != "FAILED"
+                or not isinstance(failure, Mapping)
+                or set(failure)
+                != {
+                    "error_code",
+                    "phase",
+                    "rejected_attestation",
+                    "rejected_attestation_digest",
+                }
+                or not isinstance(failure.get("error_code"), str)
+                or not failure["error_code"].strip()
+                or failure.get("phase") != "POST_DISPATCH_ATTESTATION_VALIDATION"
+                or (rejected is None) != (rejected_digest is None)
+                or (
+                    rejected is not None
+                    and (
+                        not _is_sha256(rejected_digest)
+                        or _digest(_canonical_json(rejected)) != rejected_digest
+                    )
+                )
+            ):
+                raise WorkflowError("LEDGER_INTEGRITY", "Handoff failure evidence is invalid")
+            expected_payload["failure"] = failure
+        if row["event_number"] != expected_number or payload != expected_payload:
+            raise WorkflowError("LEDGER_INTEGRITY", "Handoff event fields are inconsistent")
+        event_types.append(row["event_type"])
+    if not event_types or event_types[0] != "OFFERED" or len(event_types) != len(set(event_types)):
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff event lineage is invalid")
+    return tuple(event_types)
+
+
+def _verify_stored_route_receipt(
+    row: Mapping[str, Any] | sqlite3.Row,
+    payload: Mapping[str, Any],
+    attestation: Mapping[str, Any],
+    handoff: HandoffPackage,
+    envelope: Mapping[str, Any] | sqlite3.Row,
+) -> None:
+    expected_fields = {
+        "receipt_id",
+        "project_id",
+        "handoff_id",
+        "attempt_id",
+        "run_id",
+        "action_envelope_id",
+        "action_envelope_digest",
+        "route_envelope_digest",
+        "handoff_package_digest",
+        "candidate_digest",
+        "requested_route",
+        "actual_route",
+        "requested_parent_identity",
+        "actual_parent_identity",
+        "requested_subagent_identity",
+        "actual_subagent_identity",
+        "usage",
+        "telemetry_provenance",
+        "watchdog_proof",
+        "watchdog_verification",
+        "attestation_digest",
+        "intent_binding",
+        "accepted_at",
+    }
+    route = attestation.get("route")
+    acceptance = attestation.get("acceptance")
+    matt = attestation.get("matt")
+    route_fields = {
+        "handoff_package_digest",
+        "candidate_digest",
+        "requested_route",
+        "actual_route",
+        "requested_parent_identity",
+        "actual_parent_identity",
+        "requested_subagent_identity",
+        "actual_subagent_identity",
+        "usage",
+        "telemetry_provenance",
+        "watchdog_proof",
+    }
+    receipt_binding = _binding_from_payload(payload, "Route Receipt")
+    if (
+        set(payload) != expected_fields
+        or set(attestation) != {"acceptance", "route", "matt"}
+        or not isinstance(route, dict)
+        or set(route) != route_fields
+        or acceptance
+        != {
+            "status": "ACCEPTED",
+            "handoff_package_digest": handoff.handoff_package_digest,
+            "delivery_id": handoff.delivery_id,
+            "idempotency_key": handoff.idempotency_key,
+        }
+        or matt != json.loads(envelope["attestation_json"])
+        or payload["receipt_id"] != row["receipt_id"]
+        or payload["receipt_id"]
+        != str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:route-receipt:{handoff.handoff_package_digest}",
+            )
+        )
+        or payload["project_id"] != row["project_id"]
+        or payload["project_id"] != handoff.project_id
+        or payload["handoff_id"] != row["handoff_id"]
+        or payload["handoff_id"] != handoff.handoff_id
+        or payload["attempt_id"] != row["attempt_id"]
+        or payload["attempt_id"] != handoff.attempt_id
+        or payload["run_id"] != row["run_id"]
+        or payload["run_id"] != handoff.run_id
+        or payload["action_envelope_id"] != row["action_envelope_id"]
+        or payload["action_envelope_id"] != handoff.action_envelope_id
+        or payload["action_envelope_digest"] != handoff.action_envelope_digest
+        or payload["route_envelope_digest"] != handoff.route_envelope_digest
+        or payload["handoff_package_digest"] != handoff.handoff_package_digest
+        or payload["attestation_digest"] != row["route_attestation_digest"]
+        or row["attestation_id"]
+        != str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:route-attestation:{row['route_attestation_digest']}",
+            )
+        )
+        or row["attestation_project_id"] != handoff.project_id
+        or row["attestation_handoff_id"] != handoff.handoff_id
+        or row["attestation_attempt_id"] != handoff.attempt_id
+        or row["attestation_run_id"] != handoff.run_id
+        or payload["accepted_at"] != row["accepted_at"]
+        or receipt_binding != handoff.intent_binding
+        or receipt_binding != _binding_from_artifact_row(row)
+        or any(payload[field] != route[field] for field in route_fields)
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "stored Route Receipt fields are inconsistent")
+
+
+def _assert_live_route_capabilities(
+    connection: sqlite3.Connection,
+    route: Mapping[str, Any] | None,
+    observed_at: str,
+    action_envelope_id: str,
+) -> None:
+    if route is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "routed Action lost its route")
+    try:
+        now = datetime.fromisoformat(observed_at)
+    except (TypeError, ValueError) as error:
+        raise WorkflowError("LEDGER_INTEGRITY", "route observation time is invalid") from error
+    route_row = connection.execute(
+        "SELECT * FROM route_envelopes WHERE route_envelope_digest = ?",
+        (route["route_envelope_digest"],),
+    ).fetchone()
+    if (
+        route_row is None
+        or route_row["route_envelope_json"] != _route_canonical_json(dict(route))
+        or route_row["project_id"] != route.get("project_id")
+        or route_row["action_id"] != route.get("action_id")
+        or route_row["action_envelope_id"] != action_envelope_id
+        or route_row["plan_id"] != route.get("plan_id")
+        or route_row["plan_digest"] != route.get("plan_digest")
+        or route_row["matrix_id"] != route.get("matrix_id")
+        or route_row["matrix_digest"] != route.get("matrix_digest")
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Route Envelope indexed links changed")
+    plan = connection.execute(
+        "SELECT plan_id, project_id, action_id, matrix_id, matrix_digest, plan_json, "
+        "plan_digest FROM route_plans WHERE plan_digest = ?",
+        (route["plan_digest"],),
+    ).fetchone()
+    if plan is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "frozen Route Plan is missing")
+    plan_payload = _verify_canonical_artifact(plan["plan_json"], plan["plan_digest"], "Route Plan")
+    plan_route_fields = {
+        "matrix_digest",
+        "mode",
+        "fallback",
+        "requested",
+        "required_capabilities",
+        "target_identity",
+        "budget",
+        "exact_candidate_digest",
+        "allowed_candidate_digests",
+    }
+    if (
+        plan_payload.get("plan_id") != plan["plan_id"]
+        or plan_payload.get("project_id") != plan["project_id"]
+        or plan_payload.get("action_id") != plan["action_id"]
+        or plan_payload.get("matrix_digest") != plan["matrix_digest"]
+        or plan["plan_id"] != route["plan_id"]
+        or plan["project_id"] != route["project_id"]
+        or plan["action_id"] != route["action_id"]
+        or plan["matrix_id"] != route["matrix_id"]
+        or plan["matrix_digest"] != route["matrix_digest"]
+        or any(plan_payload.get(field) != route[field] for field in plan_route_fields)
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Route Plan authority changed")
+    matrix = connection.execute(
+        "SELECT matrix_id, project_id, matrix_version, matrix_json, matrix_digest "
+        "FROM capability_matrices WHERE matrix_digest = ?",
+        (route["matrix_digest"],),
+    ).fetchone()
+    if matrix is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "frozen route Capability Matrix is missing")
+    matrix_payload = _verify_canonical_artifact(
+        matrix["matrix_json"], matrix["matrix_digest"], "Capability Matrix"
+    )
+    if (
+        matrix_payload.get("matrix_id") != matrix["matrix_id"]
+        or matrix_payload.get("project_id") != matrix["project_id"]
+        or matrix_payload.get("matrix_version") != matrix["matrix_version"]
+        or matrix["matrix_id"] != route["matrix_id"]
+        or matrix["project_id"] != route["project_id"]
+        or matrix["matrix_id"] != plan["matrix_id"]
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix identity changed")
+    matrix_entries = matrix_payload.get("candidates")
+    if not isinstance(matrix_entries, list) or not matrix_entries:
+        raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix candidates are invalid")
+    indexed_candidates = connection.execute(
+        "SELECT project_id, candidate_number, candidate_digest, snapshot_digest, candidate_json "
+        "FROM capability_matrix_candidates WHERE matrix_id = ? ORDER BY candidate_number",
+        (matrix["matrix_id"],),
+    ).fetchall()
+    if len(indexed_candidates) != len(matrix_entries):
+        raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix candidate index changed")
+    snapshot_digests = matrix_payload.get("snapshot_digests")
+    if not isinstance(snapshot_digests, list) or not snapshot_digests:
+        raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix snapshots are invalid")
+    snapshots: dict[str, Mapping[str, Any]] = {}
+    for snapshot_digest in snapshot_digests:
+        snapshot = connection.execute(
+            "SELECT snapshot_id, project_id, adapter_id, snapshot_json, snapshot_digest, "
+            "accepted_at, expires_at FROM capability_snapshots WHERE snapshot_digest = ?",
+            (snapshot_digest,),
+        ).fetchone()
+        if snapshot is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "Capability Snapshot is missing")
+        payload = _verify_canonical_artifact(
+            snapshot["snapshot_json"], snapshot["snapshot_digest"], "Capability Snapshot"
+        )
+        if (
+            payload.get("snapshot_id") != snapshot["snapshot_id"]
+            or payload.get("project_id") != snapshot["project_id"]
+            or payload.get("adapter_id") != snapshot["adapter_id"]
+            or payload.get("project_id") != route["project_id"]
+            or payload.get("accepted_at") != snapshot["accepted_at"]
+            or payload.get("expires_at") != snapshot["expires_at"]
+        ):
+            raise WorkflowError("LEDGER_INTEGRITY", "Capability Snapshot index changed")
+        snapshots[snapshot_digest] = payload
+        try:
+            accepted = datetime.fromisoformat(snapshot["accepted_at"])
+            expires = datetime.fromisoformat(snapshot["expires_at"])
+        except (TypeError, ValueError) as error:
+            raise WorkflowError(
+                "LEDGER_INTEGRITY", "Capability Snapshot time is invalid"
+            ) from error
+        if accepted > now or now >= expires:
+            raise WorkflowError("ROUTE_EXPIRED", "frozen route capabilities have expired")
+    for candidate_number, (entry, indexed) in enumerate(
+        zip(matrix_entries, indexed_candidates, strict=True), 1
+    ):
+        if not isinstance(entry, dict):
+            raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix candidate is invalid")
+        candidate = entry.get("candidate")
+        candidate_digest = _digest(_canonical_json(candidate))
+        entry_snapshot_digest = entry.get("snapshot_digest")
+        snapshot = (
+            snapshots.get(entry_snapshot_digest) if isinstance(entry_snapshot_digest, str) else None
+        )
+        if (
+            entry.get("candidate_digest") != candidate_digest
+            or indexed["project_id"] != route["project_id"]
+            or indexed["candidate_number"] != candidate_number
+            or indexed["candidate_digest"] != candidate_digest
+            or indexed["snapshot_digest"] != entry_snapshot_digest
+            or indexed["candidate_json"] != _route_canonical_json(candidate)
+            or snapshot is None
+            or candidate not in snapshot.get("candidates", [])
+        ):
+            raise WorkflowError("LEDGER_INTEGRITY", "Capability Matrix candidate index changed")
+
+
+def _route_candidate(
+    connection: sqlite3.Connection,
+    route: Mapping[str, Any],
+    attestation: HandoffExecutionAttestation,
+) -> Mapping[str, Any]:
+    matrix = connection.execute(
+        "SELECT matrix_json, matrix_digest FROM capability_matrices WHERE matrix_digest = ?",
+        (route["matrix_digest"],),
+    ).fetchone()
+    if matrix is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "Route Receipt Capability Matrix is missing")
+    matrix_payload = _verify_canonical_artifact(
+        matrix["matrix_json"], matrix["matrix_digest"], "Capability Matrix"
+    )
+    evidence = attestation.route
+    if not isinstance(evidence, RouteExecutionAttestation) or not _is_sha256(
+        evidence.candidate_digest
+    ):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "route attestation is malformed")
+    candidate_digest = evidence.candidate_digest
+    candidates = [
+        entry["candidate"]
+        for entry in matrix_payload.get("candidates", [])
+        if entry.get("candidate_digest") == candidate_digest
+    ]
+    allowed = (
+        [route["exact_candidate_digest"]]
+        if route["mode"] == "exact"
+        else route["allowed_candidate_digests"]
+    )
+    if len(candidates) != 1 or candidate_digest not in allowed:
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "actual route candidate is not authorized")
+    return candidates[0]
+
+
+def _validated_route_attestation_json(
+    attestation: HandoffExecutionAttestation,
+    handoff: HandoffPackage,
+    route: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    adapter_id: str,
+    *,
+    matt_attestation_json: str,
+    watchdog_verification: Mapping[str, Any] | None = None,
+    require_watchdog_verification: bool = True,
+) -> str:
+    acceptance = attestation.acceptance
+    evidence = attestation.route
+    if not isinstance(acceptance, Mapping) or acceptance != {
+        "status": "ACCEPTED",
+        "handoff_package_digest": handoff.handoff_package_digest,
+        "delivery_id": handoff.delivery_id,
+        "idempotency_key": handoff.idempotency_key,
+    }:
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "Handoff acceptance is invalid")
+    expected_parent = {"executor_id": "workflow-kernel", "run_id": handoff.action_id}
+    expected_subagent = {"executor_id": handoff.executor_id, "run_id": handoff.run_id}
+    route_evidence_fields = (
+        evidence.requested_route,
+        evidence.actual_route,
+        evidence.requested_parent_identity,
+        evidence.actual_parent_identity,
+        evidence.requested_subagent_identity,
+        evidence.actual_subagent_identity,
+        evidence.usage,
+    )
+    if any(not isinstance(field, Mapping) for field in route_evidence_fields):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "route attestation is malformed")
+    requested_route = dict(evidence.requested_route)
+    actual_route = dict(evidence.actual_route)
+    candidate_route = dict(candidate["route"])
+    if (
+        evidence.handoff_package_digest != handoff.handoff_package_digest
+        or requested_route != candidate_route
+        or actual_route != candidate_route
+        or dict(evidence.requested_parent_identity) != expected_parent
+        or dict(evidence.actual_parent_identity) != expected_parent
+        or dict(evidence.requested_subagent_identity) != expected_subagent
+        or dict(evidence.actual_subagent_identity) != expected_subagent
+        or (route["mode"] == "exact" and requested_route != route["requested"])
+    ):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "requested or actual route is inconsistent")
+    usage = dict(evidence.usage)
+    usage_fields = {"input_tokens", "output_tokens", "total_tokens", "tool_calls", "elapsed_ms"}
+    enforcement = route["candidate_limits"].get(evidence.candidate_digest)
+    if (
+        set(usage) != usage_fields
+        or any(type(usage[field]) is not int or usage[field] < 0 for field in usage_fields)
+        or usage["total_tokens"] != usage["input_tokens"] + usage["output_tokens"]
+        or not isinstance(enforcement, Mapping)
+        or any(usage[field] > route["budget"][field] for field in usage_fields)
+        or any(usage[field] > enforcement["limits"][field] for field in usage_fields)
+    ):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "route usage exceeds frozen limits")
+    route_fields = {
+        "handoff_package_digest": evidence.handoff_package_digest,
+        "candidate_digest": evidence.candidate_digest,
+        "requested_route": requested_route,
+        "actual_route": actual_route,
+        "requested_parent_identity": dict(evidence.requested_parent_identity),
+        "actual_parent_identity": dict(evidence.actual_parent_identity),
+        "requested_subagent_identity": dict(evidence.requested_subagent_identity),
+        "actual_subagent_identity": dict(evidence.actual_subagent_identity),
+        "usage": usage,
+    }
+    provenance = evidence.telemetry_provenance
+    required_paths = {
+        *(
+            f"actual_route.{dimension}"
+            for dimension in ("provider", "model", "reasoning", "context", "tools")
+        ),
+        "actual_parent_identity.executor_id",
+        "actual_parent_identity.run_id",
+        "actual_subagent_identity.executor_id",
+        "actual_subagent_identity.run_id",
+        *(f"usage.{field}" for field in usage_fields),
+    }
+    if (
+        not isinstance(provenance, Mapping)
+        or set(provenance) != {"proof_kind", "adapter_id", "observed_paths", "payload_digest"}
+        or provenance.get("proof_kind") != "AUTHENTICATED_ROUTE_TELEMETRY"
+        or provenance.get("adapter_id") != adapter_id
+        or not isinstance(provenance.get("observed_paths"), list)
+        or any(not isinstance(path, str) for path in provenance.get("observed_paths", []))
+        or not required_paths.issubset(set(provenance["observed_paths"]))
+        or provenance.get("payload_digest") != _digest(_canonical_json(route_fields))
+    ):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "actual route lacks trusted telemetry")
+    if enforcement["kind"] == "external_watchdog":
+        verification_request = _validate_watchdog_proof(
+            evidence.watchdog_proof,
+            handoff=handoff,
+            route=route,
+            candidate_digest=evidence.candidate_digest,
+            limits=enforcement["limits"],
+            usage=usage,
+            watchdog_digest=enforcement["watchdog_digest"],
+        )
+        if require_watchdog_verification:
+            _validate_watchdog_verification(verification_request, watchdog_verification)
+    elif evidence.watchdog_proof is not None or watchdog_verification is not None:
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "worker prose cannot substitute for route telemetry"
+        )
+    try:
+        payload = asdict(attestation)
+        payload["matt"] = json.loads(matt_attestation_json)
+        return _canonical_json(payload)
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "route attestation is not canonical evidence"
+        ) from error
+
+
+def _watchdog_verification_request(
+    attestation: HandoffExecutionAttestation,
+    handoff: HandoffPackage,
+    route: Mapping[str, Any],
+) -> _WatchdogVerificationRequest | None:
+    evidence = attestation.route
+    enforcement = route["candidate_limits"].get(evidence.candidate_digest)
+    if not isinstance(enforcement, Mapping) or enforcement.get("kind") != "external_watchdog":
+        return None
+    return _validate_watchdog_proof(
+        evidence.watchdog_proof,
+        handoff=handoff,
+        route=route,
+        candidate_digest=evidence.candidate_digest,
+        limits=enforcement["limits"],
+        usage=evidence.usage,
+        watchdog_digest=enforcement["watchdog_digest"],
+    )
+
+
+def _validate_watchdog_proof(
+    proof: object,
+    *,
+    handoff: HandoffPackage,
+    route: Mapping[str, Any],
+    candidate_digest: str,
+    limits: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    watchdog_digest: str,
+) -> _WatchdogVerificationRequest:
+    authorities = route.get("watchdog_authorities")
+    authority = authorities.get(watchdog_digest) if isinstance(authorities, Mapping) else None
+    if not isinstance(proof, Mapping) or not isinstance(authority, Mapping):
+        raise WorkflowError("ROUTE_RECEIPT_REJECTED", "route watchdog proof is missing")
+    expected_fields = {
+        "schema_version",
+        "proof_kind",
+        "watchdog_digest",
+        "candidate_digest",
+        "limits",
+        "usage",
+        "enforcement_outcome",
+        "attestor_id",
+        "authority_provenance",
+        "route_envelope_digest",
+        "handoff_id",
+        "handoff_package_digest",
+        "run_id",
+        "proof_digest",
+    }
+    claims = dict(proof)
+    proof_digest = claims.pop("proof_digest", None)
+    expected_claims = {
+        "schema_version": 1,
+        "proof_kind": "AUTHENTICATED_WATCHDOG_ENFORCEMENT",
+        "watchdog_digest": watchdog_digest,
+        "candidate_digest": candidate_digest,
+        "limits": dict(limits),
+        "usage": dict(usage),
+        "enforcement_outcome": "WITHIN_LIMITS",
+        "attestor_id": authority.get("attestor_id"),
+        "authority_provenance": authority.get("provenance"),
+        "route_envelope_digest": handoff.route_envelope_digest,
+        "handoff_id": handoff.handoff_id,
+        "handoff_package_digest": handoff.handoff_package_digest,
+        "run_id": handoff.run_id,
+    }
+    if (
+        set(proof) != expected_fields
+        or proof.get("schema_version") != 1
+        or proof.get("proof_kind") != "AUTHENTICATED_WATCHDOG_ENFORCEMENT"
+        or proof.get("watchdog_digest") != watchdog_digest
+        or proof.get("candidate_digest") != candidate_digest
+        or proof.get("limits") != dict(limits)
+        or proof.get("usage") != dict(usage)
+        or proof.get("enforcement_outcome") != "WITHIN_LIMITS"
+        or proof.get("attestor_id") != authority.get("attestor_id")
+        or proof.get("authority_provenance") != authority.get("provenance")
+        or proof.get("route_envelope_digest") != handoff.route_envelope_digest
+        or proof.get("handoff_id") != handoff.handoff_id
+        or proof.get("handoff_package_digest") != handoff.handoff_package_digest
+        or proof.get("run_id") != handoff.run_id
+        or not _is_sha256(proof_digest)
+        or _digest(_canonical_json(claims)) != proof_digest
+    ):
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "route watchdog proof is not canonical enforcement evidence"
+        )
+    if claims != expected_claims:
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "route watchdog proof claims are not canonical"
+        )
+    return _WatchdogVerificationRequest(
+        authority=MappingProxyType(json.loads(_canonical_json(dict(authority)))),
+        expected_claims=MappingProxyType(json.loads(_canonical_json(expected_claims))),
+        proof=MappingProxyType(json.loads(_canonical_json(dict(proof)))),
+        watchdog_digest=watchdog_digest,
+    )
+
+
+def _validate_watchdog_verification(
+    request: _WatchdogVerificationRequest,
+    verification: Mapping[str, Any] | None,
+) -> None:
+    authority = request.authority
+    expected = {
+        "authority_id": authority["authority_id"],
+        "authority_provenance": authority["provenance"],
+        "attestor_id": authority["attestor_id"],
+        "watchdog_digest": request.watchdog_digest,
+    }
+    if (
+        not isinstance(verification, Mapping)
+        or set(verification)
+        != {
+            "authority_id",
+            "authority_provenance",
+            "attestor_id",
+            "verifier_id",
+            "verifier_provenance",
+            "watchdog_digest",
+        }
+        or any(verification.get(field) != value for field, value in expected.items())
+        or not isinstance(verification.get("verifier_id"), str)
+        or not verification["verifier_id"].strip()
+        or not isinstance(verification.get("verifier_provenance"), Mapping)
+        or verification["verifier_provenance"].get("proof_kind") != "TRUSTED_WATCHDOG_VERIFIER"
+    ):
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "watchdog proof lacks independent verifier provenance"
+        )
 
 
 def _matt_route(executor_id: str, run_id: str) -> dict[str, str]:
@@ -2256,12 +4617,15 @@ def _verify_matt_invocation(row: Mapping[str, Any] | sqlite3.Row) -> _MattInvoca
             }
         )
     )
-    expected_invocation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"agentic-workflow:matt-invocation:{row['action_envelope_digest']}",
-        )
+    attempt_number = (
+        row.get("invocation_attempt_number")
+        if isinstance(row, dict)
+        else row["invocation_attempt_number"]
     )
+    invocation_identity = f"agentic-workflow:matt-invocation:{row['action_envelope_digest']}"
+    if attempt_number not in {None, 1}:
+        invocation_identity = f"{invocation_identity}:{attempt_number}"
+    expected_invocation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, invocation_identity))
     if (
         set(payload) != expected_fields
         or payload["invocation_id"] != row["matt_invocation_id"]
@@ -2733,6 +5097,157 @@ def _verify_project_row(row: sqlite3.Row) -> None:
 
 def _digest(canonical_json: str) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def _freeze_source_context(source: HandoffSourceContext | None) -> Mapping[str, Any] | None:
+    if source is None:
+        return None
+    if not isinstance(source, HandoffSourceContext):
+        raise WorkflowError("INVALID_SOURCE_CONTEXT", "source context has an invalid type")
+    try:
+        source_payload = asdict(source)
+        source_payload["owned_paths"] = list(source.owned_paths)
+        payload = json.loads(_canonical_json(source_payload))
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "INVALID_SOURCE_CONTEXT", "source context is not canonical JSON"
+        ) from error
+    git_ids = (payload["exact_base_sha"], payload["expected_merge_base"])
+    if (
+        any(
+            not isinstance(value, str)
+            or len(value) not in {40, 64}
+            or any(character not in "0123456789abcdef" for character in value)
+            for value in git_ids
+        )
+        or not isinstance(payload["expected_remote_version"], str)
+        or not payload["expected_remote_version"].strip()
+        or not isinstance(payload["owned_paths"], list)
+        or not payload["owned_paths"]
+        or any(not isinstance(path, str) or not path.strip() for path in payload["owned_paths"])
+        or len(payload["owned_paths"]) != len(set(payload["owned_paths"]))
+        or not isinstance(payload["tool_policy"], dict)
+        or not payload["tool_policy"]
+        or not isinstance(payload["test_profile"], dict)
+        or not payload["test_profile"]
+    ):
+        raise WorkflowError(
+            "INVALID_SOURCE_CONTEXT", "source context identities and policies must be complete"
+        )
+    return MappingProxyType(payload)
+
+
+def _freeze_retry_command(
+    command: HandoffRetryCommand,
+) -> tuple[dict[str, Any], str, str]:
+    if not isinstance(command, HandoffRetryCommand):
+        raise WorkflowError("INVALID_RETRY_COMMAND", "retry command has an invalid type")
+    if (
+        any(
+            not isinstance(value, str) or not value.strip()
+            for value in (
+                command.command_id,
+                command.project_id,
+                command.handoff_id,
+                command.reason,
+            )
+        )
+        or type(command.expected_attempt_number) is not int
+        or command.expected_attempt_number < 1
+        or type(command.max_attempts) is not int
+        or command.max_attempts < 1
+    ):
+        raise WorkflowError("INVALID_RETRY_COMMAND", "retry command fields are invalid")
+    try:
+        payload = {"schema_version": 1, **asdict(command)}
+        command_json = _canonical_json(payload)
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError("INVALID_RETRY_COMMAND", "retry command is not canonical") from error
+    return payload, command_json, _digest(command_json)
+
+
+def _verify_retry_command_row(
+    row: Mapping[str, Any] | sqlite3.Row,
+    expected_payload: Mapping[str, Any],
+    expected_json: str,
+    expected_digest: str,
+) -> None:
+    payload = _verify_canonical_artifact(
+        row["command_json"], row["command_digest"], "Handoff retry command"
+    )
+    if (
+        payload != expected_payload
+        or row["command_json"] != expected_json
+        or row["command_digest"] != expected_digest
+        or row["command_id"] != payload.get("command_id")
+        or row["project_id"] != payload.get("project_id")
+        or row["handoff_id"] != payload.get("handoff_id")
+        or row["expected_attempt_number"] != payload.get("expected_attempt_number")
+        or row["max_attempts"] != payload.get("max_attempts")
+    ):
+        raise WorkflowError(
+            "RETRY_COMMAND_CONFLICT", "retry command identity was replayed with different fields"
+        )
+
+
+def _freeze_watchdog_authorities(
+    authorities: tuple[WatchdogAuthority, ...],
+) -> Mapping[str, Mapping[str, Any]]:
+    if not isinstance(authorities, tuple):
+        raise WorkflowError("INVALID_WATCHDOG_AUTHORITY", "watchdog authorities must be frozen")
+    frozen: dict[str, Mapping[str, Any]] = {}
+    for authority in authorities:
+        if not isinstance(authority, WatchdogAuthority):
+            raise WorkflowError(
+                "INVALID_WATCHDOG_AUTHORITY", "watchdog authority has an invalid type"
+            )
+        try:
+            payload = json.loads(_canonical_json(asdict(authority)))
+        except (TypeError, ValueError, WorkflowError) as error:
+            raise WorkflowError(
+                "INVALID_WATCHDOG_AUTHORITY", "watchdog authority is not canonical JSON"
+            ) from error
+        provenance = payload["provenance"]
+        if (
+            not isinstance(payload["authority_id"], str)
+            or not payload["authority_id"].strip()
+            or not isinstance(payload["attestor_id"], str)
+            or not payload["attestor_id"].strip()
+            or not isinstance(provenance, dict)
+            or provenance.get("proof_kind") != "TRUSTED_WATCHDOG_POLICY"
+        ):
+            raise WorkflowError(
+                "INVALID_WATCHDOG_AUTHORITY", "watchdog authority identity is invalid"
+            )
+        authority_digest = _digest(_canonical_json(payload))
+        if authority_digest in frozen:
+            raise WorkflowError(
+                "INVALID_WATCHDOG_AUTHORITY", "watchdog authority digest is duplicated"
+            )
+        frozen[authority_digest] = MappingProxyType(payload)
+    return MappingProxyType(frozen)
+
+
+def _freeze_watchdog_verifier(
+    verifier: WatchdogProofVerifier | None,
+) -> Mapping[str, Any] | None:
+    if verifier is None:
+        return None
+    try:
+        verifier_id = verifier.verifier_id
+        provenance = json.loads(_canonical_json(dict(verifier.provenance)))
+    except (AttributeError, TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "INVALID_WATCHDOG_VERIFIER", "watchdog verifier identity is invalid"
+        ) from error
+    if (
+        not isinstance(verifier_id, str)
+        or not verifier_id.strip()
+        or not isinstance(provenance, dict)
+        or provenance.get("proof_kind") != "TRUSTED_WATCHDOG_VERIFIER"
+    ):
+        raise WorkflowError("INVALID_WATCHDOG_VERIFIER", "watchdog verifier identity is invalid")
+    return MappingProxyType({"verifier_id": verifier_id, "provenance": provenance})
 
 
 def _validate_json_value(value: object) -> None:
