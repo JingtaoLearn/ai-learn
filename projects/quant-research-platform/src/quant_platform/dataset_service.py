@@ -443,8 +443,16 @@ class YahooChartSource:
                 timeout=self.timeout,
                 headers={"User-Agent": "quant-research-platform/0.1"},
                 stream=True,
+                allow_redirects=False,
             )
-            response.raise_for_status()
+            if type(getattr(response, "status_code", None)) is not int or response.status_code != 200:
+                raise DatasetResolutionError("Yahoo response must have exact HTTP 200 status")
+            history = getattr(response, "history", None)
+            if type(history) is not list or history:
+                raise DatasetResolutionError("Yahoo response must not have redirect history")
+            effective_url = getattr(response, "url", None)
+            if not isinstance(effective_url, str) or effective_url != url:
+                raise DatasetResolutionError("Yahoo response effective URL is not canonical")
             content_length = response.headers.get("content-length")
             if isinstance(content_length, str):
                 digits = content_length.strip()
@@ -748,6 +756,87 @@ class AuditedXshgDailySource:
         return detached
 
     @classmethod
+    def _normalize_market_values(
+        cls,
+        frame: pd.DataFrame,
+        *,
+        source_label: str,
+    ) -> pd.DataFrame:
+        normalized_prices: dict[str, list[float]] = {}
+        for column in cls.price_columns:
+            prices: list[float] = []
+            for value in frame[column]:
+                if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be numeric, finite, and positive"
+                    )
+                try:
+                    decimal_value = Decimal(str(value))
+                except (InvalidOperation, ValueError) as exc:
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be numeric, finite, and positive"
+                    ) from exc
+                if not decimal_value.is_finite() or decimal_value <= 0:
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be finite and positive"
+                    )
+                try:
+                    tick_value = decimal_value.quantize(
+                        cls.price_tick, rounding=ROUND_HALF_UP
+                    )
+                except InvalidOperation as exc:
+                    raise DatasetResolutionError(
+                        f"{source_label} price cannot be normalized to the CNY 0.01 tick"
+                    ) from exc
+                if abs(decimal_value - tick_value) > cls.price_tolerance:
+                    raise DatasetResolutionError(
+                        f"{source_label} price is materially outside the CNY 0.01 tick"
+                    )
+                prices.append(float(tick_value))
+            normalized_prices[column] = prices
+        for column, prices in normalized_prices.items():
+            frame[column] = prices
+
+        normalized_volumes: list[float] = []
+        for value in frame["Volume"]:
+            if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a numeric non-negative integer"
+                )
+            try:
+                decimal_value = Decimal(str(value))
+            except (InvalidOperation, ValueError) as exc:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a numeric non-negative integer"
+                ) from exc
+            if (
+                not decimal_value.is_finite()
+                or decimal_value < 0
+                or decimal_value != decimal_value.to_integral_value()
+            ):
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a finite non-negative integer"
+                )
+            if decimal_value > 2**53:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                )
+            integer_value = int(decimal_value)
+            try:
+                float_value = float(integer_value)
+            except OverflowError as exc:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                ) from exc
+            if not math.isfinite(float_value) or int(float_value) != integer_value:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                )
+            normalized_volumes.append(float_value)
+        frame["Volume"] = normalized_volumes
+        return frame
+
+    @classmethod
     def _normalize_component_frame(
         cls,
         fetched: FetchedDailyBars,
@@ -779,79 +868,10 @@ class AuditedXshgDailySource:
             raw_dates_are_sorted = True
         if not raw_dates_are_sorted:
             raise DatasetResolutionError("component source dates must be sorted")
-        if history:
-            normalized_prices: dict[str, list[float]] = {}
-            for column in cls.price_columns:
-                prices: list[float] = []
-                for value in projected[column]:
-                    if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
-                        raise DatasetResolutionError(
-                            "Yahoo history price values must be numeric, finite, and positive"
-                        )
-                    try:
-                        decimal_value = Decimal(str(value))
-                    except (InvalidOperation, ValueError) as exc:
-                        raise DatasetResolutionError(
-                            "Yahoo history price values must be numeric, finite, and positive"
-                        ) from exc
-                    if not decimal_value.is_finite() or decimal_value <= 0:
-                        raise DatasetResolutionError(
-                            "Yahoo history price values must be finite and positive"
-                        )
-                    try:
-                        tick_value = decimal_value.quantize(
-                            cls.price_tick, rounding=ROUND_HALF_UP
-                        )
-                    except InvalidOperation as exc:
-                        raise DatasetResolutionError(
-                            "Yahoo history price cannot be normalized to the CNY 0.01 tick"
-                        ) from exc
-                    if abs(decimal_value - tick_value) > cls.price_tolerance:
-                        raise DatasetResolutionError(
-                            "Yahoo history price is materially outside the CNY 0.01 tick"
-                        )
-                    prices.append(float(tick_value))
-                normalized_prices[column] = prices
-            for column, prices in normalized_prices.items():
-                projected[column] = prices
-
-            normalized_volumes: list[float] = []
-            for value in projected["Volume"]:
-                if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be a numeric non-negative integer"
-                    )
-                try:
-                    decimal_value = Decimal(str(value))
-                except (InvalidOperation, ValueError) as exc:
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be a numeric non-negative integer"
-                    ) from exc
-                if (
-                    not decimal_value.is_finite()
-                    or decimal_value < 0
-                    or decimal_value != decimal_value.to_integral_value()
-                ):
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be a finite non-negative integer"
-                    )
-                if decimal_value > 2**53:
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be losslessly representable as float64"
-                    )
-                integer_value = int(decimal_value)
-                try:
-                    float_value = float(integer_value)
-                except OverflowError as exc:
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be losslessly representable as float64"
-                    ) from exc
-                if not math.isfinite(float_value) or int(float_value) != integer_value:
-                    raise DatasetResolutionError(
-                        "Yahoo history Volume must be losslessly representable as float64"
-                    )
-                normalized_volumes.append(float_value)
-            projected["Volume"] = normalized_volumes
+        projected = cls._normalize_market_values(
+            projected,
+            source_label="Yahoo history" if history else "SSE current",
+        )
 
         try:
             normalized = _normalize_frame(projected)

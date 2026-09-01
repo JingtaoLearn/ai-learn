@@ -676,13 +676,24 @@ class FakeResponse:
         raise AssertionError("Yahoo responses must be consumed as bounded streams")
 
 
+def _yahoo_responder(*responses: FakeResponse):
+    pending = iter(responses)
+
+    def get(url, **kwargs):
+        response = next(pending)
+        response.url = url
+        return response
+
+    return get
+
+
 def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     calls = []
     payload = _yahoo_payload()
 
     def get(url, **kwargs):
         calls.append((url, kwargs))
-        return FakeResponse(payload)
+        return FakeResponse(payload, url=url)
 
     result = YahooChartSource(http_get=get).fetch(
         "601328.SS", "2026-08-25", "2026-08-26"
@@ -693,6 +704,7 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     )
     assert calls[0][1]["timeout"] == 30
     assert calls[0][1]["stream"] is True
+    assert calls[0][1]["allow_redirects"] is False
     assert result.bars["Date"].dt.strftime("%Y-%m-%d").tolist() == [
         "2026-08-25",
         "2026-08-26",
@@ -712,6 +724,35 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     assert result.source_identity["provider"] == "yahoo-chart-api"
 
 
+@pytest.mark.parametrize(
+    ("status_code", "history", "effective_url", "message"),
+    [
+        (201, [], "request", "HTTP 200"),
+        (200, [object()], "request", "redirect"),
+        (200, [], "https://example.invalid/chart", "effective URL"),
+    ],
+)
+def test_yahoo_source_rejects_unverified_http_response(
+    status_code, history, effective_url, message
+):
+    response = FakeResponse(
+        _yahoo_payload(),
+        status_code=status_code,
+        history=history,
+    )
+
+    def get(url, **kwargs):
+        response.url = url if effective_url == "request" else effective_url
+        return response
+
+    source = YahooChartSource(http_get=get)
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert response.closed is True
+
+
 def test_yahoo_source_preserves_raw_and_canonical_content_identities():
     payload = _yahoo_payload()
     alternate_payload = json.dumps(
@@ -720,8 +761,12 @@ def test_yahoo_source_preserves_raw_and_canonical_content_identities():
         indent=2,
         sort_keys=True,
     ).encode()
-    responses = iter([FakeResponse(payload), FakeResponse(alternate_payload)])
-    source = YahooChartSource(http_get=lambda *args, **kwargs: next(responses))
+    source = YahooChartSource(
+        http_get=_yahoo_responder(
+            FakeResponse(payload),
+            FakeResponse(alternate_payload),
+        )
+    )
 
     first = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
     repeated = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -743,7 +788,7 @@ def test_yahoo_source_preserves_raw_and_canonical_content_identities():
 def test_yahoo_latest_close_excludes_the_current_unfinished_xshg_session():
     payload = _yahoo_payload()
     source = YahooChartSource(
-        http_get=lambda *args, **kwargs: FakeResponse(payload),
+        http_get=_yahoo_responder(FakeResponse(payload)),
         clock=lambda: datetime(2026, 8, 26, 6, 0, tzinfo=UTC),
     )
 
@@ -768,7 +813,7 @@ def test_yahoo_latest_close_excludes_the_current_unfinished_xshg_session():
     ],
 )
 def test_yahoo_source_rejects_mismatched_or_incoherent_responses(payload, message):
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match=message):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -788,7 +833,7 @@ def test_yahoo_source_rejects_mismatched_or_incoherent_responses(payload, messag
 )
 def test_yahoo_source_rejects_mismatched_production_metadata(field, value):
     payload = _yahoo_payload(metadata={field: value})
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match=field):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -800,7 +845,7 @@ def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
         int(pd.Timestamp("2026-08-25 16:00:00", tz="UTC").timestamp()),
     ]
     payload = _yahoo_payload(timestamps=timestamps)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
@@ -821,7 +866,7 @@ def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
 )
 def test_yahoo_source_rejects_non_count_volume_values(volume):
     payload = _yahoo_payload(volume=volume)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match="volume|Volume|non-finite"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -829,7 +874,7 @@ def test_yahoo_source_rejects_non_count_volume_values(volume):
 
 def test_yahoo_source_accepts_integral_numeric_volume_as_float64():
     payload = _yahoo_payload(volume=[1000, 1100.0])
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
@@ -842,7 +887,7 @@ def test_yahoo_source_rejects_oversized_content_length_before_streaming():
         _yahoo_payload(),
         content_length=str(MAX_PROVIDER_RESPONSE_BYTES + 1),
     )
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     with pytest.raises(DatasetResolutionError, match="size limit"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -856,7 +901,7 @@ def test_yahoo_source_rejects_oversized_stream_and_closes_response():
         b"",
         chunks=[b"x" * (1024 * 1024)] * 17,
     )
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     with pytest.raises(DatasetResolutionError, match="size limit"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -868,7 +913,7 @@ def test_yahoo_source_rejects_oversized_stream_and_closes_response():
 def test_yahoo_source_safely_streams_without_valid_content_length(content_length):
     payload = _yahoo_payload()
     response = FakeResponse(payload, content_length=content_length)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
@@ -1439,7 +1484,29 @@ def test_audited_xshg_invalid_current_row_stops_before_history(current_bars):
     history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
     current = InjectedDailySource("sse-current-ashare-report", current_bars)
 
-    with pytest.raises(DatasetResolutionError, match="invalid|outside"):
+    with pytest.raises(DatasetResolutionError, match="invalid|outside|finite|positive"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("Close", 6.104),
+        ("Volume", 1000.5),
+        ("Volume", 9007199254740993),
+    ],
+)
+def test_audited_xshg_rejects_off_tick_or_inexact_current_bar(column, value):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current_bars = _bars(["2026-08-31"])
+    current_bars[column] = pd.Series([value], dtype=object)
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+
+    with pytest.raises(DatasetResolutionError, match="price|tick|Volume|float64"):
         _audited_source(history, current).fetch(
             "601328.SS", "2026-08-30", "2026-08-31"
         )
