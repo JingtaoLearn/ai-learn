@@ -54,6 +54,11 @@ class AdvanceResult:
     predecessor_action_envelope_id: str | None
     operation_id: str | None
     operation_digest: str | None
+    action_class: str = "cognitive"
+    matt_invocation_id: str | None = None
+    matt_invocation_digest: str | None = None
+    matt_receipt_id: str | None = None
+    matt_receipt_digest: str | None = None
 
 
 @dataclass(frozen=True)

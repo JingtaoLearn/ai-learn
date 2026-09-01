@@ -6,15 +6,21 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Event
+from typing import Any
 
 import pytest
 
-from agentic_workflow import UserDecision, WorkflowError, WorkflowKernel
+from agentic_workflow import (
+    UserDecision,
+    WorkflowError,
+    WorkflowKernel,
+)
 
 PROFILE = json.loads(
     (Path(__file__).parents[1] / "config" / "operating-profile.v1.json").read_text()
@@ -28,6 +34,42 @@ class ActorAuthenticator:
         }
 
 
+def digest(value: object) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class TrustedFakeExternalEffects:
+    executor_id = "trusted-intent-fencing-executor"
+
+    def attempt(self, operation: Any) -> Mapping[str, Any]:
+        artifact = {
+            "artifact_type": operation.expected_artifact,
+            "result": "deterministic intent-fencing evidence",
+        }
+        return {
+            "invocation_digest": operation.invocation_digest,
+            "executor_id": self.executor_id,
+            "run_id": operation.run_id,
+            "skill_name": operation.skill_name,
+            "skill_digest": operation.skill_digest,
+            "load_proof": {
+                "proof_kind": "EXECUTOR_VERIFIED_SKILL_LOAD",
+                "skill_name": operation.skill_name,
+                "skill_digest": operation.skill_digest,
+                "executor_id": self.executor_id,
+                "run_id": operation.run_id,
+            },
+            "gate_outcomes": {
+                gate: {"status": "PASSED", "evidence_digest": digest({"gate": gate})}
+                for gate in operation.gates
+            },
+            "artifact": artifact,
+            "artifact_digest": digest(artifact),
+            "completion_classification": "COMPLETED",
+        }
+
+
 @pytest.fixture
 def database_path(tmp_path: Path) -> Path:
     return tmp_path / "control.sqlite3"
@@ -38,6 +80,7 @@ def kernel(database_path: Path) -> WorkflowKernel:
     return WorkflowKernel(
         database_path,
         decision_authenticator=ActorAuthenticator(),
+        external_effects=TrustedFakeExternalEffects(),
     )
 
 
@@ -123,6 +166,7 @@ import sys
 
 import agentic_workflow.kernel as kernel_module
 from agentic_workflow import UserDecision, WorkflowKernel
+from test_intent_fencing import TrustedFakeExternalEffects
 
 class Authenticator:
     def authenticate(self, decision):
@@ -136,7 +180,11 @@ def crash_at_selected_point(point):
         os._exit(91)
 
 kernel_module._PRIVATE_FAULT_HOOK = crash_at_selected_point
-kernel = WorkflowKernel(sys.argv[1], decision_authenticator=Authenticator())
+kernel = WorkflowKernel(
+    sys.argv[1],
+    decision_authenticator=Authenticator(),
+    external_effects=TrustedFakeExternalEffects(),
+)
 if sys.argv[2].startswith("revision_"):
     kernel.record(UserDecision(**json.loads(os.environ["CRASH_REVISION_JSON"])))
 else:
@@ -144,8 +192,9 @@ else:
 """
     environment = os.environ.copy()
     source = str(Path(__file__).parents[1] / "src")
+    tests = str(Path(__file__).parent)
     environment["PYTHONPATH"] = os.pathsep.join(
-        part for part in (source, environment.get("PYTHONPATH", "")) if part
+        part for part in (tests, source, environment.get("PYTHONPATH", "")) if part
     )
     if revision is not None:
         environment["CRASH_REVISION_JSON"] = json.dumps(asdict(revision))
@@ -157,6 +206,41 @@ else:
         text=True,
         timeout=15,
     )
+
+
+def make_current_action_mechanical(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        action_trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'actions_no_update'"
+        ).fetchone()[0]
+        envelope_trigger = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = 'action_envelopes_no_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER actions_no_update")
+        connection.execute("DROP TRIGGER action_envelopes_no_update")
+        action = json.loads(connection.execute("SELECT action_json FROM actions").fetchone()[0])
+        action["action_kind"] = "FROZEN_TEST_COMMAND"
+        action_json = json.dumps(action, sort_keys=True, separators=(",", ":"))
+        action_digest = hashlib.sha256(action_json.encode()).hexdigest()
+        connection.execute(
+            "UPDATE actions SET action_kind = 'FROZEN_TEST_COMMAND', "
+            "action_json = ?, action_digest = ?",
+            (action_json, action_digest),
+        )
+        envelope = json.loads(
+            connection.execute("SELECT envelope_json FROM action_envelopes").fetchone()[0]
+        )
+        envelope["action_digest"] = action_digest
+        envelope["method"] = None
+        envelope_json = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        envelope_digest = hashlib.sha256(envelope_json.encode()).hexdigest()
+        connection.execute(
+            "UPDATE action_envelopes SET envelope_json = ?, action_envelope_digest = ?",
+            (envelope_json, envelope_digest),
+        )
+        connection.execute(action_trigger)
+        connection.execute(envelope_trigger)
 
 
 def test_authenticated_goal_revision_atomically_changes_active_intent(
@@ -1106,6 +1190,7 @@ def test_operation_os_exit_crash_probe_preserves_atomic_reservation_and_retry(
 ) -> None:
     kernel.record(decision())
     envelope = kernel.advance("project-1")
+    make_current_action_mechanical(database_path)
 
     crashed = run_crash_probe(database_path, fault_point)
 

@@ -7,7 +7,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,6 +24,13 @@ from .store import ControlStore
 
 _PRIVATE_FAULT_HOOK: Callable[[str], None] | None = None
 
+_IMPLEMENT_SKILL_NAME = "mattpocock:implement"
+_IMPLEMENT_SKILL_DIGEST = "6d3fd9e83b8f36e5213854779db49b256a457a7ebb4a503e53fa7dcff696adc3"
+_IMPLEMENT_GATES = ("SPEC_SATISFIED", "TESTS_PASSED")
+_IMPLEMENT_COMPLETION = "BOUNDED_IMPLEMENTATION_COMPLETED"
+_IMPLEMENT_ARTIFACT = "IMPLEMENTATION_RESULT"
+_IMPLEMENT_ALLOWED_NEXT: tuple[str, ...] = ()
+
 
 def _private_fault(point: str) -> None:
     if _PRIVATE_FAULT_HOOK is not None:
@@ -32,6 +39,52 @@ def _private_fault(point: str) -> None:
 
 class DecisionAuthenticator(Protocol):
     def authenticate(self, decision: UserDecision) -> bool: ...
+
+
+class _ExternalEffects(Protocol):
+    executor_id: str
+
+    def attempt(self, operation: _MattInvocation) -> object: ...
+
+
+@dataclass(frozen=True)
+class _MattInvocation:
+    invocation_id: str
+    invocation_digest: str
+    project_id: str
+    action_id: str
+    action_envelope_id: str
+    action_envelope_digest: str
+    skill_name: str
+    skill_digest: str
+    executor_id: str
+    run_id: str
+    input_evidence_digest: str
+    gates: tuple[str, ...]
+    completion_criterion: str
+    expected_artifact: str
+    intent_binding: IntentBinding
+
+
+@dataclass(frozen=True)
+class _MattExecutionAttestation:
+    invocation_digest: str
+    executor_id: str
+    run_id: str
+    skill_name: str
+    skill_digest: str
+    load_proof: Mapping[str, Any]
+    gate_outcomes: Mapping[str, Any]
+    artifact: Mapping[str, Any]
+    artifact_digest: str
+    completion_classification: str
+
+
+@dataclass(frozen=True)
+class _PendingMattExecution:
+    invocation: _MattInvocation
+    attempt_id: str
+    attempt_digest: str
 
 
 class Clock(Protocol):
@@ -56,10 +109,19 @@ class WorkflowKernel:
         database_path: str | Path,
         *,
         decision_authenticator: DecisionAuthenticator | None = None,
+        external_effects: _ExternalEffects | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._store = ControlStore(database_path)
         self._authenticator = decision_authenticator or RejectingAuthenticator()
+        self._external_effects = external_effects
+        self._matt_executor_id = (
+            external_effects.executor_id if external_effects is not None else None
+        )
+        if self._matt_executor_id is not None and (
+            not isinstance(self._matt_executor_id, str) or not self._matt_executor_id.strip()
+        ):
+            raise WorkflowError("INVALID_MATT_EXECUTOR", "trusted executor identity is invalid")
         self._clock = clock or SystemClock()
 
     def record(self, event: UserDecision) -> RecordReceipt:
@@ -442,6 +504,8 @@ class WorkflowKernel:
         recorded_at = self._clock.now()
         action_id = str(uuid.uuid4())
         action_envelope_id = str(uuid.uuid4())
+        pending: _PendingMattExecution | None = None
+        created: AdvanceResult | None = None
         try:
             with self._store.writer() as connection:
                 current = _current_intent_row(connection, project_id)
@@ -450,85 +514,99 @@ class WorkflowKernel:
                 _verify_current_intent(current)
                 existing = _latest_live_envelope(connection, current)
                 if existing is not None:
-                    return self._advance_existing(connection, current, existing, recorded_at)
-                compatible = _compatible_source_envelope(connection, current)
-                if compatible is not None:
-                    return self._reenvelope_compatible(connection, current, compatible, recorded_at)
-                binding = _binding_from_row(current)
-                goal = json.loads(current["goal_json"])
-                action_json = _canonical_json(
-                    {
-                        "action_id": action_id,
-                        "action_kind": "GOAL_WORK",
-                        "intent_binding": asdict(binding),
-                        "objective": goal["outcome"],
-                    }
-                )
-                action_digest = _digest(action_json)
-                connection.execute(
-                    "INSERT INTO actions "
-                    "(action_id, project_id, action_kind, action_json, action_digest, "
-                    "constitution_revision, goal_revision, operating_profile_revision, "
-                    "active_intent_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        action_id,
-                        project_id,
-                        "GOAL_WORK",
-                        action_json,
-                        action_digest,
-                        binding.constitution_revision,
-                        binding.goal_revision,
-                        binding.operating_profile_revision,
-                        binding.active_intent_digest,
-                        recorded_at,
-                    ),
-                )
-                envelope_json = _canonical_json(
-                    {
-                        "acceptance": goal["success_evidence"],
-                        "action_digest": action_digest,
-                        "action_envelope_id": action_envelope_id,
-                        "constraints": goal["constraints"],
-                        "intent_binding": asdict(binding),
-                        "predecessor_action_envelope_id": None,
-                        "stop_conditions": ["ACTIVE_INTENT_CHANGED"],
-                    }
-                )
-                envelope_digest = _digest(envelope_json)
-                connection.execute(
-                    "INSERT INTO action_envelopes "
-                    "(action_envelope_id, project_id, action_id, "
-                    "predecessor_action_envelope_id, envelope_json, action_envelope_digest, "
-                    "constitution_revision, goal_revision, operating_profile_revision, "
-                    "active_intent_digest, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        action_envelope_id,
-                        project_id,
-                        action_id,
-                        envelope_json,
-                        envelope_digest,
-                        binding.constitution_revision,
-                        binding.goal_revision,
-                        binding.operating_profile_revision,
-                        binding.active_intent_digest,
-                        recorded_at,
-                    ),
-                )
+                    advanced = self._advance_existing(connection, current, existing, recorded_at)
+                    if isinstance(advanced, AdvanceResult):
+                        return advanced
+                    pending = advanced
+                else:
+                    compatible = _compatible_source_envelope(connection, current)
+                    if compatible is not None:
+                        return self._reenvelope_compatible(
+                            connection, current, compatible, recorded_at
+                        )
+                    binding = _binding_from_row(current)
+                    goal = json.loads(current["goal_json"])
+                    action_json = _canonical_json(
+                        {
+                            "action_id": action_id,
+                            "action_kind": "GOAL_WORK",
+                            "intent_binding": asdict(binding),
+                            "objective": goal["outcome"],
+                        }
+                    )
+                    action_digest = _digest(action_json)
+                    connection.execute(
+                        "INSERT INTO actions "
+                        "(action_id, project_id, action_kind, action_json, action_digest, "
+                        "constitution_revision, goal_revision, operating_profile_revision, "
+                        "active_intent_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            action_id,
+                            project_id,
+                            "GOAL_WORK",
+                            action_json,
+                            action_digest,
+                            binding.constitution_revision,
+                            binding.goal_revision,
+                            binding.operating_profile_revision,
+                            binding.active_intent_digest,
+                            recorded_at,
+                        ),
+                    )
+                    envelope_json = _canonical_json(
+                        {
+                            "acceptance": goal["success_evidence"],
+                            "action_digest": action_digest,
+                            "action_envelope_id": action_envelope_id,
+                            "constraints": goal["constraints"],
+                            "intent_binding": asdict(binding),
+                            "method": _method_contract_for_action_kind("GOAL_WORK"),
+                            "predecessor_action_envelope_id": None,
+                            "stop_conditions": ["ACTIVE_INTENT_CHANGED"],
+                        }
+                    )
+                    envelope_digest = _digest(envelope_json)
+                    connection.execute(
+                        "INSERT INTO action_envelopes "
+                        "(action_envelope_id, project_id, action_id, "
+                        "predecessor_action_envelope_id, envelope_json, action_envelope_digest, "
+                        "constitution_revision, goal_revision, operating_profile_revision, "
+                        "active_intent_digest, created_at) "
+                        "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            action_envelope_id,
+                            project_id,
+                            action_id,
+                            envelope_json,
+                            envelope_digest,
+                            binding.constitution_revision,
+                            binding.goal_revision,
+                            binding.operating_profile_revision,
+                            binding.active_intent_digest,
+                            recorded_at,
+                        ),
+                    )
+                    created = AdvanceResult(
+                        project_id=project_id,
+                        outcome="ACTION_ENVELOPED",
+                        intent_binding=binding,
+                        action_id=action_id,
+                        action_envelope_id=action_envelope_id,
+                        action_envelope_digest=envelope_digest,
+                        predecessor_action_envelope_id=None,
+                        operation_id=None,
+                        operation_digest=None,
+                        action_class="cognitive",
+                    )
         except WorkflowError:
             raise
         except sqlite3.DatabaseError as error:
             raise WorkflowError("LEDGER_ERROR", "advance transaction failed") from error
-        return AdvanceResult(
-            project_id=project_id,
-            outcome="ACTION_ENVELOPED",
-            intent_binding=binding,
-            action_id=action_id,
-            action_envelope_id=action_envelope_id,
-            action_envelope_digest=envelope_digest,
-            predecessor_action_envelope_id=None,
-            operation_id=None,
-            operation_digest=None,
-        )
+        if pending is not None:
+            return self._execute_and_accept_matt(pending)
+        if created is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "advance produced no durable transition")
+        return created
 
     def _reenvelope_compatible(
         self,
@@ -594,6 +672,7 @@ class WorkflowKernel:
                 "action_envelope_id": action_envelope_id,
                 "constraints": goal["constraints"],
                 "intent_binding": asdict(binding),
+                "method": _method_contract_for_action_kind("GOAL_WORK"),
                 "predecessor_action_envelope_id": source["action_envelope_id"],
                 "stop_conditions": ["ACTIVE_INTENT_CHANGED"],
             }
@@ -637,12 +716,434 @@ class WorkflowKernel:
         current: sqlite3.Row,
         envelope: sqlite3.Row,
         recorded_at: str,
-    ) -> AdvanceResult:
+    ) -> AdvanceResult | _PendingMattExecution:
         envelope_binding = _verify_action_envelope(envelope)
         if envelope_binding != _binding_from_row(current):
             raise WorkflowError("LEDGER_INTEGRITY", "live Action Envelope binding is not current")
+        action_class = _classify_action_kind(envelope["action_kind"])
+        if action_class == "cognitive" and envelope["matt_receipt_id"] is None:
+            if _frozen_matt_method(envelope) is None:
+                raise WorkflowError(
+                    "MATT_METHOD_UNAVAILABLE",
+                    "cognitive Action has no applicable frozen Matt method",
+                )
+            if self._external_effects is None:
+                raise WorkflowError(
+                    "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires a trusted Matt executor"
+                )
+            invocation = (
+                _verify_matt_invocation(envelope)
+                if envelope["matt_invocation_id"] is not None
+                else self._freeze_matt_invocation(connection, current, envelope, recorded_at)
+            )
+            if invocation.executor_id != self._matt_executor_id:
+                raise WorkflowError(
+                    "MATT_EXECUTOR_MISMATCH",
+                    "frozen Matt Invocation route does not match the trusted executor",
+                )
+            if envelope["matt_attempt_id"] is not None:
+                _verify_matt_attempt(envelope, invocation)
+                if envelope["matt_observation_id"] is not None:
+                    _verify_matt_observation(envelope)
+                raise WorkflowError(
+                    "MATT_EXECUTION_AMBIGUOUS",
+                    "Matt execution attempt is ambiguous and cannot be retried",
+                )
+            return self._claim_matt_execution(connection, invocation, recorded_at)
+        if action_class == "cognitive":
+            _verify_matt_receipt_chain(envelope)
         if envelope["operation_id"] is not None:
             return self._conclude_existing(connection, current, envelope, recorded_at)
+
+        return self._reserve_existing(connection, current, envelope, recorded_at)
+
+    def _freeze_matt_invocation(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        envelope: sqlite3.Row,
+        recorded_at: str,
+    ) -> _MattInvocation:
+        if self._matt_executor_id is None:
+            raise WorkflowError(
+                "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires a trusted Matt executor"
+            )
+        method = _frozen_matt_method(envelope)
+        if method is None:
+            raise WorkflowError(
+                "MATT_METHOD_UNAVAILABLE", "cognitive Action has no applicable frozen Matt method"
+            )
+        binding = _binding_from_row(current)
+        invocation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:matt-invocation:{envelope['action_envelope_digest']}",
+            )
+        )
+        run_id = str(uuid.uuid4())
+        input_evidence_digest = _digest(
+            _canonical_json(
+                {
+                    "action_digest": envelope["action_digest"],
+                    "action_envelope_digest": envelope["action_envelope_digest"],
+                }
+            )
+        )
+        payload = {
+            "action_envelope_digest": envelope["action_envelope_digest"],
+            "action_envelope_id": envelope["action_envelope_id"],
+            "action_id": envelope["action_id"],
+            "completion_criterion": method["completion_criterion"],
+            "created_at": recorded_at,
+            "executor_id": self._matt_executor_id,
+            "expected_artifact": method["expected_artifact"],
+            "gates": method["gates"],
+            "input_evidence_digest": input_evidence_digest,
+            "intent_binding": asdict(binding),
+            "invocation_id": invocation_id,
+            "project_id": current["project_id"],
+            "route": _matt_route(self._matt_executor_id, run_id),
+            "run_id": run_id,
+            "skill_digest": method["skill_digest"],
+            "skill_name": method["skill_name"],
+        }
+        invocation_json = _canonical_json(payload)
+        invocation_digest = _digest(invocation_json)
+        connection.execute(
+            "INSERT INTO matt_invocations "
+            "(invocation_id, project_id, action_id, action_envelope_id, invocation_json, "
+            "invocation_digest, skill_name, skill_digest, executor_id, run_id, "
+            "constitution_revision, goal_revision, operating_profile_revision, "
+            "active_intent_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                invocation_id,
+                current["project_id"],
+                envelope["action_id"],
+                envelope["action_envelope_id"],
+                invocation_json,
+                invocation_digest,
+                method["skill_name"],
+                method["skill_digest"],
+                self._matt_executor_id,
+                run_id,
+                binding.constitution_revision,
+                binding.goal_revision,
+                binding.operating_profile_revision,
+                binding.active_intent_digest,
+                recorded_at,
+            ),
+        )
+        return _MattInvocation(
+            invocation_id=invocation_id,
+            invocation_digest=invocation_digest,
+            project_id=current["project_id"],
+            action_id=envelope["action_id"],
+            action_envelope_id=envelope["action_envelope_id"],
+            action_envelope_digest=envelope["action_envelope_digest"],
+            skill_name=method["skill_name"],
+            skill_digest=method["skill_digest"],
+            executor_id=self._matt_executor_id,
+            run_id=run_id,
+            input_evidence_digest=input_evidence_digest,
+            gates=tuple(method["gates"]),
+            completion_criterion=method["completion_criterion"],
+            expected_artifact=method["expected_artifact"],
+            intent_binding=binding,
+        )
+
+    def _claim_matt_execution(
+        self,
+        connection: sqlite3.Connection,
+        invocation: _MattInvocation,
+        attempted_at: str,
+    ) -> _PendingMattExecution:
+        active_attempt = connection.execute(
+            "SELECT 1 FROM matt_execution_attempts AS attempt "
+            "LEFT JOIN matt_execution_observations AS observation "
+            "ON observation.attempt_id = attempt.attempt_id "
+            "WHERE attempt.project_id = ? AND observation.observation_id IS NULL",
+            (invocation.project_id,),
+        ).fetchone()
+        if active_attempt is not None:
+            raise WorkflowError(
+                "MATT_EXECUTION_AMBIGUOUS",
+                "another Matt execution attempt for this project is unresolved",
+            )
+        attempt_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:matt-attempt:{invocation.invocation_digest}",
+            )
+        )
+        payload = {
+            "action_envelope_digest": invocation.action_envelope_digest,
+            "action_envelope_id": invocation.action_envelope_id,
+            "attempt_id": attempt_id,
+            "attempted_at": attempted_at,
+            "executor_id": invocation.executor_id,
+            "intent_binding": asdict(invocation.intent_binding),
+            "invocation_digest": invocation.invocation_digest,
+            "invocation_id": invocation.invocation_id,
+            "project_id": invocation.project_id,
+            "run_id": invocation.run_id,
+        }
+        attempt_json = _canonical_json(payload)
+        attempt_digest = _digest(attempt_json)
+        connection.execute(
+            "INSERT INTO matt_execution_attempts "
+            "(attempt_id, invocation_id, project_id, action_envelope_id, executor_id, run_id, "
+            "active_intent_digest, attempt_json, attempt_digest, attempted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attempt_id,
+                invocation.invocation_id,
+                invocation.project_id,
+                invocation.action_envelope_id,
+                invocation.executor_id,
+                invocation.run_id,
+                invocation.intent_binding.active_intent_digest,
+                attempt_json,
+                attempt_digest,
+                attempted_at,
+            ),
+        )
+        return _PendingMattExecution(
+            invocation=invocation,
+            attempt_id=attempt_id,
+            attempt_digest=attempt_digest,
+        )
+
+    def _execute_and_accept_matt(self, pending: _PendingMattExecution) -> AdvanceResult:
+        external_effects = self._external_effects
+        if external_effects is None:
+            raise WorkflowError(
+                "MATT_EXECUTOR_UNAVAILABLE", "cognitive Action requires a trusted Matt executor"
+            )
+        if self._matt_executor_id != pending.invocation.executor_id:
+            raise WorkflowError(
+                "MATT_EXECUTOR_MISMATCH",
+                "frozen Matt Invocation belongs to a different trusted executor",
+            )
+        try:
+            returned = external_effects.attempt(pending.invocation)
+        except Exception as error:
+            self._record_matt_observation(
+                pending,
+                outcome="AMBIGUOUS",
+                evidence_digest=None,
+                error_type=type(error).__name__,
+                observed_at=self._clock.now(),
+            )
+            raise WorkflowError(
+                "MATT_EXECUTION_AMBIGUOUS", "trusted Matt execution is ambiguous and cannot retry"
+            ) from error
+        returned_at = self._clock.now()
+        try:
+            attestation = _coerce_matt_attestation(returned)
+            attestation_json = _validated_attestation_json(
+                attestation, pending.invocation, returned_at
+            )
+        except WorkflowError:
+            self._record_matt_observation(
+                pending,
+                outcome="REJECTED",
+                evidence_digest=None,
+                error_type=None,
+                observed_at=returned_at,
+            )
+            raise
+        self._record_matt_observation(
+            pending,
+            outcome="RETURNED",
+            evidence_digest=_digest(attestation_json),
+            error_type=None,
+            observed_at=returned_at,
+        )
+        accepted_at = self._clock.now()
+        try:
+            with self._store.writer() as connection:
+                current = _current_intent_row(connection, pending.invocation.project_id)
+                if current is None:
+                    raise WorkflowError("PROJECT_NOT_FOUND", "workflow project does not exist")
+                _verify_current_intent(current)
+                if _binding_from_row(current) != pending.invocation.intent_binding:
+                    raise WorkflowError(
+                        "STALE_INTENT", "Matt Invocation is not bound to the current intent"
+                    )
+                envelope = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (pending.invocation.action_envelope_id,),
+                ).fetchone()
+                if envelope is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "Matt Action Envelope is missing")
+                envelope_binding = _verify_action_envelope(envelope)
+                if envelope_binding != pending.invocation.intent_binding:
+                    raise WorkflowError("STALE_INTENT", "Matt Action Envelope is not current")
+                stored_invocation = _verify_matt_invocation(envelope)
+                if stored_invocation != pending.invocation:
+                    raise WorkflowError(
+                        "LEDGER_INTEGRITY", "Matt Invocation changed after execution"
+                    )
+                _verify_matt_attempt(envelope, stored_invocation)
+                _verify_matt_observation(
+                    envelope,
+                    expected_outcome="RETURNED",
+                    expected_evidence_digest=_digest(attestation_json),
+                )
+                method = _frozen_matt_method(envelope)
+                if method is None:
+                    raise WorkflowError(
+                        "LEDGER_INTEGRITY", "Matt Invocation has no frozen method contract"
+                    )
+                if envelope["matt_receipt_id"] is not None:
+                    _verify_matt_receipt_chain(envelope)
+                    if envelope["operation_id"] is None:
+                        return self._reserve_existing(connection, current, envelope, accepted_at)
+                    return _existing_operation_result(connection, envelope)
+
+                attestation_digest = _digest(attestation_json)
+                attestation_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:matt-attestation:{attestation_digest}",
+                    )
+                )
+                connection.execute(
+                    "INSERT INTO matt_executor_attestations "
+                    "(attestation_id, invocation_id, attestation_json, attestation_digest, "
+                    "executor_id, run_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        attestation_id,
+                        stored_invocation.invocation_id,
+                        attestation_json,
+                        attestation_digest,
+                        stored_invocation.executor_id,
+                        stored_invocation.run_id,
+                        returned_at,
+                    ),
+                )
+                receipt_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"agentic-workflow:matt-receipt:{stored_invocation.invocation_digest}",
+                    )
+                )
+                receipt_payload = {
+                    "accepted_at": accepted_at,
+                    "action_envelope_digest": stored_invocation.action_envelope_digest,
+                    "action_envelope_id": stored_invocation.action_envelope_id,
+                    "action_id": stored_invocation.action_id,
+                    "actual_skill_digest": attestation.skill_digest,
+                    "allowed_next_methods": method["allowed_next_methods"],
+                    "artifact_digest": attestation.artifact_digest,
+                    "attestation_digest": attestation_digest,
+                    "completion_classification": attestation.completion_classification,
+                    "executor_id": stored_invocation.executor_id,
+                    "gate_outcomes": dict(attestation.gate_outcomes),
+                    "intent_binding": asdict(stored_invocation.intent_binding),
+                    "invocation_digest": stored_invocation.invocation_digest,
+                    "load_proof": dict(attestation.load_proof),
+                    "project_id": stored_invocation.project_id,
+                    "receipt_id": receipt_id,
+                    "route": _matt_route(stored_invocation.executor_id, stored_invocation.run_id),
+                    "run_id": stored_invocation.run_id,
+                    "skill_name": stored_invocation.skill_name,
+                }
+                _validate_matt_receipt_payload(
+                    receipt_payload,
+                    stored_invocation,
+                    attestation,
+                    attestation_digest,
+                    method,
+                )
+                receipt_json = _canonical_json(receipt_payload)
+                receipt_digest = _digest(receipt_json)
+                binding = stored_invocation.intent_binding
+                connection.execute(
+                    "INSERT INTO matt_receipts "
+                    "(receipt_id, project_id, invocation_id, attestation_id, action_envelope_id, "
+                    "receipt_json, receipt_digest, constitution_revision, goal_revision, "
+                    "operating_profile_revision, active_intent_digest, accepted_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt_id,
+                        stored_invocation.project_id,
+                        stored_invocation.invocation_id,
+                        attestation_id,
+                        stored_invocation.action_envelope_id,
+                        receipt_json,
+                        receipt_digest,
+                        binding.constitution_revision,
+                        binding.goal_revision,
+                        binding.operating_profile_revision,
+                        binding.active_intent_digest,
+                        accepted_at,
+                    ),
+                )
+                accepted = connection.execute(
+                    _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
+                    (stored_invocation.action_envelope_id,),
+                ).fetchone()
+                if accepted is None:
+                    raise WorkflowError("LEDGER_INTEGRITY", "accepted Matt Action is missing")
+                _verify_matt_receipt_chain(accepted)
+                return self._reserve_existing(connection, current, accepted, accepted_at)
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Matt receipt transaction failed") from error
+
+    def _record_matt_observation(
+        self,
+        pending: _PendingMattExecution,
+        *,
+        outcome: str,
+        evidence_digest: str | None,
+        error_type: str | None,
+        observed_at: str,
+    ) -> None:
+        observation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"agentic-workflow:matt-observation:{pending.attempt_digest}",
+            )
+        )
+        payload = {
+            "attempt_digest": pending.attempt_digest,
+            "error_type": error_type,
+            "evidence_digest": evidence_digest,
+            "observation_id": observation_id,
+            "observed_at": observed_at,
+            "outcome": outcome,
+        }
+        observation_json = _canonical_json(payload)
+        try:
+            with self._store.writer() as connection:
+                connection.execute(
+                    "INSERT INTO matt_execution_observations "
+                    "(observation_id, attempt_id, observation_json, observation_digest, "
+                    "outcome, observed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        observation_id,
+                        pending.attempt_id,
+                        observation_json,
+                        _digest(observation_json),
+                        outcome,
+                        observed_at,
+                    ),
+                )
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Matt observation transaction failed") from error
+
+    def _reserve_existing(
+        self,
+        connection: sqlite3.Connection,
+        current: sqlite3.Row,
+        envelope: Mapping[str, Any] | sqlite3.Row,
+        recorded_at: str,
+    ) -> AdvanceResult:
+        envelope_binding = _verify_action_envelope(envelope)
 
         operation_id = str(uuid.uuid4())
         operation_json = _canonical_json(
@@ -709,6 +1210,11 @@ class WorkflowKernel:
             predecessor_action_envelope_id=envelope["predecessor_action_envelope_id"],
             operation_id=operation_id,
             operation_digest=operation_digest,
+            action_class=_classify_action_kind(envelope["action_kind"]),
+            matt_invocation_id=envelope["matt_invocation_id"],
+            matt_invocation_digest=envelope["invocation_digest"],
+            matt_receipt_id=envelope["matt_receipt_id"],
+            matt_receipt_digest=envelope["matt_receipt_digest"],
         )
 
     def _conclude_existing(
@@ -762,6 +1268,11 @@ class WorkflowKernel:
             predecessor_action_envelope_id=envelope["predecessor_action_envelope_id"],
             operation_id=envelope["operation_id"],
             operation_digest=envelope["operation_digest"],
+            action_class=_classify_action_kind(envelope["action_kind"]),
+            matt_invocation_id=envelope["matt_invocation_id"],
+            matt_invocation_digest=envelope["invocation_digest"],
+            matt_receipt_id=envelope["matt_receipt_id"],
+            matt_receipt_digest=envelope["matt_receipt_digest"],
         )
 
     def view(self, project_id: str) -> ProjectView:
@@ -1378,12 +1889,50 @@ _ENVELOPE_SELECT = (
     "a.goal_revision AS action_goal_revision, "
     "a.operating_profile_revision AS action_profile_revision, "
     "a.active_intent_digest AS action_intent_digest, "
+    "mi.invocation_id AS matt_invocation_id, mi.project_id AS invocation_project_id, "
+    "mi.action_id AS invocation_action_id, "
+    "mi.action_envelope_id AS invocation_action_envelope_id, "
+    "mi.invocation_json, mi.invocation_digest, "
+    "mi.skill_name AS invocation_skill_name, mi.skill_digest AS invocation_skill_digest, "
+    "mi.executor_id AS invocation_executor_id, mi.run_id AS invocation_run_id, "
+    "mi.constitution_revision AS invocation_constitution_revision, "
+    "mi.goal_revision AS invocation_goal_revision, "
+    "mi.operating_profile_revision AS invocation_profile_revision, "
+    "mi.active_intent_digest AS invocation_intent_digest, "
+    "mi.created_at AS invocation_created_at, "
+    "mx.attempt_id AS matt_attempt_id, mx.invocation_id AS attempt_invocation_id, "
+    "mx.project_id AS attempt_project_id, mx.action_envelope_id AS attempt_envelope_id, "
+    "mx.executor_id AS attempt_executor_id, mx.run_id AS attempt_run_id, "
+    "mx.active_intent_digest AS attempt_intent_digest, mx.attempt_json, mx.attempt_digest, "
+    "mx.attempted_at, mo.observation_id AS matt_observation_id, "
+    "mo.attempt_id AS observation_attempt_id, mo.observation_json, mo.observation_digest, "
+    "mo.outcome AS observation_outcome, mo.observed_at, "
+    "ma.attestation_id, ma.invocation_id AS attestation_invocation_id, "
+    "ma.attestation_json, ma.attestation_digest, "
+    "ma.executor_id AS attestation_executor_id, ma.run_id AS attestation_run_id, "
+    "ma.recorded_at AS attestation_recorded_at, "
+    "mr.receipt_id AS matt_receipt_id, mr.project_id AS receipt_project_id, "
+    "mr.invocation_id AS receipt_invocation_id, "
+    "mr.attestation_id AS receipt_attestation_id, "
+    "mr.action_envelope_id AS receipt_action_envelope_id, "
+    "mr.receipt_json AS matt_receipt_json, "
+    "mr.receipt_digest AS matt_receipt_digest, "
+    "mr.constitution_revision AS receipt_constitution_revision, "
+    "mr.goal_revision AS receipt_goal_revision, "
+    "mr.operating_profile_revision AS receipt_profile_revision, "
+    "mr.active_intent_digest AS receipt_intent_digest, "
+    "mr.accepted_at AS receipt_accepted_at, "
     "o.operation_id, o.operation_json, o.operation_digest, "
     "o.constitution_revision AS operation_constitution_revision, "
     "o.goal_revision AS operation_goal_revision, "
     "o.operating_profile_revision AS operation_profile_revision, "
     "o.active_intent_digest AS operation_intent_digest "
     "FROM action_envelopes AS e JOIN actions AS a ON a.action_id = e.action_id "
+    "LEFT JOIN matt_invocations AS mi ON mi.action_envelope_id = e.action_envelope_id "
+    "LEFT JOIN matt_execution_attempts AS mx ON mx.invocation_id = mi.invocation_id "
+    "LEFT JOIN matt_execution_observations AS mo ON mo.attempt_id = mx.attempt_id "
+    "LEFT JOIN matt_executor_attestations AS ma ON ma.invocation_id = mi.invocation_id "
+    "LEFT JOIN matt_receipts AS mr ON mr.invocation_id = mi.invocation_id "
     "LEFT JOIN operation_records AS o ON o.action_envelope_id = e.action_envelope_id "
 )
 
@@ -1593,7 +2142,8 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
         set(action) != {"action_id", "action_kind", "intent_binding", "objective"}
         or action["action_id"] != row["action_id"]
         or action["action_kind"] != row["action_kind"]
-        or action["action_kind"] != "GOAL_WORK"
+        or not isinstance(action["action_kind"], str)
+        or not action["action_kind"].strip()
         or not isinstance(action["objective"], str)
         or not action["objective"].strip()
     ):
@@ -1614,6 +2164,7 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
             "action_envelope_id",
             "constraints",
             "intent_binding",
+            "method",
             "predecessor_action_envelope_id",
             "stop_conditions",
         }
@@ -1622,6 +2173,7 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
         or envelope["action_envelope_id"] != row["action_envelope_id"]
         or envelope["predecessor_action_envelope_id"] != row["predecessor_action_envelope_id"]
         or envelope["stop_conditions"] != ["ACTIVE_INTENT_CHANGED"]
+        or envelope["method"] != _method_contract_for_action_kind(action["action_kind"])
         or any(
             not isinstance(items, list) or any(not isinstance(item, str) for item in items)
             for items in (envelope["acceptance"], envelope["constraints"])
@@ -1633,6 +2185,454 @@ def _verify_action_envelope(row: Mapping[str, Any] | sqlite3.Row) -> IntentBindi
     if envelope_binding != indexed_envelope_binding or envelope_binding != action_binding:
         raise WorkflowError("LEDGER_INTEGRITY", "Action Envelope Intent Binding mismatch")
     return envelope_binding
+
+
+def _method_contract_for_action_kind(action_kind: object) -> dict[str, Any] | None:
+    if action_kind != "GOAL_WORK":
+        return None
+    return {
+        "allowed_next_methods": list(_IMPLEMENT_ALLOWED_NEXT),
+        "completion_criterion": _IMPLEMENT_COMPLETION,
+        "expected_artifact": _IMPLEMENT_ARTIFACT,
+        "gates": list(_IMPLEMENT_GATES),
+        "skill_digest": _IMPLEMENT_SKILL_DIGEST,
+        "skill_name": _IMPLEMENT_SKILL_NAME,
+    }
+
+
+def _frozen_matt_method(row: Mapping[str, Any] | sqlite3.Row) -> Mapping[str, Any] | None:
+    envelope = json.loads(row["envelope_json"])
+    method = envelope["method"]
+    return method if isinstance(method, Mapping) else None
+
+
+def _matt_route(executor_id: str, run_id: str) -> dict[str, str]:
+    return {
+        "executor_id": executor_id,
+        "kind": "LOCAL_TRUSTED_EXECUTOR",
+        "run_id": run_id,
+    }
+
+
+def _classify_action_kind(action_kind: object) -> str:
+    if action_kind in {"EVIDENCE_COLLECTION", "FROZEN_TEST_COMMAND"}:
+        return "mechanical"
+    return "cognitive"
+
+
+def _verify_matt_invocation(row: Mapping[str, Any] | sqlite3.Row) -> _MattInvocation:
+    _verify_action_envelope(row)
+    method = _frozen_matt_method(row)
+    if method is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt Invocation has no frozen method contract")
+    payload = _verify_canonical_artifact(
+        row["invocation_json"], row["invocation_digest"], "Matt Invocation"
+    )
+    expected_fields = {
+        "action_envelope_digest",
+        "action_envelope_id",
+        "action_id",
+        "completion_criterion",
+        "created_at",
+        "executor_id",
+        "expected_artifact",
+        "gates",
+        "input_evidence_digest",
+        "intent_binding",
+        "invocation_id",
+        "project_id",
+        "route",
+        "run_id",
+        "skill_digest",
+        "skill_name",
+    }
+    binding = _binding_from_payload(payload, "Matt Invocation")
+    indexed_binding = _binding_from_artifact_row(row, "invocation_")
+    expected_input_digest = _digest(
+        _canonical_json(
+            {
+                "action_digest": row["action_digest"],
+                "action_envelope_digest": row["action_envelope_digest"],
+            }
+        )
+    )
+    expected_invocation_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentic-workflow:matt-invocation:{row['action_envelope_digest']}",
+        )
+    )
+    if (
+        set(payload) != expected_fields
+        or payload["invocation_id"] != row["matt_invocation_id"]
+        or payload["invocation_id"] != expected_invocation_id
+        or payload["project_id"] != row["project_id"]
+        or row["invocation_project_id"] != row["project_id"]
+        or payload["action_id"] != row["action_id"]
+        or row["invocation_action_id"] != row["action_id"]
+        or payload["action_envelope_id"] != row["action_envelope_id"]
+        or row["invocation_action_envelope_id"] != row["action_envelope_id"]
+        or payload["action_envelope_digest"] != row["action_envelope_digest"]
+        or payload["skill_name"] != row["invocation_skill_name"]
+        or payload["skill_digest"] != row["invocation_skill_digest"]
+        or payload["executor_id"] != row["invocation_executor_id"]
+        or payload["run_id"] != row["invocation_run_id"]
+        or payload["created_at"] != row["invocation_created_at"]
+        or payload["route"] != _matt_route(row["invocation_executor_id"], row["invocation_run_id"])
+        or payload["skill_name"] != method["skill_name"]
+        or payload["skill_digest"] != method["skill_digest"]
+        or payload["gates"] != method["gates"]
+        or payload["completion_criterion"] != method["completion_criterion"]
+        or payload["expected_artifact"] != method["expected_artifact"]
+        or payload["input_evidence_digest"] != expected_input_digest
+        or binding != indexed_binding
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt Invocation fields are inconsistent")
+    return _MattInvocation(
+        invocation_id=payload["invocation_id"],
+        invocation_digest=row["invocation_digest"],
+        project_id=payload["project_id"],
+        action_id=payload["action_id"],
+        action_envelope_id=payload["action_envelope_id"],
+        action_envelope_digest=payload["action_envelope_digest"],
+        skill_name=payload["skill_name"],
+        skill_digest=payload["skill_digest"],
+        executor_id=payload["executor_id"],
+        run_id=payload["run_id"],
+        input_evidence_digest=payload["input_evidence_digest"],
+        gates=tuple(payload["gates"]),
+        completion_criterion=payload["completion_criterion"],
+        expected_artifact=payload["expected_artifact"],
+        intent_binding=binding,
+    )
+
+
+def _verify_matt_attempt(row: Mapping[str, Any] | sqlite3.Row, invocation: _MattInvocation) -> None:
+    payload = _verify_canonical_artifact(row["attempt_json"], row["attempt_digest"], "Matt attempt")
+    binding = _binding_from_payload(payload, "Matt attempt")
+    expected_attempt_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentic-workflow:matt-attempt:{invocation.invocation_digest}",
+        )
+    )
+    if (
+        set(payload)
+        != {
+            "action_envelope_digest",
+            "action_envelope_id",
+            "attempt_id",
+            "attempted_at",
+            "executor_id",
+            "intent_binding",
+            "invocation_digest",
+            "invocation_id",
+            "project_id",
+            "run_id",
+        }
+        or payload["attempt_id"] != expected_attempt_id
+        or row["matt_attempt_id"] != expected_attempt_id
+        or payload["invocation_id"] != invocation.invocation_id
+        or row["attempt_invocation_id"] != invocation.invocation_id
+        or payload["invocation_digest"] != invocation.invocation_digest
+        or payload["project_id"] != invocation.project_id
+        or row["attempt_project_id"] != invocation.project_id
+        or payload["action_envelope_id"] != invocation.action_envelope_id
+        or row["attempt_envelope_id"] != invocation.action_envelope_id
+        or payload["action_envelope_digest"] != invocation.action_envelope_digest
+        or payload["executor_id"] != invocation.executor_id
+        or row["attempt_executor_id"] != invocation.executor_id
+        or payload["run_id"] != invocation.run_id
+        or row["attempt_run_id"] != invocation.run_id
+        or payload["attempted_at"] != row["attempted_at"]
+        or binding != invocation.intent_binding
+        or row["attempt_intent_digest"] != invocation.intent_binding.active_intent_digest
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt execution attempt fields mismatch")
+
+
+def _verify_matt_observation(
+    row: Mapping[str, Any] | sqlite3.Row,
+    *,
+    expected_outcome: str | None = None,
+    expected_evidence_digest: str | None = None,
+) -> None:
+    payload = _verify_canonical_artifact(
+        row["observation_json"], row["observation_digest"], "Matt observation"
+    )
+    expected_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentic-workflow:matt-observation:{row['attempt_digest']}",
+        )
+    )
+    outcome = payload.get("outcome")
+    evidence_digest = payload.get("evidence_digest")
+    if (
+        set(payload)
+        != {
+            "attempt_digest",
+            "error_type",
+            "evidence_digest",
+            "observation_id",
+            "observed_at",
+            "outcome",
+        }
+        or row["matt_observation_id"] != expected_id
+        or payload["observation_id"] != expected_id
+        or row["observation_attempt_id"] != row["matt_attempt_id"]
+        or payload["attempt_digest"] != row["attempt_digest"]
+        or outcome != row["observation_outcome"]
+        or payload["observed_at"] != row["observed_at"]
+        or outcome not in {"RETURNED", "AMBIGUOUS", "REJECTED"}
+        or (outcome == "RETURNED" and not _is_sha256(evidence_digest))
+        or (outcome != "RETURNED" and evidence_digest is not None)
+        or (outcome == "AMBIGUOUS" and not isinstance(payload["error_type"], str))
+        or (outcome != "AMBIGUOUS" and payload["error_type"] is not None)
+        or (expected_outcome is not None and outcome != expected_outcome)
+        or (expected_evidence_digest is not None and evidence_digest != expected_evidence_digest)
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt execution observation fields mismatch")
+
+
+def _coerce_matt_attestation(value: object) -> _MattExecutionAttestation:
+    if not isinstance(value, Mapping):
+        raise WorkflowError(
+            "MATT_RECEIPT_REJECTED", "trusted executor did not return an attestation"
+        )
+    try:
+        payload = json.loads(_canonical_json(value))
+        return _MattExecutionAttestation(**payload)
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "MATT_RECEIPT_REJECTED", "executor attestation is not canonical evidence"
+        ) from error
+
+
+def _validated_attestation_json(
+    attestation: _MattExecutionAttestation,
+    invocation: _MattInvocation,
+    recorded_at: str,
+) -> str:
+    try:
+        payload = {**asdict(attestation), "recorded_at": recorded_at}
+        attestation_json = _canonical_json(payload)
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "MATT_RECEIPT_REJECTED", "executor attestation is not canonical evidence"
+        ) from error
+    expected_fields = {
+        "artifact",
+        "artifact_digest",
+        "completion_classification",
+        "executor_id",
+        "gate_outcomes",
+        "invocation_digest",
+        "load_proof",
+        "recorded_at",
+        "run_id",
+        "skill_digest",
+        "skill_name",
+    }
+    expected_load_proof = {
+        "executor_id": invocation.executor_id,
+        "proof_kind": "EXECUTOR_VERIFIED_SKILL_LOAD",
+        "run_id": invocation.run_id,
+        "skill_digest": invocation.skill_digest,
+        "skill_name": invocation.skill_name,
+    }
+    gate_outcomes = payload.get("gate_outcomes")
+    artifact = payload.get("artifact")
+    if (
+        set(payload) != expected_fields
+        or payload["invocation_digest"] != invocation.invocation_digest
+        or payload["executor_id"] != invocation.executor_id
+        or payload["run_id"] != invocation.run_id
+        or payload["skill_name"] != invocation.skill_name
+        or payload["skill_digest"] != invocation.skill_digest
+        or payload["load_proof"] != expected_load_proof
+        or payload["recorded_at"] != recorded_at
+        or not isinstance(gate_outcomes, dict)
+        or set(gate_outcomes) != set(invocation.gates)
+        or not isinstance(artifact, dict)
+        or artifact.get("artifact_type") != invocation.expected_artifact
+        or payload["artifact_digest"] != _digest(_canonical_json(artifact))
+        or payload["completion_classification"] != "COMPLETED"
+    ):
+        raise WorkflowError(
+            "MATT_RECEIPT_REJECTED", "executor attestation does not match the Matt Invocation"
+        )
+    for gate, outcome in gate_outcomes.items():
+        if (
+            not isinstance(outcome, dict)
+            or set(outcome) != {"status", "evidence_digest"}
+            or outcome["status"] != "PASSED"
+            or not _is_sha256(outcome["evidence_digest"])
+        ):
+            raise WorkflowError("MATT_RECEIPT_REJECTED", f"Matt gate evidence is invalid: {gate}")
+    return attestation_json
+
+
+def _validate_matt_receipt_payload(
+    payload: Mapping[str, Any],
+    invocation: _MattInvocation,
+    attestation: _MattExecutionAttestation,
+    attestation_digest: str,
+    method: Mapping[str, Any],
+) -> None:
+    expected_fields = {
+        "accepted_at",
+        "action_envelope_digest",
+        "action_envelope_id",
+        "action_id",
+        "actual_skill_digest",
+        "allowed_next_methods",
+        "artifact_digest",
+        "attestation_digest",
+        "completion_classification",
+        "executor_id",
+        "gate_outcomes",
+        "intent_binding",
+        "invocation_digest",
+        "load_proof",
+        "project_id",
+        "receipt_id",
+        "route",
+        "run_id",
+        "skill_name",
+    }
+    expected_receipt_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentic-workflow:matt-receipt:{invocation.invocation_digest}",
+        )
+    )
+    if (
+        set(payload) != expected_fields
+        or payload["receipt_id"] != expected_receipt_id
+        or payload["project_id"] != invocation.project_id
+        or payload["action_id"] != invocation.action_id
+        or payload["action_envelope_id"] != invocation.action_envelope_id
+        or payload["action_envelope_digest"] != invocation.action_envelope_digest
+        or payload["invocation_digest"] != invocation.invocation_digest
+        or payload["attestation_digest"] != attestation_digest
+        or payload["skill_name"] != invocation.skill_name
+        or payload["actual_skill_digest"] != invocation.skill_digest
+        or payload["executor_id"] != invocation.executor_id
+        or payload["run_id"] != invocation.run_id
+        or payload["load_proof"] != dict(attestation.load_proof)
+        or payload["gate_outcomes"] != dict(attestation.gate_outcomes)
+        or payload["artifact_digest"] != attestation.artifact_digest
+        or payload["completion_classification"] != "COMPLETED"
+        or payload["allowed_next_methods"] != method["allowed_next_methods"]
+        or payload["intent_binding"] != asdict(invocation.intent_binding)
+        or payload["route"] != _matt_route(invocation.executor_id, invocation.run_id)
+    ):
+        raise WorkflowError("MATT_RECEIPT_REJECTED", "Matt Receipt fails independent validation")
+
+
+def _verify_matt_receipt_chain(row: Mapping[str, Any] | sqlite3.Row) -> None:
+    invocation = _verify_matt_invocation(row)
+    _verify_matt_attempt(row, invocation)
+    method = _frozen_matt_method(row)
+    if method is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt Receipt has no frozen method contract")
+    required_chain_fields = (
+        "matt_attempt_id",
+        "matt_observation_id",
+        "attestation_id",
+        "attestation_invocation_id",
+        "attestation_json",
+        "attestation_digest",
+        "matt_receipt_id",
+        "receipt_project_id",
+        "receipt_invocation_id",
+        "receipt_attestation_id",
+        "receipt_action_envelope_id",
+        "matt_receipt_json",
+        "matt_receipt_digest",
+    )
+    if any(row[field] is None for field in required_chain_fields):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt Receipt evidence chain is incomplete")
+    attestation_payload = _verify_canonical_artifact(
+        row["attestation_json"], row["attestation_digest"], "Matt executor attestation"
+    )
+    try:
+        recorded_at = attestation_payload.pop("recorded_at")
+        attestation = _MattExecutionAttestation(**attestation_payload)
+    except (KeyError, TypeError) as error:
+        raise WorkflowError(
+            "LEDGER_INTEGRITY", "Matt executor attestation schema is invalid"
+        ) from error
+    expected_attestation_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"agentic-workflow:matt-attestation:{row['attestation_digest']}",
+        )
+    )
+    if (
+        row["attestation_id"] != expected_attestation_id
+        or row["attestation_invocation_id"] != invocation.invocation_id
+        or row["attestation_executor_id"] != invocation.executor_id
+        or row["attestation_run_id"] != invocation.run_id
+        or recorded_at != row["attestation_recorded_at"]
+        or _validated_attestation_json(attestation, invocation, recorded_at)
+        != row["attestation_json"]
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt executor attestation fields mismatch")
+    _verify_matt_observation(
+        row,
+        expected_outcome="RETURNED",
+        expected_evidence_digest=row["attestation_digest"],
+    )
+    receipt_payload = _verify_canonical_artifact(
+        row["matt_receipt_json"], row["matt_receipt_digest"], "Matt Receipt"
+    )
+    try:
+        _validate_matt_receipt_payload(
+            receipt_payload,
+            invocation,
+            attestation,
+            row["attestation_digest"],
+            method,
+        )
+    except WorkflowError as error:
+        raise WorkflowError("LEDGER_INTEGRITY", "stored Matt Receipt fails validation") from error
+    receipt_binding = _binding_from_artifact_row(row, "receipt_")
+    if (
+        row["matt_receipt_id"] != receipt_payload["receipt_id"]
+        or row["receipt_project_id"] != invocation.project_id
+        or row["receipt_invocation_id"] != invocation.invocation_id
+        or row["receipt_attestation_id"] != row["attestation_id"]
+        or row["receipt_action_envelope_id"] != invocation.action_envelope_id
+        or receipt_payload["accepted_at"] != row["receipt_accepted_at"]
+        or receipt_binding != invocation.intent_binding
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Matt Receipt indexed fields mismatch")
+
+
+def _existing_operation_result(
+    connection: sqlite3.Connection, envelope: Mapping[str, Any] | sqlite3.Row
+) -> AdvanceResult:
+    binding = _verify_operation(envelope)
+    events = _verify_operation_events(connection, envelope, binding)
+    outcome = "OPERATION_CONCLUDED" if events == ("RESERVED", "CONCLUDED") else "OPERATION_RESERVED"
+    return AdvanceResult(
+        project_id=envelope["project_id"],
+        outcome=outcome,
+        intent_binding=binding,
+        action_id=envelope["action_id"],
+        action_envelope_id=envelope["action_envelope_id"],
+        action_envelope_digest=envelope["action_envelope_digest"],
+        predecessor_action_envelope_id=envelope["predecessor_action_envelope_id"],
+        operation_id=envelope["operation_id"],
+        operation_digest=envelope["operation_digest"],
+        action_class=_classify_action_kind(envelope["action_kind"]),
+        matt_invocation_id=envelope["matt_invocation_id"],
+        matt_invocation_digest=envelope["invocation_digest"],
+        matt_receipt_id=envelope["matt_receipt_id"],
+        matt_receipt_digest=envelope["matt_receipt_digest"],
+    )
 
 
 def _verify_operation(row: Mapping[str, Any] | sqlite3.Row) -> IntentBinding:
