@@ -862,6 +862,7 @@ def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
         [-1, 1100],
         [float("nan"), 1100],
         [1000.5, 1100],
+        [9007199254740993, 1100],
     ],
 )
 def test_yahoo_source_rejects_non_count_volume_values(volume):
@@ -869,6 +870,33 @@ def test_yahoo_source_rejects_non_count_volume_values(volume):
     source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match="volume|Volume|non-finite"):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timestamp", "1787616000"),
+        ("open", "6.1"),
+        ("close", True),
+        ("adjclose", "6.05"),
+    ],
+)
+def test_yahoo_source_rejects_coercible_timestamp_or_price_schema(field, value):
+    payload = json.loads(_yahoo_payload())
+    result = payload["chart"]["result"][0]
+    if field == "timestamp":
+        result["timestamp"][0] = value
+    elif field == "adjclose":
+        result["indicators"]["adjclose"][0]["adjclose"][0] = value
+    else:
+        result["indicators"]["quote"][0][field][0] = value
+    response = FakeResponse(
+        json.dumps(payload, separators=(",", ":")).encode()
+    )
+    source = YahooChartSource(http_get=_yahoo_responder(response))
+
+    with pytest.raises(DatasetResolutionError, match="timestamp|price|OHLC"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
 

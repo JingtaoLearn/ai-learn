@@ -555,15 +555,47 @@ class YahooChartSource:
         if len(lengths) != 1:
             raise DatasetResolutionError("Yahoo response arrays are not aligned")
 
+        if any(type(value) is not int for value in timestamps):
+            raise DatasetResolutionError(
+                "Yahoo response timestamps must be exact integer epoch seconds"
+            )
+        price_arrays = [quote[field] for field in ("open", "high", "low", "close")]
+        if adjusted is not None:
+            price_arrays.append(adjusted)
+        for values in price_arrays:
+            for value in values:
+                if value is None:
+                    continue
+                if type(value) not in (int, float):
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    )
+                try:
+                    float_value = float(value)
+                except OverflowError as exc:
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    ) from exc
+                if not math.isfinite(float_value) or float_value <= 0:
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    )
         for value in quote["volume"]:
             if value is None:
                 continue
-            if (
-                type(value) not in (int, float)
-                or not math.isfinite(value)
-                or value < 0
-                or not float(value).is_integer()
-            ):
+            if type(value) is int:
+                invalid_volume = value < 0 or value > 2**53
+            elif type(value) is float:
+                invalid_volume = (
+                    not math.isfinite(value)
+                    or value < 0
+                    or not value.is_integer()
+                    or value > 2**53
+                    or int(value) != value
+                )
+            else:
+                invalid_volume = True
+            if invalid_volume:
                 raise DatasetResolutionError(
                     "Yahoo response volume values must be non-negative finite counts"
                 )
