@@ -9,14 +9,18 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import requests
 
 from quant_platform.catalog import initialize_catalog
 from quant_platform.dataset_service import (
     MAX_PROVIDER_RESPONSE_BYTES,
+    SSE_CURRENT_ENDPOINT,
+    SSE_CURRENT_PARAMS,
     DatasetCatalogItem,
     DatasetResolutionError,
     DatasetService,
     FetchedDailyBars,
+    SseCurrentDailySource,
     XSHGCalendar,
     YahooChartSource,
 )
@@ -573,6 +577,11 @@ def _yahoo_payload(
     ).encode()
 
 
+SSE_CANONICAL_URL = requests.Request(
+    "GET", SSE_CURRENT_ENDPOINT, params=SSE_CURRENT_PARAMS
+).prepare().url
+
+
 class FakeResponse:
     def __init__(
         self,
@@ -580,8 +589,14 @@ class FakeResponse:
         *,
         content_length: str | None = None,
         chunks: list[bytes] | None = None,
+        url: str | None = SSE_CANONICAL_URL,
+        status_code: int = 200,
+        history: list[object] | None = None,
     ):
         self.payload = payload
+        self.url = url
+        self.status_code = status_code
+        self.history = [] if history is None else history
         self.headers = {"content-type": "application/json"}
         if content_length is not None:
             self.headers["content-length"] = content_length
@@ -774,6 +789,314 @@ def test_yahoo_source_safely_streams_without_valid_content_length(content_length
 
     assert result.source_identity["response_sha256"] == hashlib.sha256(payload).hexdigest()
     assert response.closed is True
+
+
+SSE_FIELDS = [
+    "code",
+    "name",
+    "open",
+    "high",
+    "low",
+    "last",
+    "prev_close",
+    "chg_rate",
+    "volume",
+    "amount",
+    "tradephase",
+    "change",
+    "amp_rate",
+    "cpxxsubtype",
+    "cpxxprodusta",
+]
+SSE_ROW = [
+    "601328",
+    "交通银行",
+    7.14,
+    7.28,
+    7.13,
+    7.24,
+    7.10,
+    1.97,
+    213407934,
+    1542217037,
+    "E110    ",
+    0.14,
+    2.11,
+    "ASH",
+    "   D  F  N          ",
+]
+
+
+def _sse_payload(
+    *,
+    rows: list | None = None,
+    date: object = 20260831,
+    time: object = 162903,
+    total: object = 1,
+) -> bytes:
+    return json.dumps(
+        {
+            "date": date,
+            "time": time,
+            "total": total,
+            "list": [SSE_ROW] if rows is None else rows,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
+def test_sse_current_source_binds_exact_request_bar_and_source_identity():
+    calls = []
+    payload = _sse_payload()
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse(payload)
+
+    result = SseCurrentDailySource(http_get=get).fetch(
+        "601328.SS", "2026-08-31", "2026-08-31"
+    )
+
+    request = {
+        "method": "GET",
+        "url": SSE_CANONICAL_URL,
+        "params": {
+            "select": ",".join(SSE_FIELDS),
+            "begin": 0,
+            "end": 5000,
+        },
+        "headers": {
+            "Accept": "application/json",
+            "Referer": "https://www.sse.com.cn/market/price/report/",
+            "User-Agent": "quant-research-platform/0.1",
+        },
+    }
+    assert calls == [
+        (
+            SSE_CURRENT_ENDPOINT,
+            {
+                "params": request["params"],
+                "headers": request["headers"],
+                "timeout": 30,
+                "stream": True,
+                "allow_redirects": False,
+            },
+        )
+    ]
+    pd.testing.assert_frame_equal(
+        result.bars,
+        pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-08-31"]),
+                "Open": [7.14],
+                "High": [7.28],
+                "Low": [7.13],
+                "Close": [7.24],
+                "Volume": [213407934.0],
+            }
+        ),
+    )
+    assert result.source_identity == {
+        "provider": "sse-current-ashare-report",
+        "instrument": "601328.SS",
+        "request": request,
+        "response_sha256": "53c6785296d6a11efa36160c5ec99b33e541896e56abb6c6eddb1d2e92c4a759",
+        "canonical_content_sha256": "aba8bc12cd51608c28c52674eb7755d9d0392c95355cd5418a19c517bd033d52",
+        "response_date": "2026-08-31",
+        "response_time": "16:29:03",
+        "trading_phase": "E110",
+        "contract": "IS120 STEP 0.62",
+        "price_report_script_url": (
+            "https://www.sse.com.cn/xhtml/home/2021public/querySearch/"
+            "search_price_2021.js?v=ssesite_V3.8.0_20260828"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (FakeResponse(_sse_payload(), status_code=201), "HTTP 200"),
+        (FakeResponse(_sse_payload(), history=[object()]), "redirect"),
+        (
+            FakeResponse(
+                _sse_payload(),
+                url="https://example.invalid/v1/sh1/list/exchange/ashare",
+            ),
+            "effective URL",
+        ),
+        (FakeResponse(_sse_payload(), url=None), "effective URL"),
+        (FakeResponse(_sse_payload(), url="not-a-url"), "effective URL"),
+    ],
+)
+def test_sse_current_source_rejects_unverified_http_response(response, message):
+    source = SseCurrentDailySource(http_get=lambda *args, **kwargs: response)
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+    assert response.closed is True
+
+
+def test_sse_current_source_latest_close_is_verified_response_date():
+    response = FakeResponse(_sse_payload())
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: response,
+        clock=lambda: datetime(2026, 9, 1, tzinfo=UTC),
+    )
+
+    assert source.latest_available_close("601328.SS") == "2026-08-31"
+    assert response.closed is True
+
+
+@pytest.mark.parametrize(
+    ("instrument", "start", "end", "message"),
+    [
+        ("601328", "2026-08-31", "2026-08-31", "instrument"),
+        ("000001.SZ", "2026-08-31", "2026-08-31", "instrument"),
+        ("601328.SS", "2026-08-30", "2026-08-30", "range"),
+        ("601328.SS", "2026-08-30", "2026-08-31", "range"),
+        ("601328.SS", "2026-08-31", "2026-09-01", "range"),
+    ],
+)
+def test_sse_current_source_rejects_noncanonical_instrument_or_range(
+    instrument, start, end, message
+):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload())
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch(instrument, start, end)
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ([], "requested code"),
+        ([["600000", *SSE_ROW[1:]]], "requested code"),
+        ([SSE_ROW, SSE_ROW], "exactly one"),
+        ([SSE_ROW[:-1]], "15 fields"),
+    ],
+)
+def test_sse_current_source_requires_one_exact_requested_code_row(rows, message):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=rows))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    ("index", "value", "message"),
+    [
+        (1, "  ", "name"),
+        (2, 0, "OHLC"),
+        (3, 7.12, "OHLC"),
+        (4, 7.25, "OHLC"),
+        (5, float("inf"), "non-finite"),
+        (8, True, "volume"),
+        (8, -1, "volume"),
+        (8, 1.5, "volume"),
+        (10, "E111    ", "phase"),
+        (13, "ASHI", "subtype"),
+    ],
+)
+def test_sse_current_source_rejects_invalid_name_phase_subtype_or_ohlcv(
+    index, value, message
+):
+    row = SSE_ROW.copy()
+    row[index] = value
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_volume_not_lossless_in_float64():
+    row = SSE_ROW.copy()
+    row[8] = 9007199254740993
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match="lossless.*float64"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_leading_whitespace_in_trading_phase():
+    row = SSE_ROW.copy()
+    row[10] = " E110   "
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match="phase"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"date": 20260230}, "date"),
+        ({"date": "20260831"}, "date"),
+        ({"time": 246000}, "time"),
+        ({"time": "162903"}, "time"),
+        ({"total": -1}, "total"),
+        ({"total": True}, "total"),
+    ],
+)
+def test_sse_current_source_rejects_invalid_report_metadata(overrides, message):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(**overrides))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"date":20260831,"date":20260831,"time":162903,"total":0,"list":[]}',
+        _sse_payload().replace(b"7.14", b"NaN", 1),
+    ],
+)
+def test_sse_current_source_rejects_duplicate_keys_and_nonfinite_json(payload):
+    source = SseCurrentDailySource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    with pytest.raises(DatasetResolutionError, match="duplicate|non-finite"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_non_json_and_oversized_responses():
+    non_json = FakeResponse(_sse_payload())
+    non_json.headers["content-type"] = "text/html"
+    oversized = FakeResponse(
+        b"", chunks=[b"x" * (1024 * 1024)] * 17
+    )
+
+    for response, message in [(non_json, "not JSON"), (oversized, "size limit")]:
+        source = SseCurrentDailySource(
+            http_get=lambda *args, response=response, **kwargs: response
+        )
+        with pytest.raises(DatasetResolutionError, match=message):
+            source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+        assert response.closed is True
+
+
+def test_sse_current_source_requires_timezone_aware_clock_for_latest_close():
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload()),
+        clock=lambda: datetime(2026, 9, 1),
+    )
+
+    with pytest.raises(DatasetResolutionError, match="timezone-aware"):
+        source.latest_available_close("601328.SS")
 
 
 def test_catalog_registration_is_immutable(tmp_path: Path):

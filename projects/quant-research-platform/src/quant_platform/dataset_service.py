@@ -116,6 +116,266 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+SSE_CURRENT_ENDPOINT = "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/ashare"
+SSE_CURRENT_FIELDS = (
+    "code",
+    "name",
+    "open",
+    "high",
+    "low",
+    "last",
+    "prev_close",
+    "chg_rate",
+    "volume",
+    "amount",
+    "tradephase",
+    "change",
+    "amp_rate",
+    "cpxxsubtype",
+    "cpxxprodusta",
+)
+SSE_CURRENT_PARAMS = {
+    "select": ",".join(SSE_CURRENT_FIELDS),
+    "begin": 0,
+    "end": 5000,
+}
+SSE_CURRENT_HEADERS = {
+    "Accept": "application/json",
+    "Referer": "https://www.sse.com.cn/market/price/report/",
+    "User-Agent": "quant-research-platform/0.1",
+}
+SSE_PRICE_REPORT_SCRIPT_URL = (
+    "https://www.sse.com.cn/xhtml/home/2021public/querySearch/"
+    "search_price_2021.js?v=ssesite_V3.8.0_20260828"
+)
+
+
+def _sse_strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DatasetResolutionError(f"SSE response contains duplicate field: {key}")
+        value[key] = item
+    return value
+
+
+class SseCurrentDailySource:
+    provider = "sse-current-ashare-report"
+
+    def __init__(
+        self,
+        *,
+        http_get: Callable[..., Any] = requests.get,
+        clock: Callable[[], datetime] | None = None,
+        timeout: int = 30,
+    ):
+        self.http_get = http_get
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self.timeout = timeout
+
+    @staticmethod
+    def _instrument_code(instrument: str) -> str:
+        if not isinstance(instrument, str) or re.fullmatch(r"[0-9]{6}\.SS", instrument) is None:
+            raise DatasetResolutionError("SSE instrument must be an ordinary six-digit .SS symbol")
+        return instrument[:-3]
+
+    def _payload(self, instrument: str) -> tuple[FetchedDailyBars, str]:
+        code = self._instrument_code(instrument)
+        canonical_url = requests.Request(
+            "GET", SSE_CURRENT_ENDPOINT, params=SSE_CURRENT_PARAMS
+        ).prepare().url
+        if not isinstance(canonical_url, str):
+            raise DatasetResolutionError("SSE canonical request URL is invalid")
+        try:
+            response = self.http_get(
+                SSE_CURRENT_ENDPOINT,
+                params=SSE_CURRENT_PARAMS,
+                headers=SSE_CURRENT_HEADERS,
+                timeout=self.timeout,
+                stream=True,
+                allow_redirects=False,
+            )
+            if type(getattr(response, "status_code", None)) is not int or response.status_code != 200:
+                raise DatasetResolutionError("SSE response must have exact HTTP 200 status")
+            history = getattr(response, "history", None)
+            if type(history) is not list or history:
+                raise DatasetResolutionError("SSE response must not have redirect history")
+            effective_url = getattr(response, "url", None)
+            if not isinstance(effective_url, str) or effective_url != canonical_url:
+                raise DatasetResolutionError("SSE response effective URL is not canonical")
+            content_length = response.headers.get("content-length")
+            if isinstance(content_length, str):
+                digits = content_length.strip()
+                if re.fullmatch(r"[0-9]+", digits):
+                    significant = digits.lstrip("0") or "0"
+                    limit = str(MAX_PROVIDER_RESPONSE_BYTES)
+                    if len(significant) > len(limit) or (
+                        len(significant) == len(limit) and significant > limit
+                    ):
+                        raise DatasetResolutionError("SSE response body exceeds the size limit")
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("application/json"):
+                raise DatasetResolutionError("SSE response is not JSON")
+            raw = bytearray()
+            for chunk in response.iter_content(chunk_size=PROVIDER_STREAM_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                if not isinstance(chunk, bytes):
+                    raise DatasetResolutionError("SSE response body is invalid")
+                if len(raw) + len(chunk) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise DatasetResolutionError("SSE response body exceeds the size limit")
+                raw.extend(chunk)
+        except requests.RequestException as exc:
+            raise DatasetResolutionError(f"SSE current report request failed for {instrument}: {exc}") from exc
+        finally:
+            if "response" in locals():
+                response.close()
+
+        raw_bytes = bytes(raw)
+        if not raw_bytes:
+            raise DatasetResolutionError("SSE response body is empty")
+        try:
+            payload = json.loads(
+                raw_bytes,
+                object_pairs_hook=_sse_strict_object,
+                parse_constant=lambda item: (_ for _ in ()).throw(
+                    DatasetResolutionError(f"SSE response contains non-finite value: {item}")
+                ),
+            )
+        except DatasetResolutionError:
+            raise
+        except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DatasetResolutionError("SSE response schema is invalid") from exc
+        if not isinstance(payload, dict):
+            raise DatasetResolutionError("SSE response schema is invalid")
+
+        report_date = payload.get("date")
+        if type(report_date) is not int or re.fullmatch(r"[0-9]{8}", str(report_date)) is None:
+            raise DatasetResolutionError("SSE response date must be a real YYYYMMDD date")
+        try:
+            response_date = datetime.strptime(str(report_date), "%Y%m%d").date().isoformat()
+        except ValueError as exc:
+            raise DatasetResolutionError("SSE response date must be a real YYYYMMDD date") from exc
+
+        report_time = payload.get("time")
+        if type(report_time) is not int or not 0 <= report_time <= 235959:
+            raise DatasetResolutionError("SSE response time must be a real HHMMSS time")
+        compact_time = f"{report_time:06d}"
+        try:
+            response_time = datetime.strptime(compact_time, "%H%M%S").time().isoformat()
+        except ValueError as exc:
+            raise DatasetResolutionError("SSE response time must be a real HHMMSS time") from exc
+
+        total = payload.get("total")
+        if type(total) is not int or total < 0:
+            raise DatasetResolutionError("SSE response total must be a non-negative integer")
+        rows = payload.get("list")
+        if not isinstance(rows, list):
+            raise DatasetResolutionError("SSE response list must be a list")
+        matches = [row for row in rows if isinstance(row, list) and row and row[0] == code]
+        if not matches:
+            raise DatasetResolutionError("SSE response is missing the requested code")
+        if len(matches) != 1:
+            raise DatasetResolutionError("SSE response must contain exactly one requested code row")
+        row = matches[0]
+        if len(row) != len(SSE_CURRENT_FIELDS):
+            raise DatasetResolutionError("SSE requested code row must contain exactly 15 fields")
+
+        name = row[1]
+        if not isinstance(name, str) or not name.strip():
+            raise DatasetResolutionError("SSE response name must be non-empty")
+        ohlc = row[2:6]
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in ohlc):
+            raise DatasetResolutionError("SSE response OHLC values must be finite and positive")
+        open_value, high, low, last = ohlc
+        if high < max(open_value, low, last) or low > min(open_value, high, last):
+            raise DatasetResolutionError("SSE response OHLC values are inconsistent")
+        volume = row[8]
+        if type(volume) is not int or volume < 0:
+            raise DatasetResolutionError("SSE response volume must be a non-negative integer")
+        try:
+            float_volume = float(volume)
+        except OverflowError as exc:
+            raise DatasetResolutionError(
+                "SSE response volume must be losslessly representable as float64"
+            ) from exc
+        if not math.isfinite(float_volume) or int(float_volume) != volume:
+            raise DatasetResolutionError(
+                "SSE response volume must be losslessly representable as float64"
+            )
+        tradephase = row[10]
+        if not isinstance(tradephase, str) or tradephase[:4] != "E110":
+            raise DatasetResolutionError("SSE response trading phase is not E110")
+        if row[13] != "ASH":
+            raise DatasetResolutionError("SSE response subtype is not ASH")
+
+        canonical_content = {
+            "date": report_date,
+            "time": report_time,
+            "field_order": list(SSE_CURRENT_FIELDS),
+            "row": row,
+        }
+        try:
+            bars = _normalize_frame(
+                pd.DataFrame(
+                    [
+                        {
+                            "Date": pd.Timestamp(response_date),
+                            "Open": open_value,
+                            "High": high,
+                            "Low": low,
+                            "Close": last,
+                            "Volume": volume,
+                        }
+                    ]
+                )
+            )
+        except DatasetValidationError as exc:
+            raise DatasetResolutionError(f"SSE response data is invalid: {exc}") from exc
+        return (
+            FetchedDailyBars(
+                bars=bars,
+                source_identity={
+                    "provider": self.provider,
+                    "instrument": instrument,
+                    "request": {
+                        "method": "GET",
+                        "url": effective_url,
+                        "params": dict(SSE_CURRENT_PARAMS),
+                        "headers": dict(SSE_CURRENT_HEADERS),
+                    },
+                    "response_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                    "canonical_content_sha256": hashlib.sha256(
+                        canonical_json_bytes(canonical_content)
+                    ).hexdigest(),
+                    "response_date": response_date,
+                    "response_time": response_time,
+                    "trading_phase": tradephase[:4],
+                    "contract": "IS120 STEP 0.62",
+                    "price_report_script_url": SSE_PRICE_REPORT_SCRIPT_URL,
+                },
+            ),
+            response_date,
+        )
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        start = _date(start, "SSE request range start")
+        end = _date(end, "SSE request range end")
+        if start != end:
+            raise DatasetResolutionError("SSE current report range must be exactly one date")
+        fetched, response_date = self._payload(instrument)
+        if start != response_date:
+            raise DatasetResolutionError("SSE response date does not match the requested range")
+        return fetched
+
+    def latest_available_close(self, instrument: str) -> str:
+        now = self.clock()
+        if now.tzinfo is None:
+            raise DatasetResolutionError("SSE source clock must be timezone-aware")
+        _, response_date = self._payload(instrument)
+        return response_date
+
+
 class XSHGCalendar:
     def __init__(self) -> None:
         self._calendar = exchange_calendars.get_calendar("XSHG")
