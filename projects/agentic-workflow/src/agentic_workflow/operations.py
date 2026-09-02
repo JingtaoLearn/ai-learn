@@ -12,10 +12,18 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from threading import Lock
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
-from .model import AdvanceResult, IntentBinding, RecordReceipt, UserDecision, WorkflowError
+from .model import (
+    AdvanceResult,
+    IntentBinding,
+    RecordReceipt,
+    UserDecision,
+    WorkflowError,
+    _StrictJsonObject,
+    _validate_json_value,
+)
 from .store import ControlStore
 
 _LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -65,6 +73,66 @@ class OutboxMessage:
 
 
 @dataclass(frozen=True)
+class _OperationPolicyRequest(Mapping[str, Any]):
+    action_envelope_digest: str
+    action_envelope_id: str
+    action_id: str
+    action_kind: str
+    active_intent_digest: str
+    project_id: str
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in self.__dataclass_fields__:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.__dataclass_fields__)
+
+    def __len__(self) -> int:
+        return len(self.__dataclass_fields__)
+
+
+class _OperationPolicyResponse(TypedDict):
+    approval_required: bool
+    approval_expires_at: str
+    exact_spend_cap: _StrictJsonObject
+    expected_target_version: str
+    side_effect_class: str
+    target_identity: _StrictJsonObject
+
+
+class _AttemptResponse(TypedDict):
+    attempted: bool
+    idempotency_identity: str
+    operation_digest: str
+
+
+class _ObservationResponse(TypedDict):
+    classification: Literal["APPLIED", "NOT_APPLIED", "AMBIGUOUS"]
+    evidence: _StrictJsonObject
+    operation_digest: str
+
+
+class _DeliveryResponse(TypedDict):
+    acknowledged: bool
+    logical_outbox_identity: str
+    transport_receipt_id: str
+
+
+class _ScriptedOperationEffects(Protocol):
+    operation_mode: str | None
+
+    def operation_policy(self, request: _OperationPolicyRequest) -> _OperationPolicyResponse: ...
+
+    def attempt_operation(self, operation: FrozenOperation) -> _AttemptResponse: ...
+
+    def observe_operation(self, probe: EffectProbe) -> _ObservationResponse: ...
+
+    def deliver_outbox(self, message: OutboxMessage) -> _DeliveryResponse: ...
+
+
+@dataclass(frozen=True)
 class _PreparedOperation:
     envelope_digest: str
     mode: str
@@ -104,7 +172,7 @@ class OperationLifecycle:
     def __init__(
         self,
         store: ControlStore,
-        effects: object | None,
+        effects: _ScriptedOperationEffects | None,
         clock: _Clock,
         authenticator: _Authenticator,
     ) -> None:
@@ -129,6 +197,12 @@ class OperationLifecycle:
     @property
     def enabled(self) -> bool:
         return self._mode is not None
+
+    @property
+    def _adapter(self) -> _ScriptedOperationEffects:
+        if self._effects is None:
+            raise WorkflowError("LEDGER_INTEGRITY", "scripted Operation adapter is unavailable")
+        return self._effects
 
     @contextmanager
     def pulse(self, project_id: str) -> Iterator[None]:
@@ -164,16 +238,16 @@ class OperationLifecycle:
             ).fetchone()
         if row is None:
             return
-        context = {
-            "action_envelope_digest": row["action_envelope_digest"],
-            "action_envelope_id": row["action_envelope_id"],
-            "action_id": row["action_id"],
-            "action_kind": row["action_kind"],
-            "active_intent_digest": row["active_intent_digest"],
-            "project_id": project_id,
-        }
+        context = _OperationPolicyRequest(
+            action_envelope_digest=row["action_envelope_digest"],
+            action_envelope_id=row["action_envelope_id"],
+            action_id=row["action_id"],
+            action_kind=row["action_kind"],
+            active_intent_digest=row["active_intent_digest"],
+            project_id=project_id,
+        )
         try:
-            returned = self._effects.operation_policy(MappingProxyType(context))  # type: ignore[union-attr]
+            returned = self._adapter.operation_policy(context)
             policy = _freeze_policy(returned)
         except WorkflowError:
             raise
@@ -278,6 +352,10 @@ class OperationLifecycle:
     def record_approval(self, event: UserDecision) -> RecordReceipt:
         if not self.enabled:
             raise WorkflowError("DECISION_NOT_IMPLEMENTED", "decision kind is not implemented")
+        _validate_json_value(event.provenance)
+        if not isinstance(event.provenance, dict):
+            raise WorkflowError("INVALID_EVENT", "event provenance must be a JSON object")
+        _validate_json_value(event.complete_revision_payload)
         _validate_approval_identity(event)
         event_json = _canonical_json(asdict(event))
         frozen = UserDecision(**json.loads(event_json))
@@ -587,7 +665,7 @@ class OperationLifecycle:
     def _attempt(self, command: _AttemptCommand) -> AdvanceResult:
         _fault("operation_before_attempt")
         try:
-            returned = self._effects.attempt_operation(command.operation)  # type: ignore[union-attr]
+            returned = self._adapter.attempt_operation(command.operation)
             result = _freeze_mapping(returned, "Operation attempt result")
         except (SystemExit, KeyboardInterrupt):
             raise
@@ -636,7 +714,7 @@ class OperationLifecycle:
     def _observe(self, command: _ObserveCommand) -> AdvanceResult:
         _fault("operation_before_readback")
         try:
-            returned = self._effects.observe_operation(_probe(command.operation))  # type: ignore[union-attr]
+            returned = self._adapter.observe_operation(_probe(command.operation))
             observation = _freeze_mapping(returned, "Operation observation")
             if (
                 set(observation) != {"classification", "evidence", "operation_digest"}
@@ -835,7 +913,7 @@ class OperationLifecycle:
     def _deliver(self, command: _DeliveryCommand) -> AdvanceResult:
         _fault("outbox_before_delivery")
         try:
-            returned = self._effects.deliver_outbox(command.message)  # type: ignore[union-attr]
+            returned = self._adapter.deliver_outbox(command.message)
             result = _freeze_mapping(returned, "Outbox transport result")
             acknowledged = (
                 result.get("acknowledged") is True

@@ -35,9 +35,6 @@ class ControlStore:
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)"
                 )
-                applied = {
-                    row[0] for row in connection.execute("SELECT version FROM schema_migrations")
-                }
                 migrations = (
                     (1, "0001_initial.sql"),
                     (2, "0002_action_envelopes.sql"),
@@ -47,6 +44,18 @@ class ControlStore:
                     (6, "0006_route_handoffs.sql"),
                     (7, "0007_replay_shadow_operations.sql"),
                 )
+                applied_rows = connection.execute(
+                    "SELECT version, typeof(version) FROM schema_migrations "
+                    "ORDER BY version, rowid"
+                ).fetchall()
+                applied_versions = [row[0] for row in applied_rows]
+                known_versions = [version for version, _ in migrations]
+                if (
+                    any(row[1] != "integer" for row in applied_rows)
+                    or applied_versions != known_versions[: len(applied_versions)]
+                ):
+                    raise sqlite3.IntegrityError("schema migration history is invalid")
+                applied = set(applied_versions)
                 for version, filename in migrations:
                     if version in applied:
                         continue

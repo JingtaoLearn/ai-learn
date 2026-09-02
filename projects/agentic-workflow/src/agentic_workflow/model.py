@@ -214,3 +214,27 @@ class WorkflowError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+type _StrictJsonValue = (
+    None | bool | int | str | list[_StrictJsonValue] | dict[str, _StrictJsonValue]
+)
+type _StrictJsonObject = dict[str, _StrictJsonValue]
+
+
+def _validate_json_value(value: object) -> None:
+    if value is None or isinstance(value, bool | int | str):
+        return
+    if isinstance(value, float):
+        raise WorkflowError("INVALID_EVENT", "event contains a float")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise WorkflowError("INVALID_EVENT", "JSON object keys must be strings")
+            _validate_json_value(item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item)
+        return
+    raise WorkflowError("INVALID_EVENT", "event contains a non-JSON value")

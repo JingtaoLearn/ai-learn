@@ -31,8 +31,9 @@ from .model import (
     UserDecision,
     WatchdogAuthority,
     WorkflowError,
+    _validate_json_value,
 )
-from .operations import OperationLifecycle
+from .operations import OperationLifecycle, _ScriptedOperationEffects
 from .routing import (
     build_capability_matrix,
     freeze_capability_snapshot,
@@ -64,7 +65,7 @@ class DecisionAuthenticator(Protocol):
     def authenticate(self, decision: UserDecision) -> bool: ...
 
 
-class _ExternalEffects(Protocol):
+class _ExternalEffects(_ScriptedOperationEffects, Protocol):
     executor_id: str
     adapter_id: str
     source_context: HandoffSourceContext | None
@@ -5573,24 +5574,6 @@ def _freeze_watchdog_verifier(
     ):
         raise WorkflowError("INVALID_WATCHDOG_VERIFIER", "watchdog verifier identity is invalid")
     return MappingProxyType({"verifier_id": verifier_id, "provenance": provenance})
-
-
-def _validate_json_value(value: object) -> None:
-    if value is None or isinstance(value, bool | int | str):
-        return
-    if isinstance(value, float):
-        raise WorkflowError("INVALID_EVENT", "event contains a float")
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise WorkflowError("INVALID_EVENT", "JSON object keys must be strings")
-            _validate_json_value(item)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_json_value(item)
-        return
-    raise WorkflowError("INVALID_EVENT", "event contains a non-JSON value")
 
 
 def _is_positive_json_integer(value: object) -> bool:

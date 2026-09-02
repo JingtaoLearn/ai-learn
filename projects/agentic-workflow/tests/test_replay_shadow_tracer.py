@@ -9,7 +9,8 @@ import threading
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, get_type_hints
 
 import pytest
 from test_intent_fencing import (
@@ -19,6 +20,9 @@ from test_intent_fencing import (
     digest,
 )
 
+import agentic_workflow.kernel as kernel_module
+import agentic_workflow.model as model
+import agentic_workflow.operations as operations
 from agentic_workflow import UserDecision, WorkflowError, WorkflowKernel
 
 NOW = "2026-09-02T15:59:00+00:00"
@@ -174,10 +178,11 @@ def make_kernel(
     database_path: Path,
     effects: ScriptedTracerEffects,
     clock: MutableClock | None = None,
+    authenticator: Any = None,
 ) -> WorkflowKernel:
     return WorkflowKernel(
         database_path,
-        decision_authenticator=ActorAuthenticator(),
+        decision_authenticator=authenticator or ActorAuthenticator(),
         external_effects=effects,
         clock=clock or MutableClock(),
     )
@@ -207,6 +212,44 @@ def prepare_operation(kernel: WorkflowKernel) -> Any:
     assert kernel.advance("project-1").outcome == "ACTION_ENVELOPED"
     return kernel.advance("project-1")
 
+
+
+def test_scripted_effect_seam_has_typed_private_request_response_contracts() -> None:
+    protocol = operations._ScriptedOperationEffects
+    method_contracts = {
+        "operation_policy": (
+            operations._OperationPolicyRequest,
+            operations._OperationPolicyResponse,
+        ),
+        "attempt_operation": (operations.FrozenOperation, operations._AttemptResponse),
+        "observe_operation": (operations.EffectProbe, operations._ObservationResponse),
+        "deliver_outbox": (operations.OutboxMessage, operations._DeliveryResponse),
+    }
+
+    assert get_type_hints(operations.OperationLifecycle.__init__)["effects"] == protocol | None
+    for method_name, expected in method_contracts.items():
+        annotations = get_type_hints(getattr(protocol, method_name))
+        assert tuple(annotations.values()) == expected
+    assert "# type: ignore" not in Path(operations.__file__).read_text()
+
+
+def test_decision_json_validation_has_one_private_source_of_truth() -> None:
+    model_validator = getattr(model, "_validate_json_value", None)
+
+    assert model_validator is not None
+    assert kernel_module._validate_json_value is model_validator
+    assert operations._validate_json_value is model_validator
+
+
+def test_scripted_response_payload_annotations_use_strict_json_domain() -> None:
+    strict_json_object = getattr(operations, "_StrictJsonObject", None)
+
+    assert strict_json_object is not None
+    assert get_type_hints(operations._OperationPolicyResponse)["exact_spend_cap"] \
+        is strict_json_object
+    assert get_type_hints(operations._OperationPolicyResponse)["target_identity"] \
+        is strict_json_object
+    assert get_type_hints(operations._ObservationResponse)["evidence"] is strict_json_object
 
 
 def test_shadow_operation_uses_exact_approval_and_one_boundary_per_advance(tmp_path: Path) -> None:
@@ -254,6 +297,72 @@ def test_shadow_operation_uses_exact_approval_and_one_boundary_per_advance(tmp_p
         assert connection.execute(
             "SELECT COUNT(*) FROM operation_approval_consumptions"
         ).fetchone() == (1,)
+
+
+def test_approval_rejects_numeric_provenance_key_before_string_key_identity(
+    tmp_path: Path,
+) -> None:
+    class ActorIdentityAuthenticator:
+        def authenticate(self, decision: UserDecision) -> bool:
+            return decision.authenticated_actor == "user-1"
+
+    database_path = tmp_path / "control.sqlite3"
+    effects = ScriptedTracerEffects(approval_required=True)
+    kernel = make_kernel(database_path, effects, authenticator=ActorIdentityAuthenticator())
+    prepare_operation(kernel)
+    request = kernel.view("project-1").pending_decisions[0]
+
+    with pytest.raises(WorkflowError) as caught:
+        kernel.record(approval_for(request, provenance={1: "same"}))
+
+    assert caught.value.code == "INVALID_EVENT"
+    accepted = kernel.record(approval_for(request, provenance={"1": "same"}))
+    assert accepted.outcome == "OPERATION_APPROVAL_RECORDED"
+
+
+def test_approval_rejects_mixed_string_and_numeric_provenance_keys(
+    tmp_path: Path,
+) -> None:
+    class ActorIdentityAuthenticator:
+        def authenticate(self, decision: UserDecision) -> bool:
+            return decision.authenticated_actor == "user-1"
+
+    database_path = tmp_path / "control.sqlite3"
+    effects = ScriptedTracerEffects(approval_required=True)
+    kernel = make_kernel(database_path, effects, authenticator=ActorIdentityAuthenticator())
+    prepare_operation(kernel)
+    request = kernel.view("project-1").pending_decisions[0]
+
+    with pytest.raises(WorkflowError) as caught:
+        kernel.record(
+            approval_for(request, provenance={1: "numeric", "1": "string"})
+        )
+
+    assert caught.value.code == "INVALID_EVENT"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        [],
+        MappingProxyType({"channel": "test"}),
+        {"channel": "test", "steps": ("one", "two")},
+    ],
+    ids=["non-object", "non-json-mapping", "tuple"],
+)
+def test_approval_rejects_every_non_strict_json_provenance_shape(
+    tmp_path: Path, provenance: object
+) -> None:
+    database_path = tmp_path / "control.sqlite3"
+    effects = ScriptedTracerEffects(approval_required=True)
+    kernel = make_kernel(database_path, effects)
+    prepare_operation(kernel)
+    request = kernel.view("project-1").pending_decisions[0]
+
+    with pytest.raises(WorkflowError) as caught:
+        kernel.record(approval_for(request, provenance=provenance))
+
+    assert caught.value.code == "INVALID_EVENT"
 
 
 @pytest.mark.parametrize("classification", ["APPLIED", "NOT_APPLIED", "AMBIGUOUS"])
@@ -466,6 +575,49 @@ def test_malformed_v6_operation_lifecycle_fails_closed(tmp_path: Path) -> None:
         connection.execute("DELETE FROM operation_events WHERE event_type = 'RESERVED'")
 
     with pytest.raises(sqlite3.IntegrityError, match="legacy v6 Operation event is invalid"):
+        make_kernel(database_path, ScriptedTracerEffects())
+
+
+def replace_migration_history(database_path: Path, versions: list[int]) -> None:
+    make_kernel(database_path, ScriptedTracerEffects())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("ALTER TABLE schema_migrations RENAME TO previous_schema_migrations")
+        connection.execute("CREATE TABLE schema_migrations (version INTEGER)")
+        connection.executemany(
+            "INSERT INTO schema_migrations VALUES (?)", ((version,) for version in versions)
+        )
+        connection.execute("DROP TABLE previous_schema_migrations")
+
+
+def test_schema_migration_history_rejects_an_ahead_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "ahead.sqlite3"
+    replace_migration_history(database_path, list(range(1, 9)))
+
+    with pytest.raises(sqlite3.IntegrityError, match="schema migration history is invalid"):
+        make_kernel(database_path, ScriptedTracerEffects())
+
+
+def test_schema_migration_history_rejects_a_gap(tmp_path: Path) -> None:
+    database_path = tmp_path / "gap.sqlite3"
+    replace_migration_history(database_path, [1, 2, 4, 5, 6, 7])
+
+    with pytest.raises(sqlite3.IntegrityError, match="schema migration history is invalid"):
+        make_kernel(database_path, ScriptedTracerEffects())
+
+
+def test_schema_migration_history_rejects_a_duplicate_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "duplicate.sqlite3"
+    replace_migration_history(database_path, [1, 2, 3, 3, 4, 5, 6, 7])
+
+    with pytest.raises(sqlite3.IntegrityError, match="schema migration history is invalid"):
+        make_kernel(database_path, ScriptedTracerEffects())
+
+
+def test_schema_migration_history_rejects_an_unknown_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "unknown.sqlite3"
+    replace_migration_history(database_path, [0, 1, 2, 3, 4, 5, 6, 7])
+
+    with pytest.raises(sqlite3.IntegrityError, match="schema migration history is invalid"):
         make_kernel(database_path, ScriptedTracerEffects())
 
 
