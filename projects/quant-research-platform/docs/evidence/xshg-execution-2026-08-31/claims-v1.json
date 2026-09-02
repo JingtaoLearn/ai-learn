@@ -60,7 +60,7 @@
       "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
       "effective": "Both preserved rule intervals for ordinary non-exception main-board stock",
       "clause": "3.3.11, 3.3.13, 3.3.17",
-      "quote": "A股的申报价格最小变动单位为0.01元人民币。 本所对股票、基金交易实行价格涨跌幅限制，涨跌幅限制比例为10%。 涨跌幅限制价格、有效申报价格范围的计算结果按照四舍五入原则取至申报价格最小变动单位。",
+      "quote": "A股的申报价格最小变动单位为0.01元人民币， 本所对股票、基金交易实行价格涨跌幅限制，涨跌幅限制比例为10%。 涨跌幅限制价格、有效申报价格范围的计算结果按照四舍五入原则取至申报价格最小变动单位。",
       "source_artifact": "sse-trading-rules-2023.docx",
       "additional_source_artifact": "sse-trading-rules-2026.docx"
     },
@@ -97,7 +97,7 @@
       "document_id": "中国证券登记结算有限责任公司结算规则; preserved PDF shows no promulgation number",
       "effective": "Rule issued 2022-05-20, effective 2022-06-20; DVP formally implemented 2022-12-26",
       "clause": "Articles 12, 17, 22, 25",
-      "quote": "结算参与人资金交收账户净应付资金的，结算参与人应当在最终交收时点T+1日16:00前向本公司足额交付资金。 T日日终，本公司根据T日清算结果和结算参与人委托，将结算参与人证券交收账户下相关证券账户的应收证券划入相应证券账户。",
+      "quote": "结算参与人资金交收账户净应付资金的，结算参与人应当在最终交收时点T+1日16:00前向本公司足额交付资金； T日日终，本公司根据T日清算结果和结算参与人委托，将结算参与人证券交收账户下相关证券账户的应收证券划入相应证券账户。",
       "source_artifact": "chinaclear-settlement-rules-2022.pdf"
     },
     {
@@ -105,7 +105,7 @@
       "document_id": "中国证券登记结算有限责任公司结算规则; preserved PDF shows no promulgation number",
       "effective": "DVP formally implemented 2022-12-26",
       "clause": "Articles 19 and 22",
-      "quote": "本公司对证券公司经纪业务和融资融券业务、期货公司经纪业务的相应应收证券不加设‘可售交收锁定’标识。",
+      "quote": "本公司对证券公司经纪业务和融资融券业务、期货公司经纪业务的相应应收证券不加设“可售交收锁定”标识；",
       "source_artifact": "chinaclear-settlement-rules-2022.pdf"
     },
     {
@@ -130,7 +130,7 @@
       "document_id": "上海证券交易所收费一览表（2026年1月更新）; 上海证券交易所代收税费一览表（2022年7月更新）",
       "effective": "Current official tables retrieved 2026-08-31",
       "clause": "A-share auction trading rows",
-      "quote": "人民币普通股票（A股）竞价交易 经手费 成交金额的0.00341%（双向）。 A股 证管费 成交金额的0.002%（双向）。",
+      "quote": "人民币普通股票（A股）竞价交易 经手费 成交金额的0.00341%（双向） A股 证管费 成交金额的0.002%（双向）",
       "source_artifact": "sse-current-fees-page.html",
       "additional_source_artifact": "sse-current-collected-taxes-page.html"
     },
@@ -139,7 +139,7 @@
       "document_id": "证监发〔2002〕21号",
       "effective": "From 2002-05-01; used only to prove the schedule boundary, not to assert Jingtao's current negotiated rate",
       "clause": "Items 1 and 6",
-      "quote": "证券公司向客户收取的佣金（包括代收的证券交易监管费和证券交易所手续费等）不得高于证券交易金额的3‰也不得低于代收的证券交易监管费和证券交易所手续费等。 各证券公司应根据自身的实际情况制定本公司的佣金收取标准。",
+      "quote": "证券公司向客户收取的佣金（包括代收的证券交易监管费和证券交易所手续费等）不得高于证券交易金额的3‰也不得低于代收的证券交易监管费和证券交易所手续费等。 各证券公司应根据自身的实际情况制定本公司的佣金收取标准，",
       "source_artifact": "broker-commission-cap-2002.html"
     }
   ]
