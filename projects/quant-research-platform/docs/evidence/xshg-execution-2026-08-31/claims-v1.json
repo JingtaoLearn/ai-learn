@@ -1,0 +1,146 @@
+{
+  "schema_version": "xshg-execution-claims-v1",
+  "scope": "BOCOM_601328_XSHG_DAILY_ACCOUNT_REPLAY",
+  "claims": [
+    {
+      "claim_id": "SSE_RULE_2023_INTERVAL",
+      "document_id": "上证发〔2023〕32号",
+      "effective": "From the first main-board stock issued under the registration measures through 2026-07-05; covers the BOCOM Spike interval 2025-08-15 through 2026-06-30.",
+      "clause": "12.8 and 2026 repeal notice",
+      "quote": "本规则自按照《首次公开发行股票注册管理办法》发行的首只主板股票上市首日起施行。",
+      "source_artifact": "sse-trading-rules-2023.docx"
+    },
+    {
+      "claim_id": "SSE_RULE_2026_INTERVAL",
+      "document_id": "上证发〔2026〕41号",
+      "effective": "2026-07-06 onward",
+      "clause": "promulgation notice item 1",
+      "quote": "《交易规则》（详见附件1）自2026年7月6日起施行。本所于2023年2月17日发布的《上海证券交易所交易规则（2023年修订）》（上证发〔2023〕32号）同时废止。",
+      "source_artifact": "sse-trading-rules-page.html"
+    },
+    {
+      "claim_id": "SSE_OPEN_IS_FIRST_EXECUTION",
+      "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
+      "effective": "Both preserved rule intervals",
+      "clause": "4.1.1-4.1.2",
+      "quote": "证券的开盘价为当日该证券竞价交易的第一笔成交价格。证券的开盘价通过集合竞价方式产生，不能产生开盘价的，以连续竞价方式产生。",
+      "source_artifact": "sse-trading-rules-2023.docx",
+      "additional_source_artifact": "sse-trading-rules-2026.docx"
+    },
+    {
+      "claim_id": "SSE_MARKET_ORDER_NOT_OPENING_CALL_DEFAULT",
+      "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
+      "effective": "Both preserved rule intervals",
+      "clause": "3.3.6",
+      "quote": "市价申报只适用于连续竞价期间的交易，本所另有规定的除外。",
+      "source_artifact": "sse-trading-rules-2023.docx",
+      "additional_source_artifact": "sse-trading-rules-2026.docx"
+    },
+    {
+      "claim_id": "SSE_PRICE_TIME_PRIORITY",
+      "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
+      "effective": "Both preserved rule intervals",
+      "clause": "3.5.1-3.5.2",
+      "quote": "证券竞价交易按价格优先、时间优先的原则撮合成交。先后顺序按交易主机接受申报的时间确定。集合竞价的所有交易以同一价格成交。",
+      "source_artifact": "sse-trading-rules-2023.docx",
+      "additional_source_artifact": "sse-trading-rules-2026.docx"
+    },
+    {
+      "claim_id": "SSE_ORDINARY_A_SHARE_NO_T0_SALE",
+      "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
+      "effective": "Both preserved rule intervals",
+      "clause": "3.1.4-3.1.5",
+      "quote": "投资者买入的证券，在交收前不得卖出，但实行回转交易的除外。",
+      "source_artifact": "sse-trading-rules-2023.docx",
+      "additional_source_artifact": "sse-trading-rules-2026.docx",
+      "qualification": "Ordinary A-shares are absent from the enumerated same-day round-trip products."
+    },
+    {
+      "claim_id": "SSE_DEFAULT_LIMIT_AND_TICK",
+      "document_id": "上证发〔2023〕32号 / 上证发〔2026〕41号",
+      "effective": "Both preserved rule intervals for ordinary non-exception main-board stock",
+      "clause": "3.3.11, 3.3.13, 3.3.17",
+      "quote": "A股的申报价格最小变动单位为0.01元人民币， 本所对股票、基金交易实行价格涨跌幅限制，涨跌幅限制比例为10%。 涨跌幅限制价格、有效申报价格范围的计算结果按照四舍五入原则取至申报价格最小变动单位。",
+      "source_artifact": "sse-trading-rules-2023.docx",
+      "additional_source_artifact": "sse-trading-rules-2026.docx"
+    },
+    {
+      "claim_id": "SSE_SUSPENSION_IS_OFFICIAL_EVENT",
+      "document_id": "上证发〔2026〕41号",
+      "effective": "2026-07-06 onward; equivalent replay claim requires the applicable historical rule",
+      "clause": "4.2.5-4.2.6",
+      "quote": "证券停复牌时间以本所公告为准。证券挂牌、摘牌、停牌与复牌的，本所予以公告。",
+      "source_artifact": "sse-trading-rules-2026.docx"
+    },
+    {
+      "claim_id": "SSE_SUSPENSION_QUERY_AUTHORITY",
+      "document_id": "SSE public suspension/resumption page channel bond_14526_js_suspension_stock; no promulgation number",
+      "effective": "Current website contract retrieved 2026-08-31",
+      "clause": "search_tradeTip_2021.js suspension_stock",
+      "quote": "suspensionUrl: sseQueryURL + 'commonSoaQuery.do',  //停复牌提示url",
+      "additional_exact_quote": "\"sqlId\":'GW_PL_JYTS_TFPXX',",
+      "source_artifact": "sse-suspension-query-script.js",
+      "request_record": "sse-601328-suspension-query-record.json"
+    },
+    {
+      "claim_id": "SSE_BOCOM_SPIKE_INTERVAL_SUSPENSION_QUERY",
+      "document_id": "SSE query GW_PL_JYTS_TFPXX",
+      "effective": "Query bounded to 601328 and 2025-08-15 through 2026-06-30, retrieved 2026-08-31",
+      "clause": "exact query response",
+      "quote": "\"pageCount\":0,\"pageNo\":1,\"pageSize\":100,\"pageSizeWithOutLimit\":100,\"searchDate\":null,\"sort\":null,\"startDate\":null,\"total\":0",
+      "additional_exact_quote": "\"result\":[],\"securityCode\":\"\",\"sqlId\":\"GW_PL_JYTS_TFPXX\"",
+      "source_artifact": "sse-601328-suspension-20250815-20260630.jsonp",
+      "qualification": "Zero rows for this exact query only; not an unbounded assertion that no corporate action or trading interruption ever existed."
+    },
+    {
+      "claim_id": "CHINACLEAR_T_AND_T1_SETTLEMENT",
+      "document_id": "中国证券登记结算有限责任公司结算规则; preserved PDF shows no promulgation number",
+      "effective": "Rule issued 2022-05-20, effective 2022-06-20; DVP formally implemented 2022-12-26",
+      "clause": "Articles 12, 17, 22, 25",
+      "quote": "结算参与人资金交收账户净应付资金的，结算参与人应当在最终交收时点T+1日16:00前向本公司足额交付资金； T日日终，本公司根据T日清算结果和结算参与人委托，将结算参与人证券交收账户下相关证券账户的应收证券划入相应证券账户。",
+      "source_artifact": "chinaclear-settlement-rules-2022.pdf"
+    },
+    {
+      "claim_id": "CHINACLEAR_BROKERAGE_SALEABLE_LOCK_BOUNDARY",
+      "document_id": "中国证券登记结算有限责任公司结算规则; preserved PDF shows no promulgation number",
+      "effective": "DVP formally implemented 2022-12-26",
+      "clause": "Articles 19 and 22",
+      "quote": "本公司对证券公司经纪业务和融资融券业务、期货公司经纪业务的相应应收证券不加设“可售交收锁定”标识；",
+      "source_artifact": "chinaclear-settlement-rules-2022.pdf"
+    },
+    {
+      "claim_id": "CHINACLEAR_TRANSFER_FEE",
+      "document_id": "上海市场证券登记结算业务收费及代收税费一览表（2026年1月1日更新）; no promulgation number shown",
+      "effective": "0.01‰ both sides from 2022-04-29; current table updated 2026-01-01",
+      "clause": "Investor business charges / transaction transfer fee",
+      "quote": "A股 按照成交金额的0.01‰向买卖双方收取。",
+      "source_artifact": "chinaclear-shanghai-fees-2026.pdf"
+    },
+    {
+      "claim_id": "STAMP_TAX_SELLER_ONLY_HALF_RATE",
+      "document_id": "中华人民共和国印花税法; 财政部 税务总局公告2023年第39号",
+      "effective": "Law from 2022-07-01; half collection from 2023-08-28",
+      "clause": "Stamp Tax Law Articles 3 and 5; Announcement 39",
+      "quote": "证券交易印花税对证券交易的出让方征收，不对受让方征收。 证券交易的计税依据，为成交金额。 自2023年8月28日起，证券交易印花税实施减半征收。",
+      "source_artifact": "stamp-tax-law-2021.html",
+      "additional_source_artifact": "stamp-tax-half-2023.html"
+    },
+    {
+      "claim_id": "SSE_HANDLING_AND_REGULATORY_FEES",
+      "document_id": "上海证券交易所收费一览表（2026年1月更新）; 上海证券交易所代收税费一览表（2022年7月更新）",
+      "effective": "Current official tables retrieved 2026-08-31",
+      "clause": "A-share auction trading rows",
+      "quote": "人民币普通股票（A股）竞价交易 经手费 成交金额的0.00341%（双向） A股 证管费 成交金额的0.002%（双向）",
+      "source_artifact": "sse-current-fees-page.html",
+      "additional_source_artifact": "sse-current-collected-taxes-page.html"
+    },
+    {
+      "claim_id": "BROKER_COMMISSION_IS_ACCOUNT_SPECIFIC",
+      "document_id": "证监发〔2002〕21号",
+      "effective": "From 2002-05-01; used only to prove the schedule boundary, not to assert Jingtao's current negotiated rate",
+      "clause": "Items 1 and 6",
+      "quote": "证券公司向客户收取的佣金（包括代收的证券交易监管费和证券交易所手续费等）不得高于证券交易金额的3‰也不得低于代收的证券交易监管费和证券交易所手续费等。 各证券公司应根据自身的实际情况制定本公司的佣金收取标准，",
+      "source_artifact": "broker-commission-cap-2002.html"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "bounded_interpretation": "Official endpoint returned zero suspension/resumption rows for this exact instrument and interval. This is not an unbounded market-completeness claim.",
+  "content_type": "application/json;charset=UTF-8",
+  "endpoint": "https://query.sse.com.cn/commonSoaQuery.do",
+  "final_url": "https://query.sse.com.cn/commonSoaQuery.do?isPagination=true&sqlId=GW_PL_JYTS_TFPXX&pageHelp.pageSize=100&pageHelp.pageNo=1&pageHelp.beginPage=1&pageHelp.cacheSize=1&pageHelp.endPage=1&productCode=601328&keyWords=&startStopDate=20250815&endStopDate=20260630&jsonCallBack=jsonpCallback202",
+  "method": "GET",
+  "query": {
+    "endStopDate": "20260630",
+    "isPagination": "true",
+    "jsonCallBack": "jsonpCallback202",
+    "keyWords": "",
+    "pageHelp.beginPage": "1",
+    "pageHelp.cacheSize": "1",
+    "pageHelp.endPage": "1",
+    "pageHelp.pageNo": "1",
+    "pageHelp.pageSize": "100",
+    "productCode": "601328",
+    "sqlId": "GW_PL_JYTS_TFPXX",
+    "startStopDate": "20250815"
+  },
+  "request_header_names": [
+    "Referer",
+    "User-Agent"
+  ],
+  "response_bytes": 512,
+  "response_path": "file:///home/jingtao/quant-research-spikes/xshg-execution-semantics-202/sources/sse-601328-suspension-20250815-20260630.jsonp",
+  "response_sha256": "08cb1c31e8862d6fa111ff1e4fd07eca326f7b08f0a03aa7742050e139ac52c0",
+  "status": 200
+}
