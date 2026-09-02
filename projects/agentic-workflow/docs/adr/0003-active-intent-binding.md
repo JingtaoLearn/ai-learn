@@ -15,8 +15,8 @@ Bind every authoritative artifact to one immutable Active Intent and invalidate 
 
 - Historical evidence remains reusable without inheriting stale authority.
 - Every completion claim can be traced to the exact intent that authorized it.
-- Revision changes can cancel more work than strictly necessary; compatibility rules must be narrow and tested.
-- Best-effort worker cancellation is operational cleanup, while integration fencing is the authoritative control.
+- Revision changes can invalidate more authority than strictly necessary; compatibility rules must be narrow and tested.
+- Best-effort Physical Cancellation is operational cleanup, while Authorization Invalidation and the Integration Fence are authoritative controls.
 
 ## Alternatives considered
 

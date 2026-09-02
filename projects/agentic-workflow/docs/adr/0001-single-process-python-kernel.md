@@ -21,6 +21,6 @@ Build `projects/agentic-workflow` as a single-process Python package with one au
 
 ## Alternatives considered
 
-- GitHub/Kanban/Cron as the only ledger: useful for Replay and Shadow, but insufficient for one-shot approvals, fencing, ambiguous external effects, aggregate budgets, and exactly-once logical outbox events.
+- GitHub/Kanban/Cron as the only ledger: useful for Replay and Shadow, but insufficient for one-shot approvals, fencing, ambiguous external effects, aggregate budgets, and enforcing a unique Logical Outbox Identity.
 - Temporal or another workflow engine: powerful, but premature for the bounded first implementation.
 - TypeScript modular monolith: no existing project or admitted runtime justified the extra toolchain; Python and pytest are already proven on Feng.

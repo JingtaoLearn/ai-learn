@@ -1,7 +1,7 @@
 # Agentic Workflow V1 Solution Design
 
-- Status: Accepted for proof Spikes
-- Date: 2026-09-01
+- Status: Accepted for V1 implementation
+- Date: 2026-09-02
 - Product intent: [`product-intent.md`](product-intent.md)
 - Domain glossary: [`../CONTEXT.md`](../CONTEXT.md)
 - Decisions: [`adr/`](adr/)
@@ -20,7 +20,16 @@ SQLite control ledger   ExternalEffects
                          Copilot / Feng / Delivery
 ```
 
-V1 is a modular monolith, not a distributed workflow platform. It runs as one process, allows one active writer Pulse per project, and attempts at most one external effect per `advance`.
+V1 is a modular monolith, not a distributed workflow platform. It runs as one process, allows one active writer Pulse per Workflow Project, and attempts at most one scripted external effect per `advance`. Overlapping authority transitions stop or wait; V1 does not prove high availability, multiple simultaneous Owner writers, or a Goal Revision racing a physical request.
+
+Replay performs no effects. Shadow may propose an Operation and exercise a deterministic scripted effect, but it cannot authorize physical apply. The scripted adapter is the V1 implementation of the outbound seam; live connectors remain part of the design but are not enabled by this contract.
+
+## Frozen V1 acceptance contract
+
+- **E1 — lifecycle:** prove the exact Operation and Approval lifecycle through `record`, `advance`, and `view`. Each `advance` progresses at most one lifecycle boundary and attempts at most one scripted effect.
+- **E2 — recovery:** journal one Operation, make one scripted attempt, read back a stable target, and conclude `APPLIED`, `NOT_APPLIED`, or `AMBIGUOUS`. Recovery observes an unresolved attempt and never retries it blindly.
+- **E3 — synchronization:** commit Evidence and one logical day-close Outbox Event atomically. Delivery retry reuses its Logical Outbox Identity, retries only scripted transport, and never reruns workflow work.
+- **E4 — continuity:** migrate every valid closed-v6 ledger state and run one Replay/Shadow goal-to-brief tracer.
 
 ## 2. Public interface
 
@@ -122,7 +131,7 @@ A private connector registry dispatches typed operation variants to GitHub, Kanb
 - `DecisionAuthenticator`: production identity verification and a test adapter.
 - `ExternalEffects`: live and scripted adapters.
 
-Do not create public goal, signal, router, journal, approval, or outbox modules.
+Private modules are preferred when they hide policy and increase locality without enlarging the public interface. Do not create public goal, signal, router, journal, approval, or outbox modules, and do not add another outbound seam.
 
 ## 4. SQLite control ledger
 
@@ -185,9 +194,16 @@ operating_profile_revision
 active_intent_digest
 ```
 
-Changing any revision atomically creates a new Active Intent and invalidates old envelopes and transitive dependents by default. A compatibility rule may authorize a new envelope under the new binding; it never mutates the old envelope. Unknown impact fails closed.
+Changing any revision atomically creates a new Active Intent and applies Authorization Invalidation to old envelopes and transitive dependents by default. A compatibility rule may authorize a new envelope under the new binding; it never mutates the old envelope. Unknown impact fails closed.
 
-Worker cancellation is best effort. Integration and operation fencing are authoritative.
+V1 uses Drain and Reconcile under its single active writer:
+
+1. An overlapping authority transition stops or waits rather than racing another writer.
+2. An old-Intent Operation whose scripted attempt has not begun loses authority to begin.
+3. A logically in-flight scripted Operation is read back by stable target identity and concluded under its original Intent Binding.
+4. The old-Intent result remains Evidence, but the Integration Fence prevents it from satisfying a current-intent gate or being integrated under the new Active Intent.
+
+Physical Cancellation of a Worker or remote request is best-effort operational cleanup. It is neither Authorization Invalidation nor the Integration Fence, and V1 makes no generic hard-cancellation promise.
 
 ## 6. Matt assurance
 
@@ -232,14 +248,16 @@ For `AWAITING_APPROVAL`, `record(ApprovalDecision)` authenticates the actor and 
 
 ### Attempt and observe
 
-Call one prepared connector outside the transaction with a bounded deadline. Read back the target using its stable identity and expected version.
+Call one prepared scripted effect adapter outside the transaction with a bounded deadline. From the start of that call until its conclusion is persisted, the Operation is logically in flight. Read back the scripted target using its stable identity and expected version. If the process crashes in this window, recovery performs readback without repeating the attempt.
+
+Replay never calls `attempt`. Shadow may execute this scripted protocol, but a proposed physical Operation cannot become authorized for physical apply. Real connector attempts and stale physical-request fencing are Execute-mode work.
 
 ### Conclude transaction
 
-Recheck fencing and Active Intent, then persist the actual Route Receipt and raw result evidence. Classify the effect as:
+Recheck fencing and Active Intent, then persist the actual Route Receipt and raw result evidence. Classify the scripted effect as:
 
-- `CONFIRMED_APPLIED`;
-- `CONFIRMED_NOT_APPLIED`;
+- `APPLIED`;
+- `NOT_APPLIED`;
 - `AMBIGUOUS`.
 
 A result Signal Event may then carry the executor-produced Matt, Test, or Review Receipt. A later Pulse validates those receipts against the pre-existing envelope and operation before marking the Action complete or authorizing a downstream Action.
@@ -267,9 +285,9 @@ Exceptional states are `REJECTED`, `BLOCKED_EXTERNAL`, `SUPERSEDED`, `FAILED`, a
 
 ## 10. Outbox and daily brief
 
-Evidence and its logical Outbox Event are created in one transaction. Transport claims and delivers the event outside the transaction, then records the attempt and acknowledgement. Delivery may be at least once; the logical event identity is unique.
+When an Asia/Shanghai local date has closed, all of that Workflow Project's material changes project into one immutable Daily Brief. The day-close boundary atomically commits its resulting Evidence, the Brief, and one Outbox Event. Their logical calendar key is the Workflow Project and closed local date; repeated day-close processing returns the existing Brief and Logical Outbox Identity rather than creating another.
 
-All internal Pulses for one day project into one Daily Brief. Delivery failure retries the same brief and never reruns workflow work.
+The scripted transport claims and delivers the Outbox Event outside the transaction, then records its attempt and acknowledgement. Delivery failure retries the same Logical Outbox Identity and payload only. It never reruns workflow work or creates another notification intent. Exactly-once physical delivery is not promised; real message transport and stale-send physical fencing are Execute-mode work.
 
 ## 11. Package layout
 
@@ -316,6 +334,12 @@ Prove that Feng can execute a frozen test profile against one exact commit/tree 
 
 Each Spike has a predeclared `VALIDATED`, `PARTIAL`, `INVALIDATED`, or `INCONCLUSIVE` verdict and produces evidence, not production code.
 
+## Migration boundary
+
+The only accepted upgrade source for this slice is a ledger satisfying every invariant of the closed v6 baseline. Migration must preserve every valid v6 lifecycle, including an Operation with only `RESERVED` and one with `RESERVED` followed by `CONCLUDED`. It preserves immutable identities, Intent Bindings, digests, event order, and conclusions. A malformed lifecycle or inconsistent history fails closed.
+
+This is a versioned migration from the shipped baseline, not a general upgrader for superseded, unshipped experimental schemas. `revision_transitions` and migration 0008 are Execute-mode work.
+
 ## 13. V1 tracer slice
 
 ```text
@@ -336,23 +360,27 @@ Authenticated Goal Revision
 → one Daily Brief Outbox Event
 ```
 
-V1 does not merge or deploy automatically. It permits polling/manual callbacks before Webhook scaling. Every gate may return a legal stop.
+This tracer must satisfy E1–E4 through the public `record`, `advance`, and `view` interface and the one scripted outbound seam. V1 does not merge or deploy automatically. It permits polling/manual callbacks before Webhook scaling. Every gate may return a legal stop.
 
 ## 14. Test seams
 
 ### Local lightweight tests
 
-- Public `record`, `advance`, and `view` behavior.
+- E1–E4 behavior through public `record`, `advance`, and `view`.
 - Pure canonicalization, compatibility, classification, and receipt policies.
 - Real temporary SQLite databases with crash injection.
 - Scripted `Clock`, `DecisionAuthenticator`, and `ExternalEffects` adapters.
 
 ### Feng authoritative tests
 
-- Migration and concurrency tests.
-- Crash-after-prepare and crash-after-effect recovery.
+- Every valid closed-v6 lifecycle, malformed-v6 rejection, and single-writer concurrency.
+- Crash injection around journal, scripted attempt, readback, conclusion, and day-close commits.
 - Wrong-SHA, route drift, expired approval, forged Matt Receipt, duplicate delivery, and stale-intent scenarios.
-- Connector contract and end-to-end tracer tests.
+- Scripted effect and transport adapter contracts plus the end-to-end goal-to-brief tracer.
 - Resource, container, browser, or integration-heavy suites.
 
 A test for an old intent, SHA, route, or artifact may remain evidence but cannot satisfy the current gate.
+
+## Execute-mode deferrals
+
+The V1 contract does not include target-scoped global physical fencing, connector compare-and-fence, hard cancellation, Goal Revision and physical-request concurrency, Outbox physical-send revocation, `revision_transitions` or migration 0008, real autonomous effects, automatic merge, or deployment. Findings in those areas are follow-up Evidence, not new E1–E4 requirements.

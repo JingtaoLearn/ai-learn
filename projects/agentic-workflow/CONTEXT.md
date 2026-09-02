@@ -152,15 +152,43 @@ Evidence about whether a delivered capability or decision actually advances the 
 
 ## Operation Record
 
-The durable lifecycle of one intended external effect.
+The immutable journal of one intended external effect and its observed conclusion.
+
+## Authorization Invalidation
+
+The withdrawal of an artifact's authority to begin or satisfy work after its Intent Binding ceases to be current.
+
+**Distinguish from:** Physical Cancellation, which attempts to stop execution that may already have reached an external target.
+
+## Physical Cancellation
+
+An attempt to stop an external effect after it may have been dispatched.
+
+**Distinguish from:** Authorization Invalidation and an Integration Fence, which are authoritative even when physical execution cannot be stopped.
+
+## Drain and Reconcile
+
+The supersession protocol that invalidates unattempted authority, observes any logically in-flight Operation to a conclusion, preserves its result as Evidence under the old Intent Binding, and prevents that result from satisfying the new Active Intent.
+
+## Integration Fence
+
+The rule that Evidence or work bound to an old Active Intent cannot satisfy a gate or be integrated under the current Active Intent.
+
+**Distinguish from:** Physical Cancellation, which is operational cleanup rather than an authorization rule.
 
 ## Outbox Event
 
-A durable intent to deliver one immutable notification without repeating the underlying Action.
+A durable intent to deliver one immutable notification without repeating the workflow work that produced it.
+
+## Logical Outbox Identity
+
+The stable identity shared by one Outbox Event and all attempts to transport it.
+
+**Distinguish from:** a transport attempt or acknowledgement, neither of which creates a new notification intent.
 
 ## Daily Brief
 
-The single human-facing daily projection of material goal, evidence, frontier, stop, and decision changes.
+The immutable human-facing day-close projection of material goal, evidence, frontier, stop, and decision changes for one Workflow Project and one Asia/Shanghai local date.
 
 ## Replay
 
