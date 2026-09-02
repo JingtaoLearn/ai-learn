@@ -84,6 +84,18 @@ An immutable chronological value defining readable data, available-through time,
 
 An immutable physical projection of a parent Dataset Snapshot containing only rows a run may read, plus a separate scoring interval. The UI calls this a DatasetView.
 
+## Corporate Action Event Revision
+
+One immutable normalized revision of an issuer-declared event, bound to exact official source artifacts, retrieval evidence, terms, parser identity, and any explicit correction link. A mutable vendor row or adjusted-price jump is not an Event Revision.
+
+## Corporate Action Coverage State
+
+The bounded source-evidence conclusion for an instrument and interval: `VERIFIED_EVENTS`, `VERIFIED_NO_ACTION`, or `UNKNOWN_MISSING`. `VERIFIED_EVENTS` proves listed events but not absence on other dates; `UNKNOWN_MISSING` can never be interpreted as an empty event set.
+
+## Total-Return Claim State
+
+The trusted evidence-layer conclusion about economic completeness. `KNOWN_EVENT_CORRECTED_PARTIAL` records accepted known events without claiming complete interval coverage. `AFTER_TAX_TOTAL_RETURN_VERIFIED` requires complete coverage, applicable tax/settlement policy, exact per-account ledger reconciliation, and control-account parity; a replay engine cannot issue or upgrade this state.
+
 ## Experiment Binding
 
 An internal association between a Parameter Study and an Experiment with exactly one role: `INNER_SCORE`, `OUTER_AUDIT`, or `TERMINAL_HOLDOUT`.

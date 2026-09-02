@@ -1,0 +1,223 @@
+{
+  "schema_version": "a-share-dividend-decision-v1",
+  "purpose": "Bounded decision fixtures; synthetic cases are not source evidence.",
+  "cases": [
+    {
+      "case": "no_action_query_without_completeness",
+      "source": {
+        "kind": "SYNTHETIC_EXCHANGE_QUERY",
+        "url": "https://fixture.invalid/sse/dividends",
+        "returned_rows": 0,
+        "complete_enumeration_contract": false
+      },
+      "expected": {
+        "coverage_state": "UNKNOWN_MISSING",
+        "total_return_claim": "FORBIDDEN",
+        "reason": "EMPTY_QUERY_IS_NOT_COMPLETE_ABSENCE_EVIDENCE"
+      }
+    },
+    {
+      "case": "one_real_bocom_dividend",
+      "source": {
+        "kind": "OFFICIAL_IMPLEMENTATION_ANNOUNCEMENT",
+        "publisher": "Bank of Communications Co., Ltd.",
+        "announcement_id": "临2025-079",
+        "url": "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=94697c067ebe4427a4165910712df44d",
+        "body_bytes": 149588,
+        "body_sha256": "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6",
+        "co_primary_sse_retrieval": {
+          "locator": "https://www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2025-12-19/601328_20251219_V61A.pdf",
+          "status": "REJECTED_MEDIA_TYPE_HTML_CHALLENGE",
+          "body_bytes": 7373,
+          "body_sha256": "c183dfc0ace2279c520f6dd7bf4ae5337ab03fae5692ea53607458a296af121a"
+        }
+      },
+      "event": {
+        "instrument": "601328.SS",
+        "market": "XSHG",
+        "event_class": "CASH_DIVIDEND",
+        "announcement_date": "2025-12-18",
+        "record_date": "2025-12-24",
+        "ex_date": "2025-12-25",
+        "pay_date": "2025-12-25",
+        "gross_cash_per_share": "0.1563",
+        "currency": "CNY",
+        "entitlement": "A_SHARE_HOLDERS_REGISTERED_WITH_CHINACLEAR_SHANGHAI_AFTER_SSE_RECORD_DATE_CLOSE",
+        "differentiated_distribution": false
+      },
+      "expected": {
+        "event_state": "ACCEPTED",
+        "logical_event_id": "9a5ff0fe100d7f79593c1ca79aa80caca3134e1e01ab78b25bb3383c9e7852b3",
+        "event_revision_id": "2e02b9f67d5561bb5bf199233fb011d58fb98b22b02ea4f91ca0e0d22630ba3a",
+        "coverage_state": "VERIFIED_EVENTS",
+        "coverage_id": "cfc3f55919fe62cb85a0afcefd16dd5d8d7cae29475deefab74c95275ebe3385",
+        "total_return_claim": "KNOWN_EVENT_CORRECTED_PARTIAL",
+        "checked_as_of": "2026-08-31T15:28:12Z"
+      }
+    },
+    {
+      "case": "multiple_dividends_deterministic_order",
+      "source": {
+        "kind": "SYNTHETIC_OFFICIAL_NOTICES",
+        "url": "https://fixture.invalid/multiple"
+      },
+      "events": [
+        {
+          "announcement_id": "SYNTHETIC-B",
+          "ex_date": "2026-07-10"
+        },
+        {
+          "announcement_id": "SYNTHETIC-A",
+          "ex_date": "2025-12-25"
+        }
+      ],
+      "expected": {
+        "ordered_announcement_ids": [
+          "SYNTHETIC-A",
+          "SYNTHETIC-B"
+        ],
+        "coverage_state": "VERIFIED_EVENTS"
+      }
+    },
+    {
+      "case": "explicit_official_correction",
+      "source": {
+        "kind": "SYNTHETIC_OFFICIAL_CORRECTION",
+        "url": "https://fixture.invalid/correction"
+      },
+      "revisions": [
+        {
+          "revision_id": "original",
+          "notice_id": "SYNTHETIC-C-INITIAL",
+          "gross_cash_per_share": "0.10"
+        },
+        {
+          "revision_id": "corrected",
+          "notice_id": "SYNTHETIC-C-CORRECTION",
+          "gross_cash_per_share": "0.11",
+          "explicitly_corrects_notice_id": "SYNTHETIC-C-INITIAL"
+        }
+      ],
+      "expected": {
+        "event_series_key": {
+          "instrument": "SYNTHETIC.SS",
+          "event_class": "CASH_DIVIDEND",
+          "root_notice_id": "SYNTHETIC-C-INITIAL"
+        },
+        "accepted_revision_id": "corrected",
+        "preserved_revision_ids": [
+          "original",
+          "corrected"
+        ]
+      }
+    },
+    {
+      "case": "same_rank_conflict",
+      "source": {
+        "kind": "SYNTHETIC_OFFICIAL_CONFLICT",
+        "url": "https://fixture.invalid/conflict"
+      },
+      "revisions": [
+        {
+          "revision_id": "source-a",
+          "announcement_id": "SYNTHETIC-D",
+          "gross_cash_per_share": "0.10"
+        },
+        {
+          "revision_id": "source-b",
+          "announcement_id": "SYNTHETIC-D",
+          "gross_cash_per_share": "0.12"
+        }
+      ],
+      "expected": {
+        "event_state": "QUARANTINED_CONFLICT",
+        "coverage_state": "UNKNOWN_MISSING",
+        "operator_selection": "FORBIDDEN"
+      }
+    },
+    {
+      "case": "missing_pay_date",
+      "source": {
+        "kind": "SYNTHETIC_INCOMPLETE_NOTICE",
+        "url": "https://fixture.invalid/missing-date"
+      },
+      "event": {
+        "announcement_id": "SYNTHETIC-E",
+        "record_date": "2026-01-05",
+        "ex_date": "2026-01-06",
+        "pay_date": {
+          "state": "UNKNOWN"
+        },
+        "gross_cash_per_share": "0.10"
+      },
+      "expected": {
+        "event_state": "REJECTED_MISSING_REQUIRED_TERM",
+        "coverage_state": "UNKNOWN_MISSING",
+        "accounting": "FORBIDDEN"
+      }
+    }
+  ],
+  "tax_policy": {
+    "policy_family": "CN-INDIVIDUAL-A-2015-101",
+    "policy_version": 1,
+    "checked_at": "2026-08-31T15:28:12Z",
+    "record_date_applicability": "AFTER_2015-09-08",
+    "holding_period_endpoint": "DAY_BEFORE_TRANSFER_SETTLEMENT",
+    "lot_relief": "FIFO_PER_SECURITIES_ACCOUNT",
+    "quantity_basis": "POST_SETTLEMENT_END_OF_DAY_NET_CHANGE",
+    "initial_withholding_for_up_to_one_year": "DEFERRED",
+    "collection": "AFTER_TRANSFER_SETTLEMENT_NEXT_TRADING_DAY_PROCESS",
+    "trade_date_to_settlement_mapping": "UNKNOWN",
+    "multiple_custodian_partition": "CALCULATE_SEPARATELY_WITHIN_ONE_SECURITIES_ACCOUNT",
+    "rounding": {
+      "state": "UNKNOWN",
+      "research_assumption_required": true
+    },
+    "sources": [
+      {
+        "document_id": "财税〔2015〕101号",
+        "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5203902/content.html",
+        "body_bytes": 38314,
+        "body_sha256": "9eadaaa4693282e4a9b65ca5f02b0b2ab4720e6b0cfe6da97be4c1f1faa9845b"
+      },
+      {
+        "document_id": "财税〔2012〕85号",
+        "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5204415/content.html",
+        "body_bytes": 41373,
+        "body_sha256": "5cce33fece6d57c9de662086927a822092b66e0f92cfeec23e59e469e16d04e8"
+      },
+      {
+        "document_id": "ChinaClear dividend-tax operations notice 2012-11-30",
+        "url": "http://www.chinaclear.cn/old_files/1354262382580.pdf",
+        "body_bytes": 116151,
+        "body_sha256": "6ed1598a2bf5d841d95a149b88543eaf8f8375f8acb53e8d8369fb329016b5ae"
+      }
+    ],
+    "boundary_cases": [
+      {
+        "case": "exactly_one_natural_month",
+        "acquisition_date": "2025-11-06",
+        "transfer_settlement_date": "2025-12-06",
+        "actual_tax_burden": "0.20"
+      },
+      {
+        "case": "over_one_month",
+        "acquisition_date": "2025-11-06",
+        "transfer_settlement_date": "2025-12-07",
+        "actual_tax_burden": "0.10"
+      },
+      {
+        "case": "exactly_one_natural_year",
+        "acquisition_date": "2025-01-22",
+        "transfer_settlement_date": "2026-01-22",
+        "actual_tax_burden": "0.10"
+      },
+      {
+        "case": "over_one_year",
+        "acquisition_date": "2025-01-22",
+        "transfer_settlement_date": "2026-01-23",
+        "actual_tax_burden": "0.00"
+      }
+    ]
+  }
+}

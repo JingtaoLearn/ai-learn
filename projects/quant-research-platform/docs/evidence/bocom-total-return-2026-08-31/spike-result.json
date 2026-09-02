@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "spike": "BOCOM_KNOWN_DIVIDEND_TOTAL_RETURN",
+  "predeclared_design": {
+    "preserved_path": "file:///home/jingtao/.hermes/cache/delegation/subagent-summary-2-20260831_151407_376875.txt",
+    "sha256": "ac5ce8b045e3bc8d031a252570fb4cedf447f64cd1bf53d4b38e21ba8e4d17dc"
+  },
+  "inputs": {
+    "baseline_commit": "cf31a8a476a13069e164de2125c353203c93962a",
+    "candidate_commit": "4e70be2aac6779782320810445370e43685ccf92",
+    "dataset_snapshot_id": "562d375baf4f831cca39bd6cc697d454a4aefd9593a0710153325b14d4ff0100",
+    "dataset_parquet_sha256": "902ee9aa7af17ba4bd7fb618cbf40232e18b19bcafe4d65116d95e8a27833725",
+    "dataset_manifest_sha256": "51c1a3e3632b327fb036b6a088de0b61dd23edf27aa2f6d8555695af0ba520ec",
+    "interval": {
+      "start": "2025-08-15",
+      "end": "2026-06-30"
+    },
+    "baseline_run_binding": {
+      "submission_config_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/inputs/run-A-main-price.json",
+      "submission_config_file_sha256": "e7105916285917fb47d0b0f0b73a7f5425d55f85d812666816f6d7e0e3ab05d4",
+      "canonical_config_identity_sha256": "b63c8c3cf3a67990b93d9f44a9730a686b555af79e4d5571cab4b5032f47659b",
+      "emitted_config_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/runs/A-main-price/58ffff17338173dd01374d3d156e36a1fe11554dcbec75299edcc0469d04ef03/config.json",
+      "emitted_config_file_sha256": "464cb1e2fbdec7939f6566acbf909105019bff1079d693fcfca75583bb5728ba",
+      "run_manifest_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/runs/A-main-price/58ffff17338173dd01374d3d156e36a1fe11554dcbec75299edcc0469d04ef03/run_manifest.json",
+      "run_manifest_file_sha256": "4da03c500402724e554a87d510fbea54a4d22cb370fe33ae2bdf7d6703bd43eb",
+      "run_id": "58ffff17338173dd01374d3d156e36a1fe11554dcbec75299edcc0469d04ef03"
+    },
+    "candidate_price_run_binding": {
+      "submission_config_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/inputs/run-B-checkpoint-price.json",
+      "submission_config_file_sha256": "4cf30852241f087905f0ffd68f7ad63b32c746bc8ef7bb5d718daa175e885a72",
+      "canonical_config_identity_sha256": "4176840afc61c79cccaab482be6e819b0a5fc38b1af545704cafe744d5b24e03",
+      "emitted_config_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/runs/B-checkpoint-price/79fb142dd893eb4f596c3aef11f06ecd8cc988760d94b1268ba7185919a8e5dc/config.json",
+      "emitted_config_file_sha256": "a2f9327b4d2f7327a861396126a0b1091aeb38d8ff8b8e2ddc5c293d2fd274f8",
+      "run_manifest_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/runs/B-checkpoint-price/79fb142dd893eb4f596c3aef11f06ecd8cc988760d94b1268ba7185919a8e5dc/run_manifest.json",
+      "run_manifest_file_sha256": "03244043e903609b68b37f238d88f859884e1d510255cb3d9ac64c57440c8a0b",
+      "run_id": "79fb142dd893eb4f596c3aef11f06ecd8cc988760d94b1268ba7185919a8e5dc"
+    },
+    "event_announcement_id": "临2025-079",
+    "event_artifact_sha256": "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6"
+  },
+  "executed_results": {
+    "price_return_control": {
+      "status": "PASS",
+      "rows": 209,
+      "common_cell_differences": 0,
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/comparison/A-B-price-return-compatibility.json",
+      "sha256": "896f82a3849a222bba0c4287856ac9bf0730a9b2166d5794c6767232e69408f3"
+    },
+    "known_event_diagnostic": {
+      "status": "CANDIDATE_GUARD_FAILED_DIAGNOSTIC_ONLY",
+      "ordinary_run_error": "total-return reconciliation failed: ['trades']",
+      "unattributed_float_to_fen_delta_cny": "0.002651",
+      "run_1_sha256": "21f98ca562d336ad5acaeb2685aac169eeffebe65ca5c9867ae4a34e51b3e32e",
+      "run_2_sha256": "21f98ca562d336ad5acaeb2685aac169eeffebe65ca5c9867ae4a34e51b3e32e"
+    },
+    "independent_integer_fen_oracle": {
+      "status": "PASS",
+      "preserved_path": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/oracle/known-event-oracle.json",
+      "sha256": "76183fdafc332e3e6bc662fed45dac6199c5a0763da9b8ab1e52a4b02f465391",
+      "strategy_final_equity_cny": "87377.93",
+      "buy_hold_final_equity_cny": "87632.78",
+      "strategy_gross_dividend_cny": "2125.68",
+      "strategy_dividend_tax_cny": "212.57"
+    },
+    "decision_effect": {
+      "price_return_strategy_minus_control_cny": "-185.94",
+      "known_event_corrected_strategy_minus_control_cny": "-254.85",
+      "relative_change_cny": "-68.91",
+      "conclusion": "NO_EDGE_REINFORCED"
+    }
+  },
+  "verdict": {
+    "value": "PARTIAL",
+    "accepted_constraint": "Known-event accounting value and cent-level totals are demonstrated; complete event coverage, official rounding, settlement-time tax semantics, exact reconciliation, and control ledgers are not.",
+    "candidate_disposition": "REJECTED_NOT_MERGEABLE",
+    "preserved_report": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/VERDICT.md",
+    "report_sha256": "b5eb505510a253e1d20c6815e440c2d14374f5ebce1f0d051b0e6a6e673ffc14",
+    "preserved_json": "file:///home/jingtao/quant-research-spikes/bocom-total-return-186/verdict.json",
+    "json_sha256": "1219da362b147a664d79f790fbde165bfae56e08e442335f0bffa420e9e83867"
+  },
+  "production_changes": false
+}
