@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -17,6 +17,7 @@ from .model import (
     AdvanceResult,
     CapabilityRequest,
     CapabilitySnapshot,
+    HandoffDeliveryCommand,
     HandoffExecutionAttestation,
     HandoffPackage,
     HandoffRetryCommand,
@@ -64,8 +65,38 @@ class DecisionAuthenticator(Protocol):
 
 class _ExternalEffects(Protocol):
     executor_id: str
+    adapter_id: str
+    source_context: HandoffSourceContext | None
+    watchdog_authorities: tuple[WatchdogAuthority, ...]
+    watchdog_proof_verifier: _WatchdogProofVerifier | None
+    max_route_attempts: int
 
     def attempt(self, operation: _MattInvocation) -> object: ...
+
+    def observe_capabilities(self, request: CapabilityRequest) -> CapabilitySnapshot: ...
+
+    def plan_route(self, request: RouteRequest) -> RoutePlan: ...
+
+    def dispatch(self, handoff: object, invocation: object) -> HandoffExecutionAttestation: ...
+
+    def _next_handoff_control(
+        self, project_id: str
+    ) -> HandoffDeliveryCommand | HandoffRetryCommand | None: ...
+
+
+class _WatchdogProofVerifier(Protocol):
+    """Independent trust boundary for externally attested budget enforcement."""
+
+    verifier_id: str
+    provenance: Mapping[str, Any]
+
+    def verify(
+        self,
+        *,
+        authority: Mapping[str, Any],
+        expected_claims: Mapping[str, Any],
+        proof: Mapping[str, Any],
+    ) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -99,32 +130,6 @@ class _MattExecutionAttestation:
     artifact: Mapping[str, Any]
     artifact_digest: str
     completion_classification: str
-
-
-class TrustedRouteAdapter(Protocol):
-    adapter_id: str
-    executor_id: str
-
-    def observe_capabilities(self, request: CapabilityRequest) -> CapabilitySnapshot: ...
-
-    def plan_route(self, request: RouteRequest) -> RoutePlan: ...
-
-    def dispatch(self, handoff: object, invocation: object) -> HandoffExecutionAttestation: ...
-
-
-class WatchdogProofVerifier(Protocol):
-    """Independent trust boundary for externally attested budget enforcement."""
-
-    verifier_id: str
-    provenance: Mapping[str, Any]
-
-    def verify(
-        self,
-        *,
-        authority: Mapping[str, Any],
-        expected_claims: Mapping[str, Any],
-        proof: Mapping[str, Any],
-    ) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -190,42 +195,86 @@ class WorkflowKernel:
         *,
         decision_authenticator: DecisionAuthenticator | None = None,
         external_effects: _ExternalEffects | None = None,
-        route_adapter: TrustedRouteAdapter | None = None,
-        source_context: HandoffSourceContext | None = None,
-        watchdog_authorities: tuple[WatchdogAuthority, ...] = (),
-        watchdog_proof_verifier: WatchdogProofVerifier | None = None,
-        max_route_attempts: int = 1,
         clock: Clock | None = None,
     ) -> None:
         self._store = ControlStore(database_path)
         self._authenticator = decision_authenticator or RejectingAuthenticator()
         self._external_effects = external_effects
-        self._matt_executor_id = (
-            external_effects.executor_id if external_effects is not None else None
-        )
+        try:
+            self._matt_executor_id = (
+                external_effects.executor_id if external_effects is not None else None
+            )
+        except Exception as error:
+            raise WorkflowError(
+                "INVALID_MATT_EXECUTOR", "trusted executor identity is unavailable"
+            ) from error
         if self._matt_executor_id is not None and (
             not isinstance(self._matt_executor_id, str) or not self._matt_executor_id.strip()
         ):
             raise WorkflowError("INVALID_MATT_EXECUTOR", "trusted executor identity is invalid")
-        self._route_adapter = route_adapter
-        self._route_adapter_id = route_adapter.adapter_id if route_adapter is not None else None
-        self._route_executor_id = route_adapter.executor_id if route_adapter is not None else None
-        if route_adapter is not None and external_effects is not None:
+        route_methods = (
+            "observe_capabilities",
+            "plan_route",
+            "dispatch",
+        )
+        routed_markers = external_effects is not None and (
+            hasattr(external_effects, "adapter_id")
+            or any(hasattr(external_effects, name) for name in route_methods)
+        )
+        if routed_markers and not all(
+            callable(getattr(external_effects, name, None)) for name in route_methods
+        ):
             raise WorkflowError(
-                "INVALID_ROUTE_ADAPTER", "one trusted adapter must own routed execution"
+                "INVALID_ROUTE_ADAPTER", "routed ExternalEffects capabilities are incomplete"
             )
-        if route_adapter is not None and any(
+        self._route_adapter = external_effects if routed_markers else None
+        route_adapter = self._route_adapter
+        try:
+            self._route_adapter_id = route_adapter.adapter_id if route_adapter is not None else None
+        except Exception as error:
+            raise WorkflowError(
+                "INVALID_ROUTE_ADAPTER", "trusted route adapter identity is unavailable"
+            ) from error
+        self._route_executor_id = (
+            self._matt_executor_id if self._route_adapter is not None else None
+        )
+        if self._route_adapter is not None and any(
             not isinstance(value, str) or not value.strip()
             for value in (self._route_adapter_id, self._route_executor_id)
         ):
             raise WorkflowError(
                 "INVALID_ROUTE_ADAPTER", "trusted route adapter identity is invalid"
             )
+        try:
+            source_context = (
+                getattr(external_effects, "source_context", None)
+                if self._route_adapter is not None
+                else None
+            )
+            watchdog_authorities = (
+                getattr(external_effects, "watchdog_authorities", ())
+                if self._route_adapter is not None
+                else ()
+            )
+            watchdog_proof_verifier = (
+                getattr(external_effects, "watchdog_proof_verifier", None)
+                if self._route_adapter is not None
+                else None
+            )
+            max_route_attempts = (
+                getattr(external_effects, "max_route_attempts", 1)
+                if self._route_adapter is not None
+                else 1
+            )
+        except Exception as error:
+            raise WorkflowError(
+                "INVALID_ROUTE_ADAPTER", "trusted routed configuration is unavailable"
+            ) from error
         self._source_context = _freeze_source_context(source_context)
         self._watchdog_authorities = _freeze_watchdog_authorities(watchdog_authorities)
         self._watchdog_proof_verifier = watchdog_proof_verifier
         self._watchdog_verifier_identity = _freeze_watchdog_verifier(watchdog_proof_verifier)
-        if watchdog_proof_verifier is not None and watchdog_proof_verifier is route_adapter:
+        if watchdog_proof_verifier is not None and watchdog_proof_verifier is external_effects:
             raise WorkflowError(
                 "INVALID_WATCHDOG_VERIFIER",
                 "watchdog verifier must be a separate trusted object from the route adapter",
@@ -619,6 +668,11 @@ class WorkflowKernel:
 
     def advance(self, project_id: str) -> AdvanceResult:
         """Run one bounded lifecycle transition for the Workflow Project."""
+        control = self._take_handoff_control(project_id)
+        if isinstance(control, HandoffDeliveryCommand):
+            return self._deliver_handoff(control)
+        if isinstance(control, HandoffRetryCommand):
+            return self._retry_handoff(control)
         recorded_at = self._clock.now()
         action_id = str(uuid.uuid4())
         action_envelope_id = str(uuid.uuid4())
@@ -756,15 +810,57 @@ class WorkflowKernel:
             raise WorkflowError("LEDGER_INTEGRITY", "advance produced no durable transition")
         return created
 
-    def deliver_handoff(
-        self, project_id: str, *, delivery_id: str, idempotency_key: str
-    ) -> AdvanceResult:
+    def _take_handoff_control(
+        self, project_id: str
+    ) -> HandoffDeliveryCommand | HandoffRetryCommand | None:
+        external_effects = self._route_adapter
+        if external_effects is None:
+            return None
+        control_input = getattr(external_effects, "_next_handoff_control", None)
+        if control_input is None:
+            return None
+        if not callable(control_input):
+            raise WorkflowError(
+                "INVALID_HANDOFF_CONTROL", "trusted Handoff control input is not callable"
+            )
+        try:
+            returned = control_input(project_id)
+        except WorkflowError:
+            raise
+        except Exception as error:
+            raise WorkflowError(
+                "HANDOFF_CONTROL_FAILED", "trusted Handoff control input failed"
+            ) from error
+        if returned is None:
+            return None
+        if isinstance(returned, HandoffDeliveryCommand):
+            control = _freeze_delivery_command(returned)
+        elif isinstance(returned, HandoffRetryCommand):
+            payload, _, _ = _freeze_retry_command(returned)
+            control = HandoffRetryCommand(
+                command_id=payload["command_id"],
+                project_id=payload["project_id"],
+                handoff_id=payload["handoff_id"],
+                expected_attempt_number=payload["expected_attempt_number"],
+                max_attempts=payload["max_attempts"],
+                reason=payload["reason"],
+            )
+        else:
+            raise WorkflowError(
+                "INVALID_HANDOFF_CONTROL", "trusted Handoff control input has an invalid type"
+            )
+        if control.project_id != project_id:
+            raise WorkflowError(
+                "HANDOFF_CONTROL_PROJECT_MISMATCH",
+                "trusted Handoff control input names a different project",
+            )
+        return control
+
+    def _deliver_handoff(self, command: HandoffDeliveryCommand) -> AdvanceResult:
         """Replay only a verified receipt for an exact canonical delivery identity."""
-        if any(
-            not isinstance(value, str) or not value.strip()
-            for value in (project_id, delivery_id, idempotency_key)
-        ):
-            raise WorkflowError("INVALID_DELIVERY_IDENTITY", "delivery identity is incomplete")
+        project_id = command.project_id
+        delivery_id = command.delivery_id
+        idempotency_key = command.idempotency_key
         try:
             with self._store.reader() as connection:
                 current = _current_intent_row(connection, project_id)
@@ -802,6 +898,7 @@ class WorkflowKernel:
                     raise WorkflowError("LEDGER_INTEGRITY", "Handoff Action Envelope is missing")
                 invocation = _verify_matt_invocation(envelope)
                 handoff = _verify_handoff(handoff_row, envelope, invocation, self._source_context)
+                _verify_handoff_events(connection, handoff)
                 if handoff.intent_binding != _binding_from_row(current):
                     raise WorkflowError("STALE_INTENT", "Handoff is not bound to current intent")
                 return self._verified_routed_result(connection, current, envelope, handoff)
@@ -897,7 +994,7 @@ class WorkflowKernel:
             route_receipt_digest=receipt["receipt_digest"],
         )
 
-    def retry_handoff(self, command: HandoffRetryCommand) -> AdvanceResult:
+    def _retry_handoff(self, command: HandoffRetryCommand) -> AdvanceResult:
         command_payload, command_json, command_digest = _freeze_retry_command(command)
         replay_delivery: tuple[str, str] | None = None
         pending: _PendingRoutedExecution | None = None
@@ -1021,7 +1118,6 @@ class WorkflowKernel:
                         original.handoff_id,
                         len(events) + 1,
                         "RETRY_REQUESTED",
-                        original.handoff_package_digest,
                         recorded_at,
                     )
                     connection.execute(
@@ -1053,10 +1149,12 @@ class WorkflowKernel:
         except sqlite3.DatabaseError as error:
             raise WorkflowError("LEDGER_ERROR", "Handoff retry transaction failed") from error
         if replay_delivery is not None:
-            return self.deliver_handoff(
-                command.project_id,
-                delivery_id=replay_delivery[0],
-                idempotency_key=replay_delivery[1],
+            return self._deliver_handoff(
+                HandoffDeliveryCommand(
+                    project_id=command.project_id,
+                    delivery_id=replay_delivery[0],
+                    idempotency_key=replay_delivery[1],
+                )
             )
         if pending is None:
             raise WorkflowError("LEDGER_INTEGRITY", "Handoff retry produced no durable attempt")
@@ -1235,7 +1333,7 @@ class WorkflowKernel:
                 original.expires_at,
             ),
         )
-        _append_handoff_event(connection, handoff_id, 1, "OFFERED", package_digest, recorded_at)
+        _append_handoff_event(connection, handoff_id, 1, "OFFERED", recorded_at)
         stored = connection.execute(
             "SELECT h.*, a.attempt_number, "
             "a.parent_handoff_id AS attempt_parent_handoff_id, "
@@ -1963,7 +2061,7 @@ class WorkflowKernel:
                 expires_at,
             ),
         )
-        _append_handoff_event(connection, handoff_id, 1, "OFFERED", package_digest, recorded_at)
+        _append_handoff_event(connection, handoff_id, 1, "OFFERED", recorded_at)
         stored = connection.execute(
             "SELECT h.*, a.attempt_number, "
             "a.parent_handoff_id AS attempt_parent_handoff_id, "
@@ -2004,19 +2102,14 @@ class WorkflowKernel:
                 ).fetchone()
                 if envelope is None:
                     raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                event_types = _verify_handoff_events(connection, pending.handoff)
                 _assert_live_route_capabilities(
                     connection,
                     _frozen_route(envelope),
                     claimed_at,
                     envelope["action_envelope_id"],
                 )
-                events = connection.execute(
-                    "SELECT event_type FROM handoff_events WHERE handoff_id = ? "
-                    "ORDER BY event_number",
-                    (pending.handoff.handoff_id,),
-                ).fetchall()
-                event_types = [event[0] for event in events]
-                if event_types == ["OFFERED", "ACCEPTED", "RUNNING"]:
+                if event_types == ("OFFERED", "ACCEPTED", "RUNNING"):
                     if connection.execute(
                         "SELECT 1 FROM route_receipts WHERE handoff_id = ?",
                         (pending.handoff.handoff_id,),
@@ -2030,12 +2123,11 @@ class WorkflowKernel:
                         pending.handoff.handoff_id,
                         4,
                         "AMBIGUOUS",
-                        pending.handoff.handoff_package_digest,
                         claimed_at,
                     )
                     recovered_ambiguous = True
-                elif event_types != ["OFFERED"]:
-                    if event_types[-1:] in (["FAILED"], ["AMBIGUOUS"]):
+                elif event_types != ("OFFERED",):
+                    if event_types[-1:] in (("FAILED",), ("AMBIGUOUS",)):
                         raise WorkflowError(
                             "HANDOFF_RETRY_REQUIRED",
                             "failed Handoff requires an explicit bounded retry command",
@@ -2049,7 +2141,6 @@ class WorkflowKernel:
                         pending.handoff.handoff_id,
                         2,
                         "ACCEPTED",
-                        pending.handoff.handoff_package_digest,
                         claimed_at,
                     )
                     _append_handoff_event(
@@ -2057,7 +2148,6 @@ class WorkflowKernel:
                         pending.handoff.handoff_id,
                         3,
                         "RUNNING",
-                        pending.handoff.handoff_package_digest,
                         claimed_at,
                     )
         except WorkflowError:
@@ -2087,6 +2177,12 @@ class WorkflowKernel:
                 ).fetchone()
                 if envelope is None:
                     raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                if _verify_handoff_events(connection, pending.handoff) != (
+                    "OFFERED",
+                    "ACCEPTED",
+                    "RUNNING",
+                ):
+                    raise WorkflowError("LEDGER_INTEGRITY", "dispatch Handoff lineage is invalid")
                 _assert_live_route_capabilities(
                     connection,
                     _frozen_route(envelope),
@@ -2106,7 +2202,7 @@ class WorkflowKernel:
                     )
             raise
         try:
-            attestation = adapter.dispatch(pending.handoff, pending.invocation)
+            returned = adapter.dispatch(pending.handoff, pending.invocation)
         except Exception as error:
             failed_at = self._clock.now()
             self._record_matt_observation(
@@ -2120,10 +2216,7 @@ class WorkflowKernel:
             raise WorkflowError("ROUTE_EXECUTION_FAILED", "trusted route adapter failed") from error
         returned_at = self._clock.now()
         try:
-            if not isinstance(attestation, HandoffExecutionAttestation):
-                raise WorkflowError(
-                    "ROUTE_RECEIPT_REJECTED", "trusted route adapter returned no attestation"
-                )
+            attestation = _freeze_handoff_execution_attestation(returned)
             matt_attestation = _coerce_matt_attestation(attestation.matt)
             matt_attestation_json = _validated_attestation_json(
                 matt_attestation, pending.invocation, returned_at
@@ -2136,7 +2229,7 @@ class WorkflowKernel:
                 error_type=None,
                 observed_at=returned_at,
             )
-            self._record_rejected_attestation(pending.handoff, attestation, error)
+            self._record_rejected_attestation(pending.handoff, returned, error)
             raise
         matt_attestation_digest = _digest(matt_attestation_json)
         self._record_matt_observation(
@@ -2156,6 +2249,12 @@ class WorkflowKernel:
                 ).fetchone()
                 if envelope is None:
                     raise WorkflowError("LEDGER_INTEGRITY", "routed Action Envelope is missing")
+                if _verify_handoff_events(connection, pending.handoff) != (
+                    "OFFERED",
+                    "ACCEPTED",
+                    "RUNNING",
+                ):
+                    raise WorkflowError("LEDGER_INTEGRITY", "result Handoff lineage is invalid")
                 route = _frozen_route(envelope)
                 _assert_live_route_capabilities(
                     connection, route, accepted_at, envelope["action_envelope_id"]
@@ -2227,6 +2326,12 @@ class WorkflowKernel:
                     != pending.handoff
                 ):
                     raise WorkflowError("LEDGER_INTEGRITY", "frozen Handoff changed")
+                if _verify_handoff_events(connection, pending.handoff) != (
+                    "OFFERED",
+                    "ACCEPTED",
+                    "RUNNING",
+                ):
+                    raise WorkflowError("LEDGER_INTEGRITY", "accepted Handoff lineage is invalid")
                 route = _frozen_route(envelope)
                 if route is None:
                     raise WorkflowError("LEDGER_INTEGRITY", "routed Action lost its route")
@@ -2334,7 +2439,6 @@ class WorkflowKernel:
                     pending.handoff.handoff_id,
                     4,
                     "RESULT_RECORDED",
-                    pending.handoff.handoff_package_digest,
                     accepted_at,
                 )
                 method = _frozen_matt_method(envelope)
@@ -2422,9 +2526,16 @@ class WorkflowKernel:
                     pending.handoff.handoff_id,
                     5,
                     "VERIFIED",
-                    pending.handoff.handoff_package_digest,
                     accepted_at,
                 )
+                if _verify_handoff_events(connection, pending.handoff) != (
+                    "OFFERED",
+                    "ACCEPTED",
+                    "RUNNING",
+                    "RESULT_RECORDED",
+                    "VERIFIED",
+                ):
+                    raise WorkflowError("LEDGER_INTEGRITY", "verified Handoff lineage is invalid")
                 accepted = connection.execute(
                     _ENVELOPE_SELECT + "WHERE e.action_envelope_id = ?",
                     (stored_invocation.action_envelope_id,),
@@ -2501,19 +2612,14 @@ class WorkflowKernel:
     ) -> None:
         try:
             with self._store.writer() as connection:
-                events = connection.execute(
-                    "SELECT event_type FROM handoff_events WHERE handoff_id = ? "
-                    "ORDER BY event_number",
-                    (handoff.handoff_id,),
-                ).fetchall()
-                if any(event[0] == event_type for event in events):
+                events = _verify_handoff_events(connection, handoff)
+                if event_type in events:
                     return
                 _append_handoff_event(
                     connection,
                     handoff.handoff_id,
                     len(events) + 1,
                     event_type,
-                    handoff.handoff_package_digest,
                     recorded_at,
                     details={"failure": dict(failure)} if failure is not None else None,
                 )
@@ -3953,14 +4059,27 @@ def _append_handoff_event(
     handoff_id: str,
     event_number: int,
     event_type: str,
-    package_digest: str,
     recorded_at: str,
     *,
     details: Mapping[str, Any] | None = None,
 ) -> None:
+    handoff = connection.execute(
+        "SELECT handoff_id, handoff_package_digest, constitution_revision, goal_revision, "
+        "operating_profile_revision, active_intent_digest FROM handoffs WHERE handoff_id = ?",
+        (handoff_id,),
+    ).fetchone()
+    if handoff is None:
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff event has no immutable Handoff")
+    binding = _binding_from_artifact_row(handoff)
+    package_digest = handoff["handoff_package_digest"]
+    if not _is_sha256(package_digest):
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff event package digest is invalid")
     payload = {
+        "event_number": event_number,
         "event_type": event_type,
+        "handoff_id": handoff_id,
         "handoff_package_digest": package_digest,
+        "intent_binding": asdict(binding),
         "recorded_at": recorded_at,
     }
     if details is not None:
@@ -3968,28 +4087,116 @@ def _append_handoff_event(
     event_json = _canonical_json(payload)
     connection.execute(
         "INSERT INTO handoff_events "
-        "(handoff_id, event_number, event_type, event_json, event_digest, recorded_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (handoff_id, event_number, event_type, event_json, _digest(event_json), recorded_at),
+        "(handoff_id, event_number, event_type, event_json, event_digest, "
+        "constitution_revision, goal_revision, operating_profile_revision, "
+        "active_intent_digest, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            handoff_id,
+            event_number,
+            event_type,
+            event_json,
+            _digest(event_json),
+            binding.constitution_revision,
+            binding.goal_revision,
+            binding.operating_profile_revision,
+            binding.active_intent_digest,
+            recorded_at,
+        ),
     )
+
+
+def _canonical_utc_datetime(value: object, name: str) -> datetime:
+    if not isinstance(value, str):
+        raise WorkflowError("LEDGER_INTEGRITY", f"{name} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise WorkflowError("LEDGER_INTEGRITY", f"{name} is invalid") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0) or parsed.isoformat() != value:
+        raise WorkflowError("LEDGER_INTEGRITY", f"{name} is not canonical UTC")
+    return parsed
 
 
 def _verify_handoff_events(
     connection: sqlite3.Connection, handoff: HandoffPackage
 ) -> tuple[str, ...]:
+    handoff_index = connection.execute(
+        "SELECT handoff_id, handoff_package_digest, constitution_revision, goal_revision, "
+        "operating_profile_revision, active_intent_digest, offered_at FROM handoffs "
+        "WHERE handoff_id = ?",
+        (handoff.handoff_id,),
+    ).fetchone()
+    if (
+        handoff_index is None
+        or handoff_index["handoff_id"] != handoff.handoff_id
+        or handoff_index["handoff_package_digest"] != handoff.handoff_package_digest
+        or _binding_from_artifact_row(handoff_index) != handoff.intent_binding
+    ):
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff event index does not match Handoff")
+    offered_at = _canonical_utc_datetime(handoff_index["offered_at"], "Handoff offered_at")
     rows = connection.execute(
-        "SELECT event_number, event_type, event_json, event_digest, recorded_at "
-        "FROM handoff_events WHERE handoff_id = ? ORDER BY event_number",
+        "SELECT handoff_id, event_number, event_type, event_json, event_digest, "
+        "constitution_revision, goal_revision, operating_profile_revision, "
+        "active_intent_digest, recorded_at FROM handoff_events WHERE handoff_id = ? "
+        "ORDER BY event_number",
         (handoff.handoff_id,),
     ).fetchall()
+    allowed_after: dict[str | None, set[str]] = {
+        None: {"OFFERED"},
+        "OFFERED": {
+            "ACCEPTED",
+            "REJECTED",
+            "BLOCKED_EXTERNAL",
+            "SUPERSEDED",
+            "FAILED",
+            "AMBIGUOUS",
+            "EXPIRED",
+        },
+        "ACCEPTED": {
+            "RUNNING",
+            "REJECTED",
+            "BLOCKED_EXTERNAL",
+            "SUPERSEDED",
+            "FAILED",
+            "AMBIGUOUS",
+            "EXPIRED",
+        },
+        "RUNNING": {
+            "RESULT_RECORDED",
+            "REJECTED",
+            "BLOCKED_EXTERNAL",
+            "SUPERSEDED",
+            "FAILED",
+            "AMBIGUOUS",
+            "EXPIRED",
+        },
+        "RESULT_RECORDED": {
+            "VERIFIED",
+            "REJECTED",
+            "BLOCKED_EXTERNAL",
+            "SUPERSEDED",
+            "FAILED",
+            "AMBIGUOUS",
+            "EXPIRED",
+        },
+        "FAILED": {"RETRY_REQUESTED"},
+        "AMBIGUOUS": {"RETRY_REQUESTED"},
+    }
     event_types: list[str] = []
+    event_times: list[datetime] = []
+    previous: str | None = None
     for expected_number, row in enumerate(rows, 1):
         payload = _verify_canonical_artifact(
             row["event_json"], row["event_digest"], "Handoff event"
         )
+        indexed_binding = _binding_from_artifact_row(row)
+        payload_binding = _binding_from_payload(payload, "Handoff event")
         expected_payload: dict[str, Any] = {
+            "event_number": row["event_number"],
             "event_type": row["event_type"],
-            "handoff_package_digest": handoff.handoff_package_digest,
+            "handoff_id": row["handoff_id"],
+            "handoff_package_digest": handoff_index["handoff_package_digest"],
+            "intent_binding": asdict(indexed_binding),
             "recorded_at": row["recorded_at"],
         }
         failure = payload.get("failure")
@@ -4022,10 +4229,56 @@ def _verify_handoff_events(
             ):
                 raise WorkflowError("LEDGER_INTEGRITY", "Handoff failure evidence is invalid")
             expected_payload["failure"] = failure
-        if row["event_number"] != expected_number or payload != expected_payload:
+        event_type = row["event_type"]
+        event_time = _canonical_utc_datetime(row["recorded_at"], "Handoff event recorded_at")
+        if (
+            row["event_number"] != expected_number
+            or row["handoff_id"] != handoff.handoff_id
+            or indexed_binding != handoff.intent_binding
+            or payload_binding != indexed_binding
+            or payload != expected_payload
+            or event_type not in allowed_after.get(previous, set())
+            or (event_times and event_time < event_times[-1])
+            or (expected_number == 1 and event_time != offered_at)
+        ):
             raise WorkflowError("LEDGER_INTEGRITY", "Handoff event fields are inconsistent")
-        event_types.append(row["event_type"])
-    if not event_types or event_types[0] != "OFFERED" or len(event_types) != len(set(event_types)):
+        previous = event_type
+        event_types.append(event_type)
+        event_times.append(event_time)
+    receipt_rows = connection.execute(
+        "SELECT receipt_json, receipt_digest, accepted_at FROM route_receipts WHERE handoff_id = ?",
+        (handoff.handoff_id,),
+    ).fetchall()
+    terminal_events = [
+        event_type for event_type in event_types if event_type in {"RESULT_RECORDED", "VERIFIED"}
+    ]
+    if terminal_events:
+        if terminal_events != ["RESULT_RECORDED", "VERIFIED"] or len(receipt_rows) != 1:
+            raise WorkflowError("LEDGER_INTEGRITY", "Handoff receipt lifecycle is invalid")
+        receipt = receipt_rows[0]
+        receipt_payload = _verify_canonical_artifact(
+            receipt["receipt_json"], receipt["receipt_digest"], "Route Receipt"
+        )
+        if receipt_payload.get("accepted_at") != receipt["accepted_at"]:
+            raise WorkflowError("LEDGER_INTEGRITY", "Route Receipt acceptance time changed")
+        accepted_at = _canonical_utc_datetime(receipt["accepted_at"], "Route Receipt accepted_at")
+        if any(
+            event_time != accepted_at
+            for event_type, event_time in zip(event_types, event_times, strict=True)
+            if event_type in {"RESULT_RECORDED", "VERIFIED"}
+        ) or any(
+            event_time > accepted_at
+            for event_type, event_time in zip(event_types, event_times, strict=True)
+            if event_type not in {"RESULT_RECORDED", "VERIFIED"}
+        ):
+            raise WorkflowError("LEDGER_INTEGRITY", "Handoff receipt time is inconsistent")
+    elif receipt_rows:
+        raise WorkflowError("LEDGER_INTEGRITY", "Handoff receipt lifecycle is invalid")
+    if (
+        not event_types
+        or len(event_types) != len(set(event_types))
+        or event_types[-1] in {"ACCEPTED", "RESULT_RECORDED"}
+    ):
         raise WorkflowError("LEDGER_INTEGRITY", "Handoff event lineage is invalid")
     return tuple(event_types)
 
@@ -4773,6 +5026,26 @@ def _coerce_matt_attestation(value: object) -> _MattExecutionAttestation:
         ) from error
 
 
+def _freeze_handoff_execution_attestation(value: object) -> HandoffExecutionAttestation:
+    if not isinstance(value, HandoffExecutionAttestation) or not isinstance(
+        value.route, RouteExecutionAttestation
+    ):
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "trusted route adapter returned no attestation"
+        )
+    try:
+        payload = json.loads(_canonical_json(asdict(value)))
+        return HandoffExecutionAttestation(
+            acceptance=payload["acceptance"],
+            route=RouteExecutionAttestation(**payload["route"]),
+            matt=payload["matt"],
+        )
+    except (KeyError, TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "ROUTE_RECEIPT_REJECTED", "route attestation is not canonical evidence"
+        ) from error
+
+
 def _validated_attestation_json(
     attestation: _MattExecutionAttestation,
     invocation: _MattInvocation,
@@ -5166,6 +5439,21 @@ def _freeze_retry_command(
     return payload, command_json, _digest(command_json)
 
 
+def _freeze_delivery_command(command: HandoffDeliveryCommand) -> HandoffDeliveryCommand:
+    if not isinstance(command, HandoffDeliveryCommand) or any(
+        not isinstance(value, str) or not value.strip()
+        for value in (command.project_id, command.delivery_id, command.idempotency_key)
+    ):
+        raise WorkflowError("INVALID_DELIVERY_IDENTITY", "delivery identity is incomplete")
+    try:
+        payload = json.loads(_canonical_json(asdict(command)))
+        return HandoffDeliveryCommand(**payload)
+    except (TypeError, ValueError, WorkflowError) as error:
+        raise WorkflowError(
+            "INVALID_DELIVERY_IDENTITY", "delivery identity is not canonical"
+        ) from error
+
+
 def _verify_retry_command_row(
     row: Mapping[str, Any] | sqlite3.Row,
     expected_payload: Mapping[str, Any],
@@ -5229,7 +5517,7 @@ def _freeze_watchdog_authorities(
 
 
 def _freeze_watchdog_verifier(
-    verifier: WatchdogProofVerifier | None,
+    verifier: _WatchdogProofVerifier | None,
 ) -> Mapping[str, Any] | None:
     if verifier is None:
         return None

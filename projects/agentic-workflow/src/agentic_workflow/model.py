@@ -115,6 +115,13 @@ class HandoffSourceContext:
 
 
 @dataclass(frozen=True)
+class HandoffDeliveryCommand:
+    project_id: str
+    delivery_id: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class HandoffRetryCommand:
     command_id: str
     project_id: str

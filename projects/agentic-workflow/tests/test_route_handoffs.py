@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import sqlite3
 from collections.abc import Callable
@@ -11,19 +12,43 @@ from typing import Protocol
 
 import pytest
 
-from agentic_workflow import (
+import agentic_workflow
+from agentic_workflow import UserDecision, WorkflowError, WorkflowKernel
+from agentic_workflow.model import (
     CapabilitySnapshot,
+    HandoffDeliveryCommand,
     HandoffExecutionAttestation,
     HandoffPackage,
     HandoffRetryCommand,
     HandoffSourceContext,
     RouteExecutionAttestation,
     RoutePlan,
-    UserDecision,
     WatchdogAuthority,
-    WorkflowError,
-    WorkflowKernel,
 )
+
+
+def test_connector_types_and_controls_are_not_public_api() -> None:
+    assert agentic_workflow.__all__ == [
+        "WorkflowKernel",
+        "UserDecision",
+        "RecordReceipt",
+        "AdvanceResult",
+        "ProjectView",
+        "IntentBinding",
+        "WorkflowError",
+    ]
+    assert list(inspect.signature(WorkflowKernel).parameters) == [
+        "database_path",
+        "decision_authenticator",
+        "external_effects",
+        "clock",
+    ]
+    assert {
+        name
+        for name, member in inspect.getmembers(WorkflowKernel, predicate=callable)
+        if not name.startswith("_")
+    } == {"advance", "record", "view"}
+
 
 PROFILE = json.loads(
     (Path(__file__).parents[1] / "config" / "operating-profile.v1.json").read_text()
@@ -192,15 +217,63 @@ def candidate_digest(value: dict[str, object]) -> str:
     return digest(value)
 
 
-class ScriptedRouteAdapter:
+class ScriptedExternalEffects:
     adapter_id = "trusted-route-adapter"
     executor_id = "trusted-subagent-executor"
 
-    def __init__(self, selected: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        selected: dict[str, object] | None = None,
+        *,
+        source_context: HandoffSourceContext | None = SOURCE_CONTEXT,
+        watchdog_authorities: tuple[WatchdogAuthority, ...] = (),
+        watchdog_proof_verifier: object | None = None,
+        max_route_attempts: int = 1,
+    ) -> None:
         self.selected = selected or candidate()
+        self.source_context = source_context
+        self.watchdog_authorities = watchdog_authorities
+        self.watchdog_proof_verifier = watchdog_proof_verifier
+        self.max_route_attempts = max_route_attempts
         self.capability_requests: list[object] = []
         self.route_requests: list[object] = []
         self.handoffs: list[HandoffPackage] = []
+        self.controls: list[HandoffDeliveryCommand | HandoffRetryCommand] = []
+
+    def attempt(self, invocation: _Invocation) -> object:
+        artifact = {
+            "artifact_type": invocation.expected_artifact,
+            "result": "bounded routed implementation",
+        }
+        return {
+            "invocation_digest": invocation.invocation_digest,
+            "executor_id": self.executor_id,
+            "run_id": invocation.run_id,
+            "skill_name": invocation.skill_name,
+            "skill_digest": invocation.skill_digest,
+            "load_proof": {
+                "proof_kind": "EXECUTOR_VERIFIED_SKILL_LOAD",
+                "skill_name": invocation.skill_name,
+                "skill_digest": invocation.skill_digest,
+                "executor_id": self.executor_id,
+                "run_id": invocation.run_id,
+            },
+            "gate_outcomes": {
+                gate: {"status": "PASSED", "evidence_digest": digest({"gate": gate})}
+                for gate in invocation.gates
+            },
+            "artifact": artifact,
+            "artifact_digest": digest(artifact),
+            "completion_classification": "COMPLETED",
+        }
+
+    def queue_control(self, control: HandoffDeliveryCommand | HandoffRetryCommand) -> None:
+        self.controls.append(control)
+
+    def _next_handoff_control(
+        self, _project_id: str
+    ) -> HandoffDeliveryCommand | HandoffRetryCommand | None:
+        return self.controls.pop(0) if self.controls else None
 
     def observe_capabilities(self, request: object) -> CapabilitySnapshot:
         self.capability_requests.append(request)
@@ -242,31 +315,7 @@ class ScriptedRouteAdapter:
     def dispatch(self, handoff: object, invocation: _Invocation) -> HandoffExecutionAttestation:
         assert isinstance(handoff, HandoffPackage)
         self.handoffs.append(handoff)
-        artifact = {
-            "artifact_type": invocation.expected_artifact,
-            "result": "bounded routed implementation",
-        }
-        matt = {
-            "invocation_digest": invocation.invocation_digest,
-            "executor_id": self.executor_id,
-            "run_id": invocation.run_id,
-            "skill_name": invocation.skill_name,
-            "skill_digest": invocation.skill_digest,
-            "load_proof": {
-                "proof_kind": "EXECUTOR_VERIFIED_SKILL_LOAD",
-                "skill_name": invocation.skill_name,
-                "skill_digest": invocation.skill_digest,
-                "executor_id": self.executor_id,
-                "run_id": invocation.run_id,
-            },
-            "gate_outcomes": {
-                gate: {"status": "PASSED", "evidence_digest": digest({"gate": gate})}
-                for gate in invocation.gates
-            },
-            "artifact": artifact,
-            "artifact_digest": digest(artifact),
-            "completion_classification": "COMPLETED",
-        }
+        matt = self.attempt(invocation)
         parent = {
             "executor_id": "workflow-kernel",
             "run_id": handoff.action_id,
@@ -318,21 +367,21 @@ class ScriptedRouteAdapter:
 
 def make_kernel(
     database_path: Path,
-    adapter: ScriptedRouteAdapter,
+    adapter: ScriptedExternalEffects,
     *,
     watchdog_authorities: tuple[WatchdogAuthority, ...] = (),
     watchdog_proof_verifier: object | None = None,
     max_route_attempts: int = 1,
+    clock: object | None = None,
 ) -> WorkflowKernel:
+    adapter.watchdog_authorities = watchdog_authorities
+    adapter.watchdog_proof_verifier = watchdog_proof_verifier
+    adapter.max_route_attempts = max_route_attempts
     return WorkflowKernel(
         database_path,
         decision_authenticator=ActorAuthenticator(),
-        route_adapter=adapter,
-        source_context=SOURCE_CONTEXT,
-        watchdog_authorities=watchdog_authorities,
-        watchdog_proof_verifier=watchdog_proof_verifier,
-        max_route_attempts=max_route_attempts,
-        clock=FixedClock(),
+        external_effects=adapter,
+        clock=clock or FixedClock(),
     )
 
 
@@ -340,7 +389,7 @@ def test_accepted_unexpired_snapshot_becomes_versioned_matrix_and_frozen_route_e
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "control.sqlite3"
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects()
     kernel = make_kernel(database_path, adapter)
     kernel.record(decision())
 
@@ -393,7 +442,7 @@ def test_accepted_unexpired_snapshot_becomes_versioned_matrix_and_frozen_route_e
 def test_unaccepted_or_expired_snapshot_never_enters_a_matrix(
     tmp_path: Path, accepted_at: str, expires_at: str
 ) -> None:
-    class InvalidSnapshotAdapter(ScriptedRouteAdapter):
+    class InvalidSnapshotAdapter(ScriptedExternalEffects):
         def observe_capabilities(self, request: object) -> CapabilitySnapshot:
             snapshot = super().observe_capabilities(request)
             return replace(snapshot, accepted_at=accepted_at, expires_at=expires_at)
@@ -420,7 +469,7 @@ def test_exact_route_requires_every_control_and_attestation_claim(
     selected = candidate()
     selected[claim_group][claim] = False  # type: ignore[index]
     database_path = tmp_path / f"{claim_group}-{claim}.sqlite3"
-    kernel = make_kernel(database_path, ScriptedRouteAdapter(selected))
+    kernel = make_kernel(database_path, ScriptedExternalEffects(selected))
     kernel.record(decision())
 
     with pytest.raises(WorkflowError) as caught:
@@ -436,7 +485,7 @@ def test_exact_route_forbids_fallback_and_soft_or_none_budget_enforcement(tmp_pa
     for variant in ("fallback", "soft", "none"):
         selected = candidate()
 
-        class IneligibleAdapter(ScriptedRouteAdapter):
+        class IneligibleAdapter(ScriptedExternalEffects):
             _variant = variant
 
             def plan_route(self, request: object) -> RoutePlan:
@@ -458,7 +507,7 @@ def test_exact_route_forbids_fallback_and_soft_or_none_budget_enforcement(tmp_pa
         assert caught.value.code == "ROUTE_PLAN_REJECTED"
 
 
-class CapabilityClassAdapter(ScriptedRouteAdapter):
+class CapabilityClassAdapter(ScriptedExternalEffects):
     def plan_route(self, request: object) -> RoutePlan:
         self.route_requests.append(request)
         return RoutePlan(
@@ -542,7 +591,7 @@ def test_freezes_handoff_before_dispatch_and_persists_attested_route_receipt(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "control.sqlite3"
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects()
     kernel = make_kernel(database_path, adapter)
     bootstrap = kernel.record(decision())
     envelope = kernel.advance("project-1")
@@ -623,11 +672,11 @@ def test_freezes_handoff_before_dispatch_and_persists_attested_route_receipt(
 
 
 def test_routed_handoff_fails_closed_without_authoritative_source_context(tmp_path: Path) -> None:
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects(source_context=None)
     kernel = WorkflowKernel(
         tmp_path / "control.sqlite3",
         decision_authenticator=ActorAuthenticator(),
-        route_adapter=adapter,
+        external_effects=adapter,
         clock=FixedClock(),
     )
     kernel.record(decision())
@@ -640,7 +689,7 @@ def test_routed_handoff_fails_closed_without_authoritative_source_context(tmp_pa
     assert adapter.handoffs == []
 
 
-class WatchdogAdapter(ScriptedRouteAdapter):
+class WatchdogAdapter(ScriptedExternalEffects):
     def __init__(self, *, proof_variant: str = "valid", planner_approves: bool = False) -> None:
         selected = candidate()
         selected["budget_enforcement"] = {
@@ -850,18 +899,12 @@ def test_external_watchdog_route_without_independent_verifier_fails_closed(tmp_p
 
 def test_expiry_is_enforced_before_claim_and_before_dispatch(tmp_path: Path) -> None:
     for phase in ("claim", "dispatch"):
-        adapter = ScriptedRouteAdapter()
+        adapter = ScriptedExternalEffects()
         clock: MutableClock | SequenceClock = (
             MutableClock() if phase == "claim" else SequenceClock([NOW, NOW, NOW, NOW, EXPIRES])
         )
         database_path = tmp_path / f"{phase}.sqlite3"
-        kernel = WorkflowKernel(
-            database_path,
-            decision_authenticator=ActorAuthenticator(),
-            route_adapter=adapter,
-            source_context=SOURCE_CONTEXT,
-            clock=clock,
-        )
+        kernel = make_kernel(database_path, adapter, clock=clock)
         kernel.record(decision())
         kernel.advance("project-1")
         if isinstance(clock, MutableClock):
@@ -882,7 +925,7 @@ def test_result_completing_after_expiry_is_rejected_without_receipt_or_operation
 ) -> None:
     clock = MutableClock()
 
-    class ExpiringResultAdapter(ScriptedRouteAdapter):
+    class ExpiringResultAdapter(ScriptedExternalEffects):
         def dispatch(self, handoff: object, invocation: _Invocation) -> HandoffExecutionAttestation:
             assert isinstance(handoff, HandoffPackage)
             result = super().dispatch(handoff, invocation)
@@ -890,13 +933,7 @@ def test_result_completing_after_expiry_is_rejected_without_receipt_or_operation
             return result
 
     database_path = tmp_path / "control.sqlite3"
-    kernel = WorkflowKernel(
-        database_path,
-        decision_authenticator=ActorAuthenticator(),
-        route_adapter=ExpiringResultAdapter(),
-        source_context=SOURCE_CONTEXT,
-        clock=clock,
-    )
+    kernel = make_kernel(database_path, ExpiringResultAdapter(), clock=clock)
     kernel.record(decision())
     kernel.advance("project-1")
 
@@ -912,7 +949,7 @@ def test_result_completing_after_expiry_is_rejected_without_receipt_or_operation
         ).fetchall() == [("OFFERED",), ("ACCEPTED",), ("RUNNING",), ("EXPIRED",)]
 
 
-class FailFirstDispatchAdapter(ScriptedRouteAdapter):
+class FailFirstDispatchAdapter(ScriptedExternalEffects):
     def __init__(self) -> None:
         super().__init__()
         self.dispatch_calls = 0
@@ -930,7 +967,7 @@ class SimulatedProcessCrash(BaseException):
     pass
 
 
-class CrashAfterRunningAdapter(ScriptedRouteAdapter):
+class CrashAfterRunningAdapter(ScriptedExternalEffects):
     def __init__(self) -> None:
         super().__init__()
         self.dispatch_calls = 0
@@ -942,7 +979,280 @@ class CrashAfterRunningAdapter(ScriptedRouteAdapter):
         raise SimulatedProcessCrash
 
 
-class RejectFirstAttestationAdapter(ScriptedRouteAdapter):
+def prepare_undispatched_handoff_chain(
+    database_path: Path,
+    through_event: str,
+) -> None:
+    adapter = ScriptedExternalEffects()
+    clock = SequenceClock([NOW, NOW, NOW, EXPIRES])
+    kernel = make_kernel(database_path, adapter, clock=clock)
+    kernel.record(decision())
+    kernel.advance("project-1")
+    with pytest.raises(WorkflowError) as expired:
+        kernel.advance("project-1")
+    assert expired.value.code == "ROUTE_EXPIRED"
+    assert adapter.handoffs == []
+
+    if through_event == "OFFERED":
+        return
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        offered = connection.execute("SELECT * FROM handoff_events").fetchone()
+        assert offered is not None
+        binding = {
+            "constitution_revision": offered["constitution_revision"],
+            "goal_revision": offered["goal_revision"],
+            "operating_profile_revision": offered["operating_profile_revision"],
+            "active_intent_digest": offered["active_intent_digest"],
+        }
+        for event_number, event_type in ((2, "ACCEPTED"), (3, "RUNNING")):
+            payload = {
+                "event_number": event_number,
+                "event_type": event_type,
+                "handoff_id": offered["handoff_id"],
+                "handoff_package_digest": json.loads(offered["event_json"])[
+                    "handoff_package_digest"
+                ],
+                "intent_binding": binding,
+                "recorded_at": NOW,
+            }
+            event_json = canonical(payload)
+            connection.execute(
+                "INSERT INTO handoff_events "
+                "(handoff_id, event_number, event_type, event_json, event_digest, "
+                "constitution_revision, goal_revision, operating_profile_revision, "
+                "active_intent_digest, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    offered["handoff_id"],
+                    event_number,
+                    event_type,
+                    event_json,
+                    hashlib.sha256(event_json.encode()).hexdigest(),
+                    *binding.values(),
+                    NOW,
+                ),
+            )
+            if event_type == through_event:
+                break
+
+
+def tamper_handoff_event(connection: sqlite3.Connection, variant: str) -> None:
+    if variant.startswith("payload-") or variant == "noncanonical":
+        event_type, field = {
+            "payload-package": ("OFFERED", "handoff_package_digest"),
+            "payload-handoff": ("OFFERED", "handoff_id"),
+            "payload-binding": ("ACCEPTED", "intent_binding"),
+            "noncanonical": ("RUNNING", None),
+        }[variant]
+        event_json = connection.execute(
+            "SELECT event_json FROM handoff_events WHERE event_type = ?", (event_type,)
+        ).fetchone()[0]
+        payload = json.loads(event_json)
+        if field == "intent_binding":
+            payload[field]["constitution_revision"] += 1
+        elif field is not None:
+            payload[field] = "0" * 64 if field.endswith("digest") else "other-handoff"
+        resealed = canonical(payload) + (" " if variant == "noncanonical" else "")
+        connection.execute(
+            "UPDATE handoff_events SET event_json = ?, event_digest = ? WHERE event_type = ?",
+            (resealed, hashlib.sha256(resealed.encode()).hexdigest(), event_type),
+        )
+    elif variant == "indexed-binding":
+        connection.execute(
+            "UPDATE handoff_events SET constitution_revision = constitution_revision + 1 "
+            "WHERE event_type = 'ACCEPTED'"
+        )
+    elif variant == "indexed-handoff":
+        connection.execute(
+            "UPDATE handoff_events SET handoff_id = 'other-handoff' WHERE event_type = 'ACCEPTED'"
+        )
+    elif variant == "digest":
+        connection.execute(
+            "UPDATE handoff_events SET event_digest = ? WHERE event_type = 'RUNNING'",
+            ("0" * 64,),
+        )
+    elif variant == "event-type":
+        connection.execute(
+            "UPDATE handoff_events SET event_type = 'FAILED' WHERE event_type = 'RUNNING'"
+        )
+    elif variant == "recorded-at":
+        connection.execute(
+            "UPDATE handoff_events SET recorded_at = ? WHERE event_type = 'RUNNING'",
+            (EXPIRES,),
+        )
+    elif variant == "order":
+        connection.execute(
+            "UPDATE handoff_events SET event_number = 99 WHERE event_type = 'ACCEPTED'"
+        )
+        connection.execute(
+            "UPDATE handoff_events SET event_number = 2 WHERE event_type = 'RUNNING'"
+        )
+        connection.execute(
+            "UPDATE handoff_events SET event_number = 3 WHERE event_type = 'ACCEPTED'"
+        )
+    else:  # pragma: no cover - test parameter guard
+        raise AssertionError(f"unknown Handoff event tamper variant: {variant}")
+
+
+def reseal_handoff_event_timestamp(
+    connection: sqlite3.Connection,
+    event_type: str,
+    recorded_at: str,
+) -> None:
+    event_json = connection.execute(
+        "SELECT event_json FROM handoff_events WHERE event_type = ?", (event_type,)
+    ).fetchone()[0]
+    payload = json.loads(event_json)
+    payload["recorded_at"] = recorded_at
+    resealed = canonical(payload)
+    updated = connection.execute(
+        "UPDATE handoff_events SET recorded_at = ?, event_json = ?, event_digest = ? "
+        "WHERE event_type = ?",
+        (recorded_at, resealed, hashlib.sha256(resealed.encode()).hexdigest(), event_type),
+    )
+    assert updated.rowcount == 1
+
+
+def assert_resealed_verified_event_timestamps_rejected(
+    database_path: Path,
+    mutations: tuple[tuple[str, str], ...],
+) -> None:
+    adapter = ScriptedExternalEffects()
+    kernel = make_kernel(database_path, adapter)
+    kernel.record(decision())
+    kernel.advance("project-1")
+    original = kernel.advance("project-1")
+    handoff = adapter.handoffs[0]
+
+    with sqlite3.connect(database_path) as connection:
+        before = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM handoffs), (SELECT COUNT(*) FROM handoff_events), "
+            "(SELECT COUNT(*) FROM handoff_retry_commands), (SELECT COUNT(*) FROM attempts), "
+            "(SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM route_receipts), "
+            "(SELECT COUNT(*) FROM operation_records)"
+        ).fetchone()
+        connection.execute("DROP TRIGGER handoff_events_no_update")
+        for event_type, recorded_at in mutations:
+            reseal_handoff_event_timestamp(connection, event_type, recorded_at)
+
+    adapter.queue_control(
+        HandoffDeliveryCommand(
+            project_id="project-1",
+            delivery_id=handoff.delivery_id,
+            idempotency_key=handoff.idempotency_key,
+        )
+    )
+    with pytest.raises(WorkflowError) as caught:
+        kernel.advance("project-1")
+
+    assert caught.value.code == "LEDGER_INTEGRITY"
+    assert len(adapter.handoffs) == 1
+    with sqlite3.connect(database_path) as connection:
+        after = connection.execute(
+            "SELECT (SELECT COUNT(*) FROM handoffs), (SELECT COUNT(*) FROM handoff_events), "
+            "(SELECT COUNT(*) FROM handoff_retry_commands), (SELECT COUNT(*) FROM attempts), "
+            "(SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM route_receipts), "
+            "(SELECT COUNT(*) FROM operation_records)"
+        ).fetchone()
+    assert after == before
+    assert original.route_receipt_id
+
+
+@pytest.mark.parametrize(
+    ("through_event", "variant"),
+    [
+        ("OFFERED", "payload-package"),
+        ("OFFERED", "payload-handoff"),
+        ("RUNNING", "payload-binding"),
+        ("RUNNING", "indexed-binding"),
+        ("RUNNING", "indexed-handoff"),
+        ("RUNNING", "digest"),
+        ("RUNNING", "event-type"),
+        ("RUNNING", "recorded-at"),
+        ("RUNNING", "order"),
+        ("RUNNING", "noncanonical"),
+    ],
+)
+def test_advance_rejects_tampered_existing_handoff_event_chain_before_dispatch(
+    tmp_path: Path,
+    through_event: str,
+    variant: str,
+) -> None:
+    database_path = tmp_path / f"{through_event.lower()}-{variant}.sqlite3"
+    prepare_undispatched_handoff_chain(database_path, through_event)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TRIGGER handoff_events_no_update")
+        tamper_handoff_event(connection, variant)
+
+    adapter = ScriptedExternalEffects()
+    restarted = make_kernel(database_path, adapter)
+    with pytest.raises(WorkflowError) as caught:
+        restarted.advance("project-1")
+
+    assert caught.value.code == "LEDGER_INTEGRITY"
+    assert adapter.handoffs == []
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM route_receipts").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM operation_records").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "recorded_at",
+    [
+        "not-a-timestamp",
+        "2026-09-02T02:00:00",
+        "2026-09-02T10:00:00+08:00",
+        "2026-09-02T02:00:00Z",
+    ],
+    ids=["malformed", "naive", "non-utc", "noncanonical-utc"],
+)
+def test_duplicate_advance_rejects_resealed_noncanonical_handoff_event_timestamp(
+    tmp_path: Path,
+    recorded_at: str,
+) -> None:
+    assert_resealed_verified_event_timestamps_rejected(
+        tmp_path / f"event-time-{recorded_at[-5:]}.sqlite3",
+        (("VERIFIED", recorded_at),),
+    )
+
+
+def test_duplicate_advance_rejects_resealed_handoff_event_before_previous_event(
+    tmp_path: Path,
+) -> None:
+    assert_resealed_verified_event_timestamps_rejected(
+        tmp_path / "event-time-regression.sqlite3",
+        (("RUNNING", "2026-09-02T01:59:59+00:00"),),
+    )
+
+
+def test_duplicate_advance_rejects_resealed_offered_event_time_different_from_handoff(
+    tmp_path: Path,
+) -> None:
+    assert_resealed_verified_event_timestamps_rejected(
+        tmp_path / "offered-time-mismatch.sqlite3",
+        (("OFFERED", "2026-09-02T01:59:59+00:00"),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_terminal_event", "mutated_events"),
+    [
+        ("RESULT_RECORDED", ("RESULT_RECORDED", "VERIFIED")),
+        ("VERIFIED", ("VERIFIED",)),
+    ],
+)
+def test_duplicate_advance_rejects_resealed_terminal_event_time_different_from_receipt(
+    tmp_path: Path,
+    first_terminal_event: str,
+    mutated_events: tuple[str, ...],
+) -> None:
+    assert_resealed_verified_event_timestamps_rejected(
+        tmp_path / f"{first_terminal_event.lower()}-time-mismatch.sqlite3",
+        tuple((event_type, EXPIRES) for event_type in mutated_events),
+    )
+
+
+class RejectFirstAttestationAdapter(ScriptedExternalEffects):
     def __init__(self, rejection: str) -> None:
         super().__init__()
         self.rejection = rejection
@@ -966,7 +1276,7 @@ class RejectFirstAttestationAdapter(ScriptedRouteAdapter):
         return attestation
 
 
-class AttestationMutationAdapter(ScriptedRouteAdapter):
+class AttestationMutationAdapter(ScriptedExternalEffects):
     def __init__(
         self,
         mutation: Callable[
@@ -984,7 +1294,7 @@ class AttestationMutationAdapter(ScriptedRouteAdapter):
         return self.mutation(attestation, handoff, invocation)
 
 
-class LedgerDriftAdapter(ScriptedRouteAdapter):
+class LedgerDriftAdapter(ScriptedExternalEffects):
     def __init__(self, database_path: Path, artifact: str) -> None:
         super().__init__()
         self.database_path = database_path
@@ -1018,7 +1328,7 @@ class LedgerDriftAdapter(ScriptedRouteAdapter):
 
 def assert_post_dispatch_rejected(
     database_path: Path,
-    adapter: ScriptedRouteAdapter,
+    adapter: ScriptedExternalEffects,
     *,
     expected_code: str = "ROUTE_RECEIPT_REJECTED",
 ) -> dict[str, object]:
@@ -1055,18 +1365,21 @@ def assert_post_dispatch_rejected(
 
 def test_duplicate_delivery_returns_original_receipt_without_new_attempt(tmp_path: Path) -> None:
     database_path = tmp_path / "control.sqlite3"
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects()
     kernel = make_kernel(database_path, adapter)
     kernel.record(decision())
     kernel.advance("project-1")
     original = kernel.advance("project-1")
     handoff = adapter.handoffs[0]
 
-    duplicate = kernel.deliver_handoff(
-        "project-1",
-        delivery_id=handoff.delivery_id,
-        idempotency_key=handoff.idempotency_key,
+    adapter.queue_control(
+        HandoffDeliveryCommand(
+            project_id="project-1",
+            delivery_id=handoff.delivery_id,
+            idempotency_key=handoff.idempotency_key,
+        )
     )
+    duplicate = kernel.advance("project-1")
 
     assert duplicate.route_receipt_id == original.route_receipt_id
     assert duplicate.route_receipt_digest == original.route_receipt_digest
@@ -1091,7 +1404,7 @@ def test_restart_recovers_running_handoff_as_ambiguous_once_without_redispatch(
         kernel.advance("project-1")
     original = crashing.handoffs[0]
 
-    restarted_adapter = ScriptedRouteAdapter()
+    restarted_adapter = ScriptedExternalEffects()
     restarted = make_kernel(database_path, restarted_adapter, max_route_attempts=2)
     for _ in range(2):
         with pytest.raises(WorkflowError) as caught:
@@ -1111,7 +1424,7 @@ def test_restart_recovers_running_handoff_as_ambiguous_once_without_redispatch(
         assert connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
 
-    retried = restarted.retry_handoff(
+    restarted_adapter.queue_control(
         HandoffRetryCommand(
             command_id="retry-ambiguous-command-1",
             project_id="project-1",
@@ -1121,6 +1434,7 @@ def test_restart_recovers_running_handoff_as_ambiguous_once_without_redispatch(
             reason="original external effect outcome is unknown after process crash",
         )
     )
+    retried = restarted.advance("project-1")
 
     assert retried.outcome == "OPERATION_RESERVED"
     assert retried.attempt_id != original.attempt_id
@@ -1152,7 +1466,8 @@ def test_explicit_bounded_retry_creates_new_attempt_run_and_invocation(tmp_path:
         max_attempts=2,
         reason="durable dispatch failed before receipt",
     )
-    retried = kernel.retry_handoff(command)
+    adapter.queue_control(command)
+    retried = kernel.advance("project-1")
 
     assert retried.outcome == "OPERATION_RESERVED"
     assert retried.action_id == envelope.action_id
@@ -1163,7 +1478,8 @@ def test_explicit_bounded_retry_creates_new_attempt_run_and_invocation(tmp_path:
     assert second.invocation_digest != first.invocation_digest
     assert second.fencing_epoch == 2
 
-    duplicate_command = kernel.retry_handoff(command)
+    adapter.queue_control(command)
+    duplicate_command = kernel.advance("project-1")
     assert duplicate_command.route_receipt_id == retried.route_receipt_id
     assert adapter.dispatch_calls == 2
     with sqlite3.connect(database_path) as connection:
@@ -1236,7 +1552,8 @@ def test_rejected_attestation_is_durable_and_requires_explicit_bounded_retry(
         max_attempts=2,
         reason="attested actual route was rejected",
     )
-    retried = kernel.retry_handoff(command)
+    adapter.queue_control(command)
+    retried = kernel.advance("project-1")
 
     assert retried.outcome == "OPERATION_RESERVED"
     assert retried.action_id == envelope.action_id
@@ -1247,7 +1564,8 @@ def test_rejected_attestation_is_durable_and_requires_explicit_bounded_retry(
     assert second.invocation_digest != first.invocation_digest
     assert second.fencing_epoch == 2
 
-    duplicate = kernel.retry_handoff(command)
+    adapter.queue_control(command)
+    duplicate = kernel.advance("project-1")
     assert duplicate.route_receipt_id == retried.route_receipt_id
     assert duplicate.route_receipt_digest == retried.route_receipt_digest
     assert adapter.dispatch_calls == 2
@@ -1483,7 +1801,7 @@ def test_production_seam_rejects_candidate_digest_tampering(tmp_path: Path) -> N
 def test_production_seam_rejects_matrix_candidate_index_tampering(tmp_path: Path) -> None:
     database_path = tmp_path / "candidate-index.sqlite3"
 
-    class CandidateIndexDriftAdapter(ScriptedRouteAdapter):
+    class CandidateIndexDriftAdapter(ScriptedExternalEffects):
         def dispatch(self, handoff: object, invocation: _Invocation) -> HandoffExecutionAttestation:
             attestation = super().dispatch(handoff, invocation)
             with sqlite3.connect(database_path) as connection:
@@ -1554,7 +1872,7 @@ def test_indexed_route_chain_tampering_fails_integrity_without_dispatch(
     replacement: object,
 ) -> None:
     database_path = tmp_path / f"indexed-{table}-{column}.sqlite3"
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects()
     kernel = make_kernel(database_path, adapter)
     kernel.record(decision())
     kernel.advance("project-1")
@@ -1599,7 +1917,7 @@ def test_indexed_downstream_handoff_and_receipt_tampering_fails_integrity(
     replacement: object,
 ) -> None:
     database_path = tmp_path / f"downstream-{table}-{column}.sqlite3"
-    adapter = ScriptedRouteAdapter()
+    adapter = ScriptedExternalEffects()
     kernel = make_kernel(database_path, adapter)
     kernel.record(decision())
     kernel.advance("project-1")
@@ -1610,12 +1928,15 @@ def test_indexed_downstream_handoff_and_receipt_tampering_fails_integrity(
         connection.execute(f"DROP TRIGGER {trigger}")
         connection.execute(f"UPDATE {table} SET {column} = ?", (replacement,))
 
-    with pytest.raises(WorkflowError) as caught:
-        kernel.deliver_handoff(
-            "project-1",
+    adapter.queue_control(
+        HandoffDeliveryCommand(
+            project_id="project-1",
             delivery_id=handoff.delivery_id,
             idempotency_key=handoff.idempotency_key,
         )
+    )
+    with pytest.raises(WorkflowError) as caught:
+        kernel.advance("project-1")
 
     assert caught.value.code == "LEDGER_INTEGRITY"
 

@@ -234,6 +234,10 @@ CREATE TABLE handoff_events (
     ),
     event_json TEXT NOT NULL,
     event_digest TEXT NOT NULL,
+    constitution_revision INTEGER NOT NULL,
+    goal_revision INTEGER NOT NULL,
+    operating_profile_revision INTEGER NOT NULL,
+    active_intent_digest TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (handoff_id, event_number),
     UNIQUE (handoff_id, event_type)
