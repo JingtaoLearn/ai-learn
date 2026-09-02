@@ -7,7 +7,9 @@ import re
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from importlib.metadata import version
+from numbers import Number
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import urlsplit
@@ -116,6 +118,266 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+SSE_CURRENT_ENDPOINT = "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/ashare"
+SSE_CURRENT_FIELDS = (
+    "code",
+    "name",
+    "open",
+    "high",
+    "low",
+    "last",
+    "prev_close",
+    "chg_rate",
+    "volume",
+    "amount",
+    "tradephase",
+    "change",
+    "amp_rate",
+    "cpxxsubtype",
+    "cpxxprodusta",
+)
+SSE_CURRENT_PARAMS = {
+    "select": ",".join(SSE_CURRENT_FIELDS),
+    "begin": 0,
+    "end": 5000,
+}
+SSE_CURRENT_HEADERS = {
+    "Accept": "application/json",
+    "Referer": "https://www.sse.com.cn/market/price/report/",
+    "User-Agent": "quant-research-platform/0.1",
+}
+SSE_PRICE_REPORT_SCRIPT_URL = (
+    "https://www.sse.com.cn/xhtml/home/2021public/querySearch/"
+    "search_price_2021.js?v=ssesite_V3.8.0_20260828"
+)
+
+
+def _sse_strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DatasetResolutionError(f"SSE response contains duplicate field: {key}")
+        value[key] = item
+    return value
+
+
+class SseCurrentDailySource:
+    provider = "sse-current-ashare-report"
+
+    def __init__(
+        self,
+        *,
+        http_get: Callable[..., Any] = requests.get,
+        clock: Callable[[], datetime] | None = None,
+        timeout: int = 30,
+    ):
+        self.http_get = http_get
+        self.clock = clock or (lambda: datetime.now(UTC))
+        self.timeout = timeout
+
+    @staticmethod
+    def _instrument_code(instrument: str) -> str:
+        if not isinstance(instrument, str) or re.fullmatch(r"[0-9]{6}\.SS", instrument) is None:
+            raise DatasetResolutionError("SSE instrument must be an ordinary six-digit .SS symbol")
+        return instrument[:-3]
+
+    def _payload(self, instrument: str) -> tuple[FetchedDailyBars, str]:
+        code = self._instrument_code(instrument)
+        canonical_url = requests.Request(
+            "GET", SSE_CURRENT_ENDPOINT, params=SSE_CURRENT_PARAMS
+        ).prepare().url
+        if not isinstance(canonical_url, str):
+            raise DatasetResolutionError("SSE canonical request URL is invalid")
+        try:
+            response = self.http_get(
+                SSE_CURRENT_ENDPOINT,
+                params=SSE_CURRENT_PARAMS,
+                headers=SSE_CURRENT_HEADERS,
+                timeout=self.timeout,
+                stream=True,
+                allow_redirects=False,
+            )
+            if type(getattr(response, "status_code", None)) is not int or response.status_code != 200:
+                raise DatasetResolutionError("SSE response must have exact HTTP 200 status")
+            history = getattr(response, "history", None)
+            if type(history) is not list or history:
+                raise DatasetResolutionError("SSE response must not have redirect history")
+            effective_url = getattr(response, "url", None)
+            if not isinstance(effective_url, str) or effective_url != canonical_url:
+                raise DatasetResolutionError("SSE response effective URL is not canonical")
+            content_length = response.headers.get("content-length")
+            if isinstance(content_length, str):
+                digits = content_length.strip()
+                if re.fullmatch(r"[0-9]+", digits):
+                    significant = digits.lstrip("0") or "0"
+                    limit = str(MAX_PROVIDER_RESPONSE_BYTES)
+                    if len(significant) > len(limit) or (
+                        len(significant) == len(limit) and significant > limit
+                    ):
+                        raise DatasetResolutionError("SSE response body exceeds the size limit")
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("application/json"):
+                raise DatasetResolutionError("SSE response is not JSON")
+            raw = bytearray()
+            for chunk in response.iter_content(chunk_size=PROVIDER_STREAM_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                if not isinstance(chunk, bytes):
+                    raise DatasetResolutionError("SSE response body is invalid")
+                if len(raw) + len(chunk) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise DatasetResolutionError("SSE response body exceeds the size limit")
+                raw.extend(chunk)
+        except requests.RequestException as exc:
+            raise DatasetResolutionError(f"SSE current report request failed for {instrument}: {exc}") from exc
+        finally:
+            if "response" in locals():
+                response.close()
+
+        raw_bytes = bytes(raw)
+        if not raw_bytes:
+            raise DatasetResolutionError("SSE response body is empty")
+        try:
+            payload = json.loads(
+                raw_bytes,
+                object_pairs_hook=_sse_strict_object,
+                parse_constant=lambda item: (_ for _ in ()).throw(
+                    DatasetResolutionError(f"SSE response contains non-finite value: {item}")
+                ),
+            )
+        except DatasetResolutionError:
+            raise
+        except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DatasetResolutionError("SSE response schema is invalid") from exc
+        if not isinstance(payload, dict):
+            raise DatasetResolutionError("SSE response schema is invalid")
+
+        report_date = payload.get("date")
+        if type(report_date) is not int or re.fullmatch(r"[0-9]{8}", str(report_date)) is None:
+            raise DatasetResolutionError("SSE response date must be a real YYYYMMDD date")
+        try:
+            response_date = datetime.strptime(str(report_date), "%Y%m%d").date().isoformat()
+        except ValueError as exc:
+            raise DatasetResolutionError("SSE response date must be a real YYYYMMDD date") from exc
+
+        report_time = payload.get("time")
+        if type(report_time) is not int or not 0 <= report_time <= 235959:
+            raise DatasetResolutionError("SSE response time must be a real HHMMSS time")
+        compact_time = f"{report_time:06d}"
+        try:
+            response_time = datetime.strptime(compact_time, "%H%M%S").time().isoformat()
+        except ValueError as exc:
+            raise DatasetResolutionError("SSE response time must be a real HHMMSS time") from exc
+
+        total = payload.get("total")
+        if type(total) is not int or total < 0:
+            raise DatasetResolutionError("SSE response total must be a non-negative integer")
+        rows = payload.get("list")
+        if not isinstance(rows, list):
+            raise DatasetResolutionError("SSE response list must be a list")
+        matches = [row for row in rows if isinstance(row, list) and row and row[0] == code]
+        if not matches:
+            raise DatasetResolutionError("SSE response is missing the requested code")
+        if len(matches) != 1:
+            raise DatasetResolutionError("SSE response must contain exactly one requested code row")
+        row = matches[0]
+        if len(row) != len(SSE_CURRENT_FIELDS):
+            raise DatasetResolutionError("SSE requested code row must contain exactly 15 fields")
+
+        name = row[1]
+        if not isinstance(name, str) or not name.strip():
+            raise DatasetResolutionError("SSE response name must be non-empty")
+        ohlc = row[2:6]
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in ohlc):
+            raise DatasetResolutionError("SSE response OHLC values must be finite and positive")
+        open_value, high, low, last = ohlc
+        if high < max(open_value, low, last) or low > min(open_value, high, last):
+            raise DatasetResolutionError("SSE response OHLC values are inconsistent")
+        volume = row[8]
+        if type(volume) is not int or volume < 0:
+            raise DatasetResolutionError("SSE response volume must be a non-negative integer")
+        try:
+            float_volume = float(volume)
+        except OverflowError as exc:
+            raise DatasetResolutionError(
+                "SSE response volume must be losslessly representable as float64"
+            ) from exc
+        if not math.isfinite(float_volume) or int(float_volume) != volume:
+            raise DatasetResolutionError(
+                "SSE response volume must be losslessly representable as float64"
+            )
+        tradephase = row[10]
+        if not isinstance(tradephase, str) or tradephase[:4] != "E110":
+            raise DatasetResolutionError("SSE response trading phase is not E110")
+        if row[13] != "ASH":
+            raise DatasetResolutionError("SSE response subtype is not ASH")
+
+        canonical_content = {
+            "date": report_date,
+            "time": report_time,
+            "field_order": list(SSE_CURRENT_FIELDS),
+            "row": row,
+        }
+        try:
+            bars = _normalize_frame(
+                pd.DataFrame(
+                    [
+                        {
+                            "Date": pd.Timestamp(response_date),
+                            "Open": open_value,
+                            "High": high,
+                            "Low": low,
+                            "Close": last,
+                            "Volume": volume,
+                        }
+                    ]
+                )
+            )
+        except DatasetValidationError as exc:
+            raise DatasetResolutionError(f"SSE response data is invalid: {exc}") from exc
+        return (
+            FetchedDailyBars(
+                bars=bars,
+                source_identity={
+                    "provider": self.provider,
+                    "instrument": instrument,
+                    "request": {
+                        "method": "GET",
+                        "url": effective_url,
+                        "params": dict(SSE_CURRENT_PARAMS),
+                        "headers": dict(SSE_CURRENT_HEADERS),
+                    },
+                    "response_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                    "canonical_content_sha256": hashlib.sha256(
+                        canonical_json_bytes(canonical_content)
+                    ).hexdigest(),
+                    "response_date": response_date,
+                    "response_time": response_time,
+                    "trading_phase": tradephase[:4],
+                    "contract": "IS120 STEP 0.62",
+                    "price_report_script_url": SSE_PRICE_REPORT_SCRIPT_URL,
+                },
+            ),
+            response_date,
+        )
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        start = _date(start, "SSE request range start")
+        end = _date(end, "SSE request range end")
+        if start != end:
+            raise DatasetResolutionError("SSE current report range must be exactly one date")
+        fetched, response_date = self._payload(instrument)
+        if start != response_date:
+            raise DatasetResolutionError("SSE response date does not match the requested range")
+        return fetched
+
+    def latest_available_close(self, instrument: str) -> str:
+        now = self.clock()
+        if now.tzinfo is None:
+            raise DatasetResolutionError("SSE source clock must be timezone-aware")
+        _, response_date = self._payload(instrument)
+        return response_date
+
+
 class XSHGCalendar:
     def __init__(self) -> None:
         self._calendar = exchange_calendars.get_calendar("XSHG")
@@ -181,8 +443,16 @@ class YahooChartSource:
                 timeout=self.timeout,
                 headers={"User-Agent": "quant-research-platform/0.1"},
                 stream=True,
+                allow_redirects=False,
             )
-            response.raise_for_status()
+            if type(getattr(response, "status_code", None)) is not int or response.status_code != 200:
+                raise DatasetResolutionError("Yahoo response must have exact HTTP 200 status")
+            history = getattr(response, "history", None)
+            if type(history) is not list or history:
+                raise DatasetResolutionError("Yahoo response must not have redirect history")
+            effective_url = getattr(response, "url", None)
+            if not isinstance(effective_url, str) or effective_url != url:
+                raise DatasetResolutionError("Yahoo response effective URL is not canonical")
             content_length = response.headers.get("content-length")
             if isinstance(content_length, str):
                 digits = content_length.strip()
@@ -285,15 +555,47 @@ class YahooChartSource:
         if len(lengths) != 1:
             raise DatasetResolutionError("Yahoo response arrays are not aligned")
 
+        if any(type(value) is not int for value in timestamps):
+            raise DatasetResolutionError(
+                "Yahoo response timestamps must be exact integer epoch seconds"
+            )
+        price_arrays = [quote[field] for field in ("open", "high", "low", "close")]
+        if adjusted is not None:
+            price_arrays.append(adjusted)
+        for values in price_arrays:
+            for value in values:
+                if value is None:
+                    continue
+                if type(value) not in (int, float):
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    )
+                try:
+                    float_value = float(value)
+                except OverflowError as exc:
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    ) from exc
+                if not math.isfinite(float_value) or float_value <= 0:
+                    raise DatasetResolutionError(
+                        "Yahoo response OHLC price values must be finite positive numbers"
+                    )
         for value in quote["volume"]:
             if value is None:
                 continue
-            if (
-                type(value) not in (int, float)
-                or not math.isfinite(value)
-                or value < 0
-                or not float(value).is_integer()
-            ):
+            if type(value) is int:
+                invalid_volume = value < 0 or value > 2**53
+            elif type(value) is float:
+                invalid_volume = (
+                    not math.isfinite(value)
+                    or value < 0
+                    or not value.is_integer()
+                    or value > 2**53
+                    or int(value) != value
+                )
+            else:
+                invalid_volume = True
+            if invalid_volume:
                 raise DatasetResolutionError(
                     "Yahoo response volume values must be non-negative finite counts"
                 )
@@ -362,6 +664,9 @@ class YahooChartSource:
                 "instrument": instrument,
                 "request_url": url,
                 "response_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+                "canonical_content_sha256": hashlib.sha256(
+                    canonical_json_bytes(payload)
+                ).hexdigest(),
             },
         )
 
@@ -397,6 +702,344 @@ class YahooChartSource:
                 "Yahoo response contains no completed daily close"
             )
         return str(complete["Date"].max().date())
+
+
+class AuditedXshgDailySource:
+    provider = "xshg-audited-daily-v1"
+    policy_version = "sse-whole-t-yahoo-history-v1"
+    history_provider = "yahoo-chart-api"
+    current_provider = "sse-current-ashare-report"
+    columns = ("Date", "Open", "High", "Low", "Close", "Volume")
+    price_columns = ("Open", "High", "Low", "Close")
+    price_tick = Decimal("0.01")
+    price_tolerance = Decimal("0.000001")
+
+    def __init__(
+        self,
+        *,
+        history_source: DailyBarsSource,
+        current_source: DailyBarsSource,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        self.history_source = history_source
+        self.current_source = current_source
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def _decision_date(self) -> str:
+        now = self.clock()
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() is None
+        ):
+            raise DatasetResolutionError("audited XSHG source clock must be timezone-aware")
+        return str(now.astimezone(ZoneInfo("Asia/Shanghai")).date())
+
+    @staticmethod
+    def _validate_instrument(instrument: str) -> None:
+        if not isinstance(instrument, str) or re.fullmatch(r"[0-9]{6}\.SS", instrument) is None:
+            raise DatasetResolutionError(
+                "audited XSHG instrument must be an ordinary six-digit .SS symbol"
+            )
+
+    @staticmethod
+    def _require_component_provider(
+        source: DailyBarsSource, expected_provider: str
+    ) -> None:
+        actual_provider = getattr(source, "provider", None)
+        if type(actual_provider) is not str or actual_provider != expected_provider:
+            raise DatasetResolutionError(
+                f"configured component provider must be {expected_provider}"
+            )
+
+    @staticmethod
+    def _component_identity(
+        fetched: FetchedDailyBars,
+        *,
+        provider: str,
+        instrument: str,
+    ) -> dict[str, Any]:
+        identity = fetched.source_identity
+        if not isinstance(identity, dict):
+            raise DatasetResolutionError("component source identity must be a finite dictionary")
+        try:
+            canonical_identity = canonical_json_bytes(identity)
+            detached = json.loads(
+                canonical_identity,
+                object_pairs_hook=_strict_object,
+                parse_constant=lambda item: (_ for _ in ()).throw(
+                    ValueError(f"non-finite identity value: {item}")
+                ),
+            )
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise DatasetResolutionError(
+                "component source identity must be finite canonical JSON"
+            ) from exc
+        if type(detached) is not dict:
+            raise DatasetResolutionError("component source identity must be a finite dictionary")
+        if detached.get("provider") != provider:
+            raise DatasetResolutionError(
+                f"component source identity provider must be {provider}"
+            )
+        if detached.get("instrument") != instrument:
+            raise DatasetResolutionError(
+                "component source identity instrument does not match the request"
+            )
+        return detached
+
+    @classmethod
+    def _normalize_market_values(
+        cls,
+        frame: pd.DataFrame,
+        *,
+        source_label: str,
+    ) -> pd.DataFrame:
+        normalized_prices: dict[str, list[float]] = {}
+        for column in cls.price_columns:
+            prices: list[float] = []
+            for value in frame[column]:
+                if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be numeric, finite, and positive"
+                    )
+                try:
+                    decimal_value = Decimal(str(value))
+                except (InvalidOperation, ValueError) as exc:
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be numeric, finite, and positive"
+                    ) from exc
+                if not decimal_value.is_finite() or decimal_value <= 0:
+                    raise DatasetResolutionError(
+                        f"{source_label} price values must be finite and positive"
+                    )
+                try:
+                    tick_value = decimal_value.quantize(
+                        cls.price_tick, rounding=ROUND_HALF_UP
+                    )
+                except InvalidOperation as exc:
+                    raise DatasetResolutionError(
+                        f"{source_label} price cannot be normalized to the CNY 0.01 tick"
+                    ) from exc
+                if abs(decimal_value - tick_value) > cls.price_tolerance:
+                    raise DatasetResolutionError(
+                        f"{source_label} price is materially outside the CNY 0.01 tick"
+                    )
+                prices.append(float(tick_value))
+            normalized_prices[column] = prices
+        for column, prices in normalized_prices.items():
+            frame[column] = prices
+
+        normalized_volumes: list[float] = []
+        for value in frame["Volume"]:
+            if isinstance(value, bool) or not isinstance(value, (Number, Decimal)):
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a numeric non-negative integer"
+                )
+            try:
+                decimal_value = Decimal(str(value))
+            except (InvalidOperation, ValueError) as exc:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a numeric non-negative integer"
+                ) from exc
+            if (
+                not decimal_value.is_finite()
+                or decimal_value < 0
+                or decimal_value != decimal_value.to_integral_value()
+            ):
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be a finite non-negative integer"
+                )
+            if decimal_value > 2**53:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                )
+            integer_value = int(decimal_value)
+            try:
+                float_value = float(integer_value)
+            except OverflowError as exc:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                ) from exc
+            if not math.isfinite(float_value) or int(float_value) != integer_value:
+                raise DatasetResolutionError(
+                    f"{source_label} Volume must be losslessly representable as float64"
+                )
+            normalized_volumes.append(float_value)
+        frame["Volume"] = normalized_volumes
+        return frame
+
+    @classmethod
+    def _normalize_component_frame(
+        cls,
+        fetched: FetchedDailyBars,
+        *,
+        start: str,
+        end: str,
+        history: bool,
+    ) -> pd.DataFrame:
+        frame = fetched.bars
+        if not isinstance(frame, pd.DataFrame):
+            raise DatasetResolutionError("component source schema must be a data frame")
+        missing = [column for column in cls.columns if column not in frame.columns]
+        if missing:
+            raise DatasetResolutionError(
+                f"component source schema is missing required columns: {missing}"
+            )
+        if not history and tuple(frame.columns) != cls.columns:
+            raise DatasetResolutionError(
+                "current source schema must be exactly Date, Open, High, Low, Close, Volume"
+            )
+        projected = frame.loc[:, cls.columns].copy()
+        try:
+            raw_dates = [pd.Timestamp(value) for value in projected["Date"]]
+            if raw_dates and not any(pd.isna(value) for value in raw_dates):
+                raw_dates_are_sorted = pd.Index(raw_dates).is_monotonic_increasing
+            else:
+                raw_dates_are_sorted = True
+        except (TypeError, ValueError, OverflowError):
+            raw_dates_are_sorted = True
+        if not raw_dates_are_sorted:
+            raise DatasetResolutionError("component source dates must be sorted")
+        projected = cls._normalize_market_values(
+            projected,
+            source_label="Yahoo history" if history else "SSE current",
+        )
+
+        try:
+            normalized = _normalize_frame(projected)
+        except DatasetValidationError as exc:
+            raise DatasetResolutionError(f"component source data is invalid: {exc}") from exc
+        if normalized["Date"].duplicated().any():
+            raise DatasetResolutionError("component source contains duplicate dates")
+        if not normalized["Date"].is_monotonic_increasing:
+            raise DatasetResolutionError("component source dates must be sorted")
+        if (
+            normalized["Date"].min() < pd.Timestamp(start)
+            or normalized["Date"].max() > pd.Timestamp(end)
+        ):
+            raise DatasetResolutionError("component source contains dates outside its request")
+        return normalized
+
+    def _validated_component(
+        self,
+        source: DailyBarsSource,
+        *,
+        expected_provider: str,
+        instrument: str,
+        start: str,
+        end: str,
+        history: bool,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        self._require_component_provider(source, expected_provider)
+        fetched = source.fetch(instrument, start, end)
+        if not isinstance(fetched, FetchedDailyBars):
+            raise DatasetResolutionError("component source returned an invalid generation")
+        identity = self._component_identity(
+            fetched,
+            provider=expected_provider,
+            instrument=instrument,
+        )
+        frame = self._normalize_component_frame(
+            fetched,
+            start=start,
+            end=end,
+            history=history,
+        )
+        return frame, identity
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        self._validate_instrument(instrument)
+        start = _date(start, "audited XSHG request start")
+        end = _date(end, "audited XSHG request end")
+        if start > end:
+            raise DatasetResolutionError("audited XSHG request start is after its end")
+        decision_date = self._decision_date()
+        if end > decision_date:
+            raise DatasetResolutionError("audited XSHG request cannot include a future date")
+
+        components: list[dict[str, Any]]
+        if end < decision_date:
+            self._require_component_provider(
+                self.history_source, self.history_provider
+            )
+            bars, history_identity = self._validated_component(
+                self.history_source,
+                expected_provider=self.history_provider,
+                instrument=instrument,
+                start=start,
+                end=end,
+                history=True,
+            )
+            components = [history_identity]
+        else:
+            self._require_component_provider(
+                self.current_source, self.current_provider
+            )
+            if start < decision_date:
+                self._require_component_provider(
+                    self.history_source, self.history_provider
+                )
+            current_bars, current_identity = self._validated_component(
+                self.current_source,
+                expected_provider=self.current_provider,
+                instrument=instrument,
+                start=decision_date,
+                end=decision_date,
+                history=False,
+            )
+            if start == decision_date:
+                bars = current_bars
+                components = [current_identity]
+            else:
+                history_end = str(pd.Timestamp(decision_date).date() - timedelta(days=1))
+                history_bars, history_identity = self._validated_component(
+                    self.history_source,
+                    expected_provider=self.history_provider,
+                    instrument=instrument,
+                    start=start,
+                    end=history_end,
+                    history=True,
+                )
+                try:
+                    bars = _normalize_frame(
+                        pd.concat([history_bars, current_bars], ignore_index=True)
+                    )
+                except DatasetValidationError as exc:
+                    raise DatasetResolutionError(
+                        f"audited XSHG source generations conflict: {exc}"
+                    ) from exc
+                components = [history_identity, current_identity]
+
+        identity = {
+            "provider": self.provider,
+            "instrument": instrument,
+            "policy_version": self.policy_version,
+            "decision_date": decision_date,
+            "requested_start": start,
+            "requested_end": end,
+            "components": components,
+        }
+        try:
+            canonical_json_bytes(identity)
+        except SchemaValidationError as exc:
+            raise DatasetResolutionError(
+                "audited XSHG source identity must be finite canonical JSON"
+            ) from exc
+        return FetchedDailyBars(bars=bars, source_identity=identity)
+
+    def latest_available_close(self, instrument: str) -> str:
+        self._validate_instrument(instrument)
+        decision_date = self._decision_date()
+        self._require_component_provider(self.current_source, self.current_provider)
+        latest = _date(
+            self.current_source.latest_available_close(instrument),
+            "audited XSHG current latest close",
+        )
+        if latest > decision_date:
+            raise DatasetResolutionError(
+                "audited XSHG current latest close cannot be in the future"
+            )
+        return latest
 
 
 class DatasetService:

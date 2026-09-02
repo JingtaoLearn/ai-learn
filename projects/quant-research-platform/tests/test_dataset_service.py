@@ -5,23 +5,31 @@ import json
 import shutil
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import requests
+import quant_platform.dataset_service as dataset_service_module
 
 from quant_platform.catalog import initialize_catalog
 from quant_platform.dataset_service import (
     MAX_PROVIDER_RESPONSE_BYTES,
+    SSE_CURRENT_ENDPOINT,
+    SSE_CURRENT_PARAMS,
+    AuditedXshgDailySource,
     DatasetCatalogItem,
     DatasetResolutionError,
     DatasetService,
     FetchedDailyBars,
+    SseCurrentDailySource,
     XSHGCalendar,
     YahooChartSource,
 )
 from quant_platform.datasets import publish_snapshot, snapshot_status
 from quant_platform.experiment_service import ExperimentService
+from quant_platform.schemas import canonical_json_bytes
 
 from test_experiment_service import _task
 
@@ -118,6 +126,59 @@ class FixedSource:
                 "response_sha256": hashlib.sha256(self.revision.encode()).hexdigest(),
             },
         )
+
+
+class InjectedDailySource:
+    def __init__(
+        self,
+        provider: str,
+        bars: pd.DataFrame,
+        *,
+        identity: object | None = None,
+        latest_close: str = "2026-08-31",
+        fetch_error: Exception | None = None,
+        latest_error: Exception | None = None,
+    ):
+        self.provider = provider
+        self.bars = bars
+        self.identity = identity
+        self.latest_close = latest_close
+        self.fetch_error = fetch_error
+        self.latest_error = latest_error
+        self.fetch_calls: list[tuple[str, str, str]] = []
+        self.latest_calls: list[str] = []
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        self.fetch_calls.append((instrument, start, end))
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        identity = self.identity
+        if identity is None:
+            identity = {
+                "provider": self.provider,
+                "instrument": instrument,
+                "generation": self.provider,
+            }
+        return FetchedDailyBars(bars=self.bars.copy(), source_identity=identity)  # type: ignore[arg-type]
+
+    def latest_available_close(self, instrument: str) -> str:
+        self.latest_calls.append(instrument)
+        if self.latest_error is not None:
+            raise self.latest_error
+        return self.latest_close
+
+
+def _audited_source(
+    history: InjectedDailySource,
+    current: InjectedDailySource,
+    *,
+    clock=lambda: datetime(2026, 8, 31, 4, 0, tzinfo=UTC),
+) -> AuditedXshgDailySource:
+    return AuditedXshgDailySource(
+        history_source=history,
+        current_source=current,
+        clock=clock,
+    )
 
 
 def _dataset_service(
@@ -573,6 +634,11 @@ def _yahoo_payload(
     ).encode()
 
 
+SSE_CANONICAL_URL = requests.Request(
+    "GET", SSE_CURRENT_ENDPOINT, params=SSE_CURRENT_PARAMS
+).prepare().url
+
+
 class FakeResponse:
     def __init__(
         self,
@@ -580,8 +646,14 @@ class FakeResponse:
         *,
         content_length: str | None = None,
         chunks: list[bytes] | None = None,
+        url: str | None = SSE_CANONICAL_URL,
+        status_code: int = 200,
+        history: list[object] | None = None,
     ):
         self.payload = payload
+        self.url = url
+        self.status_code = status_code
+        self.history = [] if history is None else history
         self.headers = {"content-type": "application/json"}
         if content_length is not None:
             self.headers["content-length"] = content_length
@@ -604,13 +676,24 @@ class FakeResponse:
         raise AssertionError("Yahoo responses must be consumed as bounded streams")
 
 
+def _yahoo_responder(*responses: FakeResponse):
+    pending = iter(responses)
+
+    def get(url, **kwargs):
+        response = next(pending)
+        response.url = url
+        return response
+
+    return get
+
+
 def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     calls = []
     payload = _yahoo_payload()
 
     def get(url, **kwargs):
         calls.append((url, kwargs))
-        return FakeResponse(payload)
+        return FakeResponse(payload, url=url)
 
     result = YahooChartSource(http_get=get).fetch(
         "601328.SS", "2026-08-25", "2026-08-26"
@@ -621,6 +704,7 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     )
     assert calls[0][1]["timeout"] == 30
     assert calls[0][1]["stream"] is True
+    assert calls[0][1]["allow_redirects"] is False
     assert result.bars["Date"].dt.strftime("%Y-%m-%d").tolist() == [
         "2026-08-25",
         "2026-08-26",
@@ -640,10 +724,71 @@ def test_yahoo_source_reuses_canonical_endpoint_and_binds_exact_response():
     assert result.source_identity["provider"] == "yahoo-chart-api"
 
 
+@pytest.mark.parametrize(
+    ("status_code", "history", "effective_url", "message"),
+    [
+        (201, [], "request", "HTTP 200"),
+        (200, [object()], "request", "redirect"),
+        (200, [], "https://example.invalid/chart", "effective URL"),
+    ],
+)
+def test_yahoo_source_rejects_unverified_http_response(
+    status_code, history, effective_url, message
+):
+    response = FakeResponse(
+        _yahoo_payload(),
+        status_code=status_code,
+        history=history,
+    )
+
+    def get(url, **kwargs):
+        response.url = url if effective_url == "request" else effective_url
+        return response
+
+    source = YahooChartSource(http_get=get)
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert response.closed is True
+
+
+def test_yahoo_source_preserves_raw_and_canonical_content_identities():
+    payload = _yahoo_payload()
+    alternate_payload = json.dumps(
+        json.loads(payload),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ).encode()
+    source = YahooChartSource(
+        http_get=_yahoo_responder(
+            FakeResponse(payload),
+            FakeResponse(alternate_payload),
+        )
+    )
+
+    first = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+    repeated = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+    assert first.source_identity["response_sha256"] != repeated.source_identity[
+        "response_sha256"
+    ]
+    expected_canonical_sha256 = hashlib.sha256(
+        canonical_json_bytes(json.loads(payload))
+    ).hexdigest()
+    assert first.source_identity["canonical_content_sha256"] == (
+        expected_canonical_sha256
+    )
+    assert repeated.source_identity["canonical_content_sha256"] == (
+        expected_canonical_sha256
+    )
+
+
 def test_yahoo_latest_close_excludes_the_current_unfinished_xshg_session():
     payload = _yahoo_payload()
     source = YahooChartSource(
-        http_get=lambda *args, **kwargs: FakeResponse(payload),
+        http_get=_yahoo_responder(FakeResponse(payload)),
         clock=lambda: datetime(2026, 8, 26, 6, 0, tzinfo=UTC),
     )
 
@@ -668,7 +813,7 @@ def test_yahoo_latest_close_excludes_the_current_unfinished_xshg_session():
     ],
 )
 def test_yahoo_source_rejects_mismatched_or_incoherent_responses(payload, message):
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match=message):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -688,7 +833,7 @@ def test_yahoo_source_rejects_mismatched_or_incoherent_responses(payload, messag
 )
 def test_yahoo_source_rejects_mismatched_production_metadata(field, value):
     payload = _yahoo_payload(metadata={field: value})
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match=field):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -700,7 +845,7 @@ def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
         int(pd.Timestamp("2026-08-25 16:00:00", tz="UTC").timestamp()),
     ]
     payload = _yahoo_payload(timestamps=timestamps)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
@@ -717,19 +862,47 @@ def test_yahoo_source_derives_sessions_in_declared_exchange_timezone():
         [-1, 1100],
         [float("nan"), 1100],
         [1000.5, 1100],
+        [9007199254740993, 1100],
     ],
 )
 def test_yahoo_source_rejects_non_count_volume_values(volume):
     payload = _yahoo_payload(volume=volume)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     with pytest.raises(DatasetResolutionError, match="volume|Volume|non-finite"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timestamp", "1787616000"),
+        ("open", "6.1"),
+        ("close", True),
+        ("adjclose", "6.05"),
+    ],
+)
+def test_yahoo_source_rejects_coercible_timestamp_or_price_schema(field, value):
+    payload = json.loads(_yahoo_payload())
+    result = payload["chart"]["result"][0]
+    if field == "timestamp":
+        result["timestamp"][0] = value
+    elif field == "adjclose":
+        result["indicators"]["adjclose"][0]["adjclose"][0] = value
+    else:
+        result["indicators"]["quote"][0][field][0] = value
+    response = FakeResponse(
+        json.dumps(payload, separators=(",", ":")).encode()
+    )
+    source = YahooChartSource(http_get=_yahoo_responder(response))
+
+    with pytest.raises(DatasetResolutionError, match="timestamp|price|OHLC"):
+        source.fetch("601328.SS", "2026-08-25", "2026-08-26")
+
+
 def test_yahoo_source_accepts_integral_numeric_volume_as_float64():
     payload = _yahoo_payload(volume=[1000, 1100.0])
-    source = YahooChartSource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+    source = YahooChartSource(http_get=_yahoo_responder(FakeResponse(payload)))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
@@ -742,7 +915,7 @@ def test_yahoo_source_rejects_oversized_content_length_before_streaming():
         _yahoo_payload(),
         content_length=str(MAX_PROVIDER_RESPONSE_BYTES + 1),
     )
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     with pytest.raises(DatasetResolutionError, match="size limit"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -756,7 +929,7 @@ def test_yahoo_source_rejects_oversized_stream_and_closes_response():
         b"",
         chunks=[b"x" * (1024 * 1024)] * 17,
     )
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     with pytest.raises(DatasetResolutionError, match="size limit"):
         source.fetch("601328.SS", "2026-08-25", "2026-08-26")
@@ -768,12 +941,838 @@ def test_yahoo_source_rejects_oversized_stream_and_closes_response():
 def test_yahoo_source_safely_streams_without_valid_content_length(content_length):
     payload = _yahoo_payload()
     response = FakeResponse(payload, content_length=content_length)
-    source = YahooChartSource(http_get=lambda *args, **kwargs: response)
+    source = YahooChartSource(http_get=_yahoo_responder(response))
 
     result = source.fetch("601328.SS", "2026-08-25", "2026-08-26")
 
     assert result.source_identity["response_sha256"] == hashlib.sha256(payload).hexdigest()
     assert response.closed is True
+
+
+SSE_FIELDS = [
+    "code",
+    "name",
+    "open",
+    "high",
+    "low",
+    "last",
+    "prev_close",
+    "chg_rate",
+    "volume",
+    "amount",
+    "tradephase",
+    "change",
+    "amp_rate",
+    "cpxxsubtype",
+    "cpxxprodusta",
+]
+SSE_ROW = [
+    "601328",
+    "交通银行",
+    7.14,
+    7.28,
+    7.13,
+    7.24,
+    7.10,
+    1.97,
+    213407934,
+    1542217037,
+    "E110    ",
+    0.14,
+    2.11,
+    "ASH",
+    "   D  F  N          ",
+]
+
+
+def _sse_payload(
+    *,
+    rows: list | None = None,
+    date: object = 20260831,
+    time: object = 162903,
+    total: object = 1,
+) -> bytes:
+    return json.dumps(
+        {
+            "date": date,
+            "time": time,
+            "total": total,
+            "list": [SSE_ROW] if rows is None else rows,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
+def test_sse_current_source_binds_exact_request_bar_and_source_identity():
+    calls = []
+    payload = _sse_payload()
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse(payload)
+
+    result = SseCurrentDailySource(http_get=get).fetch(
+        "601328.SS", "2026-08-31", "2026-08-31"
+    )
+
+    request = {
+        "method": "GET",
+        "url": SSE_CANONICAL_URL,
+        "params": {
+            "select": ",".join(SSE_FIELDS),
+            "begin": 0,
+            "end": 5000,
+        },
+        "headers": {
+            "Accept": "application/json",
+            "Referer": "https://www.sse.com.cn/market/price/report/",
+            "User-Agent": "quant-research-platform/0.1",
+        },
+    }
+    assert calls == [
+        (
+            SSE_CURRENT_ENDPOINT,
+            {
+                "params": request["params"],
+                "headers": request["headers"],
+                "timeout": 30,
+                "stream": True,
+                "allow_redirects": False,
+            },
+        )
+    ]
+    pd.testing.assert_frame_equal(
+        result.bars,
+        pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-08-31"]),
+                "Open": [7.14],
+                "High": [7.28],
+                "Low": [7.13],
+                "Close": [7.24],
+                "Volume": [213407934.0],
+            }
+        ),
+    )
+    assert result.source_identity == {
+        "provider": "sse-current-ashare-report",
+        "instrument": "601328.SS",
+        "request": request,
+        "response_sha256": "53c6785296d6a11efa36160c5ec99b33e541896e56abb6c6eddb1d2e92c4a759",
+        "canonical_content_sha256": "aba8bc12cd51608c28c52674eb7755d9d0392c95355cd5418a19c517bd033d52",
+        "response_date": "2026-08-31",
+        "response_time": "16:29:03",
+        "trading_phase": "E110",
+        "contract": "IS120 STEP 0.62",
+        "price_report_script_url": (
+            "https://www.sse.com.cn/xhtml/home/2021public/querySearch/"
+            "search_price_2021.js?v=ssesite_V3.8.0_20260828"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (FakeResponse(_sse_payload(), status_code=201), "HTTP 200"),
+        (FakeResponse(_sse_payload(), history=[object()]), "redirect"),
+        (
+            FakeResponse(
+                _sse_payload(),
+                url="https://example.invalid/v1/sh1/list/exchange/ashare",
+            ),
+            "effective URL",
+        ),
+        (FakeResponse(_sse_payload(), url=None), "effective URL"),
+        (FakeResponse(_sse_payload(), url="not-a-url"), "effective URL"),
+    ],
+)
+def test_sse_current_source_rejects_unverified_http_response(response, message):
+    source = SseCurrentDailySource(http_get=lambda *args, **kwargs: response)
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+    assert response.closed is True
+
+
+def test_sse_current_source_latest_close_is_verified_response_date():
+    response = FakeResponse(_sse_payload())
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: response,
+        clock=lambda: datetime(2026, 9, 1, tzinfo=UTC),
+    )
+
+    assert source.latest_available_close("601328.SS") == "2026-08-31"
+    assert response.closed is True
+
+
+@pytest.mark.parametrize(
+    ("instrument", "start", "end", "message"),
+    [
+        ("601328", "2026-08-31", "2026-08-31", "instrument"),
+        ("000001.SZ", "2026-08-31", "2026-08-31", "instrument"),
+        ("601328.SS", "2026-08-30", "2026-08-30", "range"),
+        ("601328.SS", "2026-08-30", "2026-08-31", "range"),
+        ("601328.SS", "2026-08-31", "2026-09-01", "range"),
+    ],
+)
+def test_sse_current_source_rejects_noncanonical_instrument_or_range(
+    instrument, start, end, message
+):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload())
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch(instrument, start, end)
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ([], "requested code"),
+        ([["600000", *SSE_ROW[1:]]], "requested code"),
+        ([SSE_ROW, SSE_ROW], "exactly one"),
+        ([SSE_ROW[:-1]], "15 fields"),
+    ],
+)
+def test_sse_current_source_requires_one_exact_requested_code_row(rows, message):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=rows))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    ("index", "value", "message"),
+    [
+        (1, "  ", "name"),
+        (2, 0, "OHLC"),
+        (3, 7.12, "OHLC"),
+        (4, 7.25, "OHLC"),
+        (5, float("inf"), "non-finite"),
+        (8, True, "volume"),
+        (8, -1, "volume"),
+        (8, 1.5, "volume"),
+        (10, "E111    ", "phase"),
+        (13, "ASHI", "subtype"),
+    ],
+)
+def test_sse_current_source_rejects_invalid_name_phase_subtype_or_ohlcv(
+    index, value, message
+):
+    row = SSE_ROW.copy()
+    row[index] = value
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_volume_not_lossless_in_float64():
+    row = SSE_ROW.copy()
+    row[8] = 9007199254740993
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match="lossless.*float64"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_leading_whitespace_in_trading_phase():
+    row = SSE_ROW.copy()
+    row[10] = " E110   "
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(rows=[row]))
+    )
+
+    with pytest.raises(DatasetResolutionError, match="phase"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"date": 20260230}, "date"),
+        ({"date": "20260831"}, "date"),
+        ({"time": 246000}, "time"),
+        ({"time": "162903"}, "time"),
+        ({"total": -1}, "total"),
+        ({"total": True}, "total"),
+    ],
+)
+def test_sse_current_source_rejects_invalid_report_metadata(overrides, message):
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload(**overrides))
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"date":20260831,"date":20260831,"time":162903,"total":0,"list":[]}',
+        _sse_payload().replace(b"7.14", b"NaN", 1),
+    ],
+)
+def test_sse_current_source_rejects_duplicate_keys_and_nonfinite_json(payload):
+    source = SseCurrentDailySource(http_get=lambda *args, **kwargs: FakeResponse(payload))
+
+    with pytest.raises(DatasetResolutionError, match="duplicate|non-finite"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+
+def test_sse_current_source_rejects_non_json_and_oversized_responses():
+    non_json = FakeResponse(_sse_payload())
+    non_json.headers["content-type"] = "text/html"
+    oversized = FakeResponse(
+        b"", chunks=[b"x" * (1024 * 1024)] * 17
+    )
+
+    for response, message in [(non_json, "not JSON"), (oversized, "size limit")]:
+        source = SseCurrentDailySource(
+            http_get=lambda *args, response=response, **kwargs: response
+        )
+        with pytest.raises(DatasetResolutionError, match=message):
+            source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+        assert response.closed is True
+
+
+def test_sse_current_source_requires_timezone_aware_clock_for_latest_close():
+    source = SseCurrentDailySource(
+        http_get=lambda *args, **kwargs: FakeResponse(_sse_payload()),
+        clock=lambda: datetime(2026, 9, 1),
+    )
+
+    with pytest.raises(DatasetResolutionError, match="timezone-aware"):
+        source.latest_available_close("601328.SS")
+
+
+def test_audited_xshg_historical_only_routes_once_and_normalizes_yahoo():
+    history_bars = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-30"]),
+            "Open": [7.139999771118164],
+            "High": [7.279999771118164],
+            "Low": [7.129999771118164],
+            "Close": [7.239999771118164],
+            "Volume": [213407934],
+            "AdjustedClose": [6.88],
+        }
+    )
+    history = InjectedDailySource("yahoo-chart-api", history_bars)
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"], [9.1])
+    )
+
+    result = _audited_source(history, current).fetch(
+        "601328.SS", "2026-08-30", "2026-08-30"
+    )
+
+    assert history.fetch_calls == [("601328.SS", "2026-08-30", "2026-08-30")]
+    assert current.fetch_calls == []
+    assert list(result.bars.columns) == ["Date", "Open", "High", "Low", "Close", "Volume"]
+    assert result.bars.loc[0, ["Open", "High", "Low", "Close"]].tolist() == [
+        7.14,
+        7.28,
+        7.13,
+        7.24,
+    ]
+    assert result.bars.loc[0, "Volume"] == 213407934
+    assert int(result.bars.loc[0, "Volume"]) == 213407934
+    assert result.source_identity == {
+        "provider": "xshg-audited-daily-v1",
+        "instrument": "601328.SS",
+        "policy_version": "sse-whole-t-yahoo-history-v1",
+        "decision_date": "2026-08-31",
+        "requested_start": "2026-08-30",
+        "requested_end": "2026-08-30",
+        "components": [
+            {
+                "provider": "yahoo-chart-api",
+                "instrument": "601328.SS",
+                "generation": "yahoo-chart-api",
+            }
+        ],
+    }
+    canonical_json_bytes(result.source_identity)
+
+
+def test_audited_xshg_today_only_uses_shanghai_date_and_sse_only():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current_bars = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-31"]),
+            "Open": [7.14],
+            "High": [7.28],
+            "Low": [7.13],
+            "Close": [7.24],
+            "Volume": [213407934],
+        }
+    )
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+    source = _audited_source(
+        history,
+        current,
+        clock=lambda: datetime(2026, 8, 30, 16, 30, tzinfo=UTC),
+    )
+
+    result = source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+
+    assert current.fetch_calls == [("601328.SS", "2026-08-31", "2026-08-31")]
+    assert history.fetch_calls == []
+    pd.testing.assert_frame_equal(result.bars, current_bars.astype({"Volume": "float64"}))
+    assert [item["provider"] for item in result.source_identity["components"]] == [
+        "sse-current-ashare-report"
+    ]
+
+
+def test_audited_xshg_mixed_range_appends_complete_sse_row_without_patching():
+    history = InjectedDailySource(
+        "yahoo-chart-api",
+        _bars(["2026-08-29", "2026-08-30"], [6.2, 6.3]),
+    )
+    current_bars = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-31"]),
+            "Open": [9.01],
+            "High": [9.12],
+            "Low": [8.98],
+            "Close": [9.1],
+            "Volume": [12345],
+        }
+    )
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+
+    result = _audited_source(history, current).fetch(
+        "601328.SS", "2026-08-29", "2026-08-31"
+    )
+
+    assert current.fetch_calls == [("601328.SS", "2026-08-31", "2026-08-31")]
+    assert history.fetch_calls == [("601328.SS", "2026-08-29", "2026-08-30")]
+    assert result.bars.iloc[-1].to_dict() == {
+        "Date": pd.Timestamp("2026-08-31"),
+        "Open": 9.01,
+        "High": 9.12,
+        "Low": 8.98,
+        "Close": 9.1,
+        "Volume": 12345.0,
+    }
+    assert [item["provider"] for item in result.source_identity["components"]] == [
+        "yahoo-chart-api",
+        "sse-current-ashare-report",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "clock", "message"),
+    [
+        ("2026-09-01", "2026-08-31", None, "start.*after"),
+        ("2026-08-31", "2026-09-01", None, "future"),
+        ("2026-08-31", "2026-08-31", lambda: datetime(2026, 8, 31), "timezone-aware"),
+    ],
+)
+def test_audited_xshg_rejects_invalid_ranges_future_and_naive_clock(
+    start, end, clock, message
+):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+    kwargs = {} if clock is None else {"clock": clock}
+    source = _audited_source(history, current, **kwargs)
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        source.fetch("601328.SS", start, end)
+
+    assert history.fetch_calls == []
+    assert current.fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    "price",
+    [7.234, 0, float("inf"), float("nan"), True],
+)
+def test_audited_xshg_rejects_off_tick_or_invalid_yahoo_price(price):
+    bars = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-30"]),
+            "Open": [7.14],
+            "High": [7.28],
+            "Low": [7.13],
+            "Close": [price],
+            "Volume": [1000],
+        }
+    )
+    history = InjectedDailySource("yahoo-chart-api", bars)
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="price|tick|finite|positive"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [True, -1, 1000.5, float("inf"), float("nan"), 9007199254740993],
+)
+def test_audited_xshg_rejects_unsafe_yahoo_volume(volume):
+    bars = _bars(["2026-08-30"])
+    bars["Volume"] = pd.Series([volume], dtype=object)
+    history = InjectedDailySource("yahoo-chart-api", bars)
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="[Vv]olume|float64"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+
+def test_audited_xshg_rejects_huge_decimal_volume_before_integer_conversion(
+    monkeypatch,
+):
+    bars = _bars(["2026-08-30"])
+    bars["Volume"] = pd.Series([Decimal("1e1000000000")], dtype=object)
+    history = InjectedDailySource("yahoo-chart-api", bars)
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+    builtin_int = int
+
+    def guarded_int(value, *args, **kwargs):
+        if isinstance(value, Decimal):
+            raise AssertionError("Decimal reached int conversion")
+        return builtin_int(value, *args, **kwargs)
+
+    monkeypatch.setattr(dataset_service_module, "int", guarded_int, raising=False)
+
+    with pytest.raises(DatasetResolutionError, match="[Vv]olume|float64"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        DatasetResolutionError("SSE phase is C111"),
+        DatasetResolutionError("SSE returned a zero bar"),
+        DatasetResolutionError("SSE response date mismatch"),
+        requests.ConnectionError("SSE network failure"),
+    ],
+)
+def test_audited_xshg_current_failure_propagates_without_yahoo_fallback(error):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report",
+        _bars(["2026-08-31"]),
+        fetch_error=error,
+    )
+
+    with pytest.raises(type(error), match="SSE"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert current.fetch_calls == [("601328.SS", "2026-08-31", "2026-08-31")]
+    assert history.fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    "current_bars",
+    [
+        pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2026-08-31"]),
+                "Open": [0],
+                "High": [7.28],
+                "Low": [7.13],
+                "Close": [7.24],
+                "Volume": [1000],
+            }
+        ),
+        _bars(["2026-08-30"]),
+    ],
+)
+def test_audited_xshg_invalid_current_row_stops_before_history(current_bars):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+
+    with pytest.raises(DatasetResolutionError, match="invalid|outside|finite|positive"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("Close", 6.104),
+        ("Volume", 1000.5),
+        ("Volume", 9007199254740993),
+    ],
+)
+def test_audited_xshg_rejects_off_tick_or_inexact_current_bar(column, value):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current_bars = _bars(["2026-08-31"])
+    current_bars[column] = pd.Series([value], dtype=object)
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+
+    with pytest.raises(DatasetResolutionError, match="price|tick|Volume|float64"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"provider": "wrong", "instrument": "601328.SS"},
+        {"provider": "yahoo-chart-api", "instrument": "000001.SS"},
+        {"provider": "yahoo-chart-api", "instrument": "601328.SS", "bad": float("nan")},
+        ["not", "a", "dict"],
+    ],
+)
+def test_audited_xshg_rejects_invalid_history_component_identity(identity):
+    history = InjectedDailySource(
+        "yahoo-chart-api", _bars(["2026-08-30"]), identity=identity
+    )
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="identity|provider|instrument|finite"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+
+def test_audited_xshg_rejects_mismatched_current_component_identity():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report",
+        _bars(["2026-08-31"]),
+        identity={"provider": "yahoo-chart-api", "instrument": "601328.SS"},
+    )
+
+    with pytest.raises(DatasetResolutionError, match="provider"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+
+
+def test_audited_xshg_component_identity_is_detached_from_source_mutation():
+    identity = {
+        "provider": "yahoo-chart-api",
+        "instrument": "601328.SS",
+        "request": {"headers": ["v1"]},
+    }
+    history = InjectedDailySource(
+        "yahoo-chart-api", _bars(["2026-08-30"]), identity=identity
+    )
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    result = _audited_source(history, current).fetch(
+        "601328.SS", "2026-08-30", "2026-08-30"
+    )
+    identity["request"]["headers"].append("mutated")
+
+    assert result.source_identity["components"] == [
+        {
+            "provider": "yahoo-chart-api",
+            "instrument": "601328.SS",
+            "request": {"headers": ["v1"]},
+        }
+    ]
+
+
+def test_audited_xshg_rejects_invalid_instrument_before_component_calls():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+    source = _audited_source(history, current)
+
+    with pytest.raises(DatasetResolutionError, match=r"six-digit.*\.SS"):
+        source.fetch("601328.SZ", "2026-08-30", "2026-08-30")
+    with pytest.raises(DatasetResolutionError, match=r"six-digit.*\.SS"):
+        source.latest_available_close("601328.SZ")
+
+    assert history.fetch_calls == []
+    assert current.fetch_calls == []
+    assert history.latest_calls == []
+    assert current.latest_calls == []
+
+
+def test_audited_xshg_rejects_miswired_history_provider_before_fetch():
+    history = InjectedDailySource(
+        "wrong-runtime-provider",
+        _bars(["2026-08-30"]),
+        identity={"provider": "yahoo-chart-api", "instrument": "601328.SS"},
+    )
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="configured.*provider"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+    assert history.fetch_calls == []
+    assert current.fetch_calls == []
+
+
+def test_audited_xshg_mixed_range_rejects_miswired_history_before_calls():
+    history = InjectedDailySource(
+        "wrong-runtime-provider",
+        _bars(["2026-08-30"]),
+        identity={"provider": "yahoo-chart-api", "instrument": "601328.SS"},
+    )
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="configured.*provider"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+    assert current.fetch_calls == []
+
+
+def test_audited_xshg_rejects_miswired_current_provider_before_calls():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "wrong-runtime-provider",
+        _bars(["2026-08-31"]),
+        identity={
+            "provider": "sse-current-ashare-report",
+            "instrument": "601328.SS",
+        },
+    )
+    source = _audited_source(history, current)
+
+    with pytest.raises(DatasetResolutionError, match="configured.*provider"):
+        source.fetch("601328.SS", "2026-08-31", "2026-08-31")
+    with pytest.raises(DatasetResolutionError, match="configured.*provider"):
+        source.latest_available_close("601328.SS")
+
+    assert history.fetch_calls == []
+    assert current.fetch_calls == []
+    assert history.latest_calls == []
+    assert current.latest_calls == []
+
+
+@pytest.mark.parametrize(
+    "bars",
+    [
+        _bars(["2026-08-30", "2026-08-30"]),
+        _bars(["2026-08-29"]),
+        _bars(["2026-08-30"]).drop(columns="Volume"),
+    ],
+)
+def test_audited_xshg_rejects_duplicate_out_of_range_or_incomplete_history(bars):
+    history = InjectedDailySource("yahoo-chart-api", bars)
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="duplicate|outside|required|schema"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-30"
+        )
+
+
+def test_audited_xshg_rejects_unsorted_raw_history():
+    history = InjectedDailySource(
+        "yahoo-chart-api", _bars(["2026-08-30", "2026-08-29"])
+    )
+    current = InjectedDailySource(
+        "sse-current-ashare-report", _bars(["2026-08-31"])
+    )
+
+    with pytest.raises(DatasetResolutionError, match="sorted"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-29", "2026-08-30"
+        )
+
+
+def test_audited_xshg_rejects_current_schema_instead_of_merging_fields():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current_bars = _bars(["2026-08-31"])
+    current_bars["AdjustedClose"] = current_bars["Close"]
+    current = InjectedDailySource("sse-current-ashare-report", current_bars)
+
+    with pytest.raises(DatasetResolutionError, match="schema"):
+        _audited_source(history, current).fetch(
+            "601328.SS", "2026-08-30", "2026-08-31"
+        )
+
+    assert history.fetch_calls == []
+
+
+def test_audited_xshg_latest_close_delegates_to_current_source():
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report",
+        _bars(["2026-08-31"]),
+        latest_close="2026-08-31",
+    )
+
+    assert _audited_source(history, current).latest_available_close("601328.SS") == (
+        "2026-08-31"
+    )
+    assert current.latest_calls == ["601328.SS"]
+    assert history.latest_calls == []
+
+
+@pytest.mark.parametrize(
+    "latest_close,latest_error,message",
+    [
+        ("2026-09-01", None, "future"),
+        ("2026-08-31", DatasetResolutionError("current unavailable"), "unavailable"),
+    ],
+)
+def test_audited_xshg_latest_close_rejects_future_and_does_not_fallback(
+    latest_close, latest_error, message
+):
+    history = InjectedDailySource("yahoo-chart-api", _bars(["2026-08-30"]))
+    current = InjectedDailySource(
+        "sse-current-ashare-report",
+        _bars(["2026-08-31"]),
+        latest_close=latest_close,
+        latest_error=latest_error,
+    )
+
+    with pytest.raises(DatasetResolutionError, match=message):
+        _audited_source(history, current).latest_available_close("601328.SS")
+
+    assert current.latest_calls == ["601328.SS"]
+    assert history.latest_calls == []
 
 
 def test_catalog_registration_is_immutable(tmp_path: Path):
