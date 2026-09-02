@@ -32,6 +32,7 @@ from .model import (
     WatchdogAuthority,
     WorkflowError,
 )
+from .operations import OperationLifecycle
 from .routing import (
     build_capability_matrix,
     freeze_capability_snapshot,
@@ -290,10 +291,23 @@ class WorkflowKernel:
             raise WorkflowError("INVALID_RETRY_POLICY", "route attempt limit must be positive")
         self._max_route_attempts = max_route_attempts
         self._clock = clock or SystemClock()
+        self._operations = OperationLifecycle(
+            self._store,
+            external_effects,
+            self._clock,
+            self._authenticator,
+        )
 
     def record(self, event: UserDecision) -> RecordReceipt:
         if not isinstance(event, UserDecision):
             raise WorkflowError("INVALID_EVENT", "record accepts only a UserDecision")
+        if event.decision_kind == "APPROVE_EXACT_OPERATION":
+            try:
+                return self._operations.record_approval(event)
+            except WorkflowError:
+                raise
+            except sqlite3.DatabaseError as error:
+                raise WorkflowError("LEDGER_ERROR", "approval transaction failed") from error
         if event.decision_kind != "BOOTSTRAP_PROJECT":
             return self._record_revision(event)
         _validate_json_value(event.provenance)
@@ -668,11 +682,29 @@ class WorkflowKernel:
 
     def advance(self, project_id: str) -> AdvanceResult:
         """Run one bounded lifecycle transition for the Workflow Project."""
+        with self._operations.pulse(project_id):
+            return self._advance_once(project_id)
+
+    def _advance_once(self, project_id: str) -> AdvanceResult:
+        try:
+            operation_control = self._operations.control(project_id)
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Operation transaction failed") from error
+        if operation_control is not None:
+            return operation_control
         control = self._take_handoff_control(project_id)
         if isinstance(control, HandoffDeliveryCommand):
             return self._deliver_handoff(control)
         if isinstance(control, HandoffRetryCommand):
             return self._retry_handoff(control)
+        try:
+            self._operations.plan(project_id)
+        except WorkflowError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise WorkflowError("LEDGER_ERROR", "Operation policy lookup failed") from error
         recorded_at = self._clock.now()
         action_id = str(uuid.uuid4())
         action_envelope_id = str(uuid.uuid4())
@@ -2870,6 +2902,10 @@ class WorkflowKernel:
     ) -> AdvanceResult:
         envelope_binding = _verify_action_envelope(envelope)
 
+        scripted = self._operations.prepare(connection, current, envelope, recorded_at)
+        if scripted is not None:
+            return scripted
+
         operation_id = str(uuid.uuid4())
         operation_json = _canonical_json(
             {
@@ -3035,6 +3071,7 @@ class WorkflowKernel:
                 "ORDER BY d.brief_number DESC LIMIT 1",
                 (project_id,),
             ).fetchone()
+            pending_decisions = self._operations.pending_decisions(connection, project_id)
         if project_row is None:
             if has_project_history is not None:
                 raise WorkflowError("LEDGER_INTEGRITY", "authoritative project row is missing")
@@ -3076,7 +3113,7 @@ class WorkflowKernel:
         return ProjectView(
             current_goal=goal,
             daily_brief=daily_brief,
-            pending_decisions=(),
+            pending_decisions=pending_decisions,
         )
 
     @staticmethod

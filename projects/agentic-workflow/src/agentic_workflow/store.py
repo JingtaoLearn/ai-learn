@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -43,12 +45,15 @@ class ControlStore:
                     (4, "0004_compatibility_decisions.sql"),
                     (5, "0005_matt_receipts.sql"),
                     (6, "0006_route_handoffs.sql"),
+                    (7, "0007_replay_shadow_operations.sql"),
                 )
                 for version, filename in migrations:
                     if version in applied:
                         continue
                     sql = files("agentic_workflow.migrations").joinpath(filename).read_text()
                     _execute_script(connection, sql)
+                    if version == 7:
+                        _backfill_v6_operations(connection)
                     connection.execute(
                         "INSERT INTO schema_migrations(version) VALUES (?)", (version,)
                     )
@@ -120,3 +125,95 @@ def _execute_script(connection: sqlite3.Connection, sql: str) -> None:
             statement = ""
     if statement.strip():
         raise sqlite3.OperationalError("incomplete migration statement")
+
+
+def _backfill_v6_operations(connection: sqlite3.Connection) -> None:
+    """Validate and preserve both legal closed-v6 Operation histories exactly."""
+    connection.row_factory = sqlite3.Row
+    rows = connection.execute(
+        "SELECT o.*, e.action_envelope_digest FROM operation_records AS o "
+        "JOIN action_envelopes AS e ON e.action_envelope_id = o.action_envelope_id "
+        "WHERE o.mode IS NULL ORDER BY o.reserved_at, o.operation_id"
+    ).fetchall()
+    for row in rows:
+        legacy = _canonical_object(row["operation_json"], row["operation_digest"])
+        binding = {
+            "active_intent_digest": row["active_intent_digest"],
+            "constitution_revision": row["constitution_revision"],
+            "goal_revision": row["goal_revision"],
+            "operating_profile_revision": row["operating_profile_revision"],
+        }
+        if legacy != {
+            "action_envelope_digest": row["action_envelope_digest"],
+            "effect_kind": "BOUNDED_WORK",
+            "intent_binding": binding,
+            "operation_id": row["operation_id"],
+        }:
+            raise sqlite3.IntegrityError("legacy v6 Operation Record is invalid")
+        events = connection.execute(
+            "SELECT * FROM operation_events WHERE operation_id = ? ORDER BY event_number",
+            (row["operation_id"],),
+        ).fetchall()
+        event_types = tuple(event["event_type"] for event in events)
+        if event_types not in {("RESERVED",), ("RESERVED", "CONCLUDED")}:
+            raise sqlite3.IntegrityError("legacy v6 Operation event is invalid")
+        for number, event in enumerate(events, 1):
+            expected = {
+                "event_type": event_types[number - 1],
+                "intent_binding": binding,
+                "operation_digest": row["operation_digest"],
+            }
+            if event_types[number - 1] == "CONCLUDED":
+                expected["result"] = "NO_EXTERNAL_EFFECT"
+            expected_json = _canonical_json(expected)
+            if (
+                event["event_number"] != number
+                or event["payload_json"] != expected_json
+                or event["payload_digest"] != _digest(expected_json)
+                or event["constitution_revision"] != binding["constitution_revision"]
+                or event["goal_revision"] != binding["goal_revision"]
+                or event["operating_profile_revision"]
+                != binding["operating_profile_revision"]
+                or event["active_intent_digest"] != binding["active_intent_digest"]
+                or not isinstance(event["recorded_at"], str)
+                or not event["recorded_at"]
+            ):
+                raise sqlite3.IntegrityError("legacy v6 Operation event is invalid")
+    connection.execute(
+        "CREATE TRIGGER operation_records_no_update BEFORE UPDATE ON operation_records "
+        "BEGIN SELECT RAISE(ABORT, 'operation records are append-only'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER operation_records_no_delete BEFORE DELETE ON operation_records "
+        "BEGIN SELECT RAISE(ABORT, 'operation records are append-only'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER operation_events_no_update BEFORE UPDATE ON operation_events "
+        "BEGIN SELECT RAISE(ABORT, 'operation events are append-only'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER operation_events_no_delete BEFORE DELETE ON operation_events "
+        "BEGIN SELECT RAISE(ABORT, 'operation events are append-only'); END"
+    )
+
+
+def _canonical_object(payload_json: str, payload_digest: str) -> dict[str, object]:
+    try:
+        payload = json.loads(payload_json)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise sqlite3.IntegrityError("legacy v6 Operation Record is invalid") from error
+    if (
+        not isinstance(payload, dict)
+        or _canonical_json(payload) != payload_json
+        or _digest(payload_json) != payload_digest
+    ):
+        raise sqlite3.IntegrityError("legacy v6 Operation Record is invalid")
+    return payload
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()

@@ -500,7 +500,7 @@ def test_concurrent_advance_deduplicates_one_durable_external_attempt(tmp_path: 
     assert sum(getattr(result, "outcome", None) == "OPERATION_RESERVED" for result in results) == 1
     errors = [result for result in results if isinstance(result, WorkflowError)]
     assert len(errors) == 1
-    assert errors[0].code == "MATT_EXECUTION_AMBIGUOUS"
+    assert errors[0].code == "PULSE_BUSY"
     with sqlite3.connect(database_path) as connection:
         counts = connection.execute(
             "SELECT (SELECT COUNT(*) FROM matt_execution_attempts), "
