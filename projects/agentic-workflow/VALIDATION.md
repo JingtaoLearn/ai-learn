@@ -38,22 +38,23 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 - The superseded `awfowner` Profile, `awfscout` Profile, prototype job, recovery jobs, old workflow directory, and old worktrees were deleted after the latest product-level suite was accepted.
 - No recurring tracer-only timer remains active.
 
-## Terminal-result notification acceptance
+## Session message CLI acceptance
 
-The first post-MVP notification slice removed the manual Completion Signal from one real Research result path:
+The first post-MVP transport slice is deliberately smaller than a message queue. It sends one message to one exact Agent Session and returns that Agent's response to the caller.
 
-- canonical Owner Session: `20260903_075757_73a49f`;
-- source Agent: `ResearchAgent-QuantResearch`;
-- durable event ID: `7aa3c011dff1ee6b0b54c689e80970517736b6033f042d5f9c22e631d03f337f`;
-- run/action: `notification-link-002` / `exact-session-auto-return-002`;
-- Result SHA-256: `1e7f84f80242c1d729f1ab431750c9c29eedb0b7998cc262d7a1699e93a87edf`;
-- Owner Decision: `/home/jingtao/.hermes/workflows/quant-research/runs/notification-link-002/DECISION.md`.
+The live nested-Profile smoke used:
 
-The Research Agent wrote the Result and emitted `RESULT_READY`. The adapter persisted the event before calling the Owner profile, rebuilt a small secret-free OS-user environment across the nested Profile boundary, and targeted the exact existing Owner Session with `--resume`. Hermes reported the same Session ID through authoritative CLI metadata. The Owner independently verified the Result hash and wrote the Decision without a manually injected Completion Signal.
+- source environment: `ResearchAgent-QuantResearch` Profile home;
+- target Profile: `productowneragentquantresearch`;
+- exact target Session: `20260903_075757_73a49f`;
+- message: `SESSION-CLI-SMOKE-001`;
+- exact response: `OWNER_SESSION_DELIVERY_OK`.
 
-Re-emitting the identical event returned `deduplicated`; the Owner Session message count remained unchanged. A separate invalid-owner smoke retained `event.json` and a failed attempt while leaving `delivered.json` absent.
+The CLI removed inherited source-Profile state and credentials, restored the real user home, passed `--resume 20260903_075757_73a49f`, accepted Session identity only from Hermes stderr metadata, and returned the target response as JSON. It used no Bot Chat title lookup and could not create a replacement Session.
 
-Assistant and Reviewer terminal outcomes must adopt this same envelope next. External Signals, human decisions, and watchdog/dead-letter escalation remain separate later slices.
+All eight focused tests pass. They cover exact Profile/Session routing, private temporary message handling, stderr-only Session identity, mismatch and target-process failures, source-Profile secret isolation, message-file input, and JSON output.
+
+This CLI has no queue, persistence, retry, dead-letter, or deduplication behavior. The calling Agent owns when to send, what result reference to include, and whether a retry is safe.
 
 ## Artifact checksums
 
@@ -70,4 +71,4 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 
 ## Verdict
 
-`PASS` — the same persistent Product Owner Session received multiple Signals, selected and invoked an isolated specialist, and now receives a durable terminal-result event that automatically wakes the exact Session. The Owner verified the Result and changed the next product Action from that evidence. Assistant, Reviewer, external-event, human-decision, and reliability links remain later slices.
+`PASS` — one lightweight CLI sent a message from a nested Agent Profile environment to exact persistent Owner Session `20260903_075757_73a49f` and returned the Owner's exact response. This proves the addressed Session transport primitive only; each Agent still needs an explicit instruction to call it after producing a Result.

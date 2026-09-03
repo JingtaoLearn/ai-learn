@@ -67,7 +67,7 @@ The first live product workspace is:
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
 4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
-5. A specialist acts in its own Profile and may use an ephemeral Task Session. After writing its terminal artifact, it uses the [terminal-event adapter](notification/README.md) to durably return `RESULT_READY`, `BLOCKED`, or `FAILED` to the exact same Owner Session.
+5. A specialist acts in its own Profile and may use an ephemeral Task Session. After writing its Result, it uses the [Session message CLI](notification/README.md) to send the result reference to the exact same Owner Session.
 6. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
 
 Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
@@ -78,13 +78,13 @@ For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot 
 
 ## Current boundary
 
-- No workflow engine, database, state machine, or general connector framework. The single Python edge adapter exists only because native asynchronous Bot messaging does not wake the dormant calling Owner with the terminal result.
-- New adapter behavior follows focused test-driven development and a real exact-Session acceptance trace.
+- No workflow engine, message broker, database, state machine, outbox, or general connector framework. One small CLI sends one message to one exact Session because native asynchronous Bot messaging does not wake the dormant caller with the result.
+- The CLI follows focused test-driven development and a real exact-Session acceptance trace.
 - No automatic merge, deployment, production-signal change, paid/public action, or other high-risk external effect.
 - High-risk actions still require Jingtao's explicit approval at the existing tool boundary.
 
 ## Current status
 
-The heavy draft was discarded. The QuantResearch tracer proves one product-level Agent suite with isolated Profiles, one persistent Product Owner Bot Chat, repeated Signals in the same Owner Session, native `message_agent` delivery to a Research Agent, a real file Result, and an evidence-grounded Owner Decision. The first notification slice additionally proves automatic specialist terminal-result delivery into that same Owner Session, durable failure evidence, and duplicate suppression. See [`VALIDATION.md`](VALIDATION.md) and [`notification/README.md`](notification/README.md).
+The heavy draft was discarded. The QuantResearch tracer proves one product-level Agent suite with isolated Profiles, one persistent Product Owner Bot Chat, repeated Signals in the same Owner Session, native `message_agent` delivery to a Research Agent, a real file Result, and an evidence-grounded Owner Decision. The Session message CLI now proves exact addressed delivery from a nested Agent Profile into that same Owner Session and returns the Owner response to the caller. See [`VALIDATION.md`](VALIDATION.md) and [`notification/README.md`](notification/README.md).
 
 This remains functional validation. The next product action is the separately governed QuantResearch evidence Spike selected by the Owner; it is not part of the Agentic Workflow tracer.
