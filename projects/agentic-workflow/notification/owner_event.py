@@ -10,6 +10,7 @@ import pwd
 import re
 import subprocess
 import tempfile
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,14 +56,38 @@ def canonical_json(value: object) -> str:
 
 
 def atomic_json(path: Path, value: object) -> None:
+    atomic_text(
+        path,
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+    )
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def secure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+def atomic_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, delete=False
     ) as handle:
-        json.dump(value, handle, ensure_ascii=False, sort_keys=True, indent=2)
-        handle.write("\n")
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
         temporary = Path(handle.name)
     os.replace(temporary, path)
+    path.chmod(0o600)
+    fsync_directory(path.parent)
 
 
 def build_event(request: EventRequest) -> tuple[str, dict[str, object]]:
@@ -115,11 +140,56 @@ This durable terminal event is addressed to the canonical Product Owner Session 
 
 
 def build_delivery_environment(source: dict[str, str] | None = None) -> dict[str, str]:
-    environment = dict(source or os.environ)
-    environment.pop("HERMES_HOME", None)
-    real_home = environment.get("HERMES_REAL_HOME") or pwd.getpwuid(os.getuid()).pw_dir
+    source_environment = dict(source or os.environ)
+    real_home = source_environment.get("HERMES_REAL_HOME") or pwd.getpwuid(os.getuid()).pw_dir
+    allowed = {
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "TZ",
+        "USER",
+        "XDG_RUNTIME_DIR",
+    }
+    environment = {
+        key: value
+        for key, value in source_environment.items()
+        if key in allowed or key.startswith("LC_")
+    }
     environment["HOME"] = real_home
+    environment["HERMES_REAL_HOME"] = real_home
     return environment
+
+
+def initialize_event_directory(
+    state_root: Path,
+    event_dir: Path,
+    event: dict[str, object],
+) -> None:
+    if event_dir.exists():
+        event_dir.chmod(0o700)
+        event_path = event_dir / "event.json"
+        prompt_path = event_dir / "prompt.md"
+        if not event_path.is_file() or not prompt_path.is_file():
+            raise RuntimeError(f"incomplete event initialization: {event_dir}")
+        event_path.chmod(0o600)
+        prompt_path.chmod(0o600)
+        return
+
+    temporary = state_root / f".{event['event_id']}.{uuid.uuid4().hex}.tmp"
+    secure_directory(temporary)
+    try:
+        atomic_json(temporary / "event.json", event)
+        atomic_text(temporary / "prompt.md", render_prompt(event))
+        fsync_directory(temporary)
+        os.replace(temporary, event_dir)
+        fsync_directory(state_root)
+    finally:
+        if temporary.exists():
+            for child in temporary.iterdir():
+                child.unlink()
+            temporary.rmdir()
 
 
 def default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -139,16 +209,17 @@ def emit_event(
     runner: Runner = default_runner,
 ) -> EmitResult:
     event_id, event = build_event(request)
-    event_dir = state_root.expanduser().resolve() / event_id
-    event_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = event_dir / ".lock"
+    state_root = state_root.expanduser().resolve()
+    secure_directory(state_root)
+    locks_dir = state_root / ".locks"
+    secure_directory(locks_dir)
+    event_dir = state_root / event_id
+    lock_path = locks_dir / f"{event_id}.lock"
 
     with lock_path.open("a+", encoding="utf-8") as lock:
+        os.fchmod(lock.fileno(), 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        event_path = event_dir / "event.json"
-        if not event_path.exists():
-            atomic_json(event_path, event)
-            (event_dir / "prompt.md").write_text(render_prompt(event), encoding="utf-8")
+        initialize_event_directory(state_root, event_dir, event)
 
         delivered_path = event_dir / "delivered.json"
         if delivered_path.exists():
@@ -162,7 +233,7 @@ def emit_event(
                 )
 
         attempts_dir = event_dir / "attempts"
-        attempts_dir.mkdir(exist_ok=True)
+        secure_directory(attempts_dir)
         attempt_number = len(list(attempts_dir.glob("*.json"))) + 1
         workspace = (request.product_workspace or request.artifact_path.parent).expanduser().resolve()
         command = [
@@ -170,25 +241,31 @@ def emit_event(
             "-p",
             request.owner_profile,
             "chat",
+            "--resume",
+            request.owner_session_id,
             "--in",
             str(workspace),
-            "-c",
-            "Bot Chat",
-            "--create-if-missing",
             "-Q",
             "--query-file",
             str(event_dir / "prompt.md"),
         ]
-        completed = runner(command)
-        session_metadata = "\n".join(
-            part for part in (completed.stdout or "", completed.stderr or "") if part
-        )
-        match = SESSION_ID_RE.search(session_metadata)
+        launch_failure: str | None = None
+        try:
+            completed = runner(command)
+        except OSError as error:
+            completed = subprocess.CompletedProcess(
+                args=command,
+                returncode=-1,
+                stdout="",
+                stderr=str(error),
+            )
+            launch_failure = f"owner delivery launch failed: {error}"
+        match = SESSION_ID_RE.search(completed.stderr or "")
         observed_session = match.group(1) if match else None
-        failure: str | None = None
-        if completed.returncode != 0:
+        failure: str | None = launch_failure
+        if failure is None and completed.returncode != 0:
             failure = f"owner delivery exited {completed.returncode}"
-        elif observed_session != request.owner_session_id:
+        elif failure is None and observed_session != request.owner_session_id:
             failure = (
                 "owner session mismatch: "
                 f"expected={request.owner_session_id} observed={observed_session}"
@@ -207,9 +284,7 @@ def emit_event(
             "failure": failure,
         }
         atomic_json(attempts_dir / f"{attempt_number:04d}.json", attempt)
-        (attempts_dir / f"{attempt_number:04d}.response.txt").write_text(
-            response, encoding="utf-8"
-        )
+        atomic_text(attempts_dir / f"{attempt_number:04d}.response.txt", response)
 
         if failure:
             raise RuntimeError(failure)

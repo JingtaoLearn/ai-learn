@@ -44,12 +44,12 @@ The first post-MVP notification slice removed the manual Completion Signal from 
 
 - canonical Owner Session: `20260903_075757_73a49f`;
 - source Agent: `ResearchAgent-QuantResearch`;
-- durable event ID: `ac7e96e3e915ea566c7ffc02496e55a3781a0d5292353dd77145e40abeb7a62e`;
-- run/action: `notification-link-001` / `communication-auto-return-001`;
-- Result SHA-256: `e83fce30970507882347407369b108c518f10f8b84fb1dc514121619e24a8462`;
-- Owner Decision: `/home/jingtao/.hermes/workflows/quant-research/runs/notification-link-001/DECISION.md`.
+- durable event ID: `7aa3c011dff1ee6b0b54c689e80970517736b6033f042d5f9c22e631d03f337f`;
+- run/action: `notification-link-002` / `exact-session-auto-return-002`;
+- Result SHA-256: `1e7f84f80242c1d729f1ab431750c9c29eedb0b7998cc262d7a1699e93a87edf`;
+- Owner Decision: `/home/jingtao/.hermes/workflows/quant-research/runs/notification-link-002/DECISION.md`.
 
-The Research Agent wrote the Result and emitted `RESULT_READY`. The adapter persisted the event before calling the Owner profile, restored the real OS-user environment across the nested Profile boundary, and triggered the exact existing Owner Bot Chat. The Owner independently verified the Result hash and wrote the Decision without a manually injected Completion Signal.
+The Research Agent wrote the Result and emitted `RESULT_READY`. The adapter persisted the event before calling the Owner profile, rebuilt a small secret-free OS-user environment across the nested Profile boundary, and targeted the exact existing Owner Session with `--resume`. Hermes reported the same Session ID through authoritative CLI metadata. The Owner independently verified the Result hash and wrote the Decision without a manually injected Completion Signal.
 
 Re-emitting the identical event returned `deduplicated`; the Owner Session message count remained unchanged. A separate invalid-owner smoke retained `event.json` and a failed attempt while leaving `delivered.json` absent.
 

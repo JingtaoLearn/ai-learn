@@ -15,13 +15,13 @@ The adapter:
 1. validates the terminal event and hashes the artifact;
 2. computes a deterministic `event_id` from product, source, Owner, run/action, artifact, and summary fields;
 3. persists `event.json` and the exact Owner prompt before delivery;
-4. invokes the configured Owner profile's canonical `Bot Chat` through the Hermes CLI;
-5. requires the CLI-reported Session ID to equal the expected persistent Owner Session;
+4. invokes the configured Owner profile through exact `--resume <owner_session_id>` targeting;
+5. requires the authoritative CLI Session ID written on stderr to equal the expected persistent Owner Session;
 6. records every delivery attempt and response;
 7. writes `delivered.json` only after a successful exact-Session trigger;
 8. deduplicates later emissions of the same terminal event.
 
-The subprocess environment removes an inherited specialist `HERMES_HOME` and restores the real OS-user `HOME` before selecting the Owner profile. Without that boundary, a nested `hermes -p <owner>` can resolve credentials inside the source Agent's profile and fail before delivery.
+The subprocess environment is rebuilt from a small operational whitelist, removes inherited specialist state and credentials, and restores the real OS-user `HOME` before selecting the Owner profile. Without that boundary, a nested `hermes -p <owner>` can resolve credentials inside the source Agent's profile and fail before delivery. Event initialization uses an atomic directory rename, durable writes fsync files and parent directories, and event content is private by default (`0700` directories and `0600` files).
 
 ## CLI
 
@@ -48,7 +48,9 @@ Exit `0` with status `delivered` means the exact Owner Session ran. Status `dedu
 python3 -m pytest tests/test_owner_event.py -q
 ```
 
-The first live QuantResearch acceptance event is `ac7e96e3e915ea566c7ffc02496e55a3781a0d5292353dd77145e40abeb7a62e`. It automatically triggered Owner Session `20260903_075757_73a49f`, which verified the Result hash and wrote `runs/notification-link-001/DECISION.md`. A duplicate emission produced `deduplicated` with no Owner message-count change. A separate invalid-owner smoke preserved a failed attempt without writing `delivered.json`.
+The hardened live QuantResearch acceptance event is `7aa3c011dff1ee6b0b54c689e80970517736b6033f042d5f9c22e631d03f337f`. Its recorded command used exact `--resume 20260903_075757_73a49f`; Hermes reported that same Session on stderr. The Owner verified Result SHA-256 `1e7f84f80242c1d729f1ab431750c9c29eedb0b7998cc262d7a1699e93a87edf` and wrote `runs/notification-link-002/DECISION.md` without a manual Completion Signal. A duplicate of the earlier acceptance event produced `deduplicated` with no Owner message-count change. A separate invalid-owner smoke preserved a failed attempt without writing `delivered.json`.
+
+See [`TDD.md`](TDD.md) for the observed RED → GREEN evidence.
 
 ## Next links
 
