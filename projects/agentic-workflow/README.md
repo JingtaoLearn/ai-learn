@@ -21,6 +21,7 @@ Each resource has one job:
 - `GOAL.md` — the current Jingtao-owned objective shared by all participating Agents and changed only when Jingtao changes it.
 - Canonical Bot Chat — the Product Owner Agent's persistent Owner Session and product decision brain.
 - Task Session — an optional ephemeral conversation for one specialist action.
+- `session-messenger` — the shared Skill scaffold for exact Session messages, callbacks, Results, Reviews, decisions, and external Signals.
 - `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Agent, selected Matt flow and why, acceptance, and safety.
 - `RESULT.md` — one Agent's returned outcome and evidence.
 - `STATE.md` — a compact supporting projection for recovery and inspection; it does not replace the Owner Session.
@@ -59,32 +60,32 @@ When an observed Gap and proposed Action may benefit from a Matt Skill, use the 
 
 ## Live information flow
 
-The fixed shared directory is:
+The first live product workspace is:
 
-`/home/jingtao/.hermes/workflows/agentic-workflow`
+`/home/jingtao/.hermes/workflows/quant-research`
 
-1. A user message or Bot-to-Bot message delivers a Signal into the product's existing canonical Owner Session.
+1. A user message, Cron `bot-chat` delivery, webhook collector, or [`session-messenger`](skills/session-messenger/SKILL.md) envelope delivers a Signal into the product's existing canonical Owner Session.
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
-4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
-5. A specialist acts in its own Profile and may use an ephemeral Task Session; it returns a Result to the same Owner Session.
-6. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
+4. The Owner chooses one bounded Action. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
+5. A specialist acts in its own Profile. When a headless sender needs an explicit exact-Session callback, every `session-messenger` envelope carries both Session endpoints. The receiver swaps them to answer and trigger that same sender Session again.
+6. After writing its Result, the specialist completes the Kanban handoff or uses the same lightweight Skill. The Owner absorbs verified evidence, records its decision, updates State when useful, and waits for the next Signal.
 
 Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
 
-Native Hermes webhooks trigger Agent runs or deliver to configured user-facing platforms; they do not currently target `bot-chat`. A real-time external product event therefore needs a future adapter or relay whose delivery into the canonical Owner Session is verified end to end before that route is recorded as live.
+Scheduled Signals prefer Cron `deliver=bot-chat:<owner-profile>`. Immediate GitHub/CI adapters, production monitors, and data checks may reuse the same `agent-message/v1` envelope with a source label and no callback Session. Transport selection does not fork the business message contract.
 
-For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
+For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for short live canonical Bot consultation, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban whenever formal work needs acceptance, artifacts, blocking, retry, review, crash recovery, or auditability.
 
 ## Current boundary
 
-- No custom Python runtime, database, state machine, routing engine, or connector framework.
-- No tests are written or run during functional validation.
+- No workflow engine, message broker, database, state machine, outbox, retry loop, dead-letter queue, or general connector framework. One Skill plus one standard-library script dispatches an addressed message to one exact Session.
+- The scaffold intentionally ships without a test suite. Real Agent-to-Owner-to-Agent callback and non-Session Signal traces are the functional evidence.
 - No automatic merge, deployment, production-signal change, paid/public action, or other high-risk external effect.
 - High-risk actions still require Jingtao's explicit approval at the existing tool boundary.
 
 ## Current status
 
-The heavy draft was discarded. The QuantResearch tracer now proves one product-level Agent suite with isolated Profiles, one persistent Product Owner Bot Chat, repeated Signals in the same Owner Session, native `message_agent` delivery to a Research Agent, a real file Result, and an evidence-grounded Owner Decision. See [`VALIDATION.md`](VALIDATION.md) for exact identities and artifact checksums.
+The heavy draft was discarded. The current [`session-messenger`](skills/session-messenger/SKILL.md) scaffold proves exact addressed Research→Owner delivery, Owner→Research callback, Research acknowledgment to Owner, and a non-Session Signal entering that same persistent Owner Session. Native `message_agent` is retained for short canonical Bot Chat exchanges, Kanban for formal work, and Cron `bot-chat` for scheduled Signals. See [`VALIDATION.md`](VALIDATION.md).
 
 This remains functional validation. The next product action is the separately governed QuantResearch evidence Spike selected by the Owner; it is not part of the Agentic Workflow tracer.

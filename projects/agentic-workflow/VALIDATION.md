@@ -29,15 +29,39 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 2. A second script-only Cron signal entered the same Owner Session and produced a bounded Handoff. Early terminal-based specialist launches failed because Agent-spawned subprocesses did not receive usable provider credentials; these failures were preserved rather than treated as success.
 3. Bot Mode metadata enabled the native `message_agent` capability. A persistent interactive resume of the same Owner Session sent `QR-TRACE-007` to `ResearchAgent-QuantResearch` through `message_agent`.
 4. The delivery process exited `0`. The Research Agent wrote `runs/trace-004/RESULT.md` from its own canonical Bot Chat.
-5. The attributed completion returned to the same Owner Session. The Owner read the real Result, wrote `runs/trace-004/DECISION.md`, appended `SIGNALS.md`, and updated `STATE.md`.
-6. Independent verification passed with zero blockers on Kanban task `t_954eef46`.
+5. The Research Agent produced a real Result, but native asynchronous Bot messaging did not automatically wake the dormant Owner. A separately injected Completion Signal caused the Owner to read the Result, write `runs/trace-004/DECISION.md`, append `SIGNALS.md`, and update `STATE.md`.
+6. Independent verification passed for the bounded flow evidence, but later exact-session inspection identified the missing automatic terminal-result return as the next notification gap.
 
 ## Trigger cleanup
 
 - The Product Owner Profile has zero Cron-sourced Sessions; scheduled Signals entered its canonical `Bot Chat` instead of creating replacement Owners.
-- The superseded `awfowner` job `0c2712406f2b` and default-profile prototype job `5fc04b1222bf` are paused.
-- Recovery job `7f7855a1e33f` completed its single allowed run, is inactive with no next run, and remains only as completed scheduler metadata.
+- The superseded `awfowner` Profile, `awfscout` Profile, prototype job, recovery jobs, old workflow directory, and old worktrees were deleted after the latest product-level suite was accepted.
 - No recurring tracer-only timer remains active.
+
+## Session messenger acceptance
+
+The final transport slice is a Skill scaffold with one standard-library script and no test suite. The communication research at `/home/jingtao/research/hermes-agent-communication-2026-09/report.md` now supplies its transport layering and envelope semantics.
+
+### Native transport comparison
+
+The canonical Owner invoked native `message_agent` from a headless one-shot CLI process. Research Session `20260903_082058_d3fc23` received the request and returned `NATIVE_DM_RETURN_OK`, but after the sender process exited no completion message entered Owner Session `20260903_075757_73a49f`; its message count remained unchanged. Native Bot DM remains correct for a live owning process, but it does not close this deployment's headless exact-Session callback gap.
+
+Formal work therefore uses Kanban, scheduled Signals use Cron `bot-chat`, and `session-messenger` remains only the narrow headless callback adapter.
+
+### Report-refined callback trace
+
+1. Research Session `20260903_082058_d3fc23` dispatched `QUESTION` message `6b62da3a6f024a2c9aa85382185a1367` to Owner Session `20260903_075757_73a49f`.
+2. Its `agent-message/v1` envelope carried stable correlation `comm-report-001`, idempotency key `comm-report-001-question`, the research report artifact, `requires_decision`, RFC3339 creation time, exact endpoints, and bounded hop metadata.
+3. The exact Owner Session preserved correlation, set causation to the question ID, advanced the hop, and dispatched `REPLY` message `59c1983e2fdb4a0fb00b7d9a6d200174` with body `REPORT_REFINED_REPLY`.
+4. The exact Research Session received that callback; its delivery result reports exit code `0`, `ok: true`, and observed Session equal to requested Session.
+
+This proves Research→Owner question and Owner→the same Research Session answer without keeping the initiating Session process blocked.
+
+### Non-Session Signal trace
+
+Source `acceptance-monitor` dispatched non-replyable `SIGNAL` message `0329c1c68b6b4acba18b028be747ee5f` to the same Owner Session. Its final `agent-message/v1` envelope carried correlation `comm-report-signal-001`, stable idempotency key, RFC3339 creation time, report artifact, source label, decision flag, and bounded hop metadata. The delivery record reports exit code `0`, `ok: true`, and observed Session `20260903_075757_73a49f`; the Owner replied `FINAL_SIGNAL_ENVELOPE_OK` without changing product files or external state.
+
+The same business envelope can therefore carry immediate Agent callbacks and Signals while native Hermes mechanisms keep their proper responsibilities. `type` is open routing context rather than a hard-coded workflow state machine.
 
 ## Artifact checksums
 
@@ -54,4 +78,4 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 
 ## Verdict
 
-`PASS` — the same persistent Product Owner Session received multiple Signals, selected and invoked an isolated specialist through native Agent messaging, received a real Result, and changed the next product Action from that evidence. The next QuantResearch product action is a separately governed no-network reference-loop Spike; this validation did not execute it.
+`PASS` — after incorporating the communication report, formal work is routed to Kanban, scheduled Signals to Cron `bot-chat`, short live Bot conversation to `message_agent`, and only the observed headless exact-Session callback gap to `session-messenger`. The refined `agent-message/v1` callback reached the same Research Session, and the existing non-Session Signal route reached the canonical Owner. The final adapter remains one Skill, one script, and no test suite or messaging service.

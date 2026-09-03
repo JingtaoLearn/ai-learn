@@ -10,8 +10,8 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
-- Verified Signal routes: `<user or Bot routes into that Session; optional no-agent Cron delivery to bot-chat>`
-- Deferred external event route: `<source plus adapter or relay to verify end to end, or none>`
+- Exact-Session callback adapter: `session-messenger` installed in every participating Profile
+- Verified Signal routes: `<Cron bot-chat, webhook/Kanban, or immediate session-messenger adapter into the exact Owner Session>`
 - Temporary clock/backstop: `<none, Heartbeat, Loop, or Cron with removal condition>`
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
@@ -58,9 +58,10 @@ A Signal is new information, not merely elapsed time.
 2. Interpret it against the Goal and accumulated product decisions.
 3. Gather only Evidence that can change the decision.
 4. Identify the current Gap and choose one bounded Action.
-5. Return every Specialist Result to this same Owner Session.
+5. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
+6. Return every Specialist Result to this same Owner Session through the selected native or callback route.
 
-Use the current direct routes into the canonical Owner Session: user messages and Bot-to-Bot messages. Heartbeat and Loop may poll inside that Session. When a durable timer needs no reasoning, a script-only `no_agent` Cron job may deliver stdout to `bot-chat`; an Agent Cron instead runs in a fresh isolated Session and is not the Owner. Native Hermes webhooks do not currently target `bot-chat`, so a real-time external product event requires a future adapter or relay verified end to end. Record the condition that removes every timer.
+For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
 
 ## Handoff template
 
