@@ -1,14 +1,15 @@
 # Goal
 
-Validate a minimal but real Agentic Workflow in which AI Agents are the functional and decision-making nodes, and simple shared files carry information between them.
+Validate a minimal but real Agentic Workflow in which AI Agents are the functional and decision-making nodes, simple shared files carry information between them, and scheduled Owner pulses proactively advance useful work on a real project.
 
-The workflow should proactively advance useful work:
+The workflow should:
 
-- a Hermes Owner Agent reads the current goal and information;
-- it decides the next action and which Agent should perform it;
-- the selected Agent reads the same goal plus a bounded handoff;
-- the result returns to the Owner;
-- the Owner decides what happens next.
+- let a Hermes Owner Agent read this fixed Goal and current information;
+- gather live facts directly through existing tools when they can change the decision;
+- choose the next bounded action and the Agent best suited to perform it;
+- pass the same Goal plus one Handoff to that Agent;
+- return the Result to the Owner;
+- let the Result change the next action, next Agent, or a justified stop.
 
 ## Current phase
 
@@ -26,4 +27,4 @@ Functional validation only.
 
 ## Success
 
-The workflow repeatedly completes `Owner → Specialist → Result → Owner decision` using live information, and the returned result can change the next action or next Agent.
+The workflow must complete at least one useful, evidence-backed action on a real project through `Owner → Specialist → Result → Owner decision`. A file round-trip against the superseded Agentic Workflow implementation alone is not sufficient.
