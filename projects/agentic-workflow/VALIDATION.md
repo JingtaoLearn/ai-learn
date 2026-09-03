@@ -40,22 +40,28 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 
 ## Session messenger acceptance
 
-The final transport slice is a Skill scaffold with one standard-library script and no test suite. Every replyable envelope carries exact `from_profile`, `from_session`, `to_profile`, and `to_session` values. A receiver replies by swapping the endpoints and preserving the inbound `message_id` as `correlation_id`.
+The final transport slice is a Skill scaffold with one standard-library script and no test suite. The communication research at `/home/jingtao/research/hermes-agent-communication-2026-09/report.md` now supplies its transport layering and envelope semantics.
 
-### Replyable callback trace
+### Native transport comparison
 
-1. Research Session `20260903_082058_d3fc23` dispatched `QUESTION` message `222db00a9475420eb0f7ca5a0e4d4b83` to Owner Session `20260903_075757_73a49f`.
-2. The exact Owner Session loaded `session-messenger`, swapped the endpoints, and dispatched `REPLY` message `d49058c566664270948a9e2f6d307541` with body `CALLBACK_FROM_OWNER`.
-3. The exact Research Session received that callback and dispatched acknowledgment `a437b7dc2dc94bb59cf5e113e11b82f4` to the same Owner Session.
-4. All three private result records report exit code `0`, `ok: true`, and an observed Session equal to the requested Session.
+The canonical Owner invoked native `message_agent` from a headless one-shot CLI process. Research Session `20260903_082058_d3fc23` received the request and returned `NATIVE_DM_RETURN_OK`, but after the sender process exited no completion message entered Owner Session `20260903_075757_73a49f`; its message count remained unchanged. Native Bot DM remains correct for a live owning process, but it does not close this deployment's headless exact-Session callback gap.
 
-This proves Research→Owner question, Owner→Research answer, and return acknowledgment without keeping the initiating Session process blocked.
+Formal work therefore uses Kanban, scheduled Signals use Cron `bot-chat`, and `session-messenger` remains only the narrow headless callback adapter.
+
+### Report-refined callback trace
+
+1. Research Session `20260903_082058_d3fc23` dispatched `QUESTION` message `6b62da3a6f024a2c9aa85382185a1367` to Owner Session `20260903_075757_73a49f`.
+2. Its `agent-message/v1` envelope carried stable correlation `comm-report-001`, idempotency key `comm-report-001-question`, the research report artifact, `requires_decision`, RFC3339 creation time, exact endpoints, and bounded hop metadata.
+3. The exact Owner Session preserved correlation, set causation to the question ID, advanced the hop, and dispatched `REPLY` message `59c1983e2fdb4a0fb00b7d9a6d200174` with body `REPORT_REFINED_REPLY`.
+4. The exact Research Session received that callback; its delivery result reports exit code `0`, `ok: true`, and observed Session equal to requested Session.
+
+This proves Research→Owner question and Owner→the same Research Session answer without keeping the initiating Session process blocked.
 
 ### Non-Session Signal trace
 
 Source `acceptance-monitor` dispatched non-replyable `SIGNAL` message `bdd2f74747b44b74bf4f496cd8e905da` to the same Owner Session. The delivery record reports exit code `0`, `ok: true`, and observed Session `20260903_075757_73a49f`; the Owner replied `SIGNAL_SCAFFOLD_OK` without changing product files or external state.
 
-The same scaffold therefore covers Agent questions, replies, Results, Reviews, decisions, and external Signals. `kind` is open routing context rather than a hard-coded workflow state machine.
+The same business envelope can therefore carry immediate Agent callbacks and Signals while native Hermes mechanisms keep their proper responsibilities. `type` is open routing context rather than a hard-coded workflow state machine.
 
 ## Artifact checksums
 
@@ -72,4 +78,4 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 
 ## Verdict
 
-`PASS` — the lightweight `session-messenger` Skill completed a real Research→Owner→Research callback round trip using exact existing Sessions, and the same scaffold delivered a non-Session Signal to the canonical Owner. The final artifact contains one Skill, one script, and no test suite or messaging service.
+`PASS` — after incorporating the communication report, formal work is routed to Kanban, scheduled Signals to Cron `bot-chat`, short live Bot conversation to `message_agent`, and only the observed headless exact-Session callback gap to `session-messenger`. The refined `agent-message/v1` callback reached the same Research Session, and the existing non-Session Signal route reached the canonical Owner. The final adapter remains one Skill, one script, and no test suite or messaging service.

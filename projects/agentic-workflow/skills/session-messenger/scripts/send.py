@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 SESSION_RE = re.compile(r"(?m)^session_id:\s*(\S+)\s*$")
@@ -73,26 +74,38 @@ def target_environment() -> dict[str, str]:
 
 
 def envelope(args: argparse.Namespace, message_id: str, body: str) -> str:
+    correlation_id = args.correlation_id or message_id
     lines = [
         "[SESSION-MESSAGE v1]",
+        "schema: agent-message/v1",
         f"message_id: {message_id}",
-        f"kind: {args.kind}",
+        f"correlation_id: {correlation_id}",
+        f"type: {args.kind}",
+        f"created_at: {datetime.now(timezone.utc).isoformat()}",
         f"to_profile: {args.to_profile}",
         f"to_session: {args.to_session}",
+        f"requires_decision: {str(args.requires_decision).lower()}",
+        f"hop: {args.hop}",
+        f"max_hops: {args.max_hops}",
     ]
+    if args.causation_id:
+        lines.append(f"causation_id: {args.causation_id}")
+    if args.idempotency_key:
+        lines.append(f"idempotency_key: {args.idempotency_key}")
+    if args.artifact:
+        lines.append(f"artifacts: {json.dumps(args.artifact, ensure_ascii=False)}")
     if args.from_profile:
         lines.extend(
             [
                 f"from_profile: {args.from_profile}",
                 f"from_session: {args.from_session}",
                 "reply_available: true",
-                "reply_rule: Use the session-messenger skill, swap the from/to addresses, and preserve message_id as correlation_id.",
+                f"reply_hop: {args.hop + 1}",
+                "reply_rule: Use session-messenger; swap from/to, keep correlation_id, set causation_id to this message_id, and use reply_hop.",
             ]
         )
     else:
         lines.extend([f"source: {args.source}", "reply_available: false"])
-    if args.correlation_id:
-        lines.append(f"correlation_id: {args.correlation_id}")
     lines.extend(["", body.strip(), ""])
     return "\n".join(lines)
 
@@ -159,6 +172,12 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--source")
     value.add_argument("--kind", default="MESSAGE")
     value.add_argument("--correlation-id")
+    value.add_argument("--causation-id")
+    value.add_argument("--idempotency-key")
+    value.add_argument("--artifact", action="append", default=[])
+    value.add_argument("--requires-decision", action="store_true")
+    value.add_argument("--hop", type=int, default=0)
+    value.add_argument("--max-hops", type=int, default=6)
     value.add_argument("--workdir", type=Path, default=Path.cwd())
     body = value.add_mutually_exclusive_group()
     body.add_argument("--message")
@@ -187,6 +206,12 @@ def main() -> int:
             args.source = checked_id("source", args.source or "")
         if args.correlation_id:
             args.correlation_id = checked_id("correlation-id", args.correlation_id)
+        if args.causation_id:
+            args.causation_id = checked_id("causation-id", args.causation_id)
+        if args.idempotency_key:
+            args.idempotency_key = checked_id("idempotency-key", args.idempotency_key)
+        if args.hop < 0 or args.max_hops < 1 or args.hop >= args.max_hops:
+            raise ValueError("hop must be non-negative and lower than max-hops")
         body = args.message if args.message is not None else (
             args.message_file.expanduser().read_text(encoding="utf-8") if args.message_file else ""
         )

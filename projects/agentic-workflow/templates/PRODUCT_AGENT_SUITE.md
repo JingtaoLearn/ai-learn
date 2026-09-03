@@ -10,8 +10,8 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
-- Shared transport Skill: `session-messenger` installed in every participating Profile
-- Verified Signal routes: `<source adapters using session-messenger into that exact Session>`
+- Exact-Session callback adapter: `session-messenger` installed in every participating Profile
+- Verified Signal routes: `<Cron bot-chat, webhook/Kanban, or immediate session-messenger adapter into the exact Owner Session>`
 - Temporary clock/backstop: `<none, Heartbeat, Loop, or Cron with removal condition>`
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
@@ -58,10 +58,10 @@ A Signal is new information, not merely elapsed time.
 2. Interpret it against the Goal and accumulated product decisions.
 3. Gather only Evidence that can change the decision.
 4. Identify the current Gap and choose one bounded Action.
-5. Send every Agent question, reply, Result, Review, and decision through `session-messenger`, carrying both exact Session endpoints.
-6. Return every Specialist Result to this same Owner Session.
+5. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
+6. Return every Specialist Result to this same Owner Session through the selected native or callback route.
 
-For a replyable Agent message, include `from_profile`, `from_session`, `to_profile`, and `to_session`; the receiver answers by swapping the endpoints and preserving `message_id` as `correlation_id`. Timers, GitHub/CI adapters, production monitors, and data checks use the same Skill with `kind: SIGNAL`, a source label, and no callback Session. Record the condition that removes every timer.
+For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
 
 ## Handoff template
 

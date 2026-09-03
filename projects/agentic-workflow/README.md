@@ -64,16 +64,16 @@ The first live product workspace is:
 
 `/home/jingtao/.hermes/workflows/quant-research`
 
-1. A user message or source adapter uses [`session-messenger`](skills/session-messenger/SKILL.md) to deliver a Signal into the product's existing canonical Owner Session.
+1. A user message, Cron `bot-chat` delivery, webhook collector, or [`session-messenger`](skills/session-messenger/SKILL.md) envelope delivers a Signal into the product's existing canonical Owner Session.
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
-4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
-5. A specialist acts in its own Profile and may use an ephemeral Task Session. Every message carries both exact Session endpoints. The specialist can ask the Owner a question; the Owner swaps the endpoints to answer and trigger that same specialist Session again.
-6. After writing its Result, the specialist uses the same Skill to notify the Owner. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
+4. The Owner chooses one bounded Action. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
+5. A specialist acts in its own Profile. When a headless sender needs an explicit exact-Session callback, every `session-messenger` envelope carries both Session endpoints. The receiver swaps them to answer and trigger that same sender Session again.
+6. After writing its Result, the specialist completes the Kanban handoff or uses the same lightweight Skill. The Owner absorbs verified evidence, records its decision, updates State when useful, and waits for the next Signal.
 
 Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
 
-Timers, GitHub/CI adapters, production monitors, and data checks reuse the same Skill with `kind: SIGNAL`, a source label, and no callback Session. They do not require a second notification implementation.
+Scheduled Signals prefer Cron `deliver=bot-chat:<owner-profile>`. Immediate GitHub/CI adapters, production monitors, and data checks may reuse the same `agent-message/v1` envelope with a source label and no callback Session. Transport selection does not fork the business message contract.
 
 For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
 
@@ -86,6 +86,6 @@ For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot 
 
 ## Current status
 
-The heavy draft was discarded. The current [`session-messenger`](skills/session-messenger/SKILL.md) scaffold proves exact addressed Research→Owner delivery, Owner→Research callback, Research acknowledgment to Owner, and a non-Session Signal entering that same persistent Owner Session. See [`VALIDATION.md`](VALIDATION.md).
+The heavy draft was discarded. The current [`session-messenger`](skills/session-messenger/SKILL.md) scaffold proves exact addressed Research→Owner delivery, Owner→Research callback, Research acknowledgment to Owner, and a non-Session Signal entering that same persistent Owner Session. Native `message_agent` is retained for short canonical Bot Chat exchanges, Kanban for formal work, and Cron `bot-chat` for scheduled Signals. See [`VALIDATION.md`](VALIDATION.md).
 
 This remains functional validation. The next product action is the separately governed QuantResearch evidence Spike selected by the Owner; it is not part of the Agentic Workflow tracer.

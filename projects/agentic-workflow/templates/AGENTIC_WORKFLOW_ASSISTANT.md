@@ -31,7 +31,7 @@ Outputs:
 - one Product Owner Agent display name and canonical Owner Session;
 - each Specialist Agent's display name and bounded responsibility;
 - role-specific Toolsets and progressively disclosed Skills;
-- `session-messenger` installed in every participating Profile for questions, replies, Results, Reviews, decisions, and Signals;
+- `session-messenger` installed in every participating Profile as a narrow headless exact-Session callback adapter;
 - real-time Signal routes plus any explicitly temporary clock/backstop;
 - the complete Handoff contract used by the suite.
 
@@ -71,7 +71,7 @@ The suite definition is complete only when:
 - every display name has exactly two UpperCamelCase segments joined by one hyphen;
 - every Profile is isolated from every other Profile;
 - the Product Owner Agent has exactly one canonical persistent Owner Session;
-- every replyable Agent message carries both exact Session endpoints, while non-Session Signals carry a source label;
+- formal work uses Kanban, short live Bot Chat consultation uses `message_agent`, scheduled Signals use Cron `bot-chat`, and headless exact-Session callbacks use `session-messenger`;
 - files support but do not replace that Session;
 - Signals enter that same Session;
 - Cron, when present, is labeled temporary and cannot act as a fresh Owner;
