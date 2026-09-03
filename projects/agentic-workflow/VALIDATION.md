@@ -59,7 +59,7 @@ This proves Research→Owner question and Owner→the same Research Session answ
 
 ### Non-Session Signal trace
 
-Source `acceptance-monitor` dispatched non-replyable `SIGNAL` message `bdd2f74747b44b74bf4f496cd8e905da` to the same Owner Session. The delivery record reports exit code `0`, `ok: true`, and observed Session `20260903_075757_73a49f`; the Owner replied `SIGNAL_SCAFFOLD_OK` without changing product files or external state.
+Source `acceptance-monitor` dispatched non-replyable `SIGNAL` message `0329c1c68b6b4acba18b028be747ee5f` to the same Owner Session. Its final `agent-message/v1` envelope carried correlation `comm-report-signal-001`, stable idempotency key, RFC3339 creation time, report artifact, source label, decision flag, and bounded hop metadata. The delivery record reports exit code `0`, `ok: true`, and observed Session `20260903_075757_73a49f`; the Owner replied `FINAL_SIGNAL_ENVELOPE_OK` without changing product files or external state.
 
 The same business envelope can therefore carry immediate Agent callbacks and Signals while native Hermes mechanisms keep their proper responsibilities. `type` is open routing context rather than a hard-coded workflow state machine.
 

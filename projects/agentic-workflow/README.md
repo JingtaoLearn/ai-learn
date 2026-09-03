@@ -75,7 +75,7 @@ Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning
 
 Scheduled Signals prefer Cron `deliver=bot-chat:<owner-profile>`. Immediate GitHub/CI adapters, production monitors, and data checks may reuse the same `agent-message/v1` envelope with a source label and no callback Session. Transport selection does not fork the business message contract.
 
-For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
+For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for short live canonical Bot consultation, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban whenever formal work needs acceptance, artifacts, blocking, retry, review, crash recovery, or auditability.
 
 ## Current boundary
 
