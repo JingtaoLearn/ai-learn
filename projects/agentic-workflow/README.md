@@ -1,10 +1,15 @@
 # Agentic Workflow
 
-This project validates a small network of real Hermes Agents. It does not build a workflow engine.
+This project validates isolated product-level suites of real Hermes Agents. It does not build a workflow engine.
+
+Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The two progressively disclosed setup templates are:
+
+- [`templates/AGENTIC_WORKFLOW_ASSISTANT.md`](templates/AGENTIC_WORKFLOW_ASSISTANT.md) — the global suite maintainer;
+- [`templates/PRODUCT_AGENT_SUITE.md`](templates/PRODUCT_AGENT_SUITE.md) — one product's Owner, specialists, Handoff, and capability choices.
 
 ## Hermes resource model
 
-A dedicated functional Agent is a Hermes **Profile** (and therefore can appear as a Bot). Each profile has its own identity, model configuration, memory, sessions, skills, cron jobs, and state directory. Two Agent processes must never share one profile.
+A dedicated functional Agent is a Hermes **Profile** and therefore can appear as a Bot. Each Profile has its own identity, model configuration, memory, Sessions, Skills, Cron jobs, and state directory. Two Agent processes never share one Profile.
 
 Each resource has one job:
 
@@ -13,24 +18,27 @@ Each resource has one job:
 - Skills — procedures the Agent may load on demand. A Skill is not an Agent or a workflow stage.
 - Toolsets — capabilities available to the Agent. Keep them narrow per function.
 - `AGENTS.md` — project-local context automatically loaded from the working directory.
-- `GOAL.md` — the current Jingtao-owned objective shared by all participating Agents.
-- `HANDOFF.md` — one bounded task instance.
+- `GOAL.md` — the current Jingtao-owned objective shared by all participating Agents and changed only when Jingtao changes it.
+- Canonical Bot Chat — the Product Owner Agent's persistent Owner Session and product decision brain.
+- Task Session — an optional ephemeral conversation for one specialist action.
+- `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Agent, selected Matt flow and why, acceptance, and safety.
 - `RESULT.md` — one Agent's returned outcome and evidence.
-- `STATE.md` — the Owner's compact cross-session project state.
-- Cron — a durable wake-up for the Owner profile; it is not the decision maker.
+- `STATE.md` — a compact supporting projection for recovery and inspection; it does not replace the Owner Session.
+- Heartbeat or Loop — a temporary in-Session clock when polling is needed.
+- Cron — a temporary durable clock or backstop that starts a fresh isolated Session; it never becomes a fresh Owner.
 
-Profile-private memory is not shared workflow state. Shared project truth stays in the fixed files. A profile distribution is unnecessary until an Agent is worth shipping to other machines.
+Profile-private memory is not shared workflow truth. Product decisions remain in the canonical Owner Session; files carry inspectable Goal, Evidence, Handoffs, Results, and a compact State projection. A Profile distribution is unnecessary until an Agent is worth shipping to other machines.
 
-## Initial Agent roster
+## Product-level topology
 
-Create only two profiles for the first useful tracer:
+`AgenticWorkflow-Assistant` is the global flow maintainer. It creates and maintains isolated Product Agent Suites but does not take over product decisions. Every product starts with one Product Owner Agent and adds a specialist only when an observed Gap requires an independent role.
 
-1. `awfowner` — reads the Goal and current information, chooses one next action and one functional Agent, reads the result, and updates State.
-2. `awfscout` — gathers current project reality from files, GitHub, production evidence, sessions, or the web and returns a concise Result. It does not choose the product Goal.
+For the next Quant Research slice:
 
-Create `awfbuilder`, `awfreviewer`, or `awfops` only after a real selected action requires that independent function. Do not prebuild an Agent fleet.
+1. `ProductOwnerAgent-QuantResearch` — owns exactly one canonical persistent Bot Chat/Owner Session, interprets Signals, chooses the next bounded Action, and owns product decisions.
+2. `ResearchAgent-QuantResearch` — gathers current project reality and returns concise Evidence for a Handoff. It does not choose the product Goal.
 
-Both initial profiles should be created with `--no-skills`, receive a short explicit description and SOUL, and install only their own small Skill set. The default profile remains Jingtao's user-facing Hermes and is not reused concurrently as a specialist.
+Display names contain exactly two UpperCamelCase segments joined by one hyphen: `<RoleAgent>-<Product>`. Profile IDs may follow Hermes' machine-name constraints, but the display name must preserve this product-visible form. Create Builder, Reviewer, or Operations Agents only after a selected Action demonstrates the independent function. The default Profile remains Jingtao's user-facing Hermes and is not reused concurrently as a specialist.
 
 ## Prompt and context stack
 
@@ -40,9 +48,22 @@ Keep each layer small and non-duplicative:
 2. Profile memory: private learned facts only.
 3. Project `AGENTS.md`: project conventions and resource locations.
 4. Skill: reusable method for the selected function.
-5. `GOAL.md`: current project objective and boundaries.
-6. `HANDOFF.md`: this invocation's bounded task.
-7. Tool results: live evidence gathered during the run.
+5. Canonical Owner Session: accumulated product decisions and active context.
+6. `GOAL.md`: current project objective and boundaries.
+7. `HANDOFF.md`: this invocation's bounded task.
+8. Tool results: live Evidence gathered during the run.
+
+## Matt Skill routing
+
+The Owner selects a Matt Skill after observing the Gap and proposed Action. The Skill is a professional method, not a stage:
+
+- `domain-modeling` when terms, relationships, or decision ownership are unclear;
+- `codebase-design` when a module's seam or interface needs design;
+- `writing-for-agents` when an Agent-consumed instruction or Skill needs writing;
+- `research` when a claim needs primary-source Evidence;
+- `to-spec` when an already-understood change should be synthesized into the issue tracker.
+
+Select only the method the current work needs, record the choice and reason in the Handoff, and allow `none` when no Matt method adds leverage. A later Result may reveal a different Gap and therefore a different Skill; there is no mandatory order.
 
 ## Live information flow
 
@@ -50,15 +71,16 @@ The fixed shared directory is:
 
 `/home/jingtao/.hermes/workflows/agentic-workflow`
 
-1. A Cron job owned by `awfowner` starts one fresh Owner session in the shared directory.
-2. Project context loads automatically; the Owner reads Goal, State, Inbox, and relevant prior Result files.
-3. The Owner queries only live sources that can change the next decision.
-4. The Owner writes one Handoff and invokes a different profile, initially `awfscout`.
-5. The specialist reads the same Goal plus the Handoff and writes Result.
-6. The Owner reads Result, writes Decision, updates State, and stops.
-7. The next Owner pulse continues from the shared files.
+1. A user, Agent, webhook, or other real-time information event delivers a Signal into the product's existing canonical Owner Session.
+2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
+3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
+4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
+5. A specialist acts in its own Profile and may use an ephemeral Task Session; it returns a Result to the same Owner Session.
+6. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
 
-For same-machine named functional Agents, use separate profiles. Use `delegate_task` only for anonymous, short-lived reasoning inside one Agent; use A2A only across process, machine, or framework boundaries; use Kanban only when durable multi-day work actually appears.
+Heartbeat and Loop can temporarily poll from the Owner Session. Cron can temporarily provide a durable clock or backstop, but each Cron tick runs in a fresh isolated Session and must deliver its finding as a Signal to the existing Owner Session. The target design replaces timer polling with real-time information events.
+
+For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
 
 ## Current boundary
 
@@ -69,4 +91,4 @@ For same-machine named functional Agents, use separate profiles. Use `delegate_t
 
 ## Current status
 
-The heavy draft was discarded. The first two file-flow runs proved the file shape but reused the default profile, so they do not yet prove independent dedicated Agent nodes. The default-profile Owner Cron is paused while `awfowner` and `awfscout` are designed and created.
+The heavy draft was discarded. The first two file-flow runs proved the file shape but reused the default Profile, so they do not yet prove independent dedicated Agent nodes or continuous product ownership. The next slice uses the templates above to create `ProductOwnerAgent-QuantResearch` and `ResearchAgent-QuantResearch` only after Jingtao authorizes live Profile changes.

@@ -40,7 +40,7 @@ projects/
 
 ## Agent Workflows
 
-- [agentic-workflow](agentic-workflow/) — minimal file-based prototype where Hermes Agents read one Goal, exchange Handoff/Result files, and proactively choose the next Agent.
+- [agentic-workflow](agentic-workflow/) — native Hermes product-Agent suites in which each Product Owner Agent keeps one canonical persistent Session and routes bounded work from live Signals.
 
 ## Adding a New Project
 
