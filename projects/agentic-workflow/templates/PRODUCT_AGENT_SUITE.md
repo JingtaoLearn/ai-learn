@@ -16,6 +16,8 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
 
+The Owner continuously re-enters `Goal + Principles -> Evidence -> Gap -> Action` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action is a checkpoint, not product completion. When no equivalent work is active and a safe dependency-complete frontier exists, the Owner selects and dispatches the next bounded Action without waiting for a supervising Hermes session.
+
 Maintain a compact live role registry containing each display name, Profile ID, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role.
 
 ## Display-name rule
@@ -66,8 +68,11 @@ A Signal is new information, not merely elapsed time.
 4. Identify the current Gap and choose one bounded Action.
 5. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
 6. Return every Specialist Result to this same Owner Session through the selected native or callback route.
+7. Re-evaluate the Goal immediately after accepting, rejecting, or invalidating the Result; either dispatch the next Action or record one legal wait and its exact wake condition.
 
 If the Owner card was created from a plain CLI Session, do not assume Kanban auto-subscribed that Session to `notify+wake`. On terminal task state, send one idempotent `session-messenger` RESULT/REVIEW envelope to the exact Owner Session unless a verified native subscription already delivered it.
+
+Every formal Handoff for a CLI Owner records the callback Profile, exact Session, stable correlation/idempotency identities, required terminal message type, and artifact/hash evidence. The terminal worker—normally the final Reviewer—sends that envelope after the board reaches terminal state. A recovery Pulse may repair a missed wake, but the next Action remains the Owner's decision.
 
 For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
 
@@ -114,6 +119,18 @@ Review never rewrites immutable specialist evidence. A material finding creates 
 - Approval required: `<team, permission, production, merge, deployment, paid, public, or other gated effects>`
 - Preserve: `<Goal, Principles, data, and existing controls that remain unchanged>`
 
+### Owner terminal callback
+
+- Profile: `<exact Product Owner Profile>`
+- Session: `<exact canonical Owner Session>`
+- Correlation: `<stable Action/run identity>`
+- Terminal type mapping: `<PASS/done -> REVIEW; attributed blocked -> BLOCKED; REVISE is non-terminal>`
+- Idempotency keys: `<literal stable key for each terminal mapping>`
+- Sender: `<terminal worker, normally the final Reviewer>`
+- Evidence: `<artifact paths and hashes to include>`
+
 ## Owner completion check
 
-Before sending the Handoff, verify that all nine headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then record `continue`, `wait`, `stop`, or `ask Jingtao` in the Owner Session and update supporting State only when the compact projection changed.
+Before sending the Handoff, verify that all ten headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then record `continue`, `wait`, `stop`, or `ask Jingtao` in the Owner Session and update supporting State only when the compact projection changed.
+
+`continue` dispatches the next bounded Action. `wait` is legal only while evidence is genuinely pending, an explicit authorization boundary is reached, no positive-value bounded Action exists, or the Goal is objectively complete; it names the event or time that wakes the Owner. A recovery Pulse only wakes the exact Owner Session to verify active work; the Owner selects new work only when no equivalent Action is already active.
