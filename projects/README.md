@@ -38,6 +38,10 @@ projects/
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
 | [quant-research-platform](quant-research-platform/) | `quant.ai.jingtao.fun` plus loopback research ports on Feng | Reproducible strategy research with immutable operator/experiment governance, isolated execution, FastAPI UI, JupyterLab, MLflow, and Prefect |
 
+## Agent Workflows
+
+- [agentic-workflow](agentic-workflow/) — minimal file-based prototype where Hermes Agents read one Goal, exchange Handoff/Result files, and proactively choose the next Agent.
+
 ## Adding a New Project
 
 1. Create project directory: `projects/<project-name>/`
