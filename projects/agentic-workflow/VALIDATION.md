@@ -29,15 +29,31 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 2. A second script-only Cron signal entered the same Owner Session and produced a bounded Handoff. Early terminal-based specialist launches failed because Agent-spawned subprocesses did not receive usable provider credentials; these failures were preserved rather than treated as success.
 3. Bot Mode metadata enabled the native `message_agent` capability. A persistent interactive resume of the same Owner Session sent `QR-TRACE-007` to `ResearchAgent-QuantResearch` through `message_agent`.
 4. The delivery process exited `0`. The Research Agent wrote `runs/trace-004/RESULT.md` from its own canonical Bot Chat.
-5. The attributed completion returned to the same Owner Session. The Owner read the real Result, wrote `runs/trace-004/DECISION.md`, appended `SIGNALS.md`, and updated `STATE.md`.
-6. Independent verification passed with zero blockers on Kanban task `t_954eef46`.
+5. The Research Agent produced a real Result, but native asynchronous Bot messaging did not automatically wake the dormant Owner. A separately injected Completion Signal caused the Owner to read the Result, write `runs/trace-004/DECISION.md`, append `SIGNALS.md`, and update `STATE.md`.
+6. Independent verification passed for the bounded flow evidence, but later exact-session inspection identified the missing automatic terminal-result return as the next notification gap.
 
 ## Trigger cleanup
 
 - The Product Owner Profile has zero Cron-sourced Sessions; scheduled Signals entered its canonical `Bot Chat` instead of creating replacement Owners.
-- The superseded `awfowner` job `0c2712406f2b` and default-profile prototype job `5fc04b1222bf` are paused.
-- Recovery job `7f7855a1e33f` completed its single allowed run, is inactive with no next run, and remains only as completed scheduler metadata.
+- The superseded `awfowner` Profile, `awfscout` Profile, prototype job, recovery jobs, old workflow directory, and old worktrees were deleted after the latest product-level suite was accepted.
 - No recurring tracer-only timer remains active.
+
+## Terminal-result notification acceptance
+
+The first post-MVP notification slice removed the manual Completion Signal from one real Research result path:
+
+- canonical Owner Session: `20260903_075757_73a49f`;
+- source Agent: `ResearchAgent-QuantResearch`;
+- durable event ID: `ac7e96e3e915ea566c7ffc02496e55a3781a0d5292353dd77145e40abeb7a62e`;
+- run/action: `notification-link-001` / `communication-auto-return-001`;
+- Result SHA-256: `e83fce30970507882347407369b108c518f10f8b84fb1dc514121619e24a8462`;
+- Owner Decision: `/home/jingtao/.hermes/workflows/quant-research/runs/notification-link-001/DECISION.md`.
+
+The Research Agent wrote the Result and emitted `RESULT_READY`. The adapter persisted the event before calling the Owner profile, restored the real OS-user environment across the nested Profile boundary, and triggered the exact existing Owner Bot Chat. The Owner independently verified the Result hash and wrote the Decision without a manually injected Completion Signal.
+
+Re-emitting the identical event returned `deduplicated`; the Owner Session message count remained unchanged. A separate invalid-owner smoke retained `event.json` and a failed attempt while leaving `delivered.json` absent.
+
+Assistant and Reviewer terminal outcomes must adopt this same envelope next. External Signals, human decisions, and watchdog/dead-letter escalation remain separate later slices.
 
 ## Artifact checksums
 
@@ -54,4 +70,4 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 
 ## Verdict
 
-`PASS` — the same persistent Product Owner Session received multiple Signals, selected and invoked an isolated specialist through native Agent messaging, received a real Result, and changed the next product Action from that evidence. The next QuantResearch product action is a separately governed no-network reference-loop Spike; this validation did not execute it.
+`PASS` — the same persistent Product Owner Session received multiple Signals, selected and invoked an isolated specialist, and now receives a durable terminal-result event that automatically wakes the exact Session. The Owner verified the Result and changed the next product Action from that evidence. Assistant, Reviewer, external-event, human-decision, and reliability links remain later slices.
