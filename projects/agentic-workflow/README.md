@@ -21,6 +21,7 @@ Each resource has one job:
 - `GOAL.md` — the current Jingtao-owned objective shared by all participating Agents and changed only when Jingtao changes it.
 - Canonical Bot Chat — the Product Owner Agent's persistent Owner Session and product decision brain.
 - Task Session — an optional ephemeral conversation for one specialist action.
+- `session-messenger` — the shared Skill scaffold for exact Session messages, callbacks, Results, Reviews, decisions, and external Signals.
 - `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Agent, selected Matt flow and why, acceptance, and safety.
 - `RESULT.md` — one Agent's returned outcome and evidence.
 - `STATE.md` — a compact supporting projection for recovery and inspection; it does not replace the Owner Session.
@@ -63,28 +64,28 @@ The first live product workspace is:
 
 `/home/jingtao/.hermes/workflows/quant-research`
 
-1. A user message or Bot-to-Bot message delivers a Signal into the product's existing canonical Owner Session.
+1. A user message or source adapter uses [`session-messenger`](skills/session-messenger/SKILL.md) to deliver a Signal into the product's existing canonical Owner Session.
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
 4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
-5. A specialist acts in its own Profile and may use an ephemeral Task Session. After writing its Result, it uses the [Session message CLI](notification/README.md) to send the result reference to the exact same Owner Session.
-6. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
+5. A specialist acts in its own Profile and may use an ephemeral Task Session. Every message carries both exact Session endpoints. The specialist can ask the Owner a question; the Owner swaps the endpoints to answer and trigger that same specialist Session again.
+6. After writing its Result, the specialist uses the same Skill to notify the Owner. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
 
 Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
 
-Native Hermes webhooks trigger Agent runs or deliver to configured user-facing platforms; they do not currently target `bot-chat`. A real-time external product event therefore needs a future adapter or relay whose delivery into the canonical Owner Session is verified end to end before that route is recorded as live.
+Timers, GitHub/CI adapters, production monitors, and data checks reuse the same Skill with `kind: SIGNAL`, a source label, and no callback Session. They do not require a second notification implementation.
 
 For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
 
 ## Current boundary
 
-- No workflow engine, message broker, database, state machine, outbox, or general connector framework. One small CLI sends one message to one exact Session because native asynchronous Bot messaging does not wake the dormant caller with the result.
-- The CLI follows focused test-driven development and a real exact-Session acceptance trace.
+- No workflow engine, message broker, database, state machine, outbox, retry loop, dead-letter queue, or general connector framework. One Skill plus one standard-library script dispatches an addressed message to one exact Session.
+- The scaffold intentionally ships without a test suite. Real Agent-to-Owner-to-Agent callback and non-Session Signal traces are the functional evidence.
 - No automatic merge, deployment, production-signal change, paid/public action, or other high-risk external effect.
 - High-risk actions still require Jingtao's explicit approval at the existing tool boundary.
 
 ## Current status
 
-The heavy draft was discarded. The QuantResearch tracer proves one product-level Agent suite with isolated Profiles, one persistent Product Owner Bot Chat, repeated Signals in the same Owner Session, native `message_agent` delivery to a Research Agent, a real file Result, and an evidence-grounded Owner Decision. The Session message CLI now proves exact addressed delivery from a nested Agent Profile into that same Owner Session and returns the Owner response to the caller. See [`VALIDATION.md`](VALIDATION.md) and [`notification/README.md`](notification/README.md).
+The heavy draft was discarded. The current [`session-messenger`](skills/session-messenger/SKILL.md) scaffold proves exact addressed Research→Owner delivery, Owner→Research callback, Research acknowledgment to Owner, and a non-Session Signal entering that same persistent Owner Session. See [`VALIDATION.md`](VALIDATION.md).
 
 This remains functional validation. The next product action is the separately governed QuantResearch evidence Spike selected by the Owner; it is not part of the Agentic Workflow tracer.

@@ -38,23 +38,24 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 - The superseded `awfowner` Profile, `awfscout` Profile, prototype job, recovery jobs, old workflow directory, and old worktrees were deleted after the latest product-level suite was accepted.
 - No recurring tracer-only timer remains active.
 
-## Session message CLI acceptance
+## Session messenger acceptance
 
-The first post-MVP transport slice is deliberately smaller than a message queue. It sends one message to one exact Agent Session and returns that Agent's response to the caller.
+The final transport slice is a Skill scaffold with one standard-library script and no test suite. Every replyable envelope carries exact `from_profile`, `from_session`, `to_profile`, and `to_session` values. A receiver replies by swapping the endpoints and preserving the inbound `message_id` as `correlation_id`.
 
-The live nested-Profile smoke used:
+### Replyable callback trace
 
-- source environment: `ResearchAgent-QuantResearch` Profile home;
-- target Profile: `productowneragentquantresearch`;
-- exact target Session: `20260903_075757_73a49f`;
-- message: `SESSION-CLI-SMOKE-001`;
-- exact response: `OWNER_SESSION_DELIVERY_OK`.
+1. Research Session `20260903_082058_d3fc23` dispatched `QUESTION` message `222db00a9475420eb0f7ca5a0e4d4b83` to Owner Session `20260903_075757_73a49f`.
+2. The exact Owner Session loaded `session-messenger`, swapped the endpoints, and dispatched `REPLY` message `d49058c566664270948a9e2f6d307541` with body `CALLBACK_FROM_OWNER`.
+3. The exact Research Session received that callback and dispatched acknowledgment `a437b7dc2dc94bb59cf5e113e11b82f4` to the same Owner Session.
+4. All three private result records report exit code `0`, `ok: true`, and an observed Session equal to the requested Session.
 
-The CLI removed inherited source-Profile state and credentials, restored the real user home, passed `--resume 20260903_075757_73a49f`, accepted Session identity only from Hermes stderr metadata, and returned the target response as JSON. It used no Bot Chat title lookup and could not create a replacement Session.
+This proves Research→Owner question, Owner→Research answer, and return acknowledgment without keeping the initiating Session process blocked.
 
-All eight focused tests pass. They cover exact Profile/Session routing, private temporary message handling, stderr-only Session identity, mismatch and target-process failures, source-Profile secret isolation, message-file input, and JSON output.
+### Non-Session Signal trace
 
-This CLI has no queue, persistence, retry, dead-letter, or deduplication behavior. The calling Agent owns when to send, what result reference to include, and whether a retry is safe.
+Source `acceptance-monitor` dispatched non-replyable `SIGNAL` message `bdd2f74747b44b74bf4f496cd8e905da` to the same Owner Session. The delivery record reports exit code `0`, `ok: true`, and observed Session `20260903_075757_73a49f`; the Owner replied `SIGNAL_SCAFFOLD_OK` without changing product files or external state.
+
+The same scaffold therefore covers Agent questions, replies, Results, Reviews, decisions, and external Signals. `kind` is open routing context rather than a hard-coded workflow state machine.
 
 ## Artifact checksums
 
@@ -71,4 +72,4 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 
 ## Verdict
 
-`PASS` — one lightweight CLI sent a message from a nested Agent Profile environment to exact persistent Owner Session `20260903_075757_73a49f` and returned the Owner's exact response. This proves the addressed Session transport primitive only; each Agent still needs an explicit instruction to call it after producing a Result.
+`PASS` — the lightweight `session-messenger` Skill completed a real Research→Owner→Research callback round trip using exact existing Sessions, and the same scaffold delivered a non-Session Signal to the canonical Owner. The final artifact contains one Skill, one script, and no test suite or messaging service.
