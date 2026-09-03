@@ -1,7 +1,7 @@
 ---
 name: session-messenger
 description: Use when one exact Hermes Agent Session must receive a question, reply, result, review, decision, or Signal. Routes lightweight callbacks while leaving durable formal work to Kanban.
-version: 1.1.0
+version: 1.2.0
 author: Hermes
 license: MIT
 metadata:
@@ -26,6 +26,8 @@ This Skill fills one local gap: in the current headless Profile layout, native `
 - **Cross-machine Hermes:** use `hermes peer`; **cross-framework:** use A2A.
 
 The script is a narrow migration adapter, not a new workflow runtime.
+
+A task created from a plain CLI-owned Owner Session may have no native Kanban wake subscription. When that task reaches `done`, `blocked`, or terminal review, a supervising observer sends one idempotent RESULT/REVIEW envelope to the exact Owner Session. Skip that fallback only when the board shows a verified native subscription already delivered the terminal event.
 
 ## Replyable Session message
 
