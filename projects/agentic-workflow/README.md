@@ -55,15 +55,7 @@ Keep each layer small and non-duplicative:
 
 ## Matt Skill routing
 
-The Owner selects a Matt Skill after observing the Gap and proposed Action. The Skill is a professional method, not a stage:
-
-- `domain-modeling` when terms, relationships, or decision ownership are unclear;
-- `codebase-design` when a module's seam or interface needs design;
-- `writing-for-agents` when an Agent-consumed instruction or Skill needs writing;
-- `research` when a claim needs primary-source Evidence;
-- `to-spec` when an already-understood change should be synthesized into the issue tracker.
-
-Select only the method the current work needs, record the choice and reason in the Handoff, and allow `none` when no Matt method adds leverage. A later Result may reveal a different Gap and therefore a different Skill; there is no mandatory order.
+When an observed Gap and proposed Action may benefit from a Matt Skill, use the authoritative [Matt routing table](templates/AGENTIC_WORKFLOW_ASSISTANT.md#matt-routing). Record the selected method and reason in the Handoff.
 
 ## Live information flow
 
@@ -71,14 +63,16 @@ The fixed shared directory is:
 
 `/home/jingtao/.hermes/workflows/agentic-workflow`
 
-1. A user, Agent, webhook, or other real-time information event delivers a Signal into the product's existing canonical Owner Session.
+1. A user message or Bot-to-Bot message delivers a Signal into the product's existing canonical Owner Session.
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
 4. The Owner chooses one bounded Action, selects a Matt flow only when its method fits, and writes one complete Handoff.
 5. A specialist acts in its own Profile and may use an ephemeral Task Session; it returns a Result to the same Owner Session.
 6. The Owner absorbs the Result, records its decision, updates the State projection when useful, and waits for the next Signal.
 
-Heartbeat and Loop can temporarily poll from the Owner Session. Cron can temporarily provide a durable clock or backstop, but each Cron tick runs in a fresh isolated Session and must deliver its finding as a Signal to the existing Owner Session. The target design replaces timer polling with real-time information events.
+Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
+
+Native Hermes webhooks trigger Agent runs or deliver to configured user-facing platforms; they do not currently target `bot-chat`. A real-time external product event therefore needs a future adapter or relay whose delivery into the canonical Owner Session is verified end to end before that route is recorded as live.
 
 For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot messaging for named Bots, `delegate_task` only for anonymous short-lived reasoning inside one Agent, A2A only across process, machine, or framework boundaries, and Kanban only when durable multi-day work actually appears.
 

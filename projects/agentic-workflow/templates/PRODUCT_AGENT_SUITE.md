@@ -10,7 +10,8 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
-- Real-time Signal routes: `<user, Agent, webhook, or product-event routes into that Session>`
+- Verified Signal routes: `<user or Bot routes into that Session; optional no-agent Cron delivery to bot-chat>`
+- Deferred external event route: `<source plus adapter or relay to verify end to end, or none>`
 - Temporary clock/backstop: `<none, Heartbeat, Loop, or Cron with removal condition>`
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
@@ -30,11 +31,11 @@ A role or product name that needs another hyphen must be recast as one UpperCame
 
 ## Model and reasoning policy
 
-Every Agent in the suite uses `gpt-5.6-sol`. Claude models are not available and must not be selected as defaults, task overrides, fallbacks, or review models.
+Every Agent uses `gpt-5.6-sol`. No Claude model is selected anywhere: not as a default, task override, fallback, or review model.
 
 - `ProductOwnerAgent-<Product>` uses `max` reasoning.
-- Research and other bounded execution specialists use at least `high` reasoning.
-- Agents making architecture, workflow-maintenance, or independent-review judgments use `xhigh` unless they are the Product Owner, which remains `max`.
+- Research, Scout, and other bounded execution specialists use exactly `high` reasoning.
+- `AgenticWorkflow-Assistant` and independent Reviewer Agents use exactly `xhigh` reasoning.
 
 Record both model and reasoning effort in the live Profile configuration and in any Kanban or Cron override that can replace Profile defaults.
 
@@ -59,7 +60,7 @@ A Signal is new information, not merely elapsed time.
 4. Identify the current Gap and choose one bounded Action.
 5. Return every Specialist Result to this same Owner Session.
 
-Prefer native event delivery from users, Bots, gateways, or webhooks. Heartbeat and Loop may poll inside the Owner Session. Cron may be a durable temporary backstop, but its fresh isolated run only observes information and delivers a Signal to the Owner Session. Record the condition that removes every timer.
+Use the current direct routes into the canonical Owner Session: user messages and Bot-to-Bot messages. Heartbeat and Loop may poll inside that Session. When a durable timer needs no reasoning, a script-only `no_agent` Cron job may deliver stdout to `bot-chat`; an Agent Cron instead runs in a fresh isolated Session and is not the Owner. Native Hermes webhooks do not currently target `bot-chat`, so a real-time external product event requires a future adapter or relay verified end to end. Record the condition that removes every timer.
 
 ## Handoff template
 
