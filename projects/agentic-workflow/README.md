@@ -70,9 +70,12 @@ The first live product workspace is:
 4. The Owner chooses one bounded Action. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
 5. The selected Kanban worker acts directly in its own Profile and does not spawn another Agent for the same Handoff. Formal cards retain at least two transient attempts unless one-attempt fail-closed behavior is justified.
 6. Review uses a product-matched Reviewer. `REVISE` preserves the original Result, adds a separately hashed correction, and requires re-review.
-7. A verified native subscription or one idempotent `session-messenger` terminal envelope wakes the exact Owner Session. The Owner absorbs verified evidence, records its decision, updates State when useful, and waits for the next Signal.
+7. A verified native subscription or one idempotent `session-messenger` terminal envelope wakes the exact Owner Session. The Owner absorbs verified evidence, records its decision, and updates State when useful.
+8. The Owner immediately re-enters `Goal + Principles -> Evidence -> Gap -> Action`: the Goal supplies direction and the Principles constrain the move. If no equivalent work is active and a safe dependency-complete frontier exists, it dispatches the next bounded Action itself. Otherwise it records one legal wait and the exact wake condition.
 
-Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
+A CLI Owner's formal Handoff carries its exact callback Profile/Session plus stable correlation and idempotency identities. The terminal worker sends the evidence-bearing envelope after terminal board state; the recovery Pulse only repairs a missed wake.
+
+Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable recovery clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. Pulses recover stalled loops; they do not choose product Actions. An Agent Cron runs in a fresh isolated Session and is not the Owner.
 
 Scheduled Signals prefer Cron `deliver=bot-chat:<owner-profile>`. Immediate GitHub/CI adapters, production monitors, and data checks may reuse the same `agent-message/v1` envelope with a source label and no callback Session. Transport selection does not fork the business message contract.
 
