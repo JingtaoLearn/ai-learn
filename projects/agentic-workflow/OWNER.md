@@ -13,6 +13,7 @@ On each pulse:
 
 ## Output rules
 
+- Treat `GOAL.md` as Jingtao-owned and read-only. Never edit it.
 - Use ordinary Markdown, not schemas.
 - Keep reasoning compact and cite the source files or live systems used.
 - A result may be `continue`, `wait`, `stop`, or `ask Jingtao`.
