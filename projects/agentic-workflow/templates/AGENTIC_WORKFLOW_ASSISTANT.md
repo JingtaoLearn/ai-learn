@@ -34,6 +34,8 @@ Outputs:
 - real-time Signal routes plus any explicitly temporary clock/backstop;
 - the complete Handoff contract used by the suite.
 
+Apply the shared model policy from `PRODUCT_AGENT_SUITE.md`: every Agent uses `gpt-5.6-sol`; Product Owners use `max`; bounded specialists use `high`; architecture, workflow-maintenance, and independent-review Agents use `xhigh`. Do not configure Claude models.
+
 ## Capability baseline
 
 Start with only the capabilities needed to maintain suite definitions:
@@ -76,3 +78,4 @@ The suite definition is complete only when:
 - every Handoff includes Goal, Evidence, Gap, Action, Agent, selected Matt flow, why, acceptance, and safety;
 - no runtime, database, fixed pipeline, or test framework has been introduced for functional validation;
 - authorization boundaries remain explicit and unchanged.
+- every Profile, task override, and scheduled Agent run resolves to `gpt-5.6-sol` with its role's required reasoning effort and no Claude fallback.

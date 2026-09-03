@@ -28,6 +28,16 @@ Valid examples:
 
 A role or product name that needs another hyphen must be recast as one UpperCamelCase segment. Record the separate Hermes Profile ID beside the display name when the native machine identifier differs.
 
+## Model and reasoning policy
+
+Every Agent in the suite uses `gpt-5.6-sol`. Claude models are not available and must not be selected as defaults, task overrides, fallbacks, or review models.
+
+- `ProductOwnerAgent-<Product>` uses `max` reasoning.
+- Research and other bounded execution specialists use at least `high` reasoning.
+- Agents making architecture, workflow-maintenance, or independent-review judgments use `xhigh` unless they are the Product Owner, which remains `max`.
+
+Record both model and reasoning effort in the live Profile configuration and in any Kanban or Cron override that can replace Profile defaults.
+
 ## Smallest suite
 
 | Display name | Responsibility | Interface | Initial Toolsets | Disclosed Skills | Creation evidence |
@@ -94,4 +104,4 @@ Prefer native event delivery from users, Bots, gateways, or webhooks. Heartbeat 
 
 ## Owner completion check
 
-Before sending the Handoff, verify that all nine headings are present and specific. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then record `continue`, `wait`, `stop`, or `ask Jingtao` in the Owner Session and update supporting State only when the compact projection changed.
+Before sending the Handoff, verify that all nine headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then record `continue`, `wait`, `stop`, or `ask Jingtao` in the Owner Session and update supporting State only when the compact projection changed.
