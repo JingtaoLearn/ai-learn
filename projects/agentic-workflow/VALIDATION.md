@@ -32,6 +32,13 @@ This record covers the first product-level Agentic Workflow tracer for the Quant
 5. The attributed completion returned to the same Owner Session. The Owner read the real Result, wrote `runs/trace-004/DECISION.md`, appended `SIGNALS.md`, and updated `STATE.md`.
 6. Independent verification passed with zero blockers on Kanban task `t_954eef46`.
 
+## Trigger cleanup
+
+- The Product Owner Profile has zero Cron-sourced Sessions; scheduled Signals entered its canonical `Bot Chat` instead of creating replacement Owners.
+- The superseded `awfowner` job `0c2712406f2b` and default-profile prototype job `5fc04b1222bf` are paused.
+- Recovery job `7f7855a1e33f` completed its single allowed run, is inactive with no next run, and remains only as completed scheduler metadata.
+- No recurring tracer-only timer remains active.
+
 ## Artifact checksums
 
 ```text

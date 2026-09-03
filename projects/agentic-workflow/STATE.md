@@ -2,7 +2,7 @@
 
 ## Phase
 
-Continuous Product Owner contract and suite-template alignment.
+First product-level persistent Owner tracer verified.
 
 ## Current reality
 
@@ -12,19 +12,15 @@ Continuous Product Owner contract and suite-template alignment.
 - Sessions retain conversation history. Heartbeat and Loop re-enter the same Session, while Cron starts a fresh isolated Session per tick.
 - Skills are on-demand professional methods selected for an observed Gap and Action; Toolsets are role capabilities.
 - Two Agent processes must not share the same profile.
-- Runs 001 and 002 proved the Markdown information shape, but both reused the default profile and therefore do not prove independent dedicated Agent nodes.
-- The default-profile prototype Owner Cron is paused.
+- `AgenticWorkflow-Assistant`, `ProductOwnerAgent-QuantResearch`, `ResearchAgent-QuantResearch`, and `ReviewerAgent-AgenticWorkflow` exist as isolated Profiles with the approved display names and `gpt-5.6-sol` reasoning policy.
+- Scheduled Signals reached canonical Owner Session `20260903_075757_73a49f`; that Owner invoked Research Bot Chat `20260903_082058_d3fc23` through native `message_agent`, read the real Result, and wrote the Decision and State updates.
+- Independent Product and Standards review passed with zero blockers at Agentic Workflow design SHA `0e3f43e3fd560a1e7734ad0b1a191e99028388d0`; the complete tracer evidence is in `VALIDATION.md`.
+- The superseded Owner crons are paused, the recovery job is inactive after its single completed run, and no recurring tracer-only timer remains active.
 
 ## Current frontier
 
-Prepare the next authorized live slice from the repository templates:
-
-1. `AgenticWorkflow-Assistant` maintains the global flow and creates isolated product suites.
-2. `ProductOwnerAgent-QuantResearch` owns one canonical persistent Owner Session.
-3. `ResearchAgent-QuantResearch` handles the first observed read-oriented specialist Action.
-
-After Jingtao explicitly authorizes live Profile changes, instantiate only those Profiles, deliver Signals into the existing Owner Session, and run one real `ProductOwnerAgent-QuantResearch → ResearchAgent-QuantResearch → Result → ProductOwnerAgent-QuantResearch decision` tracer against current quantitative-platform information. Use a timer only as a temporary signal backstop.
+Use the verified Product Agent Suite to execute the separately governed next QuantResearch action selected by the Owner: one isolated, no-network reference-loop Spike. The Spike must preserve exact identities, command output, checksums, and read-only sealing evidence and must not alter production or production signals.
 
 ## Deferred
 
-Create Builder, Reviewer, or Operations Profiles only when an observed Gap and Action need them. Real-time product information events are the final trigger; Cron replacement is deferred until the relevant event source is selected. Do not add A2A, Profile distributions, a custom runtime, database, tests, or mandatory validation framework during this phase.
+Create Builder, Reviewer, or Operations Profiles only when an observed Gap and Action need them. Real-time product information events are the final trigger; a verified event adapter remains deferred until the relevant source is selected. Do not add A2A, Profile distributions, a custom runtime, database, or mandatory validation framework during this phase.
