@@ -16,6 +16,8 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
 
+Maintain a compact live role registry containing each display name, Profile ID, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role.
+
 ## Display-name rule
 
 Every product Agent display name has exactly two UpperCamelCase segments joined by one hyphen:
@@ -50,6 +52,10 @@ Delete the specialist row until its creation evidence exists. Add further rows o
 
 Profiles isolate Hermes state, not operating-system filesystem access. Set an explicit workspace and keep Toolsets narrow when filesystem or external-system access matters.
 
+A Kanban worker is already the background Agent for its card. When the selected Matt method says to spawn a background researcher, a Research worker applies the method directly in its current Session instead of spawning the same Handoff again. Nested Agents are reserved for genuinely independent subproblems with separate ownership.
+
+Use the board's normal transient-failure budget for formal work. Set `max_retries` to at least `2` unless a documented deterministic hazard requires one-attempt fail-closed behavior. A reviewer crash must not silently become a PASS or force a cross-product reviewer substitution.
+
 ## Signal contract
 
 A Signal is new information, not merely elapsed time.
@@ -61,7 +67,11 @@ A Signal is new information, not merely elapsed time.
 5. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
 6. Return every Specialist Result to this same Owner Session through the selected native or callback route.
 
+If the Owner card was created from a plain CLI Session, do not assume Kanban auto-subscribed that Session to `notify+wake`. On terminal task state, send one idempotent `session-messenger` RESULT/REVIEW envelope to the exact Owner Session unless a verified native subscription already delivered it.
+
 For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
+
+Review never rewrites immutable specialist evidence. A material finding creates a separately hashed additive correction, returns the card to the original specialist, and requires another independent review before the Owner accepts the package.
 
 ## Handoff template
 

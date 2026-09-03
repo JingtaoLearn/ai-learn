@@ -79,3 +79,20 @@ The files above live under `/home/jingtao/.hermes/workflows/quant-research/`. Th
 ## Verdict
 
 `PASS` — after incorporating the communication report, formal work is routed to Kanban, scheduled Signals to Cron `bot-chat`, short live Bot conversation to `message_agent`, and only the observed headless exact-Session callback gap to `session-messenger`. The refined `agent-message/v1` callback reached the same Research Session, and the existing non-Session Signal route reached the canonical Owner. The final adapter remains one Skill, one script, and no test suite or messaging service.
+
+## First real formal loop — Gold overfit concern
+
+Signal `gold-overfit-flow-001` entered canonical Owner Session `20260903_075757_73a49f`. The Owner created QuantResearch board task `t_6d2e50c0`; Research returned immutable `RESULT.md`; a product-matched `ReviewerAgent-QuantResearch` required one additive correction and then returned `PASS`; an explicit terminal envelope woke the exact Owner, which wrote `DECISION.md`.
+
+The run exposed and repaired six workflow defects:
+
+1. The Research Kanban worker spawned a duplicate nested researcher for the same Handoff. Future Research workers apply the method directly.
+2. Headless role creation waited on protected-file approval and confused the requested Reviewer with an existing Experiment role. Future Assistant runs return a complete `BLOCKED_APPLY` package for supervised application.
+3. The headless Owner requested that role through `message_agent`; after the one-shot sender exited, the Assistant completion could not wake it. Headless role-package returns now use `session-messenger` with the requester's exact callback Session.
+4. The first review incorrectly substituted `ReviewerAgent-AgenticWorkflow` and crashed. Role routing now forbids cross-product substitutes; the dedicated QuantResearch Reviewer passed an isolated probe.
+5. `max_retries=1` turned one reviewer crash into a blocked card. Formal cards now retain at least two transient attempts unless fail-fast behavior is justified.
+6. The CLI-owned Owner was not automatically subscribed to Kanban wake. One idempotent exact-Session REVIEW envelope delivered the terminal state.
+
+Independent review caught an unsupported interpretation of `1,201` as the exact pre-selection family size. Research preserved the original Result, added a separately hashed correction, and passed re-review. The accepted evidence supports `OVERFIT_RISK_SUBSTANTIATED` from 1,200 adaptive trials on reused exposed history without multiplicity correction or untouched final evaluation; it does not prove production harm or a superior replacement.
+
+No Gold production manifest, script, Cron, schedule, signal, deployment, GitHub state, trading behavior, order capability, or paid/public state changed. This accepts the repaired Agentic Workflow path, not the model's future economic performance.

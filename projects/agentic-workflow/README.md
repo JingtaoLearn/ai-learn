@@ -68,8 +68,9 @@ The first live product workspace is:
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
 3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
 4. The Owner chooses one bounded Action. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
-5. A specialist acts in its own Profile. When a headless sender needs an explicit exact-Session callback, every `session-messenger` envelope carries both Session endpoints. The receiver swaps them to answer and trigger that same sender Session again.
-6. After writing its Result, the specialist completes the Kanban handoff or uses the same lightweight Skill. The Owner absorbs verified evidence, records its decision, updates State when useful, and waits for the next Signal.
+5. The selected Kanban worker acts directly in its own Profile and does not spawn another Agent for the same Handoff. Formal cards retain at least two transient attempts unless one-attempt fail-closed behavior is justified.
+6. Review uses a product-matched Reviewer. `REVISE` preserves the original Result, adds a separately hashed correction, and requires re-review.
+7. A verified native subscription or one idempotent `session-messenger` terminal envelope wakes the exact Owner Session. The Owner absorbs verified evidence, records its decision, updates State when useful, and waits for the next Signal.
 
 Heartbeat and Loop can temporarily poll from the Owner Session. A zero-reasoning, script-only Cron job can provide a durable temporary clock and deliver its stdout directly to the canonical Owner Session with `deliver: bot-chat`. An Agent Cron runs in a fresh isolated Session and is not the Owner.
 
