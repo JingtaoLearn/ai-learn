@@ -2,7 +2,7 @@
 
 This project validates isolated product-level suites of real Hermes Agents. It does not build a workflow engine.
 
-Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The two progressively disclosed setup templates are:
+Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The first verified product-level tracer is recorded in [`VALIDATION.md`](VALIDATION.md). The two progressively disclosed setup templates are:
 
 - [`templates/AGENTIC_WORKFLOW_ASSISTANT.md`](templates/AGENTIC_WORKFLOW_ASSISTANT.md) — the global suite maintainer;
 - [`templates/PRODUCT_AGENT_SUITE.md`](templates/PRODUCT_AGENT_SUITE.md) — one product's Owner, specialists, Handoff, and capability choices.
@@ -85,4 +85,6 @@ For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot 
 
 ## Current status
 
-The heavy draft was discarded. The first two file-flow runs proved the file shape but reused the default Profile, so they do not yet prove independent dedicated Agent nodes or continuous product ownership. The next slice uses the templates above to create `ProductOwnerAgent-QuantResearch` and `ResearchAgent-QuantResearch` only after Jingtao authorizes live Profile changes.
+The heavy draft was discarded. The QuantResearch tracer now proves one product-level Agent suite with isolated Profiles, one persistent Product Owner Bot Chat, repeated Signals in the same Owner Session, native `message_agent` delivery to a Research Agent, a real file Result, and an evidence-grounded Owner Decision. See [`VALIDATION.md`](VALIDATION.md) for exact identities and artifact checksums.
+
+This remains functional validation. The next product action is the separately governed QuantResearch evidence Spike selected by the Owner; it is not part of the Agentic Workflow tracer.
