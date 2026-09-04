@@ -6,10 +6,12 @@ from fastapi.testclient import TestClient
 from quant_platform.datasets import publish_snapshot, snapshot_status
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
+from quant_platform.study_datasets import ExecutionDatasetSliceFactory
 from quant_platform.web import MAX_BODY_BYTES, _run_workers_once, create_app
 from quant_platform.worker import SerialAttemptWorker, SerialStudyWorker
 
 from test_auth import AUDIENCE, NOW, SESSION, SHARED, _claims, _token
+from test_corporate_actions import bocom_evidence
 from test_experiment_service import FIXTURE, _task
 from test_parameter_study import (
     EXECUTION_IDENTITY,
@@ -141,6 +143,99 @@ def snapshot(app):
     )["snapshot_id"]
 
 
+def bocom_action_view(app) -> dict:
+    frame = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(
+                ["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"]
+            ),
+            "Open": [6.0, 6.1, 6.2, 6.3],
+            "High": [6.1, 6.2, 6.3, 6.4],
+            "Low": [5.9, 6.0, 6.1, 6.2],
+            "Close": [6.05, 6.15, 6.25, 6.35],
+            "Volume": [1000, 1100, 1200, 1300],
+        }
+    )
+    root = app.state.catalog.state_root
+    published = publish_snapshot(
+        frame,
+        root,
+        {
+            "instrument": "601328.SS",
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "unadjusted",
+        },
+        corporate_action_evidence=bocom_evidence(),
+    )
+    parent_detail = app.state.datasets.snapshot_detail(
+        "601328.SS", published["snapshot_id"]
+    )
+    return ExecutionDatasetSliceFactory(root).materialize(
+        {
+            "instrument": "601328.SS",
+            "snapshot_id": published["snapshot_id"],
+            "canonical_sha256": parent_detail["canonical_sha256"],
+        },
+        {
+            "allowed_start": "2026-08-29",
+            "training_through": "2026-08-31",
+            "available_through": "2026-09-01",
+            "scoring_start": "2026-09-01",
+            "scoring_end": "2026-09-01",
+            "role": "INNER_SCORE",
+            "information_interval": {
+                "signal_time": "SESSION_CLOSE",
+                "earliest_execution_time": "NEXT_SESSION_OPEN",
+                "return_or_label_end_time": "EXECUTION_SESSION_CLOSE",
+            },
+            "account_policy": "FORCE_FLAT_WITH_COST",
+        },
+    )
+
+
+def test_authenticated_dataset_detail_api_preserves_bocom_view_evidence(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    view = bocom_action_view(app)
+    path = f"/api/datasets/601328.SS/snapshots/{view['snapshot_id']}"
+
+    unauthenticated = client.get(path)
+    assert unauthenticated.status_code == 401
+    authenticate(app, client)
+
+    task = _task(view["snapshot_id"])
+    task["dataset"]["instrument"] = "601328.SS"
+    task["template"]["parameters"]["evaluation_start"] = "2026-09-01"
+    task["template"]["parameters"]["evaluation_end"] = "2026-09-01"
+    resolved = app.state.experiments.resolve_task(task)
+    response = client.get(path)
+
+    assert response.status_code == 200
+    detail = response.json()["dataset"]
+    assert resolved["dataset"]["snapshot_id"] == detail["snapshot_id"]
+    assert detail["corporate_action_evidence_sha256"] == resolved["dataset"]["lineage"][
+        "projected_action_evidence_sha256"
+    ]
+    evidence = detail["corporate_actions"]
+    assert evidence["coverage_state"] == "VERIFIED_EVENTS"
+    assert evidence["coverage_id"] == (
+        "cfc3f55919fe62cb85a0afcefd16dd5d8d7cae29475deefab74c95275ebe3385"
+    )
+    assert evidence["events"][0]["event_series"]["root_notice_id"] == "临2025-079"
+    assert evidence["events"][0]["payload"]["gross_cash_per_share"] == "0.1563"
+    assert evidence["events"][0]["payload"]["record_date"] == "2025-12-24"
+    assert evidence["events"][0]["payload"]["ex_date"] == "2025-12-25"
+    assert evidence["events"][0]["payload"]["pay_date"] == "2025-12-25"
+    assert evidence["artifacts"][0]["body_sha256"] == (
+        "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6"
+    )
+    assert evidence["limitations"] == ["NO_COMPLETE_AUTHORITATIVE_ENUMERATION"]
+    assert evidence["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
+
+
 def test_public_health_and_security_headers(tmp_path: Path):
     _, client = make_app(tmp_path)
 
@@ -197,7 +292,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         ),
         (
             app.state.datasets,
-            ("list_available", "resolve"),
+            ("list_available", "resolve", "snapshot_detail"),
         ),
         (
             app.state.studies,
@@ -227,6 +322,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
         "/operators/prior_log_ols/1.0.0",
         "/templates/single_stock_daily_causal/1",
         "/experiments/new",
+        "/datasets/not-found/snapshots/not-found",
         "/studies",
         "/studies/new",
         "/studies/not-found",
@@ -250,6 +346,7 @@ def test_every_protected_route_authenticates_before_any_meaningful_work(
     api_gets = (
         "/api/operators",
         "/api/datasets",
+        "/api/datasets/not-found/snapshots/not-found",
         "/api/operators/prior_log_ols",
         "/api/templates/single_stock_daily_causal/1",
         "/api/experiments",

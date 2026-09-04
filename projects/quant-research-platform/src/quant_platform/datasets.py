@@ -17,6 +17,12 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from .corporate_actions import (
+    CorporateActionEvidence,
+    admit_corporate_action_evidence,
+    load_strict_json,
+    project_corporate_action_evidence,
+)
 from .dataset_lineage import (
     SAFE_INSTRUMENT,
     DatasetValidationError,
@@ -347,7 +353,75 @@ def _snapshot_manifest_fields(schema_version: int) -> frozenset[str]:
         return frozenset(common | {"created_at", "columns"})
     if schema_version == 3:
         return frozenset(common | {"columns", "lineage", "scoring_mask_sha256"})
+    if schema_version == 4:
+        return frozenset(
+            common
+            | {"created_at", "columns", "corporate_action_evidence_sha256"}
+        )
+    if schema_version == 5:
+        return frozenset(
+            common
+            | {
+                "columns",
+                "lineage",
+                "scoring_mask_sha256",
+                "corporate_action_evidence_sha256",
+            }
+        )
     raise ValueError("unsupported snapshot schema")
+
+
+def _action_snapshot_files(manifest: Mapping[str, Any]) -> frozenset[str]:
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("snapshot file map must be an object")
+    artifacts = files.get("corporate_action_artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("corporate-action artifact file map is invalid")
+    if not all(
+        isinstance(artifact_id, str)
+        and re.fullmatch(r"[0-9a-f]{64}", artifact_id)
+        and isinstance(path, str)
+        and path == f"corporate-action-{artifact_id}.bin"
+        for artifact_id, path in artifacts.items()
+    ):
+        raise ValueError("corporate-action artifact file map is invalid")
+    expected_map: dict[str, Any] = {
+        "data": "data.parquet",
+        "corporate_actions": "corporate_actions.json",
+        "corporate_action_artifacts": artifacts,
+    }
+    if manifest.get("schema_version") == 5:
+        expected_map["scoring_mask"] = "scoring_mask.json"
+    if files != expected_map:
+        raise ValueError("snapshot file map is invalid")
+    names = {"manifest.json"}
+    names.update(value for value in files.values() if isinstance(value, str))
+    names.update(artifacts.values())
+    return frozenset(names)
+
+
+def _verified_action_evidence(
+    target: Path, manifest: Mapping[str, Any]
+) -> CorporateActionEvidence:
+    payload = _read_snapshot_file(
+        target / "corporate_actions.json", "corporate-action evidence"
+    )
+    document = load_strict_json(payload)
+    if payload != _canonical_json(document) + b"\n":
+        raise ValueError("corporate-action evidence JSON is not canonical")
+    artifact_bytes = {
+        artifact_id: _read_snapshot_file(
+            target / path, f"corporate-action artifact {artifact_id}"
+        )
+        for artifact_id, path in manifest["files"]["corporate_action_artifacts"].items()
+    }
+    evidence = admit_corporate_action_evidence(document, artifact_bytes)
+    if not evidence.publishable:
+        raise ValueError("corporate-action evidence is not publishable")
+    if evidence.digest != manifest["corporate_action_evidence_sha256"]:
+        raise ValueError("corporate-action evidence digest mismatch")
+    return evidence
 
 
 def _parent_verification_attestation(
@@ -397,7 +471,7 @@ def _validate_parent_verification_attestation(
     ):
         raise ValueError("derived-view parent manifest attestation digest is invalid")
     schema_version = verified_manifest.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2, 3}:
+    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5}:
         raise ValueError("derived-view verified parent schema is invalid")
     if set(verified_manifest) != _snapshot_manifest_fields(schema_version):
         raise ValueError("derived-view verified parent manifest fields are invalid")
@@ -413,10 +487,19 @@ def _validate_parent_verification_attestation(
         "metadata": verified_manifest["metadata"],
         "canonical_sha256": verified_manifest["canonical_sha256"],
     }
-    if schema_version == 3:
+    if schema_version in {3, 5}:
         if verified_manifest.get("lineage") != parent_identity["lineage"]:
             raise ValueError("derived-view verified parent lineage does not match")
         manifest_identity["lineage"] = verified_manifest["lineage"]
+    if schema_version in {4, 5}:
+        if (
+            verified_manifest.get("corporate_action_evidence_sha256")
+            != parent_identity.get("corporate_action_evidence_sha256")
+        ):
+            raise ValueError("derived-view verified parent action evidence does not match")
+        manifest_identity["corporate_action_evidence_sha256"] = verified_manifest[
+            "corporate_action_evidence_sha256"
+        ]
     if _sha256(_canonical_json(manifest_identity)) != parent_identity["snapshot_id"]:
         raise ValueError("derived-view verified parent snapshot ID is invalid")
     return verified_manifest
@@ -427,7 +510,7 @@ def _verified_scoring_bounds(
     manifest: dict[str, Any],
     frame: pd.DataFrame,
 ) -> tuple[str, str]:
-    if manifest.get("schema_version") != 3:
+    if manifest.get("schema_version") not in {3, 5}:
         raise ValueError("snapshot does not have a committed scoring mask")
     lineage = manifest["lineage"]
     dates = frame["Date"].dt.strftime("%Y-%m-%d").tolist()
@@ -502,25 +585,20 @@ def _verify_snapshot(
         if stat.S_IMODE(target_metadata.st_mode) != 0o555:
             raise ValueError("snapshot directory has unsafe permissions")
         entries = {entry.name for entry in os.scandir(target)}
-        supported_file_sets = (
-            {"manifest.json", "data.parquet"},
-            {"manifest.json", "data.parquet", "scoring_mask.json"},
-        )
-        if entries not in supported_file_sets:
-            raise ValueError(
-                f"snapshot file set is invalid: actual={sorted(entries)}"
-            )
+        if not {"manifest.json", "data.parquet"}.issubset(entries):
+            raise ValueError(f"snapshot file set is invalid: actual={sorted(entries)}")
         manifest = _load_manifest(
             _read_snapshot_file(target / "manifest.json", "manifest")
         )
         schema_version = manifest.get("schema_version")
-        if type(schema_version) is not int or schema_version not in {1, 2, 3}:
+        if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5}:
             raise ValueError("unsupported snapshot schema")
-        expected_files = (
-            {"manifest.json", "data.parquet", "scoring_mask.json"}
-            if schema_version == 3
-            else {"manifest.json", "data.parquet"}
-        )
+        if schema_version in {4, 5}:
+            expected_files = _action_snapshot_files(manifest)
+        elif schema_version == 3:
+            expected_files = {"manifest.json", "data.parquet", "scoring_mask.json"}
+        else:
+            expected_files = {"manifest.json", "data.parquet"}
         if entries != expected_files:
             raise ValueError("snapshot file set does not match its schema")
         parquet_path = target / "data.parquet"
@@ -541,20 +619,23 @@ def _verify_snapshot(
             raise ValueError("instrument directory does not match snapshot metadata")
         if not isinstance(manifest["files"], dict):
             raise ValueError("snapshot file map must be an object")
-        expected_file_map = (
-            {"data": "data.parquet", "scoring_mask": "scoring_mask.json"}
-            if schema_version == 3
-            else {"data": "data.parquet"}
-        )
-        if manifest["files"] != expected_file_map:
-            raise ValueError("snapshot file map is invalid")
-        if schema_version in {1, 2}:
+        if schema_version not in {4, 5}:
+            expected_file_map = (
+                {"data": "data.parquet", "scoring_mask": "scoring_mask.json"}
+                if schema_version == 3
+                else {"data": "data.parquet"}
+            )
+            if manifest["files"] != expected_file_map:
+                raise ValueError("snapshot file map is invalid")
+        if schema_version in {1, 2, 4}:
             if not isinstance(manifest["created_at"], str):
                 raise ValueError("created_at must be a string")
             datetime.fromisoformat(manifest["created_at"])
         digest_fields = ["canonical_sha256", "parquet_sha256"]
-        if schema_version == 3:
+        if schema_version in {3, 5}:
             digest_fields.append("scoring_mask_sha256")
+        if schema_version in {4, 5}:
+            digest_fields.append("corporate_action_evidence_sha256")
         for field in digest_fields:
             if not isinstance(manifest[field], str) or not re.fullmatch(
                 r"[0-9a-f]{64}", manifest[field]
@@ -571,8 +652,14 @@ def _verify_snapshot(
             "metadata": manifest["metadata"],
             "canonical_sha256": manifest["canonical_sha256"],
         }
-        if schema_version == 3:
+        if schema_version in {3, 5}:
             identity["lineage"] = manifest["lineage"]
+        action_evidence: CorporateActionEvidence | None = None
+        if schema_version in {4, 5}:
+            identity["corporate_action_evidence_sha256"] = manifest[
+                "corporate_action_evidence_sha256"
+            ]
+            action_evidence = _verified_action_evidence(target, manifest)
         if _sha256(_canonical_json(identity)) != expected_snapshot_id:
             raise ValueError("snapshot ID does not match its identity inputs")
         if _sha256(parquet_payload) != manifest["parquet_sha256"]:
@@ -580,14 +667,14 @@ def _verify_snapshot(
         normalized = _normalize_frame(pd.read_parquet(io.BytesIO(parquet_payload)))
         if schema_version == 1 and tuple(normalized.columns) != REQUIRED_COLUMNS:
             raise ValueError("v1 snapshot must contain exactly the legacy OHLCV schema")
-        if schema_version in {2, 3}:
+        if schema_version in {2, 3, 4, 5}:
             if not isinstance(manifest["columns"], list) or not all(
                 isinstance(column, str) for column in manifest["columns"]
             ):
                 raise ValueError("snapshot columns must be a string array")
             if manifest["columns"] != list(normalized.columns):
                 raise ValueError("snapshot column schema mismatch")
-        if schema_version == 3:
+        if schema_version in {3, 5}:
             lineage = manifest["lineage"]
             expected_lineage_fields = {
                 "kind",
@@ -600,6 +687,8 @@ def _verify_snapshot(
                 "projected_bytes_sha256",
                 "access_boundary_digest",
             }
+            if schema_version == 5:
+                expected_lineage_fields.add("projected_action_evidence_sha256")
             if (
                 not isinstance(lineage, dict)
                 or set(lineage) != expected_lineage_fields
@@ -608,12 +697,15 @@ def _verify_snapshot(
             if lineage["kind"] != "derived_view":
                 raise ValueError("derived snapshot lineage kind is invalid")
             parent = lineage["parent"]
-            if not isinstance(parent, dict) or set(parent) != {
+            expected_parent_fields = {
                 "instrument",
                 "snapshot_id",
                 "canonical_sha256",
                 "lineage",
-            }:
+            }
+            if schema_version == 5:
+                expected_parent_fields.add("corporate_action_evidence_sha256")
+            if not isinstance(parent, dict) or set(parent) != expected_parent_fields:
                 raise ValueError("derived-view parent identity is invalid")
             if parent["instrument"] != metadata["instrument"]:
                 raise ValueError("derived-view parent instrument is invalid")
@@ -656,7 +748,7 @@ def _verify_snapshot(
                     raise ValueError(
                         "derived-view parent snapshot identity does not match"
                     )
-                if parent_manifest["schema_version"] == 3:
+                if parent_manifest["schema_version"] in {3, 5}:
                     parent_lineage = parent_manifest["lineage"]
                 else:
                     parent_lineage = snapshot_update_lineage(
@@ -715,6 +807,50 @@ def _verify_snapshot(
                 "projected_bytes_sha256": manifest["parquet_sha256"],
                 "scoring_mask_sha256": manifest["scoring_mask_sha256"],
             }
+            if schema_version == 5:
+                if action_evidence is None:
+                    raise ValueError("derived-view action evidence is missing")
+                if (
+                    lineage["projected_action_evidence_sha256"]
+                    != manifest["corporate_action_evidence_sha256"]
+                ):
+                    raise ValueError("derived-view projected action evidence is invalid")
+                projection = action_evidence.document.get("projection")
+                if (
+                    not isinstance(projection, dict)
+                    or projection.get("parent_evidence_sha256")
+                    != parent["corporate_action_evidence_sha256"]
+                    or projection.get("available_through")
+                    != view_spec["available_through"]
+                ):
+                    raise ValueError("derived-view action evidence projection is invalid")
+                if verify_parent:
+                    if parent_manifest["schema_version"] not in {4, 5}:
+                        raise ValueError(
+                            "derived-view action evidence parent is not action-aware"
+                        )
+                    verified_parent_action_evidence = _verified_action_evidence(
+                        parent_target,
+                        parent_manifest,
+                    )
+                    expected_action_evidence = project_corporate_action_evidence(
+                        verified_parent_action_evidence,
+                        view_spec["available_through"],
+                    )
+                    if (
+                        action_evidence.digest != expected_action_evidence.digest
+                        or action_evidence.json_bytes()
+                        != expected_action_evidence.json_bytes()
+                        or dict(action_evidence.artifact_bytes)
+                        != dict(expected_action_evidence.artifact_bytes)
+                    ):
+                        raise ValueError(
+                            "derived-view action evidence does not match the verified "
+                            "parent projection"
+                        )
+                access_boundary["projected_action_evidence_sha256"] = manifest[
+                    "corporate_action_evidence_sha256"
+                ]
             if lineage["access_boundary_digest"] != _sha256(
                 _canonical_json(access_boundary)
             ):
@@ -802,6 +938,7 @@ def publish_snapshot(
     metadata: dict[str, str],
     *,
     update_latest: bool = True,
+    corporate_action_evidence: CorporateActionEvidence | None = None,
 ) -> dict[str, str]:
     """Validate and atomically publish one immutable market-data snapshot."""
 
@@ -809,12 +946,35 @@ def publish_snapshot(
     normalized = _normalize_frame(frame)
     canonical_bytes = _canonical_data_bytes(normalized)
     canonical_sha256 = _sha256(canonical_bytes)
-    schema_version = 1 if tuple(normalized.columns) == REQUIRED_COLUMNS else 2
+    if corporate_action_evidence is not None:
+        if not isinstance(corporate_action_evidence, CorporateActionEvidence):
+            raise DatasetValidationError("corporate-action evidence type is invalid")
+        if not corporate_action_evidence.publishable:
+            raise DatasetValidationError("corporate-action evidence is not publishable")
+        revisions = corporate_action_evidence.document["revisions"]
+        coverage = corporate_action_evidence.document["coverage"]["payload"]
+        if (
+            coverage["instrument"] != normalized_metadata["instrument"]
+            or coverage["market"] != normalized_metadata["market"]
+            or any(
+                revision["payload"]["instrument"] != normalized_metadata["instrument"]
+                or revision["payload"]["market"] != normalized_metadata["market"]
+                for revision in revisions
+            )
+        ):
+            raise DatasetValidationError(
+                "corporate-action evidence source does not match snapshot metadata"
+            )
+        schema_version = 4
+    else:
+        schema_version = 1 if tuple(normalized.columns) == REQUIRED_COLUMNS else 2
     identity = {
         "schema_version": schema_version,
         "metadata": normalized_metadata,
         "canonical_sha256": canonical_sha256,
     }
+    if corporate_action_evidence is not None:
+        identity["corporate_action_evidence_sha256"] = corporate_action_evidence.digest
     snapshot_id = _sha256(_canonical_json(identity))
 
     root = Path(root).resolve()
@@ -834,6 +994,28 @@ def publish_snapshot(
             with parquet_path.open("rb") as stream:
                 os.fsync(stream.fileno())
             parquet_sha256 = _sha256(parquet_path.read_bytes())
+            files: dict[str, Any] = {"data": "data.parquet"}
+            expected_files = {"manifest.json", "data.parquet"}
+            if corporate_action_evidence is not None:
+                _write_new(
+                    temporary / "corporate_actions.json",
+                    corporate_action_evidence.json_bytes(),
+                )
+                artifact_files: dict[str, str] = {}
+                for artifact in corporate_action_evidence.document["artifacts"]:
+                    artifact_id = artifact["artifact_id"]
+                    artifact_path = artifact["path"]
+                    _write_new(
+                        temporary / artifact_path,
+                        corporate_action_evidence.artifact_bytes[artifact_id],
+                    )
+                    artifact_files[artifact_id] = artifact_path
+                    expected_files.add(artifact_path)
+                files |= {
+                    "corporate_actions": "corporate_actions.json",
+                    "corporate_action_artifacts": artifact_files,
+                }
+                expected_files.add("corporate_actions.json")
             manifest = identity | {
                 "snapshot_id": snapshot_id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -841,9 +1023,9 @@ def publish_snapshot(
                 "data_start": str(normalized["Date"].min().date()),
                 "data_end": str(normalized["Date"].max().date()),
                 "parquet_sha256": parquet_sha256,
-                "files": {"data": "data.parquet"},
+                "files": files,
             }
-            if schema_version == 2:
+            if schema_version in {2, 4}:
                 manifest["columns"] = list(normalized.columns)
             with (temporary / "manifest.json").open("x", encoding="utf-8") as stream:
                 stream.write(
@@ -851,10 +1033,8 @@ def publish_snapshot(
                 )
                 stream.flush()
                 os.fsync(stream.fileno())
-            _seal_snapshot(temporary)
-            _verify_snapshot_seal(
-                temporary, frozenset({"manifest.json", "data.parquet"})
-            )
+            _seal_snapshot(temporary, frozenset(expected_files))
+            _verify_snapshot_seal(temporary, frozenset(expected_files))
             _fsync_directory(temporary)
             _verify_snapshot(
                 temporary,

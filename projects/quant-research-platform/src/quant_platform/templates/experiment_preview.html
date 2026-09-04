@@ -40,7 +40,7 @@
   <details><summary>Full canonical identity and dataset evidence</summary><dl class="technical">
     <dt>Experiment ID</dt><dd>{{ preview.experiment_id }}</dd>
     <dt>Template digest</dt><dd>{{ preview.resolved.template.content_digest }}</dd>
-    <dt>Dataset snapshot</dt><dd>{{ preview.resolved.dataset.snapshot_id }}</dd>
+    <dt>Dataset snapshot</dt><dd><a href="/datasets/{{ preview.resolved.dataset.dataset_id or preview.resolved.dataset.instrument }}/snapshots/{{ preview.resolved.dataset.snapshot_id }}">{{ preview.resolved.dataset.snapshot_id }}</a></dd>
     <dt>Dataset digest</dt><dd>{{ preview.resolved.dataset.canonical_sha256 }}</dd>
   </dl></details>
 </section>

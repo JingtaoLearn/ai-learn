@@ -27,6 +27,7 @@ from .datasets import (
     _normalize_frame,
     _validate_metadata,
     _verify_snapshot,
+    _verified_action_evidence,
     snapshot_status,
 )
 from .schemas import SchemaValidationError, canonical_json_bytes
@@ -1196,6 +1197,83 @@ class DatasetService:
                 }
             )
         return options
+
+    def snapshot_detail(self, dataset_id: str, snapshot_id: str) -> dict[str, Any]:
+        """Return one recursively verified snapshot and its bounded action evidence."""
+
+        if not isinstance(snapshot_id, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_id) is None:
+            raise DatasetResolutionError("snapshot_id must be a lower-case SHA-256 value")
+        item = self._item(dataset_id)
+        target = self.catalog.state_root / "datasets" / item.instrument / snapshot_id
+        if target.is_symlink() or not target.is_dir():
+            raise DatasetResolutionError(
+                f"unknown immutable dataset snapshot: {item.instrument}@{snapshot_id}"
+            )
+        try:
+            manifest = _verify_snapshot(target, snapshot_id, verify_parent=True)
+            if manifest["metadata"] != item.metadata:
+                raise DatasetResolutionError(
+                    "snapshot metadata conflicts with dataset catalog"
+                )
+            if manifest["schema_version"] in {4, 5}:
+                evidence = _verified_action_evidence(target, manifest)
+                document = evidence.document
+                coverage = document["coverage"]
+                corporate_actions = {
+                    "coverage_state": coverage["payload"]["coverage_state"],
+                    "coverage_id": coverage["coverage_id"],
+                    "limitations": coverage["payload"]["limitations"],
+                    "events": document["revisions"],
+                    "artifacts": document["artifacts"],
+                    "requests": document["requests"],
+                    "retrievals": document["retrievals"],
+                    "findings": document["findings"],
+                    "total_return_claim": document["total_return_claim"],
+                    "explanation": (
+                        "Known events with incomplete interval coverage are not verified "
+                        "total return."
+                        if coverage["payload"]["coverage_state"] == "VERIFIED_EVENTS"
+                        else "Unknown or partial corporate-action evidence is not verified "
+                        "total return."
+                    ),
+                }
+            else:
+                corporate_actions = {
+                    "coverage_state": "UNKNOWN_MISSING",
+                    "coverage_id": None,
+                    "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
+                    "events": [],
+                    "artifacts": [],
+                    "requests": [],
+                    "retrievals": [],
+                    "findings": [],
+                    "total_return_claim": "FORBIDDEN",
+                    "explanation": (
+                        "Unknown or partial corporate-action evidence is not verified "
+                        "total return."
+                    ),
+                }
+        except DatasetResolutionError:
+            raise
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            raise DatasetResolutionError(
+                f"dataset snapshot detail failed verification: {exc}"
+            ) from exc
+        return {
+            "dataset_id": item.dataset_id,
+            "name": item.name,
+            "instrument": item.instrument,
+            "snapshot_id": manifest["snapshot_id"],
+            "schema_version": manifest["schema_version"],
+            "canonical_sha256": manifest["canonical_sha256"],
+            "corporate_action_evidence_sha256": manifest.get(
+                "corporate_action_evidence_sha256"
+            ),
+            "data_start": manifest["data_start"],
+            "data_end": manifest["data_end"],
+            "lineage": manifest.get("lineage"),
+            "corporate_actions": corporate_actions,
+        }
 
     def sessions(self, dataset_id: str, start: str, end: str) -> list[str]:
         start = _date(start, "dataset range start")
