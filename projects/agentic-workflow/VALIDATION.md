@@ -97,6 +97,24 @@ Independent review caught an unsupported interpretation of `1,201` as the exact 
 
 No Gold production manifest, script, Cron, schedule, signal, deployment, GitHub state, trading behavior, order capability, or paid/public state changed. This accepts the repaired Agentic Workflow path, not the model's future economic performance.
 
+## Product-group communication provisioning
+
+Issue `#235` adopts one private Feishu product group as the human surface for one Product Agent Suite without adding a workflow engine or scripted business pipeline.
+
+Verified provisioning evidence:
+
+- A private Feishu group named `QuantResearch` exists with a readable `A-QR` avatar on a solid deep-blue background with no frame; its exact chat identifier remains only in the live private binding.
+- Read-back shows Jingtao and the existing Hermes Agent bot as the only members; Jingtao is the owner.
+- The default Hermes configuration enables native profile multiplexing only for `productowneragentquantresearch` and contains one exact Feishu `profile_routes` match for the private product-group chat.
+- Parsing the live configuration with `gateway.config.load_gateway_config()` and resolving it with `gateway.profile_routing.match_profile_route()` returns route `quant-research-feishu-group` and target Profile `productowneragentquantresearch`.
+- `AgenticWorkflow-Assistant` and `ProductOwnerAgent-QuantResearch` have `lark-im` plus `lark-shared` as Agent-callable platform procedures; the Owner also has `feishu-reply-style`. `lark-cli auth status --verify` under both Profile homes confirms bot identity is ready and verified; all product-group operations use explicit `--as bot` rather than the unavailable user-default identity.
+- A first multiplex restart exposed that copying the shared Feishu credential into the routed Owner Profile starts a second websocket adapter that can receive unrelated chats before exact route selection. The Profile-scoped gateway credentials were removed from both Assistant and Owner while their independently bound `lark-cli --as bot` authentication remained verified. The default Profile is the sole Feishu connector owner; exact native routing selects the Owner execution Profile after ingress.
+- The first group `/resume` tracer was correctly denied: the configuration authorized the Feishu `open_id`, while slash-command policy evaluated a distinct adapter-normalized principal. The private live binding now records and authorizes only the observed Jingtao slash principal. Reusable provisioning must verify `/whoami` before requesting an admin-only bind; no private principal is committed here.
+- One prompt-only daily Cron sends a `REPORT_DUE` timing Signal to the existing Product Owner Bot Chat at 20:30 Asia/Shanghai; it has no script and does not compose the report.
+- No new script, daemon, database, queue, report generator, or workflow state machine was added. Existing native `lark-cli`, profile routing, Session resume, Cron/Heartbeat, Kanban, and `session-messenger` remain atomic capabilities.
+
+The exact group route and bidirectional Owner replies are proven, but canonical-session persistence is not yet accepted. An authorized `/resume` successfully bound the group to the recorded Owner Session; a later manual `REPORT_DUE` acceptance run exposed that the current release's one-shot `bot-chat` delivery marks the resumed canonical row `cli_close`, after which the next group message correctly stayed in the Owner Profile but created a replacement Session. Recovery Pulse and Daily Report jobs are paused fail-closed. Final acceptance requires one stable rebind plus a same-Session timing-signal transport that does not close the gateway-owned canonical Session. Live identifiers remain only in the private communication record.
+
 ## Continuous Owner-loop acceptance
 
 Jingtao's correction entered canonical Owner Session `20260903_075757_73a49f` as Signal `9e13001cc00a47caa14f72e64e6912c9`. The supervising Hermes session supplied no product Action. The Owner independently read the accepted Gold Decision, verified that no equivalent work was active, and selected the next evidence Gap: absence of a sealed prospective-evaluation contract.

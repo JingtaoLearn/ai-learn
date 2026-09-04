@@ -11,11 +11,17 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
+- Private Feishu product group: `<name and exact oc_... chat_id>`
+- Native group route: `<gateway.profile_routes entry for platform=feishu, exact chat_id, and Owner Profile>`
+- Authorized human participant: `<one owner open_id by default; multiple humans require an explicit shared-session policy before activation>`
+- User communication policy: [`PRODUCT_COMMUNICATION.md`](PRODUCT_COMMUNICATION.md)
 - Exact-Session callback adapter: `session-messenger` installed in every participating Profile
 - Verified Signal routes: `<Cron bot-chat, webhook/Kanban, or immediate session-messenger adapter into the exact Owner Session>`
 - Temporary clock/backstop: `<none, Heartbeat, Loop, or Cron with removal condition>`
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
+
+The Feishu product group is the human interface to that brain. Bind its native routed session key to the recorded canonical Owner Session before activation. Do not allow the group, a Cron run, a router Agent, or a State file to become a second Owner.
 
 The Owner continuously re-enters `Goal + Principles -> Portfolio Evidence -> Workstream Gaps -> Action set` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action only reopens capacity. The Owner fills every safe independent execution slot rather than serializing the whole product behind one global frontier.
 
@@ -79,6 +85,14 @@ Every formal Handoff for a CLI Owner records the callback Profile, exact Session
 For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
 
 Review never rewrites immutable specialist evidence. A material finding creates a separately hashed additive correction, returns the card to the original specialist, and requires another independent review before the Owner accepts the package.
+
+## User communication contract
+
+Treat each authorized product-group message as information requiring Owner judgment, not as an automatic task. Interpret it as a Signal, Question, Goal/Principle change, Control, or explicit Authorization. Reply with the interpretation, affected Workstreams, resulting Action set or legal wait, and any preserved authorization boundary. The default product group has one authorized human because Hermes isolates shared-group sessions per user by default; do not invite another human until a supported shared-session policy preserves the one canonical Owner Session.
+
+Send only user-relevant `ACK`, `DAILY_REPORT`, `DECISION_REQUEST`, `ALERT`, and `MILESTONE` messages to the group. Keep worker starts, tool traces, routine tests, and intermediate Review cycles on Kanban and in artifacts. A decision request includes current evidence, one recommendation, material alternatives, consequences, and the exact user decision required.
+
+A schedule contributes only a `REPORT_DUE` Signal to this same Owner Session. The Owner reads live sources, decides whether material change warrants a report, composes it, and sends it with an existing atomic messaging tool. No script selects report content and no fresh scheduled Session acts as Product Owner.
 
 ## Handoff template
 

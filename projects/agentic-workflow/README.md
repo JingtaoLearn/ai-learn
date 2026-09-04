@@ -2,11 +2,13 @@
 
 This project validates isolated product-level suites of real Hermes Agents. It does not build a workflow engine.
 
-Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The first verified product-level tracer is recorded in [`VALIDATION.md`](VALIDATION.md). The three progressively disclosed setup templates are:
+Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The first verified product-level tracer is recorded in [`VALIDATION.md`](VALIDATION.md). The five progressively disclosed setup templates are:
 
 - [`templates/AGENTIC_WORKFLOW_ASSISTANT.md`](templates/AGENTIC_WORKFLOW_ASSISTANT.md) — the global suite maintainer;
 - [`templates/PRODUCT_AGENT_SUITE.md`](templates/PRODUCT_AGENT_SUITE.md) — one product's Owner, specialists, Handoff, and capability choices.
 - [`templates/PORTFOLIO_STATE.md`](templates/PORTFOLIO_STATE.md) — the reusable multi-Workstream state projection.
+- [`templates/PRODUCT_COMMUNICATION.md`](templates/PRODUCT_COMMUNICATION.md) — one private Feishu product group, its native Owner route, and the prompt-first human communication contract.
+- [`templates/PRODUCT_GROUP_REGISTRY.md`](templates/PRODUCT_GROUP_REGISTRY.md) — the private live-binding index shape; committed copies contain placeholders only.
 
 ## Hermes resource model
 
@@ -21,6 +23,7 @@ Each resource has one job:
 - `AGENTS.md` — project-local context automatically loaded from the working directory.
 - `GOAL.md` — the current Jingtao-owned objective shared by all participating Agents and changed only when Jingtao changes it.
 - Canonical Bot Chat — the Product Owner Agent's persistent Owner Session and product decision brain.
+- Product group — the product's private Feishu human interface, routed by exact `chat_id` to the Owner Profile and bound to the canonical Owner Session.
 - Task Session — an optional ephemeral conversation for one specialist action.
 - `session-messenger` — the shared Skill scaffold for exact Session messages, callbacks, Results, Reviews, decisions, and external Signals.
 - `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Workstream, Agent, selected Matt flow and why, acceptance, and safety.
@@ -55,6 +58,16 @@ Keep each layer small and non-duplicative:
 7. `HANDOFF.md`: this invocation's bounded task.
 8. Tool results: live Evidence gathered during the run.
 
+Behavioral policy belongs in these prompt and context layers. Existing CLI/API operations may be exposed as narrow Agent-callable tools, but scripts must not encode product routing, report selection, authorization interpretation, or a fixed workflow.
+
+## Product group communication
+
+Every adopted Product Agent Suite has one private Feishu product group. `AgenticWorkflow-Assistant` creates the group, installs one native `gateway.profile_routes` binding for its exact `chat_id`, binds the group route to the existing canonical Owner Session with a supported Hermes session operation, and verifies a real user round trip. It does not create a second Owner or make product decisions.
+
+The Product Owner interprets group messages as Signals, Questions, Goal or Principle changes, Controls, or explicit Authorizations. A message is never automatically a Kanban card. The Owner sends only business-relevant `ACK`, `DAILY_REPORT`, `DECISION_REQUEST`, `ALERT`, or `MILESTONE` messages back to the group. Routine worker chatter remains on Kanban and in artifacts.
+
+A report schedule supplies only a `REPORT_DUE` Signal to the same Owner Session. The Owner decides from live evidence whether a report is warranted and composes it. No fixed report script or fresh-session Cron impersonates the Owner. See [`templates/PRODUCT_COMMUNICATION.md`](templates/PRODUCT_COMMUNICATION.md).
+
 ## Matt Skill routing
 
 When an observed Gap and proposed Action may benefit from a Matt Skill, use the authoritative [Matt routing table](templates/AGENTIC_WORKFLOW_ASSISTANT.md#matt-routing). Record the selected method and reason in the Handoff.
@@ -84,7 +97,7 @@ For same-machine named functional Agents, use separate Profiles. Use Bot-to-Bot 
 
 ## Current boundary
 
-- No workflow engine, message broker, database, state machine, outbox, retry loop, dead-letter queue, or general connector framework. One Skill plus one standard-library script dispatches an addressed message to one exact Session.
+- No workflow engine, message broker, database, state machine, outbox, retry loop, dead-letter queue, general connector framework, or scripted business pipeline. Prefer native profile routes and existing platform CLIs. A necessary script is only a narrow Agent-callable atomic tool, never the decision flow.
 - The scaffold intentionally ships without a test suite. Real Agent-to-Owner-to-Agent callback and non-Session Signal traces are the functional evidence.
 - No automatic merge, deployment, production-signal change, paid/public action, or other high-risk external effect.
 - High-risk actions still require Jingtao's explicit approval at the existing tool boundary.

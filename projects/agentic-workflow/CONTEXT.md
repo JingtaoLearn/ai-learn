@@ -30,6 +30,12 @@ The one canonical persistent conversation through which a Product Owner Agent re
 
 **Distinguish from:** a State projection, which supports inspection and recovery but is not the product's decision brain.
 
+## Product Group
+
+The one private Feishu group through which authorized users communicate with one Product Owner Agent. A native exact-`chat_id` profile route connects it to the Owner Profile, and a supported session bind keeps the existing canonical Owner Session as the product brain.
+
+**Distinguish from:** a workflow engine, task queue, evidence store, or second Owner Session.
+
 ## Specialist Agent
 
 A role-specific Agent selected for one bounded Action because the observed Gap requires its independent capability.
