@@ -20,7 +20,7 @@ The isolated set of role-specific Agents serving one product under one Product O
 
 ## Product Owner Agent
 
-The Agent accountable for interpreting a product's Goal, Signals, Evidence, and Results and choosing its next bounded Action.
+The Agent accountable for reconciling a product's Goal, Principles, Signals, Portfolio, Evidence, and Results and selecting a capacity-bounded Action set across its Workstreams.
 
 **Distinguish from:** Jingtao, who owns the Goal and the authorization boundaries the Agent must preserve.
 
@@ -59,6 +59,30 @@ The specific missing knowledge, judgment, or result that prevents useful progres
 ## Action
 
 One bounded outcome chosen by the Product Owner Agent to close or reduce a Gap.
+
+## Portfolio
+
+All durable Workstreams that contribute to one Product Goal and compete for shared execution capacity.
+
+**Distinguish from:** a backlog, which stores candidate work without asserting current Goal contribution or readiness.
+
+## Workstream
+
+One durable outcome lane in a Portfolio. A Workstream survives multiple sequential Actions and has its own Evidence, Gap, state, health, dependencies, and wake condition.
+
+**Distinguish from:** an Action, Issue, or Kanban card, each of which is a bounded delivery record inside or supporting a Workstream.
+
+## Ready set
+
+The Workstreams whose next bounded Action is dependency-complete and safe to start.
+
+## Action set
+
+The bounded Actions selected from the Ready set to fill currently compatible execution slots.
+
+## Execution slot
+
+Capacity created by an available specialist Profile, a non-overlapping workspace or mutable-frontier lease, and sufficient host and token budget.
 
 ## Handoff
 

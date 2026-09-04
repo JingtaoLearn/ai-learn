@@ -7,10 +7,10 @@ The workflow should:
 - let a Hermes Product Owner Agent retain this fixed Goal and current information in its canonical persistent Session;
 - let real-time information events enter that existing Owner Session as Signals;
 - gather live facts directly through existing tools when they can change the decision;
-- choose the next bounded action and the Agent best suited to perform it;
-- pass the same Goal plus one Handoff to that Agent;
+- reconcile all non-Done Workstreams and choose a capacity-bounded set of safe independent Actions with the Agents best suited to perform them;
+- pass the same Goal plus one Workstream-specific Handoff to each selected Agent;
 - return the Result to the Owner;
-- let the Result change the next action, next Agent, or a justified stop.
+- let each Result change the affected Workstream, the next Action set, Agent allocation, or a justified lane/Portfolio wait.
 
 ## Current phase
 
@@ -23,7 +23,7 @@ Functional validation only.
 - Let Agents choose Skills and Tools when needed.
 - Do not build a database, kernel, state machine, receipt system, replay engine, or connector framework.
 - Do not write or run tests.
-- Keep one bounded action per Signal.
+- Keep every individual Action bounded; one Signal may produce several independent Workstream Actions when compatible execution slots exist.
 - Do not merge, deploy, change production signals, or perform high-risk external actions without Jingtao's explicit approval.
 
 ## Success

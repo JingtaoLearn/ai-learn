@@ -112,3 +112,15 @@ After independent Reviewer PASS, the final Reviewer emitted message `cb24222ebf4
 Recovery Pulse `fd0dd85ef5c1` delivers only to `bot-chat:productowneragentquantresearch` and is configured every two hours from 08:00 through 22:00 Asia/Shanghai. The stored script was revised after the last recorded execution to instruct the Owner to inspect equivalent active work and to restrict stopping to the four legal waits with an exact wake condition. No scheduled execution has yet validated those revised instructions, and non-duplication under a Pulse concurrent with active work is not claimed by this trace.
 
 Result/Review callbacks remain the primary continuation mechanism. Remove this recovery Pulse after three consecutive formal terminal events independently reach the exact canonical Owner Session, each causes the next assessment or a valid wait, and no missed callback, stale Action, or duplicate dispatch requires timer recovery.
+
+## Multi-Workstream Portfolio acceptance
+
+Jingtao's correction entered canonical Owner Session `20260903_075757_73a49f` as Signal `97671c6a09dd4f3683974ddca22efcd4`. The Signal supplied no product Action; it required the Owner to reconcile multiple Workstreams and fill independent capacity.
+
+At reconciliation time, Gold implementation task `t_2779c2b2`, run `41`, occupied `implementationagentquantresearch` and isolated worktree `gold-prospective-kernel`. The Owner inspected live GitHub, Kanban, process, production, Profile, and host-capacity evidence, classified the remaining Workstreams, and found one additional safe heavy-worker slot on the 2-vCPU / 3.8-GiB host.
+
+The Owner independently selected `WS-DAILY-DATA` rather than waiting for Gold. It created task `t_dc1f07d8`, run `42`, under `researchagentquantresearch` for a read-only `#196` readiness audit against accepted `#201`, current main, and `#140`'s ownership boundary. The Research worker writes only `runs/daily-data-lineage-001/`, so it does not overlap the Gold implementation worktree. Kanban read-back showed both tasks `running` concurrently under distinct Profiles.
+
+The Owner also recorded ready-but-unstaffed `WS-GOLD-PROVENANCE` and `WS-REFERENCE-RUNTIME`, blocked `WS-DECISION-EXPERIENCE` and `WS-REPORT-OPERATOR`, and waiting `WS-PRODUCTION-OPS`, each with a wake or reconsider condition. This proves Portfolio reconciliation, capacity-aware Action-set selection, blocked-lane isolation, and non-overlapping concurrent dispatch without a workflow engine.
+
+The first recovery Pulse mislabeled a fully occupied Portfolio with READY lanes as a "Legal portfolio wait." Additive `runs/portfolio-reconcile-001/PULSE-CORRECTION.md` preserves that observation but reclassifies it as `CAPACITY_SATURATED`: READY work remained, no compatible slot existed, and the exact wake condition was a slot release. The reusable contract now keeps saturation distinct from a genuine Portfolio wait.

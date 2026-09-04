@@ -7,6 +7,7 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Product: `<Product>`
 - Jingtao-owned Goal: `<link to the canonical Goal>`
 - Principles: `<unchanged owner-approved Principles>`
+- Portfolio state contract: [`PORTFOLIO_STATE.md`](PORTFOLIO_STATE.md)
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
@@ -16,7 +17,7 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 
 The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
 
-The Owner continuously re-enters `Goal + Principles -> Evidence -> Gap -> Action` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action is a checkpoint, not product completion. When no equivalent work is active and a safe dependency-complete frontier exists, the Owner selects and dispatches the next bounded Action without waiting for a supervising Hermes session.
+The Owner continuously re-enters `Goal + Principles -> Portfolio Evidence -> Workstream Gaps -> Action set` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action only reopens capacity. The Owner fills every safe independent execution slot rather than serializing the whole product behind one global frontier.
 
 Maintain a compact live role registry containing each display name, Profile ID, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role.
 
@@ -65,10 +66,11 @@ A Signal is new information, not merely elapsed time.
 1. Deliver the Signal into the existing canonical Owner Session.
 2. Interpret it against the Goal and accumulated product decisions.
 3. Gather only Evidence that can change the decision.
-4. Identify the current Gap and choose one bounded Action.
-5. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
-6. Return every Specialist Result to this same Owner Session through the selected native or callback route.
-7. Re-evaluate the Goal immediately after accepting, rejecting, or invalidating the Result; either dispatch the next Action or record one legal wait and its exact wake condition.
+4. Reconcile every non-Done Workstream, then build the Ready set.
+5. Select an Action set that fills all safe independent execution slots under Profile, workspace, dependency, idempotency, and resource constraints.
+6. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
+7. Return every Specialist Result to this same Owner Session through the selected native or callback route.
+8. Reconcile the whole Portfolio immediately after accepting, rejecting, or invalidating any Result; refill capacity or record lane-local and Portfolio legal waits with exact wake conditions.
 
 If the Owner card was created from a plain CLI Session, do not assume Kanban auto-subscribed that Session to `notify+wake`. On terminal task state, send one idempotent `session-messenger` RESULT/REVIEW envelope to the exact Owner Session unless a verified native subscription already delivered it.
 
@@ -95,6 +97,10 @@ Review never rewrites immutable specialist evidence. A material finding creates 
 ### Action
 
 `<One bounded outcome, not a list of stages>`
+
+### Workstream
+
+`<One stable Portfolio lane ID>`
 
 ### Agent
 
@@ -131,6 +137,6 @@ Review never rewrites immutable specialist evidence. A material finding creates 
 
 ## Owner completion check
 
-Before sending the Handoff, verify that all ten headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then record `continue`, `wait`, `stop`, or `ask Jingtao` in the Owner Session and update supporting State only when the compact projection changed.
+Before sending the Handoff, verify that all eleven headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then update the affected Workstream, reconcile every other non-Done lane, dispatch the selected Action set, and update supporting State only when the compact projection changed.
 
-`continue` dispatches the next bounded Action. `wait` is legal only while evidence is genuinely pending, an explicit authorization boundary is reached, no positive-value bounded Action exists, or the Goal is objectively complete; it names the event or time that wakes the Owner. A recovery Pulse only wakes the exact Owner Session to verify active work; the Owner selects new work only when no equivalent Action is already active.
+`continue` makes one lane eligible for another bounded Action. A Portfolio-level `wait` is legal only when every non-Done lane is Active, Waiting, Blocked, Parked with a reconsider trigger, has no positive-value bounded Action, or the Goal is objectively complete. A recovery Pulse only wakes the exact Owner Session to reconcile the Portfolio; the Owner alone selects work.

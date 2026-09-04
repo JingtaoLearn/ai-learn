@@ -2,10 +2,11 @@
 
 This project validates isolated product-level suites of real Hermes Agents. It does not build a workflow engine.
 
-Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The first verified product-level tracer is recorded in [`VALIDATION.md`](VALIDATION.md). The two progressively disclosed setup templates are:
+Read the canonical vocabulary in [`CONTEXT.md`](CONTEXT.md). The first verified product-level tracer is recorded in [`VALIDATION.md`](VALIDATION.md). The three progressively disclosed setup templates are:
 
 - [`templates/AGENTIC_WORKFLOW_ASSISTANT.md`](templates/AGENTIC_WORKFLOW_ASSISTANT.md) — the global suite maintainer;
 - [`templates/PRODUCT_AGENT_SUITE.md`](templates/PRODUCT_AGENT_SUITE.md) — one product's Owner, specialists, Handoff, and capability choices.
+- [`templates/PORTFOLIO_STATE.md`](templates/PORTFOLIO_STATE.md) — the reusable multi-Workstream state projection.
 
 ## Hermes resource model
 
@@ -22,7 +23,7 @@ Each resource has one job:
 - Canonical Bot Chat — the Product Owner Agent's persistent Owner Session and product decision brain.
 - Task Session — an optional ephemeral conversation for one specialist action.
 - `session-messenger` — the shared Skill scaffold for exact Session messages, callbacks, Results, Reviews, decisions, and external Signals.
-- `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Agent, selected Matt flow and why, acceptance, and safety.
+- `HANDOFF.md` — one bounded task instance with Goal, Evidence, Gap, Action, Workstream, Agent, selected Matt flow and why, acceptance, and safety.
 - `RESULT.md` — one Agent's returned outcome and evidence.
 - `STATE.md` — a compact supporting projection for recovery and inspection; it does not replace the Owner Session.
 - Heartbeat or Loop — a temporary in-Session clock when polling is needed.
@@ -36,7 +37,7 @@ Profile-private memory is not shared workflow truth. Product decisions remain in
 
 For the next Quant Research slice:
 
-1. `ProductOwnerAgent-QuantResearch` — owns exactly one canonical persistent Bot Chat/Owner Session, interprets Signals, chooses the next bounded Action, and owns product decisions.
+1. `ProductOwnerAgent-QuantResearch` — owns exactly one canonical persistent Bot Chat/Owner Session, reconciles the Portfolio, selects capacity-bounded Action sets, and owns product decisions.
 2. `ResearchAgent-QuantResearch` — gathers current project reality and returns concise Evidence for a Handoff. It does not choose the product Goal.
 
 Display names contain exactly two UpperCamelCase segments joined by one hyphen: `<RoleAgent>-<Product>`. Profile IDs may follow Hermes' machine-name constraints, but the display name must preserve this product-visible form. Create Builder, Reviewer, or Operations Agents only after a selected Action demonstrates the independent function. The default Profile remains Jingtao's user-facing Hermes and is not reused concurrently as a specialist.
@@ -66,12 +67,12 @@ The first live product workspace is:
 
 1. A user message, Cron `bot-chat` delivery, webhook collector, or [`session-messenger`](skills/session-messenger/SKILL.md) envelope delivers a Signal into the product's existing canonical Owner Session.
 2. The Owner interprets that Signal against the Goal, Session context, State, and relevant prior Results.
-3. The Owner gathers only live Evidence that can change the next decision and identifies the current Gap.
-4. The Owner chooses one bounded Action. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
+3. The Owner gathers only live Evidence that can change Portfolio decisions and identifies each affected Workstream Gap.
+4. The Owner reconciles every non-Done Workstream, builds a Ready set, and chooses a capacity-bounded Action set. Formal work with acceptance, artifacts, blocking, retry, or review becomes a Kanban task; a short consultation may use native `message_agent`.
 5. The selected Kanban worker acts directly in its own Profile and does not spawn another Agent for the same Handoff. Formal cards retain at least two transient attempts unless one-attempt fail-closed behavior is justified.
 6. Review uses a product-matched Reviewer. `REVISE` preserves the original Result, adds a separately hashed correction, and requires re-review.
 7. A verified native subscription or one idempotent `session-messenger` terminal envelope wakes the exact Owner Session. The Owner absorbs verified evidence, records its decision, and updates State when useful.
-8. The Owner immediately re-enters `Goal + Principles -> Evidence -> Gap -> Action`: the Goal supplies direction and the Principles constrain the move. If no equivalent work is active and a safe dependency-complete frontier exists, it dispatches the next bounded Action itself. Otherwise it records one legal wait and the exact wake condition.
+8. The Owner immediately re-enters `Goal + Principles -> Portfolio Evidence -> Workstream Gaps -> Action set`, fills newly available independent slots, and lets blocked lanes coexist with progress elsewhere. It records a Portfolio-level wait only when no lane can legally advance.
 
 A CLI Owner's formal Handoff carries its exact callback Profile/Session plus stable correlation and idempotency identities. The terminal worker sends the evidence-bearing envelope after terminal board state; the recovery Pulse only repairs a missed wake.
 
