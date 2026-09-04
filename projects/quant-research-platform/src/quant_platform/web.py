@@ -24,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
-from .dataset_service import DatasetService
+from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
 from .operator_service import OperatorService, OperatorSubmissionError
@@ -1152,6 +1152,17 @@ def create_app(
             "datasets": await run_in_threadpool(datasets.list_available)
         }
 
+    @app.get("/api/datasets/{dataset_id}/snapshots/{snapshot_id}")
+    async def api_dataset_detail(request: Request, dataset_id: str, snapshot_id: str):
+        _session(request)
+        try:
+            detail = await run_in_threadpool(
+                datasets.snapshot_detail, dataset_id, snapshot_id
+            )
+        except DatasetResolutionError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        return {"dataset": detail}
+
     @app.get("/api/operators/{operator_id}")
     async def api_operator(request: Request, operator_id: str, version: str | None = None):
         _session(request)
@@ -1412,6 +1423,22 @@ def create_app(
             operator_count=len(operators.list()),
             failure_count=failures,
             attempts=[dict(row) for row in attempts],
+        )
+
+    @app.get("/datasets/{dataset_id}/snapshots/{snapshot_id}")
+    async def dataset_detail(request: Request, dataset_id: str, snapshot_id: str):
+        session = _session(request)
+        try:
+            detail = await run_in_threadpool(
+                datasets.snapshot_detail, dataset_id, snapshot_id
+            )
+        except DatasetResolutionError as exc:
+            return HTMLResponse(str(exc), status_code=404)
+        return _render(
+            request,
+            "dataset_detail.html",
+            session=session,
+            dataset=detail,
         )
 
     @app.get("/operators")

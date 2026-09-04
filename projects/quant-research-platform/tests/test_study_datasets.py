@@ -12,6 +12,11 @@ import pytest
 
 import quant_platform.study_datasets as study_datasets_module
 from quant_platform.catalog import initialize_catalog
+from quant_platform.corporate_actions import (
+    EVIDENCE_DOMAIN,
+    admit_corporate_action_evidence,
+    identity_digest,
+)
 from quant_platform.datasets import (
     _canonical_data_bytes,
     _canonical_json,
@@ -33,6 +38,7 @@ from quant_platform.study_datasets import (
     ExecutionDatasetSliceError,
     ExecutionDatasetSliceFactory,
 )
+from test_corporate_actions import bocom_evidence, bocom_evidence_inputs
 
 METADATA = {
     "instrument": "SYNTH.SS",
@@ -98,6 +104,54 @@ def _daily_frame(dates: list[str]) -> pd.DataFrame:
     )
 
 
+def _bocom_evidence_at(
+    available_at: str,
+    *,
+    use_role: str = "CAUSAL_FEATURE",
+):
+    inputs = bocom_evidence_inputs()
+    retrieval = inputs["document"]["retrievals"][0]
+    retrieval["payload"]["started_at"] = available_at
+    retrieval["payload"]["completed_at"] = available_at
+    retrieval["retrieval_id"] = identity_digest(
+        "quant-platform/source-retrieval/v1", retrieval["payload"]
+    )
+    revision = inputs["document"]["revisions"][0]
+    revision["available_at"] = available_at
+    revision["use_role"] = use_role
+    return admit_corporate_action_evidence(**inputs)
+
+
+def _materialize_bocom_view(root: Path, evidence, available_through: str) -> dict:
+    dates = ["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"]
+    metadata = METADATA | {"instrument": "601328.SS"}
+    published = publish_snapshot(
+        _daily_frame(dates),
+        root,
+        metadata,
+        corporate_action_evidence=evidence,
+    )
+    parent_manifest = _verify_snapshot(Path(published["path"]), published["snapshot_id"])
+    available_position = dates.index(available_through)
+    return ExecutionDatasetSliceFactory(root).materialize(
+        {
+            "instrument": "601328.SS",
+            "snapshot_id": published["snapshot_id"],
+            "canonical_sha256": parent_manifest["canonical_sha256"],
+        },
+        {
+            "allowed_start": dates[0],
+            "training_through": dates[available_position - 1],
+            "available_through": available_through,
+            "scoring_start": available_through,
+            "scoring_end": available_through,
+            "role": "INNER_SCORE",
+            "information_interval": INFORMATION_INTERVAL,
+            "account_policy": "FORCE_FLAT_WITH_COST",
+        },
+    )
+
+
 def _parent_snapshot(root: Path, dates: list[str]) -> dict:
     published = publish_snapshot(_daily_frame(dates), root, METADATA)
     manifest = json.loads((Path(published["path"]) / "manifest.json").read_text(encoding="utf-8"))
@@ -121,6 +175,238 @@ def _fold_window() -> dict:
         "information_interval": INFORMATION_INTERVAL,
         "account_policy": "FORCE_FLAT_WITH_COST",
     }
+
+
+def test_action_aware_view_projects_cutoff_evidence_and_binds_parent(tmp_path: Path):
+    root = tmp_path / "state"
+    evidence = bocom_evidence()
+    metadata = METADATA | {"instrument": "601328.SS"}
+    published = publish_snapshot(
+        _daily_frame(["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"]),
+        root,
+        metadata,
+        corporate_action_evidence=evidence,
+    )
+    parent_manifest = _verify_snapshot(Path(published["path"]), published["snapshot_id"])
+    parent = {
+        "instrument": "601328.SS",
+        "snapshot_id": published["snapshot_id"],
+        "canonical_sha256": parent_manifest["canonical_sha256"],
+    }
+    window = {
+        "allowed_start": "2026-08-29",
+        "training_through": "2026-08-31",
+        "available_through": "2026-09-01",
+        "scoring_start": "2026-09-01",
+        "scoring_end": "2026-09-01",
+        "role": "INNER_SCORE",
+        "information_interval": INFORMATION_INTERVAL,
+        "account_policy": "FORCE_FLAT_WITH_COST",
+    }
+
+    projected = ExecutionDatasetSliceFactory(root).materialize(parent, window)
+    manifest = _verify_snapshot(Path(projected["path"]), projected["snapshot_id"])
+    descriptor = json.loads(
+        (Path(projected["path"]) / "corporate_actions.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["schema_version"] == 5
+    assert manifest["lineage"]["parent"]["corporate_action_evidence_sha256"] == (
+        evidence.digest
+    )
+    assert manifest["lineage"]["projected_action_evidence_sha256"] == manifest[
+        "corporate_action_evidence_sha256"
+    ]
+    assert descriptor["revisions"][0]["event_revision_id"] == (
+        "2e02b9f67d5561bb5bf199233fb011d58fb98b22b02ea4f91ca0e0d22630ba3a"
+    )
+    assert descriptor["projection"]["available_through"] == "2026-09-01"
+
+    task = _experiment_task(
+        projected["snapshot_id"],
+        evaluation_start="2026-09-01",
+        evaluation_end="2026-09-01",
+    )
+    task["dataset"]["instrument"] = "601328.SS"
+    resolved = ExperimentService(
+        initialize_catalog(root), execution_identity={"runner": "test"}
+    ).resolve_task(task)
+    assert resolved["dataset"]["snapshot_id"] == projected["snapshot_id"]
+    assert resolved["dataset"]["lineage"]["projected_action_evidence_sha256"] == (
+        manifest["corporate_action_evidence_sha256"]
+    )
+
+    wrong_window_task = _experiment_task(
+        projected["snapshot_id"],
+        evaluation_start="2026-08-31",
+        evaluation_end="2026-09-01",
+    )
+    wrong_window_task["dataset"]["instrument"] = "601328.SS"
+    with pytest.raises(TaskValidationError, match="evaluation_start.*derived"):
+        ExperimentService(
+            initialize_catalog(root), execution_identity={"runner": "test"}
+        ).resolve_task(wrong_window_task)
+
+    before_window = window | {
+        "training_through": "2026-08-29",
+        "available_through": "2026-08-30",
+        "scoring_start": "2026-08-30",
+        "scoring_end": "2026-08-30",
+    }
+    before = ExecutionDatasetSliceFactory(root).materialize(parent, before_window)
+    before_descriptor = json.loads(
+        (Path(before["path"]) / "corporate_actions.json").read_text(encoding="utf-8")
+    )
+    assert before["snapshot_id"] != projected["snapshot_id"]
+    assert before_descriptor["revisions"] == []
+    assert before_descriptor["coverage"]["payload"]["coverage_state"] == "UNKNOWN_MISSING"
+
+    descriptor["projection"]["parent_evidence_sha256"] = "0" * 64
+    path = Path(projected["path"]) / "corporate_actions.json"
+    path.chmod(0o644)
+    path.write_text(json.dumps(descriptor, sort_keys=True, separators=(",", ":")) + "\n")
+    path.chmod(0o444)
+    with pytest.raises(RuntimeError, match="evidence|projection|digest"):
+        _verify_snapshot(Path(projected["path"]), projected["snapshot_id"])
+
+
+def test_v5_view_and_experiment_exclude_accounting_outcome_from_causal_evidence(
+    tmp_path: Path,
+):
+    evidence = _bocom_evidence_at(
+        "2026-08-31T15:06:07Z", use_role="ACCOUNTING_OUTCOME"
+    )
+    projected = _materialize_bocom_view(tmp_path, evidence, "2026-09-01")
+    manifest = _verify_snapshot(Path(projected["path"]), projected["snapshot_id"])
+    descriptor = json.loads(
+        (Path(projected["path"]) / "corporate_actions.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["schema_version"] == 5
+    assert descriptor["revisions"] == []
+    assert descriptor["projection"]["excluded_revisions"] == [
+        {
+            "event_revision_id": evidence.document["revisions"][0]["event_revision_id"],
+            "reason": "ACCOUNTING_OUTCOME_NOT_CAUSAL",
+        }
+    ]
+    assert "RETROSPECTIVE_ACCOUNTING_OUTCOME_EXCLUDED" in descriptor["coverage"][
+        "payload"
+    ]["limitations"]
+    task = _experiment_task(
+        projected["snapshot_id"],
+        evaluation_start="2026-09-01",
+        evaluation_end="2026-09-01",
+    )
+    task["dataset"]["instrument"] = "601328.SS"
+    resolved = ExperimentService(
+        initialize_catalog(tmp_path), execution_identity={"runner": "test"}
+    ).resolve_task(task)
+    assert resolved["dataset"]["lineage"]["projected_action_evidence_sha256"] == (
+        manifest["corporate_action_evidence_sha256"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("available_at", "included"),
+    [
+        ("2026-08-31T06:59:59Z", True),
+        ("2026-08-31T07:00:00Z", True),
+        ("2026-08-31T07:00:01Z", False),
+    ],
+)
+def test_v5_view_applies_xshg_session_close_cutoff_at_timestamp_precision(
+    tmp_path: Path,
+    available_at: str,
+    included: bool,
+):
+    root = tmp_path / available_at.replace(":", "-")
+    projected = _materialize_bocom_view(
+        root,
+        _bocom_evidence_at(available_at),
+        "2026-08-31",
+    )
+    manifest = _verify_snapshot(Path(projected["path"]), projected["snapshot_id"])
+    descriptor = json.loads(
+        (Path(projected["path"]) / "corporate_actions.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["schema_version"] == 5
+    assert descriptor["projection"]["decision_cutoff"]["timestamp_utc"] == (
+        "2026-08-31T07:00:00Z"
+    )
+    assert bool(descriptor["revisions"]) is included
+    if not included:
+        assert descriptor["projection"]["excluded_revisions"][0]["reason"] == (
+            "AVAILABLE_AFTER_DECISION_CUTOFF"
+        )
+
+
+def test_experiment_rejects_rehashed_action_projection_not_derived_from_parent(
+    tmp_path: Path,
+):
+    projected = _materialize_bocom_view(tmp_path, bocom_evidence(), "2026-08-30")
+    target = Path(projected["path"])
+    evidence_path = target / "corporate_actions.json"
+    manifest_path = target / "manifest.json"
+    target.chmod(0o755)
+    evidence_path.chmod(0o644)
+    manifest_path.chmod(0o644)
+
+    descriptor = json.loads(evidence_path.read_text(encoding="utf-8"))
+    descriptor["projection"]["excluded_revisions"][0]["reason"] = (
+        "ACCOUNTING_OUTCOME_NOT_CAUSAL"
+    )
+    forged_evidence_sha256 = identity_digest(EVIDENCE_DOMAIN, descriptor)
+    evidence_path.write_bytes(_canonical_json(descriptor) + b"\n")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["corporate_action_evidence_sha256"] = forged_evidence_sha256
+    lineage = manifest["lineage"]
+    lineage["projected_action_evidence_sha256"] = forged_evidence_sha256
+    access_boundary = {
+        "schema_version": 1,
+        "parent": lineage["parent"],
+        "parent_verification": lineage["parent_verification"],
+        "view_spec": lineage["view_spec"],
+        "projection_identity": lineage["projection_identity"],
+        "projected_bytes_sha256": manifest["parquet_sha256"],
+        "scoring_mask_sha256": manifest["scoring_mask_sha256"],
+        "projected_action_evidence_sha256": forged_evidence_sha256,
+    }
+    lineage["access_boundary_digest"] = _sha256(_canonical_json(access_boundary))
+    forged_snapshot_id = _sha256(
+        _canonical_json(
+            {
+                "schema_version": 5,
+                "metadata": manifest["metadata"],
+                "canonical_sha256": manifest["canonical_sha256"],
+                "lineage": lineage,
+                "corporate_action_evidence_sha256": forged_evidence_sha256,
+            }
+        )
+    )
+    manifest["snapshot_id"] = forged_snapshot_id
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    evidence_path.chmod(0o444)
+    manifest_path.chmod(0o444)
+    forged_target = target.parent / forged_snapshot_id
+    target.rename(forged_target)
+    forged_target.chmod(0o555)
+
+    task = _experiment_task(
+        forged_snapshot_id,
+        evaluation_start="2026-08-30",
+        evaluation_end="2026-08-30",
+    )
+    task["dataset"]["instrument"] = "601328.SS"
+    with pytest.raises(TaskValidationError, match="parent projection|verification"):
+        ExperimentService(
+            initialize_catalog(tmp_path), execution_identity={"runner": "test"}
+        ).resolve_task(task)
 
 
 def _experiment_task(

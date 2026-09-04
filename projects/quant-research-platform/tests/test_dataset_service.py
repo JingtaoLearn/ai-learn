@@ -28,6 +28,7 @@ from quant_platform.dataset_service import (
     YahooChartSource,
 )
 from quant_platform.datasets import publish_snapshot, snapshot_status
+from test_corporate_actions import bocom_evidence
 from quant_platform.experiment_service import ExperimentService
 from quant_platform.schemas import canonical_json_bytes
 
@@ -301,6 +302,59 @@ def test_complete_range_resolves_existing_snapshot_without_fetch(tmp_path: Path)
     assert resolved["snapshot_id"] == published["snapshot_id"]
     assert resolved["update_id"] is None
     assert resolved["lineage"] == {"kind": "legacy_snapshot"}
+
+
+def test_snapshot_detail_projects_action_evidence_and_legacy_unknown_without_mutation(
+    tmp_path: Path,
+):
+    source = FixedSource(_bars(SESSIONS))
+    service = _dataset_service(tmp_path, source)
+    root = service.catalog.state_root
+    legacy = publish_snapshot(_bars(SESSIONS), root, METADATA)
+    legacy_dir = Path(legacy["path"])
+    legacy_before = {path.name: path.read_bytes() for path in legacy_dir.iterdir()}
+    legacy_pointer = (root / "datasets" / "601328.SS" / "latest.json").read_bytes()
+
+    legacy_detail = service.snapshot_detail("601328.SS", legacy["snapshot_id"])
+    assert legacy_detail["corporate_actions"] == {
+        "coverage_state": "UNKNOWN_MISSING",
+        "coverage_id": None,
+        "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
+        "events": [],
+        "artifacts": [],
+        "requests": [],
+        "retrievals": [],
+        "findings": [],
+        "total_return_claim": "FORBIDDEN",
+        "explanation": "Unknown or partial corporate-action evidence is not verified total return.",
+    }
+    assert {path.name: path.read_bytes() for path in legacy_dir.iterdir()} == legacy_before
+    assert (root / "datasets" / "601328.SS" / "latest.json").read_bytes() == legacy_pointer
+
+    action = publish_snapshot(
+        _bars(SESSIONS),
+        root,
+        METADATA,
+        corporate_action_evidence=bocom_evidence(),
+    )
+    detail = service.snapshot_detail("601328.SS", action["snapshot_id"])
+    corporate_actions = detail["corporate_actions"]
+    assert corporate_actions["coverage_state"] == "VERIFIED_EVENTS"
+    assert corporate_actions["coverage_id"] == (
+        "cfc3f55919fe62cb85a0afcefd16dd5d8d7cae29475deefab74c95275ebe3385"
+    )
+    assert corporate_actions["events"][0]["payload"]["gross_cash_per_share"] == "0.1563"
+    assert corporate_actions["events"][0]["payload"]["record_date"] == "2025-12-24"
+    assert corporate_actions["artifacts"][0]["body_sha256"] == (
+        "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6"
+    )
+    assert corporate_actions["requests"][0]["request_id"] == (
+        "46ea178afb7903f1f42d87567f9b607132d2cbd24e321f5fd6e66a667f27b547"
+    )
+    assert corporate_actions["retrievals"][0]["retrieval_id"] == (
+        "4597787c599a4c476c3ad7e1bfa45fb1b633cf73f01a7e4ff28284fd87a04747"
+    )
+    assert corporate_actions["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
 
 
 def test_incomplete_range_fetches_one_generation_and_publishes_provenance(

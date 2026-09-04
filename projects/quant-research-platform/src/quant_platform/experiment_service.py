@@ -204,7 +204,7 @@ class ExperimentService:
         if snapshot_manifest["metadata"]["instrument"] != instrument:
             raise TaskValidationError("dataset snapshot instrument does not match")
         if resolved_dataset is None:
-            if snapshot_manifest["schema_version"] == 3:
+            if snapshot_manifest["schema_version"] in {3, 5}:
                 lineage = snapshot_manifest["lineage"]
             else:
                 try:
@@ -253,7 +253,7 @@ class ExperimentService:
             < template_parameters["evaluation_start"]
         ):
             raise TaskValidationError("evaluation_end cannot precede evaluation_start")
-        if snapshot_manifest["schema_version"] == 3:
+        if snapshot_manifest["schema_version"] in {3, 5}:
             view_spec = snapshot_manifest["lineage"]["view_spec"]
             scoring_start = view_spec["scoring_start"]
             if template_parameters["evaluation_start"] != scoring_start:

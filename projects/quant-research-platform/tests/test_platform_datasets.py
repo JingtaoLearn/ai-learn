@@ -14,6 +14,7 @@ from quant_platform.datasets import (
     publish_snapshot,
     snapshot_status,
 )
+from test_corporate_actions import bocom_evidence
 
 
 def test_dataset_lineage_import_graph_is_acyclic():
@@ -85,6 +86,53 @@ def test_publish_snapshot_is_content_addressed_atomic_and_idempotent(tmp_path: P
     status = snapshot_status(tmp_path, "601288.SS")
     assert status["snapshot_id"] == first["snapshot_id"]
     assert status["path"] == first["path"]
+
+
+def test_action_aware_root_binds_and_recursively_verifies_exact_evidence(tmp_path: Path):
+    metadata = _metadata() | {"instrument": "601328.SS"}
+    evidence = bocom_evidence()
+
+    published = publish_snapshot(
+        _daily_frame(), tmp_path, metadata, corporate_action_evidence=evidence
+    )
+    target = Path(published["path"])
+    manifest = _verify_snapshot(target, published["snapshot_id"])
+
+    assert manifest["schema_version"] == 4
+    assert manifest["corporate_action_evidence_sha256"] == evidence.digest
+    assert (target / "corporate_actions.json").read_bytes() == evidence.json_bytes()
+    artifact = evidence.document["artifacts"][0]
+    assert (target / artifact["path"]).read_bytes() == evidence.artifact_bytes[
+        artifact["artifact_id"]
+    ]
+
+    artifact_path = target / artifact["path"]
+    artifact_path.chmod(0o644)
+    artifact_path.write_bytes(b"tampered")
+    artifact_path.chmod(0o444)
+    with pytest.raises(RuntimeError, match="artifact|checksum|evidence"):
+        _verify_snapshot(target, published["snapshot_id"])
+
+
+def test_unpublishable_conflict_cannot_move_latest_pointer(tmp_path: Path):
+    from dataclasses import replace
+
+    metadata = _metadata() | {"instrument": "601328.SS"}
+    initial = publish_snapshot(_daily_frame(), tmp_path, metadata)
+    pointer = tmp_path / "datasets" / "601328.SS" / "latest.json"
+    before = pointer.read_bytes()
+    conflict = replace(bocom_evidence(), publishable=False)
+
+    with pytest.raises(DatasetValidationError, match="not publishable"):
+        publish_snapshot(
+            _daily_frame(),
+            tmp_path,
+            metadata,
+            corporate_action_evidence=conflict,
+        )
+
+    assert pointer.read_bytes() == before
+    assert snapshot_status(tmp_path, "601328.SS")["snapshot_id"] == initial["snapshot_id"]
 
 
 def test_publish_rejects_a_post_seal_hardlink_before_rename(

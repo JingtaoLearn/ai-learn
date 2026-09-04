@@ -7,7 +7,7 @@ from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
 from test_experiment_service import _task
-from test_web_api import authenticate, make_app, snapshot
+from test_web_api import authenticate, bocom_action_view, make_app, snapshot
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -651,6 +651,50 @@ def test_experiment_preview_no_js_theme_forms_preserve_post_context(
         assert 'data-page="experiment-preview"' in themed.text
         assert f'<html lang="en" data-theme="{theme}">' in themed.text
         assert f"quant_theme={theme}" in themed.headers["set-cookie"]
+
+
+def test_dataset_detail_ui_is_authenticated_truthful_and_linked_from_preview(
+    tmp_path: Path,
+):
+    app, client = make_app(tmp_path)
+    view = bocom_action_view(app)
+    detail_path = f"/datasets/601328.SS/snapshots/{view['snapshot_id']}"
+
+    unauthenticated = client.get(detail_path, follow_redirects=False)
+    assert unauthenticated.status_code == 303
+    assert unauthenticated.headers["location"] == "/login"
+    issued = authenticate(app, client)
+
+    detail = client.get(detail_path)
+    assert detail.status_code == 200
+    assert 'data-page="dataset-detail"' in detail.text
+    for expected in (
+        "临2025-079",
+        "0.1563 CNY",
+        "2025-12-24",
+        "2025-12-25",
+        "VERIFIED_EVENTS",
+        "NO_COMPLETE_AUTHORITATIVE_ENUMERATION",
+        "c2da69cd9ababa957c029dfd4a11fcca08efb66b73d0bac381024676ffd1f7a6",
+        "not verified total return",
+    ):
+        assert expected in detail.text
+
+    form = _experiment_form(app, view["snapshot_id"], issued.csrf_token)
+    form["dataset_id"] = "601328.SS"
+    form["start_date"] = "2026-09-01"
+    form["end_date"] = "2026-09-01"
+    form["template_evaluation_start"] = "2026-09-01"
+    form["template_evaluation_end"] = "2026-09-01"
+    preview = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+    assert preview.status_code == 200
+    assert re.search(
+        r'href="/datasets/601328\.SS/snapshots/[0-9a-f]{64}"', preview.text
+    )
 
 
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):

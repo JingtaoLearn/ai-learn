@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from .corporate_actions import project_corporate_action_evidence
 from .datasets import (
     PROJECTION_IDENTITY as _PROJECTION_IDENTITY,
     SAFE_INSTRUMENT,
@@ -26,6 +27,7 @@ from .datasets import (
     _sha256,
     _verify_snapshot_seal,
     _verify_snapshot,
+    _verified_action_evidence,
     _write_new,
 )
 from .study_contracts import normalize_fold_window
@@ -93,7 +95,7 @@ class ExecutionDatasetSliceFactory:
                 parent_manifest, parent_frame = verified
                 parent_lineage = (
                     parent_manifest["lineage"]
-                    if parent_manifest["schema_version"] == 3
+                    if parent_manifest["schema_version"] in {3, 5}
                     else snapshot_update_lineage(root, instrument, snapshot_id)
                 )
                 supplied_digest = parent_snapshot.get("canonical_sha256")
@@ -133,6 +135,18 @@ class ExecutionDatasetSliceFactory:
                         "canonical_sha256": parent_manifest["canonical_sha256"],
                         "lineage": parent_lineage,
                     }
+                    projected_action_evidence = None
+                    if parent_manifest["schema_version"] in {4, 5}:
+                        parent_action_evidence = _verified_action_evidence(
+                            parent_path, parent_manifest
+                        )
+                        projected_action_evidence = project_corporate_action_evidence(
+                            parent_action_evidence,
+                            normalized_window["available_through"],
+                        )
+                        parent_identity["corporate_action_evidence_sha256"] = (
+                            parent_manifest["corporate_action_evidence_sha256"]
+                        )
                     parent_verification = _parent_verification_attestation(
                         parent_identity,
                         parent_manifest,
@@ -146,6 +160,10 @@ class ExecutionDatasetSliceFactory:
                         "projected_bytes_sha256": _sha256(parquet_payload),
                         "scoring_mask_sha256": _sha256(mask_payload),
                     }
+                    if projected_action_evidence is not None:
+                        access_boundary["projected_action_evidence_sha256"] = (
+                            projected_action_evidence.digest
+                        )
                     lineage = {
                         "kind": "derived_view",
                         "parent": parent_identity,
@@ -165,14 +183,51 @@ class ExecutionDatasetSliceFactory:
                         "projected_bytes_sha256": _sha256(parquet_payload),
                         "access_boundary_digest": _sha256(_canonical_json(access_boundary)),
                     }
+                    if projected_action_evidence is not None:
+                        lineage["projected_action_evidence_sha256"] = (
+                            projected_action_evidence.digest
+                        )
                     canonical_sha256 = _sha256(_canonical_data_bytes(projected))
                     identity = {
-                        "schema_version": 3,
+                        "schema_version": 5 if projected_action_evidence is not None else 3,
                         "metadata": parent_manifest["metadata"],
                         "canonical_sha256": canonical_sha256,
                         "lineage": lineage,
                     }
+                    if projected_action_evidence is not None:
+                        identity["corporate_action_evidence_sha256"] = (
+                            projected_action_evidence.digest
+                        )
                     derived_snapshot_id = _sha256(_canonical_json(identity))
+                    files: dict[str, Any] = {
+                        "data": "data.parquet",
+                        "scoring_mask": "scoring_mask.json",
+                    }
+                    expected_files = {
+                        "manifest.json",
+                        "data.parquet",
+                        "scoring_mask.json",
+                    }
+                    if projected_action_evidence is not None:
+                        _write_new(
+                            temporary / "corporate_actions.json",
+                            projected_action_evidence.json_bytes(),
+                        )
+                        artifact_files: dict[str, str] = {}
+                        for artifact in projected_action_evidence.document["artifacts"]:
+                            artifact_id = artifact["artifact_id"]
+                            artifact_path = artifact["path"]
+                            _write_new(
+                                temporary / artifact_path,
+                                projected_action_evidence.artifact_bytes[artifact_id],
+                            )
+                            artifact_files[artifact_id] = artifact_path
+                            expected_files.add(artifact_path)
+                        files |= {
+                            "corporate_actions": "corporate_actions.json",
+                            "corporate_action_artifacts": artifact_files,
+                        }
+                        expected_files.add("corporate_actions.json")
                     manifest = identity | {
                         "snapshot_id": derived_snapshot_id,
                         "rows": len(projected),
@@ -181,10 +236,7 @@ class ExecutionDatasetSliceFactory:
                         "parquet_sha256": _sha256(parquet_payload),
                         "scoring_mask_sha256": _sha256(mask_payload),
                         "columns": list(projected.columns),
-                        "files": {
-                            "data": "data.parquet",
-                            "scoring_mask": "scoring_mask.json",
-                        },
+                        "files": files,
                     }
                     _write_new(
                         temporary / "manifest.json",
@@ -199,15 +251,11 @@ class ExecutionDatasetSliceFactory:
                     )
                     _seal_snapshot(
                         temporary,
-                        frozenset(
-                            {"manifest.json", "data.parquet", "scoring_mask.json"}
-                        ),
+                        frozenset(expected_files),
                     )
                     _verify_snapshot_seal(
                         temporary,
-                        frozenset(
-                            {"manifest.json", "data.parquet", "scoring_mask.json"}
-                        ),
+                        frozenset(expected_files),
                     )
                     _fsync_directory(temporary)
                     _verify_snapshot(

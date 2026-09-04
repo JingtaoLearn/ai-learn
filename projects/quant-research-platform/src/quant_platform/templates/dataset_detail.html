@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ dataset.name }} · Dataset evidence{% endblock %}
+{% block page %}dataset-detail{% endblock %}
+{% block content %}
+<section class="page-heading" data-testid="dataset-evidence-heading">
+  <p class="eyebrow">IMMUTABLE DATASET EVIDENCE</p>
+  <h1>{{ dataset.name }}</h1>
+  <p>{{ dataset.instrument }} · {{ dataset.data_start }} to {{ dataset.data_end }}</p>
+  <span class="status" data-status="{{ dataset.corporate_actions.coverage_state }}">{{ dataset.corporate_actions.coverage_state }}</span>
+</section>
+
+<section class="panel" data-testid="corporate-action-claim">
+  <h2>Corporate-action coverage</h2>
+  <p><strong>{{ dataset.corporate_actions.explanation }}</strong></p>
+  <dl class="technical">
+    <dt>Coverage state</dt><dd>{{ dataset.corporate_actions.coverage_state }}</dd>
+    <dt>Coverage ID</dt><dd>{{ dataset.corporate_actions.coverage_id or "Unavailable for legacy snapshot" }}</dd>
+    <dt>Evidence digest</dt><dd>{{ dataset.corporate_action_evidence_sha256 or "Unavailable for legacy snapshot" }}</dd>
+    <dt>Total-return claim</dt><dd>{{ dataset.corporate_actions.total_return_claim }}</dd>
+  </dl>
+  <h3>Limitations</h3>
+  <ul>{% for limitation in dataset.corporate_actions.limitations %}<li>{{ limitation }}</li>{% endfor %}</ul>
+</section>
+
+<section class="panel" data-testid="corporate-action-events">
+  <h2>Known events</h2>
+  {% if dataset.corporate_actions.events %}
+  {% for event in dataset.corporate_actions.events %}
+  <article>
+    <h3>{{ event.event_series.root_notice_id }}</h3>
+    <dl class="technical">
+      <dt>Event Revision ID</dt><dd>{{ event.event_revision_id }}</dd>
+      <dt>Gross cash per share</dt><dd>{{ event.payload.gross_cash_per_share }} {{ event.payload.normalized_currency }}</dd>
+      <dt>Record date</dt><dd>{{ event.payload.record_date }}</dd>
+      <dt>Ex date</dt><dd>{{ event.payload.ex_date }}</dd>
+      <dt>Pay date</dt><dd>{{ event.payload.pay_date }}</dd>
+      <dt>Availability</dt><dd>{{ event.available_at }}</dd>
+      <dt>Use role</dt><dd>{{ event.use_role }}</dd>
+      <dt>Acceptance</dt><dd>{{ event.acceptance_state }}</dd>
+    </dl>
+  </article>
+  {% endfor %}
+  {% else %}<p>No accepted event is established by this snapshot. This is unknown coverage, not proof of no action.</p>{% endif %}
+</section>
+
+<section class="panel" data-testid="corporate-action-sources">
+  <h2>Source identity</h2>
+  {% for artifact in dataset.corporate_actions.artifacts %}
+  <dl class="technical">
+    <dt>Artifact ID</dt><dd>{{ artifact.artifact_id }}</dd>
+    <dt>Body SHA-256</dt><dd>{{ artifact.body_sha256 }}</dd>
+    <dt>Bytes</dt><dd>{{ artifact.byte_length }}</dd>
+    <dt>Media type</dt><dd>{{ artifact.media_type }}</dd>
+    <dt>Official source</dt><dd>{{ artifact.source_url }}</dd>
+  </dl>
+  {% endfor %}
+  {% for request in dataset.corporate_actions.requests %}<p>Request ID: <span class="mono">{{ request.request_id }}</span></p>{% endfor %}
+  {% for retrieval in dataset.corporate_actions.retrievals %}<p>Retrieval ID: <span class="mono">{{ retrieval.retrieval_id }}</span></p>{% endfor %}
+</section>
+
+<section class="panel" data-testid="corporate-action-findings">
+  <h2>Findings and conflicts</h2>
+  {% if dataset.corporate_actions.findings %}<ul>{% for finding in dataset.corporate_actions.findings %}<li>{{ finding }}</li>{% endfor %}</ul>{% else %}<p>No package-level conflict finding.</p>{% endif %}
+</section>
+
+<details class="panel"><summary>Snapshot identity</summary><dl class="technical">
+  <dt>Snapshot ID</dt><dd>{{ dataset.snapshot_id }}</dd>
+  <dt>Schema version</dt><dd>{{ dataset.schema_version }}</dd>
+  <dt>Canonical market-data digest</dt><dd>{{ dataset.canonical_sha256 }}</dd>
+</dl></details>
+{% endblock %}
