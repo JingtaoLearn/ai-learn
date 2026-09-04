@@ -94,7 +94,7 @@ The suite definition is complete only when:
 - every role has only the Toolsets and Skills its observed work requires;
 - every requested role was checked against the live roster and no cross-product substitute was used;
 - every headless protected-write boundary returns a complete `BLOCKED_APPLY` package instead of waiting for impossible approval;
-- every Handoff includes Goal, Evidence, Gap, Action, Agent, selected Matt flow, why, acceptance, and safety;
+- every Handoff includes Goal, Evidence, Gap, Action, Workstream, Agent, selected Matt flow, why, acceptance, and safety;
 - no runtime, database, fixed pipeline, or test framework has been introduced for functional validation;
 - authorization boundaries remain explicit and unchanged.
 - every Profile, task override, and scheduled Agent run satisfies the shared model and reasoning policy.
