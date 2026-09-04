@@ -1,0 +1,124 @@
+{
+  "available_artifact_sha256": [
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222222222222222222222222222",
+    "5717015fd01e1a468ace57eacba66f827ac594ecd8a8a4a7ca59e49350c3f954",
+    "7846f46179038abfed539682acfb88640fcaf653e4c0ef225d24b0e519244cf5",
+    "990132d23319344ba0291639a9733de39532d871ab808f996cac135184a985d0"
+  ],
+  "artifact_byte_lengths": {
+    "1111111111111111111111111111111111111111111111111111111111111111": 128,
+    "2222222222222222222222222222222222222222222222222222222222222222": 64,
+    "5717015fd01e1a468ace57eacba66f827ac594ecd8a8a4a7ca59e49350c3f954": 64,
+    "7846f46179038abfed539682acfb88640fcaf653e4c0ef225d24b0e519244cf5": 64,
+    "990132d23319344ba0291639a9733de39532d871ab808f996cac135184a985d0": 64
+  },
+  "calendar": [
+    {
+      "facts": {
+        "evidence_sha256": [
+          "7846f46179038abfed539682acfb88640fcaf653e4c0ef225d24b0e519244cf5",
+          "990132d23319344ba0291639a9733de39532d871ab808f996cac135184a985d0"
+        ],
+        "sources_complete": true,
+        "full_closure": false,
+        "exceptional_opening": false,
+        "exceptional_open_time": null,
+        "no_prior_night": true,
+        "prior_night_cancelled": false,
+        "remaining_open_time": null,
+        "conflicting": false,
+        "ambiguous": false
+      },
+      "session_date": "2025-10-13"
+    },
+    {
+      "facts": {
+        "evidence_sha256": [
+          "7846f46179038abfed539682acfb88640fcaf653e4c0ef225d24b0e519244cf5",
+          "990132d23319344ba0291639a9733de39532d871ab808f996cac135184a985d0"
+        ],
+        "sources_complete": true,
+        "full_closure": false,
+        "exceptional_opening": false,
+        "exceptional_open_time": null,
+        "no_prior_night": false,
+        "prior_night_cancelled": false,
+        "remaining_open_time": null,
+        "conflicting": false,
+        "ambiguous": false
+      },
+      "session_date": "2025-10-14"
+    }
+  ],
+  "events": [
+    {
+      "candidate_date": "2025-10-13",
+      "event_at": "2025-10-13T09:00:00+08:00",
+      "event_type": "DATE_DECLARED",
+      "evidence_sha256": [
+        "7846f46179038abfed539682acfb88640fcaf653e4c0ef225d24b0e519244cf5"
+      ],
+      "initial_status": "EXPECTED_PENDING"
+    },
+    {
+      "attempt_outcome": "VALID_TARGET_ROW",
+      "build_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "candidate_date": "2025-10-13",
+      "collector_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "error_details": null,
+      "event_at": "2025-10-13T16:00:00+08:00",
+      "event_type": "FETCH_ATTEMPT",
+      "evidence_sha256": [
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "5717015fd01e1a468ace57eacba66f827ac594ecd8a8a4a7ca59e49350c3f954"
+      ],
+      "http_status": 200,
+      "history_row_sha256s": {
+        "2025-10-13": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "parsed_row_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "parser_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "runtime_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "raw_byte_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "request_at": "2025-10-13T16:00:00+08:00",
+      "request_at_asia_shanghai": "2025-10-13T16:00:00+08:00",
+      "request_url": "https://vip.stock.finance.sina.com.cn/q/view/download_gold_history.php?breed=AU9999&start=2021-01-01&end=2025-10-13",
+      "response_at": "2025-10-13T16:00:00+08:00",
+      "response_at_asia_shanghai": "2025-10-13T16:00:00+08:00",
+      "response_byte_length": 128,
+      "response_headers": {
+        "content-type": "text/tab-separated-values; charset=gbk"
+      },
+      "response_headers_sha256": "5717015fd01e1a468ace57eacba66f827ac594ecd8a8a4a7ca59e49350c3f954",
+      "reason": "synthetic offline frozen-source capture"
+    },
+    {
+      "build_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "candidate_date": "2025-10-13",
+      "event_at": "2025-10-13T16:00:00+08:00",
+      "event_type": "CANONICAL_ROW_ACCEPTED",
+      "canonical_row_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "evidence_sha256": [
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "5717015fd01e1a468ace57eacba66f827ac594ecd8a8a4a7ca59e49350c3f954"
+      ],
+      "parser_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "target_sealed_at": "2025-10-13T16:00:00+08:00"
+    }
+  ],
+  "genesis": {
+    "contract": "synthetic-offline-fixture",
+    "sealed_at": "2025-10-12T00:00:00Z",
+    "warmup_row_sha256s": {},
+    "initialization_seal": {
+      "sealed_at": "2025-10-12T01:00:00Z",
+      "pre_s1_replay_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "initial_target_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "intended_s1_position_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "quantity_inputs_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  }
+}
