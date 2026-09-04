@@ -8,6 +8,7 @@ Copy this document for one product only. Replace every `<Product>` with one Uppe
 - Jingtao-owned Goal: `<link to the canonical Goal>`
 - Principles: `<unchanged owner-approved Principles>`
 - Portfolio state contract: [`PORTFOLIO_STATE.md`](PORTFOLIO_STATE.md)
+- Specialist pool and remote execution contract: [`EXECUTION_POOL.md`](EXECUTION_POOL.md)
 - Safety boundary: `<allowed effects and existing approval gates>`
 - Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
 - Canonical Owner Session: `<persistent Bot Chat identifier or title>`
@@ -19,7 +20,7 @@ The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.m
 
 The Owner continuously re-enters `Goal + Principles -> Portfolio Evidence -> Workstream Gaps -> Action set` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action only reopens capacity. The Owner fills every safe independent execution slot rather than serializing the whole product behind one global frontier.
 
-Maintain a compact live role registry containing each display name, Profile ID, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role.
+Maintain a compact live role registry containing each display name, Profile ID, role pool, slot number, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role. Product Owner is singleton. Every safely parallelizable concrete Specialist role may use slots `01..03`; slot `04` is invalid and no static cross-role global cap is imposed.
 
 ## Display-name rule
 
@@ -39,8 +40,8 @@ A role or product name that needs another hyphen must be recast as one UpperCame
 Every Agent uses `gpt-5.6-sol`. No Claude model is selected anywhere: not as a default, task override, fallback, or review model.
 
 - `ProductOwnerAgent-<Product>` uses `max` reasoning.
-- Research, Scout, and other bounded execution specialists use exactly `high` reasoning.
-- `AgenticWorkflow-Assistant` and independent Reviewer Agents use exactly `xhigh` reasoning.
+- Research, Scout, Experiment, and other evidence specialists use exactly `high` reasoning.
+- Implementation Agents, `AgenticWorkflow-Assistant`, and independent Reviewer Agents use exactly `xhigh` reasoning.
 
 Record both model and reasoning effort in the live Profile configuration and in any Kanban or Cron override that can replace Profile defaults.
 
@@ -53,7 +54,7 @@ Record both model and reasoning effort in the live Profile configuration and in 
 
 Delete the specialist row until its creation evidence exists. Add further rows one at a time; a hypothetical role is not a suite requirement.
 
-Profiles isolate Hermes state, not operating-system filesystem access. Set an explicit workspace and keep Toolsets narrow when filesystem or external-system access matters.
+Profiles isolate Hermes state, not operating-system filesystem access. Every Action therefore follows [`EXECUTION_POOL.md`](EXECUTION_POOL.md): exact Profile instance, Session, branch/worktree or exact-SHA checkout, run directory, read/write sets, semantic seams, execution host, lease and fencing identity. Formal tests, regression, builds, containers, large data work, backtests and other heavy commands run on an eligible remote execution host; source and data move only by the contract's immutable-SHA and manifest rules.
 
 A Kanban worker is already the background Agent for its card. When the selected Matt method says to spawn a background researcher, a Research worker applies the method directly in its current Session instead of spawning the same Handoff again. Nested Agents are reserved for genuinely independent subproblems with separate ownership.
 
@@ -67,7 +68,7 @@ A Signal is new information, not merely elapsed time.
 2. Interpret it against the Goal and accumulated product decisions.
 3. Gather only Evidence that can change the decision.
 4. Reconcile every non-Done Workstream, then build the Ready set.
-5. Select an Action set that fills all safe independent execution slots under Profile, workspace, dependency, idempotency, and resource constraints.
+5. Select the largest safe Action set across `01..03` role-pool slots under Profile, workspace, semantic-seam, dependency, idempotency, fencing and live-host constraints.
 6. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
 7. Return every Specialist Result to this same Owner Session through the selected native or callback route.
 8. Reconcile the whole Portfolio immediately after accepting, rejecting, or invalidating any Result; refill capacity or record lane-local and Portfolio legal waits with exact wake conditions.
@@ -106,6 +107,24 @@ Review never rewrites immutable specialist evidence. A material finding creates 
 
 `<One display name from this Product Agent Suite>`
 
+### Pool and slot
+
+`<Concrete role pool and exact isolated Profile ID>`
+
+### Workspace and seams
+
+- Workspace: `<workspace_id and exact path>`
+- Base/candidate: `<immutable SHA identities>`
+- Read set: `<immutable inputs>`
+- Write set: `<owned paths/resources>`
+- Shared seams: `<schema/interface/dataset/deployment/integration conflicts>`
+
+### Execution
+
+- Host/resource class: `<control | remote host; light | heavy>`
+- Transfer manifest: `<path or none>`
+- Lease/fencing: `<owner, heartbeat/expiry, fencing identity>`
+
 ### Selected Matt flow
 
 `<domain-modeling | codebase-design | writing-for-agents | research | to-spec | none>`
@@ -137,6 +156,6 @@ Review never rewrites immutable specialist evidence. A material finding creates 
 
 ## Owner completion check
 
-Before sending the Handoff, verify that all eleven headings are present and specific and that the selected Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item from Evidence rather than treating completion prose as proof. Then update the affected Workstream, reconcile every other non-Done lane, dispatch the selected Action set, and update supporting State only when the compact projection changed.
+Before sending the Handoff, verify that every heading above is present and specific, the selected Profile is an unoccupied valid slot `01..03`, and the Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item, remote manifest and artifact hash from Evidence rather than treating completion prose as proof. Then update the affected Workstream, reconcile every other non-Done lane, dispatch the selected Action set, and update supporting State only when the compact projection changed.
 
 `continue` makes one lane eligible for another bounded Action. A Portfolio-level `wait` is legal only when every non-Done lane is Active, Waiting, Blocked, Parked with a reconsider trigger, has no positive-value bounded Action, or the Goal is objectively complete. A recovery Pulse only wakes the exact Owner Session to reconcile the Portfolio; the Owner alone selects work.

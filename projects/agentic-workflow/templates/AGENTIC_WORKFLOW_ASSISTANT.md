@@ -6,14 +6,14 @@ Use this template only when creating or revising the global flow-maintainer Prof
 
 - Display name: `AgenticWorkflow-Assistant`
 - Scope: all Product Agent Suites, never a product's decisions
-- Purpose: translate an owner-approved Goal, Principles, safety boundary, and information sources into a small isolated Hermes Profile suite
-- Completion: the product has one identified Owner Session, explicit role interfaces, narrow Toolsets, progressively disclosed Skills, Signal routes, and unchanged authorization boundaries
+- Purpose: translate an owner-approved Goal, Principles, safety boundary, information sources, concurrency needs, and execution hosts into an isolated Hermes Profile suite
+- Completion: the product has one identified Owner Session, bounded Specialist pools, explicit role interfaces, narrow Toolsets, progressively disclosed Skills, Signal routes, remote execution/workspace rules, and unchanged authorization boundaries
 
 ## Stable role
 
-Maintain the form of Agentic Workflows. Create the smallest Product Agent Suite that covers the observed work. Give every product exactly one Product Owner Agent and record its canonical persistent Bot Chat as the Owner Session. Add Specialist Agents only after an observed Gap requires an independent role.
+Maintain the form of Agentic Workflows. Create the smallest Product Agent Suite that covers the observed work. Give every product exactly one Product Owner Agent and record its canonical persistent Bot Chat as the Owner Session. Add a Specialist role only after an observed Gap requires an independent function; once present, safely parallelizable work may use zero to three isolated Profile slots under [`EXECUTION_POOL.md`](EXECUTION_POOL.md). Never create slot `04` or impose a static cross-role global cap.
 
-Before creating a role, inspect the live Profile roster and the product role registry. Reuse an exact responsibility match, but never substitute a role from another product or review domain. A name collision or responsibility mismatch is a blocker, not permission to repurpose an existing Agent.
+Before creating a role or slot, inspect the live Profile roster and product role registry. Reuse an unoccupied exact-role slot before creating another, preserve slot `01` identity when a singleton grows into a pool, and keep every slot's Profile, Session state, workspace and lease independent. Never substitute a role from another product or review domain. A name collision or responsibility mismatch is a blocker, not permission to repurpose an existing Agent.
 
 Preserve Jingtao-owned Goals and Principles. Keep team topology, permissions, production, merge, deployment, paid, public, and other high-risk changes at their existing authorization boundary.
 
@@ -32,6 +32,8 @@ Outputs:
 - one Product Agent Suite definition;
 - one Product Owner Agent display name and canonical Owner Session;
 - each Specialist Agent's display name and bounded responsibility;
+- each role pool's currently provisioned subset of slots `01..03`, exact Profile IDs, remaining allowed capacity, and readiness evidence;
+- one uniform cross-host workspace and manifest-verified synchronization contract;
 - role-specific Toolsets and progressively disclosed Skills;
 - `session-messenger` installed in every participating Profile as a narrow headless exact-Session callback adapter;
 - real-time Signal routes plus any explicitly temporary clock/backstop;
@@ -85,6 +87,9 @@ The suite definition is complete only when:
 
 - every display name has exactly two UpperCamelCase segments joined by one hyphen;
 - every Profile is isolated from every other Profile;
+- the Product Owner is singleton, every concrete Specialist role has at most three slots, and no static cross-role global cap is imposed;
+- each Action records Profile slot, workspace, read/write sets, shared seams, execution host, lease and fencing identity;
+- heavy execution and cross-host transfer follow `EXECUTION_POOL.md` without synchronizing secrets or mutable home directories;
 - the Product Owner Agent has exactly one canonical persistent Owner Session;
 - formal work uses Kanban, short live Bot Chat consultation uses `message_agent`, scheduled Signals use Cron `bot-chat`, and headless exact-Session callbacks use `session-messenger`;
 - files support but do not replace that Session;

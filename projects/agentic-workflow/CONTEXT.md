@@ -36,6 +36,18 @@ A role-specific Agent selected for one bounded Action because the observed Gap r
 
 **Distinguish from:** a mandatory workflow stage.
 
+## Specialist Role Pool
+
+The zero-to-three isolated Profile instances that can perform one concrete Specialist role for one product. The role supplies common responsibility; each Worker Slot supplies independent runtime identity and capacity.
+
+**Distinguish from:** the singleton Product Owner and from an unbounded shared Agent fleet.
+
+## Worker Slot
+
+One Profile instance in a Specialist Role Pool, with its own Session state, active-process limit, workspace lease, and fencing identity.
+
+**Distinguish from:** a thread or process started against another slot's Profile.
+
 ## Task Session
 
 A conversation used by a Specialist Agent for one bounded task and allowed to end after its Result returns.
@@ -82,7 +94,23 @@ The bounded Actions selected from the Ready set to fill currently compatible exe
 
 ## Execution slot
 
-Capacity created by an available specialist Profile, a non-overlapping workspace or mutable-frontier lease, and sufficient host and token budget.
+Capacity created by an unoccupied Worker Slot, a non-overlapping Action Workspace and semantic-seam lease, an eligible Execution Host, and sufficient live resources.
+
+## Action Workspace
+
+The one run-scoped directory tree owned by one Action and one Worker Slot, containing its exact-SHA source, immutable inputs, outputs, logs, scratch data, and manifest.
+
+**Distinguish from:** the canonical product evidence directory or another Action's workspace.
+
+## Execution Host
+
+The machine selected from live capability and availability evidence to run an Action's commands. Heavy formal verification belongs on an eligible remote host rather than the control VM.
+
+## Transfer Manifest
+
+The immutable inventory of non-Git files crossing hosts, including direction, relative destination, size, hash, sensitivity, and promotion state.
+
+**Distinguish from:** bidirectional directory synchronization or credential distribution.
 
 ## Handoff
 

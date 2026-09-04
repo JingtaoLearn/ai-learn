@@ -8,7 +8,8 @@ Use one instance per product. This is a compact mutable projection for the persi
 - **Workstream** — one outcome lane that survives multiple sequential Actions.
 - **Action** — one bounded executable outcome, normally represented by one Kanban card and one run directory.
 - **Ready set** — Workstreams with a dependency-complete, safe next Action.
-- **Execution slot** — an available specialist Profile plus a non-overlapping workspace lease and sufficient host/token budget.
+- **Role pool** — zero to three isolated Profile instances for one concrete Specialist role; Product Owner is singleton.
+- **Execution slot** — an unoccupied role-pool Profile plus a non-overlapping workspace/seam lease and an eligible live execution host. There is no static cross-role global cap.
 - **Safety/stage-gate class** — the tuple of authorization boundary, irreversible-risk tier, and next unmet product gate used only to compare fairness among genuinely substitutable ready Actions. Actions in different classes are not peers for oldest-ready selection.
 
 ## Reconciliation
@@ -18,7 +19,7 @@ On every Signal, Result, Review, Decision, or recovery Pulse:
 1. Reconcile every non-Done Workstream from live tracker, Kanban, process, production, and evidence facts.
 2. Update lane state, health, Evidence, Gap, current/next Action, dependencies, and wake condition.
 3. Build the Ready set and fill every safe independent execution slot.
-4. Enforce one process per Profile, one writer per workspace/frontier, native dependencies, stable idempotency, and current resource budgets.
+4. Enforce slots `01..03` per concrete Specialist role, one process per Profile, one writer per physical workspace, one lease holder per mutable semantic seam, one Integrator per target branch, native dependencies, stable idempotency/fencing, and live host capability.
 5. Rank ready Actions by irreversible safety/correctness risk, stage-gate leverage, user value, evidence age, and starvation.
 6. Let blocked or waiting lanes coexist with progress in unrelated ready lanes.
 7. Set `ready_since` only when a lane first becomes READY; preserve it across compatible skips. Increment `skipped_slot_releases` only when a verified compatible slot is released and assigned to a peer Action in the same safety/stage-gate class. Reset both fields when the lane leaves READY, its Action or class materially changes, or it is staffed. Within one class, select the oldest `ready_since` first. After three compatible skips, staff the lane at the next compatible release unless evidence proves it is no longer ready. Reclassification requires that changed evidence and an exact reconsider trigger; parking is never a fairness escape hatch.
@@ -68,7 +69,7 @@ Fact sources: <tracker, board, process, production, artifact handles>
 - Evidence: ...
 - Gap: ...
 - Current or next Action: ...
-- Task / Profile / workspace: ...
+- Task / role pool / Profile slot / workspace / execution host: ...
 - Dependencies: ...
 - Shared-seam constraints: <interfaces, schemas, files, or leases this lane shares with named Workstreams>
 - Wake: ...
