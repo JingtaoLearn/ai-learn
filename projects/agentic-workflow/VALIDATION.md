@@ -97,6 +97,23 @@ Independent review caught an unsupported interpretation of `1,201` as the exact 
 
 No Gold production manifest, script, Cron, schedule, signal, deployment, GitHub state, trading behavior, order capability, or paid/public state changed. This accepts the repaired Agentic Workflow path, not the model's future economic performance.
 
+## Specialist-pool and remote-execution acceptance
+
+Issue `#237` applies the approved concurrency model without adding a workflow engine or static cross-role global cap.
+
+Verified live evidence:
+
+- Product Owner remains one canonical Profile and Session.
+- Implementation, Research, Reviewer, and Experiment each expose exactly three isolated QuantResearch Profile slots: the existing unsuffixed slot `01` plus `02` and `03`.
+- All twelve Specialist Profiles resolve to `gpt-5.6-sol`; Implementation and Reviewer use `xhigh`, while Research and Experiment use `high`.
+- Eight new Profiles were probed concurrently. Every probe returned its exact Profile ID, slot, `REMOTE_HEAVY`, and `ONE_PROCESS` contract without sharing a Profile or Session.
+- The control VM, `feng-learn`, and `zehua-teamclaw` have distinct `agent-workspaces/quant-research` roots. The remote roots are owned by their host users and the product directory is mode `0750`.
+- Both remote hosts expose Git, Python 3.12, Docker, `rsync`, and `sha256sum`, and both independently fetched exact repository SHA `984ef79eacc0be5f5da80491c61520c0f4166095` from GitHub into separate Action workspaces.
+- Corrective runs `probe-feng-002` and `probe-zehua-002` transferred one non-Git input through a run-local `.partial` path, recorded `STAGED`, size/hash `VERIFIED`, and atomic `PROMOTED` evidence, and left no partial file. Both immutable inputs and manifests are mode `0440`; each manifest records source, target host, relative destination, size `28`, SHA-256 `0f51707803fa44440872432a3b26466ab5fd180b92292aadd075bb12cb514215`, sensitivity, immutability, direction, promotion state, exact source SHA, commands, and `secret_sync=false`.
+- Reusable prompts require exact Profile slot, workspace, immutable source, read/write sets, semantic seams, execution host, resource class, transfer manifest, lease and fencing identity before dispatch. Formal tests, regression, builds, containers, large data work, backtests and other heavy commands belong on an eligible remote host.
+
+This proves isolated role-pool readiness and the remote workspace/synchronization path. It does not authorize production, deployment, Cron, signal, order, or paid/public effects.
+
 ## Continuous Owner-loop acceptance
 
 Jingtao's correction entered canonical Owner Session `20260903_075757_73a49f` as Signal `9e13001cc00a47caa14f72e64e6912c9`. The supervising Hermes session supplied no product Action. The Owner independently read the accepted Gold Decision, verified that no equivalent work was active, and selected the next evidence Gap: absence of a sealed prospective-evaluation contract.

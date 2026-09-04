@@ -12,6 +12,8 @@ First product-level persistent Owner tracer verified.
 - Sessions retain conversation history. Heartbeat and Loop re-enter the same Session, while Cron starts a fresh isolated Session per tick.
 - Skills are on-demand professional methods selected for an observed Gap and Action; Toolsets are role capabilities.
 - Two Agent processes must not share the same profile.
+- The Product Owner remains singleton; every safely parallelizable concrete Specialist role may use up to three isolated Profile slots with no static cross-role global cap.
+- Formal heavy tests/builds/data work run on eligible remote execution hosts under exact-SHA and manifest-verified workspace rules.
 - `AgenticWorkflow-Assistant`, `ProductOwnerAgent-QuantResearch`, `ResearchAgent-QuantResearch`, and `ReviewerAgent-AgenticWorkflow` exist as isolated Profiles with the approved display names and `gpt-5.6-sol` reasoning policy.
 - Scheduled Signals reached canonical Owner Session `20260903_075757_73a49f`; that Owner invoked Research Bot Chat `20260903_082058_d3fc23` through native `message_agent`, read the real Result, and wrote the Decision and State updates.
 - Independent Product and Standards review passed with zero blockers at Agentic Workflow design SHA `0e3f43e3fd560a1e7734ad0b1a191e99028388d0`; the complete tracer evidence is in `VALIDATION.md`.

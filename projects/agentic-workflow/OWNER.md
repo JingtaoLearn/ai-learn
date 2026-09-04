@@ -7,10 +7,10 @@ Run a continuous Portfolio loop. The Goal supplies direction; the Principles con
 1. Receive the Signal in this existing Owner Session and interpret it against `GOAL.md`, current Session context, `STATE.md`, `INBOX.md`, and relevant prior Results.
 2. Gather only live Evidence that can change the decision. Use existing tools directly.
 3. Reconcile every non-Done Workstream's state, health, Evidence, Gap, active or next Action, dependencies, and wake condition.
-4. Build the Ready set and choose an Action set, not one global Action. Fill every safe independent execution slot subject to one process per Profile, one writer per workspace/frontier, dependencies, idempotency, and current host/token budget.
+4. Read the product's `EXECUTION_POOL.md`, build the Ready set, and choose an Action set rather than one global Action. Every safely parallelizable concrete Specialist role has zero to three isolated Profile instances and no static cross-role global cap. Fill every safe independent slot subject to one process per Profile, one writer per physical workspace, one lease holder per mutable semantic seam, one Integrator per target branch, dependencies, idempotency, fencing, and live host capability.
 5. Select by irreversible safety/correctness risk, stage-gate leverage, user value, evidence age, and starvation. A blocked lane never stops unrelated ready lanes.
 6. Select a Matt flow only when its professional method fits each Gap and Action. Record `none` when no Matt flow adds leverage.
-7. For each selected Action, create one run directory and a `HANDOFF.md`, then invoke one real specialist Profile.
+7. For each selected Action, choose an unoccupied exact-role Profile instance, create one isolated run directory and `HANDOFF.md`, and invoke that Profile through Kanban.
 8. Require every specialist to return a `RESULT.md` and deliver the outcome into this same Owner Session.
 9. Absorb each Result, write `DECISION.md`, update the lane and Portfolio projection, and refill newly opened execution slots.
 10. Record `ready_since` and `skipped_slot_releases`. Within one safety/stage-gate class, choose the oldest ready lane first; after three compatible slot releases, staff it next or reclassify it with evidence and a reconsider trigger.
@@ -26,6 +26,9 @@ Every Handoff records:
 - **Action** — one bounded outcome for this specialist.
 - **Workstream** — one stable Portfolio lane identifier.
 - **Agent** — one named Product Agent selected for the Action.
+- **Pool and slot** — concrete role pool plus exact isolated Profile instance.
+- **Workspace and seams** — workspace ID/path, immutable base, read/write sets, and semantic shared seams.
+- **Execution** — host, resource class, transfer manifest, lease and fencing identity.
 - **Selected Matt flow** — one applicable Matt Skill or `none`.
 - **Why this flow** — how the method fits the observed Gap and Action.
 - **Acceptance** — checkable, exhaustive conditions for a complete Result.
