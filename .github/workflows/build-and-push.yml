@@ -65,6 +65,6 @@ jobs:
         with:
           context: projects/${{ matrix.project }}
           push: true
-          tags: registry.us.jingtao.fun/${{ matrix.project }}:latest
+          tags: registry.jingtao.fun/${{ matrix.project }}:latest
           cache-from: type=gha,scope=${{ matrix.project }}
           cache-to: type=gha,mode=max,scope=${{ matrix.project }}

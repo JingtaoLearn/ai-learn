@@ -1,6 +1,6 @@
 services:
   share-board:
-    image: registry.us.jingtao.fun/share-board:latest
+    image: registry.jingtao.fun/share-board:latest
     environment:
       - VIRTUAL_HOST=board.${S_DOMAIN}
       - VIRTUAL_PORT=3000

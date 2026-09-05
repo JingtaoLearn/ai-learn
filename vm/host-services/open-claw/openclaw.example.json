@@ -22,7 +22,7 @@
   "models": {
     "providers": {
       "litellm": {
-        "baseUrl": "https://litellm.us.jingtao.fun/",
+        "baseUrl": "https://litellm.jingtao.fun/",
         "apiKey": "${S_LITELLM_API_KEY}",
         "api": "openai-completions",
         "models": [
@@ -98,7 +98,7 @@
       },
       "openai": {
         "apiKey": "${S_LITELLM_API_KEY}",
-        "baseUrl": "https://litellm.us.jingtao.fun/v1",
+        "baseUrl": "https://litellm.jingtao.fun/v1",
         "models": []
       }
     }
@@ -138,7 +138,7 @@
         },
         "provider": "openai",
         "remote": {
-          "baseUrl": "https://litellm.us.jingtao.fun/v1/",
+          "baseUrl": "https://litellm.jingtao.fun/v1/",
           "apiKey": "${S_LITELLM_API_KEY}"
         },
         "model": "text-embedding-3-large",
@@ -350,7 +350,7 @@
           "apiKey": "${S_LITELLM_API_KEY}",
           "model": "gpt-4o-mini-tts",
           "voice": "alloy",
-          "baseUrl": "https://litellm.us.jingtao.fun/v1"
+          "baseUrl": "https://litellm.jingtao.fun/v1"
         }
       },
       "maxTextLength": 4000,
@@ -654,7 +654,7 @@
         "enabled": true,
         "config": {
           "mode": "remote",
-          "baseUrl": "https://ov.us.jingtao.fun",
+          "baseUrl": "https://ov.jingtao.fun",
           "apiKey": "${S_OPENVIKING_API_KEY}"
         }
       }

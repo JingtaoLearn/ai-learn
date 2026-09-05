@@ -89,7 +89,7 @@ openclaw models list --all | grep "openai-codex"
 journalctl --user -u openclaw-gateway --since "1 minute ago" | grep "agent model"
 
 # Test LiteLLM API directly
-curl -s -X POST https://litellm.us.jingtao.fun/v1/chat/completions \
+curl -s -X POST https://litellm.jingtao.fun/v1/chat/completions \
   -H "Authorization: Bearer ${S_LITELLM_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{

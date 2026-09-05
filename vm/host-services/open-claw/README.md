@@ -42,7 +42,7 @@ openclaw status
 ## Architecture
 
 ```
-OpenClaw Gateway (18789) ──┬─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
+OpenClaw Gateway (18789) ──┬─→ LiteLLM Proxy (litellm.jingtao.fun)  ← PRIMARY
                            │
                            └─→ OpenAI API (openai-codex, OAuth)         ← FALLBACK
 ```
