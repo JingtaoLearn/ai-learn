@@ -56,7 +56,7 @@ All available tools are enabled in the configuration:
           "type": "provider",
           "provider": "openai",
           "model": "gpt-4o-transcribe",
-          "baseUrl": "https://litellm.us.jingtao.fun/v1",
+          "baseUrl": "https://litellm.jingtao.fun/v1",
           "headers": {
             "authorization": "Bearer ${S_LITELLM_API_KEY}"
           },
@@ -311,7 +311,7 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
         "experimental": { "sessionMemory": true },
         "provider": "openai",
         "remote": {
-          "baseUrl": "https://litellm.us.jingtao.fun/v1/",
+          "baseUrl": "https://litellm.jingtao.fun/v1/",
           "apiKey": "${S_LITELLM_API_KEY}"
         },
         "model": "text-embedding-3-large",
@@ -416,7 +416,7 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
         "enabled": true,
         "config": {
           "mode": "remote",
-          "baseUrl": "https://ov.us.jingtao.fun",
+          "baseUrl": "https://ov.jingtao.fun",
           "apiKey": "${S_OPENVIKING_API_KEY}"
         }
       }
@@ -502,7 +502,7 @@ Beyond the defaults, OpenClaw supports named agent instances with dedicated work
           "apiKey": "${S_LITELLM_API_KEY}",
           "model": "gpt-4o-mini-tts",
           "voice": "alloy",
-          "baseUrl": "https://litellm.us.jingtao.fun/v1"
+          "baseUrl": "https://litellm.jingtao.fun/v1"
         }
       },
       "modelOverrides": {

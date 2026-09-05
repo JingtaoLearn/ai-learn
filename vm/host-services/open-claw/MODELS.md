@@ -6,12 +6,12 @@ Configuration and setup for LLM model providers in OpenClaw.
 
 OpenClaw uses two providers:
 
-- **litellm** — connects to a LiteLLM proxy (`litellm.us.jingtao.fun`), which routes to upstream LLM backends (GitHub Copilot / Anthropic API)
+- **litellm** — connects to a LiteLLM proxy (`litellm.jingtao.fun`), which routes to upstream LLM backends (GitHub Copilot / Anthropic API)
 - **openai-codex** — connects directly to OpenAI API via OAuth (ChatGPT Plus subscription)
 
 ```
 OpenClaw Gateway (18789)
-    ├─→ LiteLLM Proxy (litellm.us.jingtao.fun)  ← PRIMARY
+    ├─→ LiteLLM Proxy (litellm.jingtao.fun)  ← PRIMARY
     │       ↓
     │   GitHub Copilot / Anthropic API
     │
@@ -36,7 +36,7 @@ Connects to the LiteLLM proxy using the OpenAI-completions API format.
   "models": {
     "providers": {
       "litellm": {
-        "baseUrl": "https://litellm.us.jingtao.fun/",
+        "baseUrl": "https://litellm.jingtao.fun/",
         "apiKey": "${S_LITELLM_API_KEY}",
         "api": "openai-completions",
         "models": [

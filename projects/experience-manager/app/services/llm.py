@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from openai import AsyncOpenAI
 
-_DEFAULT_BASE_URL = "https://litellm.us.jingtao.fun/v1"
+_DEFAULT_BASE_URL = "https://litellm.jingtao.fun/v1"
 _DEFAULT_MODEL = "github-copilot/claude-sonnet-4.5"
 
 _client: Optional[AsyncOpenAI] = None

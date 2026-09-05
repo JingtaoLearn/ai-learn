@@ -9,7 +9,7 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 
-_DEFAULT_BASE_URL = "https://litellm.us.jingtao.fun/v1"
+_DEFAULT_BASE_URL = "https://litellm.jingtao.fun/v1"
 _DEFAULT_MODEL = "text-embedding-3-large"
 
 
