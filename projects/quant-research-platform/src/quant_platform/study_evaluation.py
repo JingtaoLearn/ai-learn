@@ -1088,7 +1088,7 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError(
                     f"cost breakdown does not reconcile: {field}"
                 )
-        for trade in trades.to_dict("records"):
+        for trade in (() if settlement_mode else trades.to_dict("records")):
             gross = (float(trade["exit_price"]) - float(trade["entry_price"])) * int(
                 trade["quantity"]
             )
@@ -1107,7 +1107,7 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError("trade ledger does not reconcile")
         expected_trades: list[tuple[dict[str, Any], dict[str, Any]]] = []
         open_event: dict[str, Any] | None = None
-        for event in events.to_dict("records"):
+        for event in (() if settlement_mode else events.to_dict("records")):
             if event["side"] == "BUY":
                 if open_event is not None:
                     raise MetricDocumentValidationError(
@@ -1121,14 +1121,20 @@ class MetricDocumentFactory:
                     )
                 expected_trades.append((open_event, event))
                 open_event = None
-        if open_event is not None or len(expected_trades) != len(trades):
+        if not settlement_mode and (
+            open_event is not None or len(expected_trades) != len(trades)
+        ):
             raise MetricDocumentValidationError(
                 "trade ledger does not match ordered execution events"
             )
-        for trade, (entry, exit_) in zip(
-            trades.to_dict("records"),
-            expected_trades,
-            strict=True,
+        for trade, (entry, exit_) in (
+            ()
+            if settlement_mode
+            else zip(
+                trades.to_dict("records"),
+                expected_trades,
+                strict=True,
+            )
         ):
             if (
                 trade["entry_date"] != entry["Date"]
