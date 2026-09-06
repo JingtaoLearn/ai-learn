@@ -102,6 +102,26 @@ def test_package_and_release_routes_compute_the_same_payload_identity(tmp_path, 
     assert package.observation["git"]["commit"] is None
 
 
+def test_package_capture_ignores_canonical_installer_console_script_row(tmp_path, monkeypatch):
+    distribution, _, payloads = _make_matching_package_and_release(tmp_path)
+    record = tmp_path / "installed" / "gold_quant_research-0.1.0.dist-info" / "RECORD"
+    with record.open("a", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerow(
+            ("../../../bin/gold-research", _record_digest(b"launcher"), "8")
+        )
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda: iter([distribution]))
+
+    package = _package_source_capture(
+        _validate_source_provenance(
+            {"mode": "package", "distribution": "gold-quant-research"}
+        )
+    )
+
+    assert package.source_identity == _canonical_source_identity(
+        {f"src/{relative}": data for relative, data in payloads.items()}
+    )
+
+
 def test_package_record_mismatch_fails_closed(tmp_path, monkeypatch):
     distribution, _, _ = _make_matching_package_and_release(tmp_path)
     monkeypatch.setattr(importlib.metadata, "distributions", lambda: iter([distribution]))

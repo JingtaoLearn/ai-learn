@@ -392,12 +392,16 @@ def _record_rows(distribution: importlib.metadata.Distribution) -> list[tuple[st
             if len(row) != 3:
                 raise ValueError("RECORD row must have three fields")
             name, digest, size = row
-            _validate_member_name(name)
-            normalized = PurePosixPath(name).as_posix()
-            if normalized in seen:
-                raise ValueError(f"duplicate RECORD path: {normalized}")
-            seen.add(normalized)
-            rows.append((normalized, digest, size))
+            if (
+                not name
+                or "\0" in name
+                or any(ord(character) < 32 or ord(character) == 127 for character in name)
+            ):
+                raise ValueError(f"invalid RECORD path: {name!r}")
+            if name in seen:
+                raise ValueError(f"duplicate RECORD path: {name}")
+            seen.add(name)
+            rows.append((name, digest, size))
     except (csv.Error, ValueError, ProvenanceError) as exc:
         raise ProvenanceError("DEPENDENCY_IDENTITY_INVALID", f"invalid RECORD: {exc}") from exc
     return rows
