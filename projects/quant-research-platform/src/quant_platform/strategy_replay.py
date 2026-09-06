@@ -390,7 +390,10 @@ class _SettlementAccount:
     def _trade(
         self, event_date: date, side: str, raw_price: float, quantity: int, reason: str
     ) -> dict[str, Any]:
-        settlement_date = self.schedule.settlement_date(event_date)
+        try:
+            settlement_date = self.schedule.settlement_date(event_date)
+        except CorporateActionEvidenceError as exc:
+            raise ReplayError(f"settlement input is invalid: {exc}") from exc
         price_fen = cny_to_fen(Decimal(str(raw_price)))
         notional_fen = cny_to_fen(Decimal(str(raw_price)) * quantity)
         costs_fen = self._cost_fen(side, raw_price, quantity)
