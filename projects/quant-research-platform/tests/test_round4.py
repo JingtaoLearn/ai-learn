@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,19 @@ from gold_research.round4 import (
     run_round4_research,
     select_candidate_for_fold,
 )
+from gold_research.run import _canonical_source_identity, _enumerate_release_files
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def release_provenance() -> dict[str, str]:
+    files, _, _ = _enumerate_release_files(PROJECT_ROOT)
+    return {
+        "mode": "release",
+        "source_root": str(PROJECT_ROOT),
+        "expected_source_sha256": str(_canonical_source_identity(files)["sha256"]),
+    }
 
 
 def synthetic_gold(seed: int, periods: int = 1200) -> pd.DataFrame:
@@ -140,6 +154,7 @@ def test_round4_aligns_daily_proxies_by_session_date_not_vendor_timestamp(tmp_pa
         {"GC=F": gc, "GLD": gld},
         tmp_path,
         analysis_date=gc.index[-1].normalize(),
+        source_provenance=release_provenance(),
     )
     config = json.loads((tmp_path / result["run_id"] / "config.json").read_text())
     assert config["evaluation_sessions"] > 700
@@ -152,7 +167,11 @@ def test_round4_rejects_invalid_prices_without_partial_output(tmp_path, bad_pric
         frame["Open"] = frame["Open"].astype(object)
     frame.iloc[0, frame.columns.get_loc("Open")] = bad_price
     with pytest.raises(ValueError, match="finite and strictly positive"):
-        run_round4_research({"GC=F": frame, "GLD": synthetic_gold(3)}, tmp_path)
+        run_round4_research(
+            {"GC=F": frame, "GLD": synthetic_gold(3)},
+            tmp_path,
+            source_provenance=release_provenance(),
+        )
     assert not list(tmp_path.iterdir())
 
 
@@ -163,6 +182,7 @@ def test_round4_rejects_invalid_costs_without_partial_output(tmp_path, bad_costs
             {"GC=F": synthetic_gold(4), "GLD": synthetic_gold(5)},
             tmp_path,
             cost_grid_bps=bad_costs,
+            source_provenance=release_provenance(),
         )
     assert not list(tmp_path.iterdir())
 
@@ -177,6 +197,7 @@ def test_round4_emits_immutable_walk_forward_artifacts_and_escaped_mobile_report
             tmp_path,
             analysis_date=analysis_date,
             data_manifest={"source": "<script id='probe'>bad()</script>"},
+            source_provenance=release_provenance(),
         )
     finally:
         os.umask(previous_umask)
@@ -199,6 +220,15 @@ def test_round4_emits_immutable_walk_forward_artifacts_and_escaped_mobile_report
     assert all(path.stat().st_mode & 0o777 == 0o644 for path in run_dir.iterdir())
 
     config = json.loads((run_dir / "config.json").read_text())
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    render_identity = manifest["execution_identity"]["render_identity"]
+    assert render_identity["resources"]
+    assert any(
+        resource["environment_member"].endswith("matplotlibrc")
+        and any(owner["distribution_name"] == "matplotlib" for owner in resource["owners"])
+        for resource in render_identity["resources"]
+    )
+    assert all(resource["owners"] for resource in render_identity["resources"])
     assert config["candidate_names"] == CANDIDATE_NAMES
     assert config["cost_grid_bps"] == [5.0, 20.0]
     assert config["evaluation_policy"] == "latest three calendar years ending at latest completed daily bar"
@@ -274,4 +304,5 @@ def test_round4_emits_immutable_walk_forward_artifacts_and_escaped_mobile_report
             tmp_path,
             analysis_date=analysis_date,
             data_manifest={"source": "<script id='probe'>bad()</script>"},
+            source_provenance=release_provenance(),
         )

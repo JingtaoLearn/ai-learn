@@ -408,8 +408,37 @@ from pathlib import Path
 
 from gold_research.round4 import run_round4_research
 
+# Supported installed-wheel route. The unique gold-quant-research distribution
+# and its METADATA/RECORD are the source authority.
 result = run_round4_research(data, Path("runs/three-year-walk-forward"))
 ```
+
+An immutable release tree is the only other supported route. Seal the canonical
+`src/gold_research` plus `src/quant_platform` payload first, then supply that
+digest explicitly:
+
+```python
+result = run_round4_research(
+    data,
+    Path("runs/three-year-walk-forward"),
+    source_provenance={
+        "mode": "release",
+        "source_root": "/absolute/non-symlink/release/project",
+        "expected_source_sha256": "<64-lowercase-hex-digest>",
+        # Optional when the release is an exactly tracked Git project subtree:
+        "expected_git_commit": "<40-hex-commit>",
+        "expected_project_tree_oid": "<40-hex-tree>",
+    },
+)
+```
+
+Round 4 never infers provenance from `PYTHONPATH`, the current working directory,
+or an imported module's parent directory. Mixed authority fields, missing or
+symlinked roots, inconsistent `RECORD` data, source mutation, undeclared loaded
+code, runtime/native-object changes, and external Matplotlib configuration or
+fonts fail closed before atomic publication. Both supported routes launch a
+fresh isolated worker from captured first-party source bytes. Route-specific
+absolute paths and Git observations remain outside the run identity.
 
 Each immutable run writes `candidate_summary.csv`, `walk_forward_folds.csv`,
 `walk_forward_daily.csv`, `pseudo_oos_summary.csv`, `latest_signals.csv`,
