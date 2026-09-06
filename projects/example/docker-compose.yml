@@ -1,0 +1,19 @@
+services:
+  example:
+    build: .
+    container_name: example-app
+    restart: always
+    environment:
+      - VIRTUAL_HOST=example.${S_DOMAIN}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=example.${S_DOMAIN}
+      - LETSENCRYPT_EMAIL=${S_EMAIL}
+    expose:
+      - "80"
+    networks:
+      - default
+
+networks:
+  default:
+    external: true
+    name: nginx-proxy
