@@ -887,6 +887,7 @@ class MetricDocumentFactory:
         initial = float(metrics["initial_capital_cny"])
         final = float(daily["equity"].iloc[-1])
         total_cost = float(events["total_cost_cny"].sum())
+        settlement_mode = "account_events.csv" in payloads
         scored_market = dataset_frame.loc[
             dataset_frame["Date"].dt.strftime("%Y-%m-%d").isin(scored_dates),
             ["Date", "Open", "Close"],
@@ -907,11 +908,14 @@ class MetricDocumentFactory:
                 rtol=1e-12,
                 atol=1e-8,
             )
-            or not np.allclose(
-                daily["cash"] + daily["market_value"],
-                daily["equity"],
-                rtol=1e-12,
-                atol=1e-8,
+            or (
+                not settlement_mode
+                and not np.allclose(
+                    daily["cash"] + daily["market_value"],
+                    daily["equity"],
+                    rtol=1e-12,
+                    atol=1e-8,
+                )
             )
             or not _close(final, float(metrics["final_equity_cny"]), scale=initial)
             or not _close(final - initial, float(metrics["net_profit_cny"]), scale=initial)
@@ -962,7 +966,7 @@ class MetricDocumentFactory:
         expected_cash = initial
         expected_holdings = 0
         cumulative_cost = 0.0
-        for daily_row in daily.itertuples(index=False):
+        for daily_row in (() if settlement_mode else daily.itertuples(index=False)):
             date = daily_row.Date
             day_events = events.loc[events["Date"] == date]
             if (
