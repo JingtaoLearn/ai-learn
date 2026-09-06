@@ -723,11 +723,13 @@ def _artifact_set_digest(payloads: Mapping[str, bytes]) -> str:
 def _accounting_outcome_evidence(
     *,
     state_root: Path | str,
+    result_path: Path | str,
     result_payloads: Mapping[str, bytes],
     expected_result_digest: str,
     execution_view_snapshot_id: str,
 ) -> tuple[Any, datetime]:
     state = Path(os.path.abspath(os.fspath(state_root)))
+    result = Path(os.path.abspath(os.fspath(result_path)))
     package = state / "accounting-outcomes" / expected_result_digest
     try:
         package.relative_to(state)
@@ -742,6 +744,16 @@ def _accounting_outcome_evidence(
         or stat.S_IMODE(metadata.st_mode) & 0o222
     ):
         raise TotalReturnQualificationError("accounting outcome package is not immutable")
+    try:
+        result_sealed_ns = max(
+            os.stat(result / name, follow_symlinks=False).st_ctime_ns for name in result_payloads
+        )
+    except OSError as exc:
+        raise TotalReturnQualificationError("sealed result attachment time is unavailable") from exc
+    if metadata.st_ctime_ns <= result_sealed_ns:
+        raise TotalReturnQualificationError(
+            "accounting outcome package was not attached after the sealed result"
+        )
     manifest_path = package / "manifest.json"
     try:
         manifest_metadata = os.stat(manifest_path, follow_symlinks=False)
@@ -785,6 +797,10 @@ def _accounting_outcome_evidence(
             or stat.S_IMODE(before.st_mode) & 0o222
         ):
             raise TotalReturnQualificationError("accounting outcome artifact is not immutable")
+        if before.st_ctime_ns <= result_sealed_ns:
+            raise TotalReturnQualificationError(
+                "accounting outcome artifact predates the sealed result"
+            )
         payload = path.read_bytes()
         if descriptor != {
             "sha256": hashlib.sha256(payload).hexdigest(),
@@ -813,6 +829,11 @@ def _accounting_outcome_evidence(
         )
     ):
         raise TotalReturnQualificationError("accounting outcome evidence role or identity is invalid")
+    encoded_digest = admitted.digest.encode("ascii")
+    if any(encoded_digest in payload for payload in result_payloads.values()):
+        raise TotalReturnQualificationError(
+            "accounting outcome evidence was exposed to the sealed execution bundle"
+        )
     checked_as_of = admitted.document["coverage"]["payload"].get("checked_as_of")
     if checked_as_of != manifest.get("checked_as_of"):
         raise TotalReturnQualificationError("accounting outcome checked-as-of differs")
@@ -1334,6 +1355,7 @@ def _verified_evidence_graph(
         raise TotalReturnQualificationError("corporate-action evidence leaks after the feature cutoff")
     outcome, checked = _accounting_outcome_evidence(
         state_root=state_root,
+        result_path=result_path,
         result_payloads=payloads,
         expected_result_digest=expected_result_digest,
         execution_view_snapshot_id=dataset_manifest["snapshot_id"],
