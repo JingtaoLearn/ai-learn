@@ -523,6 +523,16 @@ def _a_share_total_return_qualification(
             source_total_return_claim="PRICE_RETURN_ONLY",
             coverage_state="UNKNOWN_MISSING",
         )
+    if (
+        accounting.get("claim") == "KNOWN_EVENT_CORRECTED_PARTIAL"
+        and accounting.get("coverage_state") == "VERIFIED_EVENTS"
+    ):
+        return read_time_classification(
+            source_issuer="STRATEGY_RUNNER",
+            source_total_return_claim="KNOWN_EVENT_CORRECTED_PARTIAL",
+            coverage_state="VERIFIED_EVENTS",
+            attempted_after_tax=True,
+        )
     try:
         qualification = qualify_total_return(
             state_root=state_root,

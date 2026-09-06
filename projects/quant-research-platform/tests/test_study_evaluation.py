@@ -634,6 +634,9 @@ def _mutate_and_reseal_trusted_run(
         elif case == "N_PRICE_ONLY":
             manifest.pop("accounting")
             manifest["identity"].pop("accounting")
+        elif case == "N_PARTIAL":
+            accounting["coverage_state"] = "VERIFIED_EVENTS"
+            accounting["complete_contract_id"] = None
         else:
             raise AssertionError(case)
         if case != "N_PRICE_ONLY":
@@ -669,7 +672,7 @@ def _mutate_and_reseal_trusted_run(
     prior_package = factory.state_root / "accounting-outcomes" / prior_result_digest
     prior_package.chmod(0o755)
     shutil.rmtree(prior_package)
-    if case != "N_PRICE_ONLY":
+    if case not in {"N_PRICE_ONLY", "N_PARTIAL"}:
         _seal_accounting_outcome(
             factory.state_root,
             root,
@@ -1045,6 +1048,19 @@ def _price_only_document(tmp_path: Path, *, candidate_variant: int) -> dict:
     )
 
 
+def _partial_document(tmp_path: Path, *, candidate_variant: int) -> dict:
+    factory, attempt, fold_window = _trusted_attempt_and_factory(
+        tmp_path, candidate_variant=candidate_variant
+    )
+    _mutate_and_reseal_trusted_run(factory, attempt, "N_PARTIAL")
+    return factory.from_attempt(
+        attempt,
+        candidate_digest=_candidate_digest(attempt),
+        candidate_configuration=attempt["candidate_configuration"],
+        fold_window=fold_window,
+    )
+
+
 def test_n1_heterogeneous_all_ineligible_has_no_champion_or_holdout(tmp_path: Path):
     price_only = _price_only_document(tmp_path / "price", candidate_variant=1)
     exposed = _trusted_document(
@@ -1072,18 +1088,14 @@ def test_n1_heterogeneous_all_ineligible_has_no_champion_or_holdout(tmp_path: Pa
 
 
 def test_n2_numerically_better_partial_is_removed_before_trusted_ranking(tmp_path: Path):
-    untrusted_document = _price_only_document(tmp_path / "partial", candidate_variant=4)
+    untrusted_document = _partial_document(tmp_path / "partial", candidate_variant=4)
     trusted_document = _trusted_document(tmp_path / "trusted", candidate_variant=5)
     partial = _policy_evaluation(untrusted_document)
     trusted = _policy_evaluation(trusted_document)
-    partial["total_return_qualifications"] = [
-        total_return_claims.read_time_classification(
-            source_issuer="STRATEGY_RUNNER",
-            source_total_return_claim="KNOWN_EVENT_CORRECTED_PARTIAL",
-            coverage_state="VERIFIED_EVENTS",
-        )
-    ]
     partial["validation_score"] = trusted["validation_score"] + 1_000.0
+    assert untrusted_document["total_return_qualification"]["claim_state"] == (
+        "KNOWN_EVENT_CORRECTED_PARTIAL"
+    )
     assert partial["total_return_qualifications"][0]["claim_state"] == (
         "KNOWN_EVENT_CORRECTED_PARTIAL"
     )
