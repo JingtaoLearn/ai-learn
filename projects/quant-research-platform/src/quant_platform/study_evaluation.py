@@ -514,7 +514,7 @@ def _a_share_total_return_qualification(
     metrics: Mapping[str, Any],
     historical_exposure: str,
 ) -> dict[str, Any] | None:
-    if not instrument.endswith((".SS", ".SZ")):
+    if re.fullmatch(r"[0-9]{6}\.(?:SS|SZ)", instrument) is None:
         return None
     accounting = run_manifest.get("accounting")
     if not isinstance(accounting, Mapping):
@@ -1589,7 +1589,7 @@ class RobustWalkForwardPolicy:
         closed_trades = sum(int(document["metrics"]["closed_trades"]) for document in ordered)
         trusted_total_return = all(
             (
-                not document["instrument"].endswith((".SS", ".SZ"))
+                re.fullmatch(r"[0-9]{6}\.(?:SS|SZ)", document["instrument"]) is None
                 or (
                     isinstance(document["total_return_qualification"], Mapping)
                     and document["total_return_qualification"].get("issuer")

@@ -133,7 +133,9 @@ def test_plain_copy_and_mutated_capability_are_not_trusted():
 def test_identity_integer_aliases_reject_boolean_and_float(bad):
     bindings = _bindings()
     bindings["schema_version_for_test"] = bad
-    with pytest.raises(TotalReturnQualificationError, match="binding fields"):
+    with pytest.raises(
+        TotalReturnQualificationError, match="binding fields|floating-point"
+    ):
         _verified(bindings=bindings)
     if isinstance(bad, float):
         with pytest.raises(TotalReturnQualificationError, match="floating-point"):

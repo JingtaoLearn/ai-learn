@@ -368,8 +368,15 @@ def _validate_record(record: dict[str, Any], prior_record_bytes: bytes | None) -
         raise TotalReturnQualificationError("reason codes are invalid")
     if ranking["eligible_for_promotion"] and not ranking["eligible_for_ranking"]:
         raise TotalReturnQualificationError("promotion requires ranking eligibility")
+    allowed_ranking_reasons = (
+        ["OTHER_STUDY_GATE_FAILED"]
+        if not ranking["eligible_for_promotion"]
+        else []
+    )
     if ranking["eligible_for_ranking"] and (
-        not verified or ranking["historical_exposure"] != "PRISTINE" or reasons
+        not verified
+        or ranking["historical_exposure"] != "PRISTINE"
+        or reasons != allowed_ranking_reasons
     ):
         raise TotalReturnQualificationError("ranking eligibility contradicts qualification")
     if ranking["historical_exposure"] == "EXPOSED" and (
@@ -420,9 +427,17 @@ def _validate_record(record: dict[str, Any], prior_record_bytes: bytes | None) -
             claim_state,
         ) in SAME_EVIDENCE_FORBIDDEN:
             raise TotalReturnQualificationError("same evidence cannot upgrade to verified")
-        if prior_record_bytes is None or hashlib.sha256(prior_record_bytes).hexdigest() != prior_id:
+        if prior_record_bytes is None:
             raise TotalReturnQualificationError("exact prior qualification bytes are unavailable")
         prior = load_strict_json(prior_record_bytes)
+        prior_without_id = {
+            key: value for key, value in prior.items() if key != "qualification_id"
+        }
+        if (
+            prior.get("qualification_id") != prior_id
+            or qualification_id(prior_without_id) != prior_id
+        ):
+            raise TotalReturnQualificationError("exact prior qualification identity does not match")
         if prior.get("claim_state") != from_state:
             raise TotalReturnQualificationError("prior qualification state does not match")
     expected_id = qualification_id(
@@ -504,7 +519,7 @@ def qualify_total_return(
             raise TotalReturnQualificationError("prior qualification is not pristine trusted evidence")
         prior_record = qualification_record(prior_qualification)
         prior_bytes = canonical_json_bytes(prior_record)
-        prior_id = hashlib.sha256(prior_bytes).hexdigest()
+        prior_id = prior_record["qualification_id"]
         from_state = prior_record["claim_state"]
     record: dict[str, Any] = {
         "schema_version": 1,

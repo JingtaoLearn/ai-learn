@@ -41,6 +41,7 @@ PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/strategy_replay.py": "strategy_replay.py",
     "src/quant_platform/strategy_report.py": "strategy_report.py",
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
+    "src/quant_platform/total_return_claims.py": "total_return_claims.py",
     "src/quant_platform/study_contracts.py": "study_contracts.py",
     "src/quant_platform/study_datasets.py": "study_datasets.py",
     "src/quant_platform/worker.py": "worker.py",
