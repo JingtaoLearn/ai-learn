@@ -646,6 +646,14 @@ def _immutable_payloads(state_root: Path | str, result_path: Path | str) -> dict
         metadata = os.stat(path, follow_symlinks=False)
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise TotalReturnQualificationError("result bundle topology is unsafe")
+    cursor = root
+    while True:
+        metadata = os.stat(cursor, follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise TotalReturnQualificationError("result bundle path contains a symlink")
+        if cursor == state:
+            break
+        cursor = cursor.parent
     root_metadata = os.stat(root, follow_symlinks=False)
     if stat.S_IMODE(root_metadata.st_mode) & 0o222:
         raise TotalReturnQualificationError("result bundle is mutable")
@@ -760,10 +768,12 @@ def _ledger_bindings_and_close(
     close = metrics.get("accounting_close_date")
     close_date = _date_value(close, "accounting close")
     bindings: dict[str, dict[str, str]] = {}
+    event_rows_by_account: dict[str, list[dict[str, Any]]] = {}
     initial_capital: int | None = None
     for account in sorted(ACCOUNT_NAMES):
         account_events = [row for row in events if row["account"] == account]
         account_trades = [row for row in trades if row["account"] == account]
+        event_rows_by_account[account] = account_events
         sequences = [row["sequence"] for row in account_events]
         if sequences != list(range(1, len(account_events) + 1)):
             raise TotalReturnQualificationError("account event sequence is incomplete")
@@ -828,6 +838,11 @@ def _ledger_bindings_and_close(
             row["trade_id"] for row in account_events if row["trade_id"]
         }
         if any(
+            row["trade_id"] and not row["trade_id"].startswith(f"{account}-trade-")
+            for row in account_events
+        ):
+            raise TotalReturnQualificationError("account event trade identity crosses accounts")
+        if any(
             not row["lot_id"].startswith(f"{account}-lot-")
             or not row["entry_trade_id"].startswith(f"{account}-trade-")
             or (row["exit_trade_id"] and not row["exit_trade_id"].startswith(f"{account}-trade-"))
@@ -836,6 +851,11 @@ def _ledger_bindings_and_close(
             for row in account_trades
         ):
             raise TotalReturnQualificationError("account trade linkage or isolation failed")
+        if (
+            len({row["lot_id"] for row in account_trades}) != len(account_trades)
+            or any(row["status"] != "CLOSED" for row in account_trades)
+        ):
+            raise TotalReturnQualificationError("account trade ledger is duplicated or open")
         event_cost = sum(
             row["cost_fen"]
             for row in account_events
@@ -875,6 +895,15 @@ def _ledger_bindings_and_close(
             "trades_sha256": hashlib.sha256(canonical_json_bytes(account_trades)).hexdigest(),
             "final_state_sha256": hashlib.sha256(canonical_json_bytes(final_state)).hexdigest(),
         }
+    parity_fields = ("Date", "event_type", "event_revision_id", "note")
+    if [
+        tuple(row[field] for field in parity_fields)
+        for row in event_rows_by_account["strategy"]
+    ] != [
+        tuple(row[field] for field in parity_fields)
+        for row in event_rows_by_account["zero_cost"]
+    ] or facts["zero_cost"]["trading_cost_fen"] != 0:
+        raise TotalReturnQualificationError("strategy and zero-cost control parity failed")
     return bindings, str(close), hashlib.sha256(
         canonical_json_bytes(
             {
@@ -964,6 +993,36 @@ def _verify_policy_and_schedule(
     }
     if not liabilities.issubset(set(schedule.settlement_to_collection)):
         raise TotalReturnQualificationError("tax collection schedule is incomplete")
+    for row in events:
+        if row["event_type"] not in {"TRADE_BUY", "TRADE_SELL"}:
+            continue
+        settlement_type = (
+            "ACQUISITION_SETTLEMENT"
+            if row["event_type"] == "TRADE_BUY"
+            else "DISPOSAL_SETTLEMENT"
+        )
+        expected_date = schedule.trade_to_settlement[row["Date"]]
+        if not any(
+            candidate["account"] == row["account"]
+            and candidate["trade_id"] == row["trade_id"]
+            and candidate["event_type"] == settlement_type
+            and candidate["Date"] == expected_date
+            for candidate in events
+        ):
+            raise TotalReturnQualificationError("trade settlement posting is incomplete")
+    for row in events:
+        if row["event_type"] != "TAX_LIABILITY" or row["cost_fen"] <= 0:
+            continue
+        expected_date = schedule.settlement_to_collection[row["Date"]]
+        if not any(
+            candidate["account"] == row["account"]
+            and candidate["trade_id"] == row["trade_id"]
+            and candidate["event_type"] == "TAX_COLLECTION"
+            and candidate["Date"] == expected_date
+            and candidate["cash_delta_fen"] == -row["cost_fen"]
+            for candidate in events
+        ):
+            raise TotalReturnQualificationError("tax collection posting is incomplete")
     return tax, settlement, rounding
 
 
@@ -1086,7 +1145,7 @@ def _verified_evidence_graph(
         or accounting.get("event_revision_ids") != coverage_payload.get("event_revision_ids")
         or accounting.get("raw_artifact_sha256s")
         != sorted(admitted.artifact_bytes)
-        or sorted(terminal_ids) != sorted(coverage_payload.get("event_revision_ids", []))
+        or not set(terminal_ids).issubset(set(coverage_payload.get("event_revision_ids", [])))
         or accounting.get("claim") not in SOURCE_ISSUER_CLAIMS["STRATEGY_RUNNER"]
     ):
         raise TotalReturnQualificationError("coverage or terminal event identity differs")
