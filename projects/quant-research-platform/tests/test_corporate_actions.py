@@ -104,6 +104,7 @@ def synthetic_complete_evidence_inputs(*, no_action: bool = False) -> dict:
         "VERIFIED_NO_ACTION" if no_action else "VERIFIED_COMPLETE_INTERVAL"
     )
     coverage["limitations"] = []
+    coverage["checked_as_of"] = "2026-07-02T00:00:00Z"
     document["total_return_claim"] = "FORBIDDEN"
     if no_action:
         document["requests"] = []
@@ -113,6 +114,14 @@ def synthetic_complete_evidence_inputs(*, no_action: bool = False) -> dict:
         coverage["event_revision_ids"] = []
         coverage["query_retrieval_ids"] = []
         inputs["artifact_bytes"] = {}
+    else:
+        retrieval = document["retrievals"][0]
+        retrieval["payload"]["started_at"] = "2025-08-14T00:00:00Z"
+        retrieval["payload"]["completed_at"] = "2025-08-14T00:00:00Z"
+        retrieval["retrieval_id"] = identity_digest(
+            "quant-platform/source-retrieval/v1", retrieval["payload"]
+        )
+        document["revisions"][0]["available_at"] = "2025-08-14T00:00:00Z"
     document["coverage"]["coverage_id"] = identity_digest(
         "quant-platform/corporate-action-coverage/v1", coverage
     )

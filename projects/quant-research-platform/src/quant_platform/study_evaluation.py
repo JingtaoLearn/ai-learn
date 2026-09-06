@@ -24,8 +24,7 @@ from .strategy_replay import COST_FIELDS, EVENT_COLUMNS, TRADE_COLUMNS
 from .strategy_runner import RECONCILIATION_FIELDS, SETTLEMENT_RECONCILIATION_FIELDS
 from .study_contracts import normalize_fold_window
 from .total_return_claims import (
-    BINDING_FIELDS,
-    CHECK_FIELDS,
+    TotalReturnQualificationError,
     qualification_record,
     qualify_total_return,
     read_time_classification,
@@ -506,12 +505,13 @@ def _candidate_attempt_binding(
 
 def _a_share_total_return_qualification(
     *,
+    state_root: Path,
+    result_path: Path,
     instrument: str,
+    dataset_snapshot_id: str,
     dataset_manifest: Mapping[str, Any],
     run_manifest: Mapping[str, Any],
-    payloads: Mapping[str, bytes],
     result_digest: str,
-    metrics: Mapping[str, Any],
     historical_exposure: str,
 ) -> dict[str, Any] | None:
     if re.fullmatch(r"[0-9]{6}\.(?:SS|SZ)", instrument) is None:
@@ -523,178 +523,19 @@ def _a_share_total_return_qualification(
             source_total_return_claim="PRICE_RETURN_ONLY",
             coverage_state="UNKNOWN_MISSING",
         )
-    if "account_events.csv" not in payloads or "account_trades.csv" not in payloads:
-        raise MetricDocumentValidationError("A-share accounting ledgers are missing")
     try:
-        account_events = pd.read_csv(BytesIO(payloads["account_events.csv"]))
-        account_trades = pd.read_csv(BytesIO(payloads["account_trades.csv"]))
-    except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
-        raise MetricDocumentValidationError("A-share accounting ledgers are invalid") from exc
-    account_facts = metrics.get("accounting_accounts")
-    if not isinstance(account_facts, Mapping) or set(account_facts) != {
-        "strategy",
-        "zero_cost",
-        "buy_and_hold",
-    }:
-        raise MetricDocumentValidationError("three-account frozen metrics are missing")
-    account_bindings = {}
-    for account in ("strategy", "zero_cost", "buy_and_hold"):
-        facts = account_facts[account]
-        final_state = facts.get("final_state") if isinstance(facts, Mapping) else None
-        if not isinstance(final_state, Mapping) or any(type(value) is not int for value in final_state.values()):
-            raise MetricDocumentValidationError("account final state is not exact integer evidence")
-        account_bindings[account] = {
-            "events_sha256": _sha256(
-                account_events[account_events["account"] == account]
-                .to_csv(index=False, lineterminator="\n")
-                .encode("utf-8")
-            ),
-            "trades_sha256": _sha256(
-                account_trades[account_trades["account"] == account]
-                .to_csv(index=False, lineterminator="\n")
-                .encode("utf-8")
-            ),
-            "final_state_sha256": _sha256(canonical_json_bytes(dict(final_state))),
-        }
-    lineage = dataset_manifest.get("lineage")
-    parent = lineage.get("parent", {}) if isinstance(lineage, Mapping) else {}
-    files = run_manifest.get("files")
-    if not isinstance(files, Mapping):
-        raise MetricDocumentValidationError("run manifest file bindings are missing")
-    tax = accounting.get("tax_policy")
-    settlement = accounting.get("settlement_schedule")
-    rounding = accounting.get("rounding_policy")
-    if not all(isinstance(item, Mapping) for item in (tax, settlement, rounding)):
-        raise MetricDocumentValidationError("accounting policy identities are missing")
-    tax = dict(tax or {})
-    settlement = dict(settlement or {})
-    rounding = dict(rounding or {})
-    bindings: dict[str, Any] = {field: None for field in BINDING_FIELDS}
-    bindings.update(
-        {
-            "corporate_action_evidence_sha256": accounting.get(
-                "corporate_action_evidence_sha256"
-            ),
-            "raw_artifact_sha256s": list(accounting.get("raw_artifact_sha256s", [])),
-            "event_revision_ids": list(accounting.get("event_revision_ids", [])),
-            "tax_policy_id": tax.get("tax_policy_id"),
-            "tax_policy_sha256": tax.get("sha256"),
-            "settlement_policy_id": settlement.get("policy_id"),
-            "settlement_policy_sha256": settlement.get("sha256"),
-            "rounding_policy_id": rounding.get("rounding_policy_id"),
-            "rounding_policy_sha256": rounding.get("sha256"),
-            "parent_snapshot_id": parent.get("snapshot_id"),
-            "execution_view_snapshot_id": dataset_manifest.get("snapshot_id"),
-            "parent_corporate_action_evidence_sha256": parent.get(
-                "corporate_action_evidence_sha256"
-            ),
-            "view_corporate_action_evidence_sha256": dataset_manifest.get(
-                "corporate_action_evidence_sha256"
-            ),
-            "scoring_mask_sha256": dataset_manifest.get("scoring_mask_sha256"),
-            "causal_feature_cutoff": accounting.get("accounting_close_date")
-            or metrics.get("period_end"),
-            "accounting_outcome_checked_as_of": (
-                f"{accounting.get('accounting_close_date') or metrics.get('period_end')}T00:00:00Z"
-            ),
-            "accounting_outcome_use_role": "ACCOUNTING_OUTCOME",
-            "result_digest": result_digest,
-            "run_manifest_sha256": _sha256(payloads["run_manifest.json"]),
-            "account_events_sha256": files.get("account_events.csv", {}).get("sha256"),
-            "account_trades_sha256": files.get("account_trades.csv", {}).get("sha256"),
-            "accounts": account_bindings,
-            "control_parity_sha256": _sha256(canonical_json_bytes(account_bindings)),
-        }
-    )
-    coverage_state = accounting.get("coverage_state", "UNKNOWN_MISSING")
-    complete_contract_id = accounting.get("complete_contract_id")
-    exact_integer = all(
-        pd.api.types.is_integer_dtype(account_events[column])
-        for column in account_events
-        if column
-        in {
-            "sequence",
-            "quantity",
-            "trade_quantity_delta",
-            "settled_quantity_delta",
-            "cash_delta_fen",
-            "cost_fen",
-            "cash_fen",
-            "trade_holdings",
-            "settled_holdings",
-            "receivable_fen",
-            "unpaid_dividend_tax_base_fen",
-            "deferred_tax_base_fen",
-            "outstanding_tax_fen",
-            "market_price_fen",
-            "market_value_fen",
-            "equity_fen",
-        }
-    )
-    settled = all(
-        all(
-            facts["final_state"][field] == 0
-            for field in (
-                "trade_holdings",
-                "settled_holdings",
-                "receivable_fen",
-                "unpaid_dividend_tax_base_fen",
-                "deferred_tax_base_fen",
-                "outstanding_tax_fen",
-            )
+        qualification = qualify_total_return(
+            state_root=state_root,
+            result_path=result_path,
+            instrument=instrument,
+            expected_dataset_snapshot_id=dataset_snapshot_id,
+            expected_result_digest=result_digest,
+            historical_exposure=historical_exposure,
         )
-        for facts in account_facts.values()
-    )
-    checks = {field: True for field in CHECK_FIELDS}
-    checks.update(
-        {
-            "dataset_binding": (
-                accounting.get("corporate_action_evidence_sha256")
-                == dataset_manifest.get("corporate_action_evidence_sha256")
-            ),
-            "coverage_complete": coverage_state
-            in {"VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"},
-            "event_set_complete": coverage_state
-            in {"VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"},
-            "policy_applicable": all(
-                bindings[field] is not None
-                for field in (
-                    "tax_policy_id",
-                    "tax_policy_sha256",
-                    "settlement_policy_id",
-                    "settlement_policy_sha256",
-                    "rounding_policy_id",
-                    "rounding_policy_sha256",
-                )
-            ),
-            "strategy_control_parity": set(account_events["account"])
-            == {"strategy", "zero_cost", "buy_and_hold"},
-            "ledgers_complete": set(account_trades["account"])
-            == {"strategy", "zero_cost", "buy_and_hold"},
-            "exact_fen_quantity": exact_integer,
-            "settled": settled,
-            "causal_separation": isinstance(lineage, Mapping)
-            and lineage.get("kind") == "derived_view",
-            "controls_and_metrics": True,
-        }
-    )
-    source_claim = accounting.get("claim")
-    if not isinstance(source_claim, str):
-        raise MetricDocumentValidationError("runner source claim is missing")
-    qualification = qualify_total_return(
-        source_issuer="STRATEGY_RUNNER",
-        source_total_return_claim=source_claim,
-        coverage_state=coverage_state,
-        coverage_basis=(
-            "COMPLETE_ENUMERATION_CONTRACT" if complete_contract_id is not None else "NONE"
-        ),
-        coverage_id=accounting.get("coverage_id"),
-        complete_contract_id=complete_contract_id,
-        equivalent_contract_approval_id=None,
-        bindings=bindings,
-        checks=checks,
-        historical_exposure=historical_exposure,
-    )
+    except TotalReturnQualificationError as exc:
+        raise MetricDocumentValidationError(
+            f"A-share total-return evidence failed trusted qualification: {exc}"
+        ) from exc
     return qualification_record(qualification)
 
 
@@ -1345,12 +1186,13 @@ class MetricDocumentFactory:
         if historical_exposure not in {"PRISTINE", "EXPOSED", "UNKNOWN"}:
             raise MetricDocumentValidationError("historical exposure state is invalid")
         total_return_qualification = _a_share_total_return_qualification(
+            state_root=self.state_root,
+            result_path=root,
             instrument=instrument,
+            dataset_snapshot_id=snapshot_id,
             dataset_manifest=manifest,
             run_manifest=run_manifest,
-            payloads=payloads,
             result_digest=result_digest,
-            metrics=metrics,
             historical_exposure=historical_exposure,
         )
         document = {
