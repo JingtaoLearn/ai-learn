@@ -310,9 +310,7 @@ def test_study_html_creation_uses_only_the_public_parameter_study_seam(
     assert posted.status_code == 200
 
 
-def test_study_pages_expose_research_evidence_and_escape_values(
-    tmp_path: Path, monkeypatch
-):
+def test_study_pages_expose_research_evidence_and_escape_values(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
@@ -388,12 +386,8 @@ def test_study_pages_expose_research_evidence_and_escape_values(
         "-turnover_weight*annual_turnover"
     ) in ranking
     assert "Score components" in ranking
-    assert ranking.index("lower_maximum_drawdown") < ranking.index(
-        "lower_annual_turnover"
-    )
-    assert ranking.index("lower_annual_turnover") < ranking.index(
-        "strategy_configuration_digest"
-    )
+    assert ranking.index("lower_maximum_drawdown") < ranking.index("lower_annual_turnover")
+    assert ranking.index("lower_annual_turnover") < ranking.index("strategy_configuration_digest")
     assert "Ineligible" in ranking
     assert "minimum_trades" in ranking
     assert "KNOWN_EVENT_CORRECTED_PARTIAL" in ranking
@@ -412,6 +406,48 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     assert "Study event history" in study.text
     for label in ("Sequence", "Event", "Occurred"):
         assert f'data-label="{label}"' in study.text
+
+
+def test_no_edge_study_uses_exact_qualification_wording_and_no_champion(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    detail = _study_detail()
+    detail.update(
+        selection_outcome="NO_QUALIFIED_CANDIDATE",
+        qualification_outcome="NO_QUALIFIED_CANDIDATE",
+        qualification_decision="REJECTED_NO_EDGE",
+        rankings=[],
+        champion_evidence=None,
+        holdout={
+            "access": "NOT_GRANTED",
+            "outcome": "NOT_RUN",
+            "freshness": "LEGACY_UNKNOWN",
+        },
+        decision_summary={
+            "claim": "REJECTED_NO_EDGE",
+            "champion_candidate_digest": None,
+            "champion_parameters": None,
+            "validation_score": None,
+            "primary_ties": [],
+            "outer_selections": [],
+            "outer_stability": "NOT_AVAILABLE",
+            "statistical_significance": "NOT_ESTABLISHED",
+            "rationale": "No candidate passed matched-exposure qualification.",
+        },
+    )
+    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+
+    response = client.get(f"/studies/{STUDY_ID}")
+
+    assert response.status_code == 200
+    assert "Qualification decision" in response.text
+    assert "NO_QUALIFIED_CANDIDATE" in response.text
+    assert "REJECTED_NO_EDGE" in response.text
+    assert "NOT_GRANTED · NOT_RUN" in response.text
+    assert "Best observed parameters" not in response.text
+    assert "Champion parameters" not in response.text
 
 
 def test_completed_study_replaces_controls_and_identifies_unranked_trials(
@@ -474,9 +510,7 @@ def test_completed_study_replaces_controls_and_identifies_unranked_trials(
     assert "Trial and binding records remain visible" not in response.text
 
 
-def test_study_detail_and_report_render_optional_suggestion_journal(
-    tmp_path: Path, monkeypatch
-):
+def test_study_detail_and_report_render_optional_suggestion_journal(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
@@ -556,9 +590,7 @@ def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         app.state.studies,
         "control",
-        lambda study_id, operation, *, action_id: calls.append(
-            (study_id, operation, action_id)
-        )
+        lambda study_id, operation, *, action_id: calls.append((study_id, operation, action_id))
         or {"status": "PAUSED", "study_id": study_id},
     )
     monkeypatch.setattr(
@@ -587,9 +619,7 @@ def test_study_controls_work_as_plain_html_forms(tmp_path: Path, monkeypatch):
 
     assert paused.status_code == advanced.status_code == 303
     assert paused.headers["location"].startswith(f"/studies/{STUDY_ID}?status=PAUSED.")
-    assert advanced.headers["location"].startswith(
-        f"/studies/{STUDY_ID}?status=ADVANCED."
-    )
+    assert advanced.headers["location"].startswith(f"/studies/{STUDY_ID}?status=ADVANCED.")
     assert calls == [(STUDY_ID, "PAUSE", "pause-web"), (STUDY_ID, "ADVANCE")]
 
 
@@ -1070,9 +1100,7 @@ def test_study_preview_no_js_theme_forms_preserve_post_context(tmp_path: Path):
         assert f"quant_theme={theme}" in themed.headers["set-cookie"]
 
 
-def test_study_list_identity_is_copyable_with_no_js_fallback(
-    tmp_path: Path, monkeypatch
-):
+def test_study_list_identity_is_copyable_with_no_js_fallback(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
@@ -1086,9 +1114,7 @@ def test_study_list_identity_is_copyable_with_no_js_fallback(
     assert STUDY_ID in response.text.split("Full Study ID", 1)[1]
 
 
-def test_stale_study_submit_returns_a_fresh_reviewable_preview(
-    tmp_path: Path, monkeypatch
-):
+def test_stale_study_submit_returns_a_fresh_reviewable_preview(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
     fresh_digest = "b" * 64
@@ -1296,9 +1322,7 @@ def test_study_json_rejects_excessive_scalar_counts():
         _json_text(f"[{values}]", "study_json")
 
 
-def test_study_not_found_and_mutation_outcomes_are_visible(
-    tmp_path: Path, monkeypatch
-):
+def test_study_not_found_and_mutation_outcomes_are_visible(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
     headers = {"origin": "https://quant.ai.jingtao.fun"}
@@ -1378,9 +1402,7 @@ def test_invalid_wizard_preserves_values_and_links_accessible_errors(tmp_path: P
     assert "prior_log_ols@1.0.0 parameters" in response.text
 
 
-def test_study_pages_include_skip_navigation_and_non_scripted_system_theme(
-    tmp_path: Path
-):
+def test_study_pages_include_skip_navigation_and_non_scripted_system_theme(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
 
@@ -1389,7 +1411,7 @@ def test_study_pages_include_skip_navigation_and_non_scripted_system_theme(
 
     assert 'class="skip-link" href="#main-content"' in page.text
     assert '<main id="main-content"' in page.text
-    assert ':root:not([data-theme])' in css
+    assert ":root:not([data-theme])" in css
     assert ".danger-button:hover" in css
     assert ".button.quiet:hover" in css
     assert "overflow-wrap: anywhere" in css

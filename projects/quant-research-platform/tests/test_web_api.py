@@ -146,9 +146,7 @@ def snapshot(app):
 def bocom_action_view(app) -> dict:
     frame = pd.DataFrame(
         {
-            "Date": pd.to_datetime(
-                ["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"]
-            ),
+            "Date": pd.to_datetime(["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01"]),
             "Open": [6.0, 6.1, 6.2, 6.3],
             "High": [6.1, 6.2, 6.3, 6.4],
             "Low": [5.9, 6.0, 6.1, 6.2],
@@ -169,9 +167,7 @@ def bocom_action_view(app) -> dict:
         },
         corporate_action_evidence=bocom_evidence(),
     )
-    parent_detail = app.state.datasets.snapshot_detail(
-        "601328.SS", published["snapshot_id"]
-    )
+    parent_detail = app.state.datasets.snapshot_detail("601328.SS", published["snapshot_id"])
     return ExecutionDatasetSliceFactory(root).materialize(
         {
             "instrument": "601328.SS",
@@ -216,9 +212,10 @@ def test_authenticated_dataset_detail_api_preserves_bocom_view_evidence(
     assert response.status_code == 200
     detail = response.json()["dataset"]
     assert resolved["dataset"]["snapshot_id"] == detail["snapshot_id"]
-    assert detail["corporate_action_evidence_sha256"] == resolved["dataset"]["lineage"][
-        "projected_action_evidence_sha256"
-    ]
+    assert (
+        detail["corporate_action_evidence_sha256"]
+        == resolved["dataset"]["lineage"]["projected_action_evidence_sha256"]
+    )
     evidence = detail["corporate_actions"]
     assert evidence["coverage_state"] == "VERIFIED_EVENTS"
     assert evidence["coverage_id"] == (
@@ -236,9 +233,7 @@ def test_authenticated_dataset_detail_api_preserves_bocom_view_evidence(
     assert evidence["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
     assert evidence["complete_enumeration_contract"] is False
     assert evidence["complete_contract_id"] is None
-    assert evidence["effective_total_return"]["claim_state"] == (
-        "KNOWN_EVENT_CORRECTED_PARTIAL"
-    )
+    assert evidence["effective_total_return"]["claim_state"] == ("KNOWN_EVENT_CORRECTED_PARTIAL")
     assert evidence["effective_total_return"]["ranking"]["eligible_for_ranking"] is False
 
 
@@ -480,6 +475,50 @@ def test_study_api_requires_csrf_and_preserves_domain_statuses(
         assert response.json()["status"] == status
 
 
+def test_study_api_emits_frozen_no_edge_qualification_without_recomputation(
+    tmp_path: Path, monkeypatch
+):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    study_id = "a" * 64
+    qualification = {
+        "authority": "quant-platform/matched-exposure-qualification@1",
+        "qualification_id": "b" * 64,
+        "candidate_digest": "c" * 64,
+        "state": "REJECTED",
+        "reason_codes": ["MATCHED_EXPOSURE_EXCESS_FAILED"],
+        "ranking_status": "NOT_RANKED",
+        "aggregate": {
+            "candidate_costed_return": 0.01,
+            "matched_control_return": 0.02,
+            "active_excess": -0.01,
+        },
+    }
+    detail = {
+        "study_id": study_id,
+        "selection_outcome": "NO_QUALIFIED_CANDIDATE",
+        "qualification_outcome": "NO_QUALIFIED_CANDIDATE",
+        "qualification_decision": "REJECTED_NO_EDGE",
+        "champion_evidence": None,
+        "holdout": {"access": "NOT_GRANTED", "outcome": "NOT_RUN"},
+        "qualification_records": [qualification],
+    }
+    monkeypatch.setattr(app.state.studies, "detail", lambda value: detail)
+
+    response = client.get(f"/api/studies/{study_id}")
+    frozen = response.json()["study"]
+    qualification["state"] = "QUALIFIED"
+    qualification["aggregate"]["active_excess"] = 10.0
+
+    assert response.status_code == 200
+    assert frozen["selection_outcome"] == "NO_QUALIFIED_CANDIDATE"
+    assert frozen["qualification_decision"] == "REJECTED_NO_EDGE"
+    assert frozen["champion_evidence"] is None
+    assert frozen["holdout"] == {"access": "NOT_GRANTED", "outcome": "NOT_RUN"}
+    assert frozen["qualification_records"][0]["state"] == "REJECTED"
+    assert frozen["qualification_records"][0]["aggregate"]["active_excess"] == -0.01
+
+
 def test_sso_callback_sets_secure_cookie_and_rejects_replay(tmp_path: Path):
     _, client = make_app(tmp_path)
     token = _token(_claims())
@@ -513,9 +552,7 @@ def test_json_catalog_submit_duplicate_rerun_and_history_flow(tmp_path: Path):
     }
 
     assert len(client.get("/api/operators").json()["operators"]) == 7
-    resolved = client.post(
-        "/api/tasks/resolve", json={"task": task}, headers=headers
-    )
+    resolved = client.post("/api/tasks/resolve", json={"task": task}, headers=headers)
     created = client.post(
         "/api/experiments",
         json={"task": task, "action_id": "create"},
@@ -538,10 +575,7 @@ def test_json_catalog_submit_duplicate_rerun_and_history_flow(tmp_path: Path):
     assert duplicate.json()["status"] == "DUPLICATE"
     assert rerun.status_code == 201
     assert len(client.get("/api/experiments").json()["experiments"]) == 1
-    assert (
-        len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"])
-        == 2
-    )
+    assert len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"]) == 2
 
 
 def test_api_cannot_preclaim_a_study_internal_experiment_action(tmp_path: Path):
@@ -593,9 +627,7 @@ def test_api_accepts_catalog_dataset_and_date_range_and_freezes_snapshot(
         json={"task": task, "action_id": "catalog-create"},
         headers=headers,
     )
-    detail = client.get(
-        f"/api/experiments/{response.json()['experiment_id']}"
-    ).json()["experiment"]
+    detail = client.get(f"/api/experiments/{response.json()['experiment_id']}").json()["experiment"]
     datasets = client.get("/api/datasets").json()["datasets"]
 
     assert response.status_code == 201
@@ -686,10 +718,7 @@ def test_api_weekend_bounds_canonicalize_to_sessions_and_suppress_duplicates(
     assert detail["dataset"]["requested_start"] == "2026-01-04"
     assert detail["dataset"]["effective_start"] == "2026-01-05"
     assert detail["template"]["parameters"]["evaluation_start"] == "2026-01-05"
-    assert (
-        len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"])
-        == 1
-    )
+    assert len(client.get(f"/api/experiments/{experiment_id}/attempts").json()["attempts"]) == 1
 
 
 def test_api_repairs_incomplete_catalog_range_after_security_checks(tmp_path: Path):
@@ -727,8 +756,7 @@ def test_api_repairs_incomplete_catalog_range_after_security_checks(tmp_path: Pa
             self.fetch_calls.append((instrument, start, end))
             return FetchedDailyBars(
                 bars=bars(["2026-08-18", "2026-08-19", "2026-08-20"]),
-                source_identity=source_identity
-                | {"instrument": instrument},
+                source_identity=source_identity | {"instrument": instrument},
             )
 
     class Calendar:
@@ -777,26 +805,21 @@ def test_api_repairs_incomplete_catalog_range_after_security_checks(tmp_path: Pa
     )
 
     assert response.status_code == 201
-    assert source.fetch_calls == [
-        ("REPAIR.SS", "2026-08-18", "2026-08-20")
-    ]
-    detail = app.state.experiments.experiment_detail(
-        response.json()["experiment_id"]
-    )
+    assert source.fetch_calls == [("REPAIR.SS", "2026-08-18", "2026-08-20")]
+    detail = app.state.experiments.experiment_detail(response.json()["experiment_id"])
     assert detail["dataset"]["requested_end"] == "2026-08-20"
     assert detail["dataset"]["lineage"]["kind"] == "verified_update"
     assert detail["dataset"]["lineage"]["source"] == source_identity
     assert detail["dataset"]["lineage"]["expected_sessions_source"] == (
         app.state.datasets.calendars["XSHG"].source_identity
     )
-    assert snapshot_status(
-        app.state.catalog.state_root, "REPAIR.SS"
-    )["snapshot_id"] == detail["dataset"]["snapshot_id"]
+    assert (
+        snapshot_status(app.state.catalog.state_root, "REPAIR.SS")["snapshot_id"]
+        == detail["dataset"]["snapshot_id"]
+    )
 
 
-def test_oversized_authenticated_body_cannot_reach_dataset_updater(
-    tmp_path: Path, monkeypatch
-):
+def test_oversized_authenticated_body_cannot_reach_dataset_updater(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
     calls = []
@@ -882,9 +905,7 @@ def test_catalog_coexists_with_authoritative_platform_datasets(tmp_path: Path):
         },
     )["snapshot_id"]
     snapshot_dir = root / "datasets" / "SYNTH.SS" / snapshot_id
-    before = {
-        path.name: path.read_bytes() for path in snapshot_dir.iterdir()
-    }
+    before = {path.name: path.read_bytes() for path in snapshot_dir.iterdir()}
     allowlist = tmp_path / "allowed.txt"
     allowlist.write_text("researcher@example.com\n", encoding="utf-8")
     settings = Settings(
@@ -908,9 +929,7 @@ def test_catalog_coexists_with_authoritative_platform_datasets(tmp_path: Path):
 
     assert app.state.catalog.database_path == root / "catalog.sqlite3"
     assert resolved["dataset"]["snapshot_id"] == snapshot_id
-    assert {
-        path.name: path.read_bytes() for path in snapshot_dir.iterdir()
-    } == before
+    assert {path.name: path.read_bytes() for path in snapshot_dir.iterdir()} == before
     assert not snapshot_dir.is_symlink()
 
 

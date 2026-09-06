@@ -28,6 +28,7 @@ from quant_platform.parameter_study import (
     StudyNotFoundError,
     StudyValidationError,
     _build_decision_summary,
+    _qualification_terminal_projection,
 )
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.schemas import canonical_json_bytes
@@ -95,8 +96,7 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
         }
 
     digests = {
-        window: hashlib.sha256(str(window).encode()).hexdigest()
-        for window in (10, 20, 25, 30)
+        window: hashlib.sha256(str(window).encode()).hexdigest() for window in (10, 20, 25, 30)
     }
     enriched, summary = _build_decision_summary(
         frozen_plan=frozen_plan,
@@ -119,9 +119,7 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
         },
     )
 
-    assert enriched[0]["studied_parameters"] == {
-        "/operators/fit/window_sessions": 10
-    }
+    assert enriched[0]["studied_parameters"] == {"/operators/fit/window_sessions": 10}
     assert "commission_rate" not in canonical_json_bytes(enriched[0]).decode()
     assert summary == {
         "claim": "TIE_BROKEN_BY_FROZEN_RULE",
@@ -167,9 +165,7 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
         trials=[trial(digests[10], 10), trial(digests[20], 20)],
         rankings=[eligible_champion, higher_score_ineligible],
         outer_evidence={
-            "rounds": [
-                {"search_round": "OUTER:1", "selected_candidate_digest": digests[20]}
-            ]
+            "rounds": [{"search_round": "OUTER:1", "selected_candidate_digest": digests[20]}]
         },
     )
     assert eligibility_summary is not None
@@ -177,6 +173,37 @@ def test_decision_summary_exposes_values_ties_outer_divergence_and_no_significan
         "The champion was the highest-ranked eligible candidate under the complete "
         "frozen ranking policy, but outer-round selections diverged."
     )
+
+
+def test_v2_all_rejected_projection_has_no_champion_or_holdout_authority():
+    projection = _qualification_terminal_projection(
+        [
+            {
+                "candidate_digest": "b" * 64,
+                "qualification_id": "2" * 64,
+                "state": "REJECTED",
+            },
+            {
+                "candidate_digest": "a" * 64,
+                "qualification_id": "1" * 64,
+                "state": "ADMISSION_REJECTED",
+            },
+        ]
+    )
+    assert projection is not None
+    assert projection["selection_outcome"] == "NO_QUALIFIED_CANDIDATE"
+    assert projection["decision"] == "REJECTED_NO_EDGE"
+    assert projection["champion"] is None
+    assert projection["champion_evidence"] is None
+    assert projection["holdout"] == {"access": "NOT_GRANTED", "outcome": "NOT_RUN"}
+    assert [item["candidate_digest"] for item in projection["ranking"]] == [
+        "a" * 64,
+        "b" * 64,
+    ]
+
+
+def test_legacy_no_eligible_projection_is_not_relabelled_as_v2_qualification():
+    assert _qualification_terminal_projection([]) is None
 
 
 def test_decision_summary_ignores_outer_rounds_without_an_actual_selection():
@@ -285,28 +312,28 @@ def test_persisted_production_shaped_completed_study_is_read_only_decision_evide
     assert len(inspected["trials"]) == 6
     assert len(inspected["bindings"]) == 39
     assert all(
-        binding["state"] == "VERIFIED"
-        and binding["attempt"]["status"] == "SUCCEEDED"
+        binding["state"] == "VERIFIED" and binding["attempt"]["status"] == "SUCCEEDED"
         for binding in inspected["bindings"]
     )
     studied_path = "/operators/fit/window_sessions"
     ordered_windows = [
-        ranking["studied_parameters"][studied_path]
-        for ranking in inspected["rankings"]
+        ranking["studied_parameters"][studied_path] for ranking in inspected["rankings"]
     ]
     assert ordered_windows == [10, 20, 30, 40, 25, 15]
-    assert inspected["rankings"][0]["validation_score"] == inspected["rankings"][1][
-        "validation_score"
-    ]
-    assert inspected["rankings"][0]["independent_metrics"][
-        "maximum_drawdown"
-    ] == inspected["rankings"][1]["independent_metrics"]["maximum_drawdown"]
-    assert inspected["rankings"][0]["independent_metrics"][
-        "annual_turnover"
-    ] == inspected["rankings"][1]["independent_metrics"]["annual_turnover"]
-    assert inspected["rankings"][4]["validation_score"] == inspected["rankings"][5][
-        "validation_score"
-    ]
+    assert (
+        inspected["rankings"][0]["validation_score"] == inspected["rankings"][1]["validation_score"]
+    )
+    assert (
+        inspected["rankings"][0]["independent_metrics"]["maximum_drawdown"]
+        == inspected["rankings"][1]["independent_metrics"]["maximum_drawdown"]
+    )
+    assert (
+        inspected["rankings"][0]["independent_metrics"]["annual_turnover"]
+        == inspected["rankings"][1]["independent_metrics"]["annual_turnover"]
+    )
+    assert (
+        inspected["rankings"][4]["validation_score"] == inspected["rankings"][5]["validation_score"]
+    )
     assert inspected["decision_summary"]["claim"] == "TIE_BROKEN_BY_FROZEN_RULE"
     assert inspected["decision_summary"]["champion_parameters"] == {studied_path: 10}
     assert [
@@ -314,19 +341,13 @@ def test_persisted_production_shaped_completed_study_is_read_only_decision_evide
         for item in inspected["decision_summary"]["outer_selections"]
     ] == [30, 25]
     assert inspected["decision_summary"]["outer_stability"] == "DIVERGENT"
-    assert (
-        inspected["decision_summary"]["statistical_significance"]
-        == "NOT_ESTABLISHED"
-    )
+    assert inspected["decision_summary"]["statistical_significance"] == "NOT_ESTABLISHED"
     assert inspected["holdout"] == {
         "access": "ACCESSED",
         "outcome": "PASSED",
         "freshness": "PREVIOUSLY_EXPOSED",
     }
-    assert sum(
-        event["event_type"] == "ACCESSED"
-        for event in inspected["holdout_ledger"]
-    ) == 1
+    assert sum(event["event_type"] == "ACCESSED" for event in inspected["holdout_ledger"]) == 1
 
 
 class FixedCalendar:
@@ -458,9 +479,7 @@ def _spec() -> dict:
             "unique_trial_budget": 4,
             "max_suggestions": 8,
             "space": {
-                "/operators/decision/buy_threshold_pct_per_day": {
-                    "values": [1, 2.0]
-                },
+                "/operators/decision/buy_threshold_pct_per_day": {"values": [1, 2.0]},
                 "/operators/fit/window_sessions": {"values": [2, 3]},
             },
         },
@@ -499,12 +518,8 @@ def _explicit_spec() -> dict:
         }
     )
     for descriptor in BUILTINS:
-        spec["operators"][descriptor["slot"]]["parameters"] = deepcopy(
-            descriptor["defaults"]
-        )
-    spec["search"]["space"][
-        "/operators/decision/buy_threshold_pct_per_day"
-    ]["values"] = [1.0, 2]
+        spec["operators"][descriptor["slot"]]["parameters"] = deepcopy(descriptor["defaults"])
+    spec["search"]["space"]["/operators/decision/buy_threshold_pct_per_day"]["values"] = [1.0, 2]
     spec["evaluation"]["parameters"] = {
         "stability_weight": 0.5,
         "turnover_weight": 0.05,
@@ -522,11 +537,7 @@ def _minimal_orchestration_spec() -> dict:
         {
             "unique_trial_budget": 1,
             "max_suggestions": 1,
-            "space": {
-                "/operators/decision/buy_threshold_pct_per_day": {
-                    "values": [0.2]
-                }
-            },
+            "space": {"/operators/decision/buy_threshold_pct_per_day": {"values": [0.2]}},
         }
     )
     spec["validation"].update({"outer_folds": 1, "inner_folds": 1})
@@ -565,8 +576,7 @@ class _ScriptedOptunaSuggester:
         pending = [
             event
             for event in proposals
-            if event["disposition"] == "UNIQUE"
-            and event["candidate_digest"] not in told
+            if event["disposition"] == "UNIQUE" and event["candidate_digest"] not in told
         ]
         if pending:
             raise AssertionError("a second Optuna Trial was asked before the first tell")
@@ -599,9 +609,7 @@ class _ScriptedOptunaSuggester:
             )
 
         candidate = baseline.candidate
-        candidate["operators"]["decision"]["parameters"][
-            "buy_threshold_pct_per_day"
-        ] = 0.3
+        candidate["operators"]["decision"]["parameters"]["buy_threshold_pct_per_day"] = 0.3
         return Suggestion(
             proposal_sequence=sequence,
             candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
@@ -645,11 +653,7 @@ def _optuna_spec(*, unique_trial_budget: int = 2, max_suggestions: int = 2) -> d
             "suggester": "OPTUNA_TPE",
             "unique_trial_budget": unique_trial_budget,
             "max_suggestions": max_suggestions,
-            "space": {
-                "/operators/decision/buy_threshold_pct_per_day": {
-                    "values": [0.2, 0.3]
-                }
-            },
+            "space": {"/operators/decision/buy_threshold_pct_per_day": {"values": [0.2, 0.3]}},
         }
     )
     return spec
@@ -708,9 +712,7 @@ def _expire_study_lease(studies: ParameterStudy, study_id: str) -> None:
             (
                 f"study-internal:lease:{study_id}:{fencing_token}",
                 study_id,
-                hashlib.sha256(
-                    canonical_json_bytes({"study_id": study_id, **lease})
-                ).hexdigest(),
+                hashlib.sha256(canonical_json_bytes({"study_id": study_id, **lease})).hexdigest(),
                 canonical_json_bytes(lease).decode(),
                 lease["expires_at"],
             ),
@@ -803,11 +805,7 @@ def _persist_production_completed_study(
             "suggester": "GRID",
             "unique_trial_budget": 6,
             "max_suggestions": 12,
-            "space": {
-                "/operators/fit/window_sessions": {
-                    "values": [10, 20, 30, 40, 25, 15]
-                }
-            },
+            "space": {"/operators/fit/window_sessions": {"values": [10, 20, 30, 40, 25, 15]}},
         }
     )
     spec["validation"].update({"outer_folds": 2, "inner_folds": 2})
@@ -838,8 +836,7 @@ def _persist_production_completed_study(
         }
     )
     inner_fold_index = {
-        scoring_start: index
-        for index, scoring_start in enumerate(inner_scoring_starts)
+        scoring_start: index for index, scoring_start in enumerate(inner_scoring_starts)
     }
     fold_sharpes = {
         10: [0.0, 0.0, 4.0, 4.0],
@@ -857,13 +854,9 @@ def _persist_production_completed_study(
         candidate_configuration,
         fold_window,
     ):
-        window = candidate_configuration["operators"]["fit"]["parameters"][
-            "window_sessions"
-        ]
+        window = candidate_configuration["operators"]["fit"]["parameters"]["window_sessions"]
         if fold_window["role"] == "INNER_SCORE":
-            net_sharpe = fold_sharpes[window][
-                inner_fold_index[fold_window["scoring_start"]]
-            ]
+            net_sharpe = fold_sharpes[window][inner_fold_index[fold_window["scoring_start"]]]
         else:
             net_sharpe = 1.0
         metrics = {
@@ -900,9 +893,7 @@ def _persist_production_completed_study(
             "attempt_id": attempt["attempt_id"],
             "result_digest": attempt["result_digest"],
             "dataset_snapshot_id": attempt["resolved"]["dataset"]["snapshot_id"],
-            "scoring_mask_sha256": hashlib.sha256(
-                canonical_json_bytes(fold_window)
-            ).hexdigest(),
+            "scoring_mask_sha256": hashlib.sha256(canonical_json_bytes(fold_window)).hexdigest(),
             "fold_window": fold_window,
             "artifact_digests": {"synthetic": "a" * 64},
             "scored_dates": [scored_date],
@@ -919,9 +910,7 @@ def _persist_production_completed_study(
                 "force_flat_with_cost": True,
             },
         }
-        document["document_digest"] = hashlib.sha256(
-            canonical_json_bytes(document)
-        ).hexdigest()
+        document["document_digest"] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
         return _issue_verified_metric_document(document)
 
     def execute(effect: dict, action_id: str) -> dict:
@@ -979,12 +968,10 @@ def test_preview_freezes_one_canonical_plan_for_semantically_equivalent_inputs(
     plan = first["frozen_plan"]
     assert plan["dataset"]["snapshot_id"]
     assert plan["template"]["parameters"]["initial_capital_cny"] == 100_000.0
-    assert plan["operators"]["decision"]["parameters"][
-        "buy_threshold_pct_per_day"
-    ] == 0.2
-    assert plan["search"]["space"][
-        "/operators/decision/buy_threshold_pct_per_day"
-    ] == {"values": [1.0, 2.0]}
+    assert plan["operators"]["decision"]["parameters"]["buy_threshold_pct_per_day"] == 0.2
+    assert plan["search"]["space"]["/operators/decision/buy_threshold_pct_per_day"] == {
+        "values": [1.0, 2.0]
+    }
     assert plan["execution"]["identity"] == experiments.execution_identity
     assert len(plan["validation"]["outer_rounds"]) == 2
     assert len(plan["validation"]["final_search_round"]["inner_folds"]) == 2
@@ -1000,20 +987,14 @@ def test_preview_estimates_bindings_from_actual_defaults_first_suggestions(
         {
             "unique_trial_budget": 2,
             "max_suggestions": 2,
-            "space": {
-                "/operators/decision/buy_threshold_pct_per_day": {
-                    "values": [0.3]
-                }
-            },
+            "space": {"/operators/decision/buy_threshold_pct_per_day": {"values": [0.3]}},
         }
     )
 
     preview = studies.preview(spec)
 
     assert preview["frozen_plan"]["search"]["candidate_capacity"] == 1
-    assert [
-        item["candidate_count"] for item in preview["execution_estimate"]["rounds"]
-    ] == [2, 2]
+    assert [item["candidate_count"] for item in preview["execution_estimate"]["rounds"]] == [2, 2]
     assert preview["execution_estimate"] == {
         "minimum_experiment_bindings": 4,
         "conditional_maximum_experiment_bindings": 6,
@@ -1154,9 +1135,7 @@ def test_public_optuna_study_runs_real_adapter_to_completion(tmp_path: Path):
     assert detail["suggestion_journal"]
     for search_round in ("OUTER:1", "FINAL"):
         events = [
-            event
-            for event in detail["suggestion_journal"]
-            if event["search_round"] == search_round
+            event for event in detail["suggestion_journal"] if event["search_round"] == search_round
         ]
         event_types = [event["event_type"] for event in events]
         assert event_types[0] == "SUGGESTION_RECORDED"
@@ -1169,10 +1148,7 @@ def test_public_optuna_study_runs_real_adapter_to_completion(tmp_path: Path):
         }
         first_tell = event_types.index("INNER_EVALUATION_RECORDED")
         assert first_tell > event_types.index("SUGGESTION_RECORDED")
-        assert all(
-            event.get("role") in {None, "INNER_SCORE"}
-            for event in events
-        )
+        assert all(event.get("role") in {None, "INNER_SCORE"} for event in events)
 
 
 def test_creation_options_are_supplied_by_the_parameter_study_boundary(
@@ -1225,14 +1201,14 @@ def test_preview_does_not_expose_process_global_identity_references(tmp_path: Pa
     expected_later = deepcopy(first)
 
     first["frozen_plan"]["metric_engine"]["name"] = "mutated"
-    first["frozen_plan"]["evaluation"]["parameter_schema"]["properties"][
-        "stability_weight"
-    ]["minimum"] = 0.25
+    first["frozen_plan"]["evaluation"]["parameter_schema"]["properties"]["stability_weight"][
+        "minimum"
+    ] = 0.25
     first["frozen_plan"]["evaluation"]["defaults"]["stability_weight"] = 0.75
     first["frozen_plan"]["evaluation"]["manifest"]["direction"] = "MINIMIZE"
-    first["frozen_plan"]["validation"]["outer_rounds"][0]["inner_folds"][0][
-        "information_interval"
-    ]["signal_time"] = "MUTATED"
+    first["frozen_plan"]["validation"]["outer_rounds"][0]["inner_folds"][0]["information_interval"][
+        "signal_time"
+    ] = "MUTATED"
 
     later = studies.preview(_spec())
 
@@ -1253,9 +1229,10 @@ def test_release_locator_is_outside_the_semantic_frozen_plan(tmp_path: Path):
 
     assert first == second
     assert set(first["frozen_plan"]["execution"]) == {"identity"}
-    assert first["preview_digest"] == hashlib.sha256(
-        canonical_json_bytes(first["frozen_plan"])
-    ).hexdigest()
+    assert (
+        first["preview_digest"]
+        == hashlib.sha256(canonical_json_bytes(first["frozen_plan"])).hexdigest()
+    )
 
 
 def test_first_submitted_release_locator_is_immutable_operational_metadata(
@@ -1305,9 +1282,9 @@ def test_preview_fold_windows_keep_the_parent_snapshot_warmup_boundary(
     plan = studies.preview(_spec())["frozen_plan"]
 
     assert plan["dataset"]["snapshot_data_start"] == WARMUP_SESSION
-    assert plan["validation"]["outer_rounds"][0]["inner_folds"][0][
-        "allowed_start"
-    ] == WARMUP_SESSION
+    assert (
+        plan["validation"]["outer_rounds"][0]["inner_folds"][0]["allowed_start"] == WARMUP_SESSION
+    )
     assert plan["holdout"]["fold_window"]["allowed_start"] == WARMUP_SESSION
 
 
@@ -1416,9 +1393,10 @@ def test_submit_persists_the_frozen_projection_and_initial_event_for_detail(
     assert detail["frozen_plan"] == preview["frozen_plan"]
     assert detail["lineage"] == preview["frozen_plan"]["lineage"]
     assert detail["identities"]["execution"] == EXECUTION_IDENTITY
-    assert detail["identities"]["dataset"]["snapshot_id"] == preview["frozen_plan"][
-        "dataset"
-    ]["snapshot_id"]
+    assert (
+        detail["identities"]["dataset"]["snapshot_id"]
+        == preview["frozen_plan"]["dataset"]["snapshot_id"]
+    )
     assert detail["events"] == [
         {
             "sequence": 1,
@@ -1513,9 +1491,7 @@ def test_holdout_detail_derives_append_only_access_and_exposure_ledger(
     with studies.catalog.connect() as connection:
         projection_columns = {
             row["name"]
-            for row in connection.execute(
-                "PRAGMA table_info(parameter_studies)"
-            ).fetchall()
+            for row in connection.execute("PRAGMA table_info(parameter_studies)").fetchall()
         }
     assert projection_columns.isdisjoint({"holdout_access", "holdout_freshness"})
 
@@ -1837,9 +1813,7 @@ def test_preview_rejects_template_dates_outside_the_selected_dataset_range(
 def test_preview_rejects_cost_parameters_from_the_search_space(tmp_path: Path):
     studies, _ = _study_service(tmp_path)
     spec = _spec()
-    spec["search"]["space"]["/operators/cost/commission_rate"] = {
-        "values": [0, 0.001]
-    }
+    spec["search"]["space"]["/operators/cost/commission_rate"] = {"values": [0, 0.001]}
 
     with pytest.raises(StudyValidationError, match="cannot search cost"):
         studies.preview(spec)
@@ -1927,9 +1901,10 @@ def test_parameter_study_migration_rejects_noncontiguous_recorded_history(
         )
 
     with catalog.connect() as connection:
-        assert connection.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = 5"
-        ).fetchone() is None
+        assert (
+            connection.execute("SELECT 1 FROM schema_migrations WHERE version = 5").fetchone()
+            is None
+        )
 
 
 def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
@@ -1942,9 +1917,7 @@ def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
     with catalog.connect() as connection:
         assert [
             row["version"]
-            for row in connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            )
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ] == [1, 2, 3, 4]
     datasets = DatasetService(
         catalog,
@@ -1970,9 +1943,7 @@ def test_parameter_study_migration_upgrades_v4_without_losing_catalog_data(
     with restarted.connect() as connection:
         assert [
             row["version"]
-            for row in connection.execute(
-                "SELECT version FROM schema_migrations ORDER BY version"
-            )
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
@@ -2006,21 +1977,36 @@ def test_parameter_study_migration_is_safe_under_concurrent_initialization(
 
     assert len(services) == 8
     with Catalog(root).connect() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 5"
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 8"
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 5"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 8"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_catalog_extension_migration_rolls_back_an_injected_failure(tmp_path: Path):
@@ -2039,15 +2025,19 @@ INSERT INTO missing_migration_target(value) VALUES ('fail');
         catalog.apply_migrations([broken])
 
     with catalog.connect() as connection:
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'migration_rollback_probe'
             """
-        ).fetchone() is None
-        assert connection.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = 5"
-        ).fetchone() is None
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute("SELECT 1 FROM schema_migrations WHERE version = 5").fetchone()
+            is None
+        )
 
     datasets = DatasetService(
         catalog,
@@ -2149,13 +2139,9 @@ def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
     assert (
         studies._canonical_verified_metric_document(
             experiment_id=created["experiment_id"],
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
-            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
-                "inner_folds"
-            ][0],
+            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0]["inner_folds"][0],
         )
         is None
     )
@@ -2196,13 +2182,9 @@ def test_duplicate_experiment_is_not_success_and_divergence_is_contested(
     with pytest.raises(RuntimeError, match="CONTESTED"):
         studies._canonical_verified_metric_document(
             experiment_id=created["experiment_id"],
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
-            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0][
-                "inner_folds"
-            ][0],
+            fold_window=preview["frozen_plan"]["validation"]["outer_rounds"][0]["inner_folds"][0],
         )
 
 
@@ -2245,10 +2227,7 @@ def test_executor_cannot_fabricate_champion_or_holdout_outcome(tmp_path: Path):
     assert detail["selection_outcome"] == "NOT_DETERMINED"
     assert detail["holdout"]["access"] == "SEALED"
     assert detail["holdout"]["outcome"] == "NOT_RUN"
-    assert not any(
-        item["evidence_type"] == "CHAMPION_FROZEN"
-        for item in detail["evidence"]
-    )
+    assert not any(item["evidence_type"] == "CHAMPION_FROZEN" for item in detail["evidence"])
 
 
 def test_public_study_rejects_arbitrary_executor_conclusions(tmp_path: Path):
@@ -2279,10 +2258,7 @@ def test_public_study_rejects_arbitrary_executor_conclusions(tmp_path: Path):
 
     detail = coordinator.detail(submitted["study_id"])
     assert detail["selection_outcome"] == "NOT_DETERMINED"
-    assert not any(
-        item["evidence_type"] == "CHAMPION_FROZEN"
-        for item in detail["evidence"]
-    )
+    assert not any(item["evidence_type"] == "CHAMPION_FROZEN" for item in detail["evidence"])
 
 
 def test_public_study_owns_tasks_bindings_metrics_policy_and_outer_evidence(
@@ -2354,12 +2330,11 @@ def test_public_study_owns_tasks_bindings_metrics_policy_and_outer_evidence(
 
     detail = coordinator.detail(submitted["study_id"])
     assert detail["selection_outcome"] == "CHAMPION_SELECTED"
-    candidate = next(
-        trial for trial in detail["trials"] if trial["classification"] == "IN_RANGE"
+    candidate = next(trial for trial in detail["trials"] if trial["classification"] == "IN_RANGE")
+    assert (
+        candidate["candidate_digest"]
+        == hashlib.sha256(canonical_json_bytes(candidate["configuration"])).hexdigest()
     )
-    assert candidate["candidate_digest"] == hashlib.sha256(
-        canonical_json_bytes(candidate["configuration"])
-    ).hexdigest()
     assert {binding["role"] for binding in detail["bindings"]} == {
         "INNER_SCORE",
         "OUTER_AUDIT",
@@ -2468,9 +2443,7 @@ def test_public_study_records_divergent_attempts_as_contested(tmp_path: Path):
     detail = studies.detail(submitted["study_id"])
     assert detail["control_status"] == "FAILED"
     assert detail["bindings"][0]["state"] == "CONTESTED"
-    assert [
-        item["evidence_type"] for item in detail["evidence"]
-    ] == ["EVIDENCE_CONTESTED"]
+    assert [item["evidence_type"] for item in detail["evidence"]] == ["EVIDENCE_CONTESTED"]
 
 
 def test_late_divergent_attempt_invalidates_a_selected_study(tmp_path: Path):
@@ -2528,10 +2501,7 @@ def test_late_divergent_attempt_invalidates_a_selected_study(tmp_path: Path):
     assert result["status"] == "EVIDENCE_CONTESTED"
     assert detail["control_status"] == "FAILED"
     assert any(item["state"] == "CONTESTED" for item in detail["bindings"])
-    assert any(
-        item["evidence_type"] == "EVIDENCE_CONTESTED"
-        for item in detail["evidence"]
-    )
+    assert any(item["evidence_type"] == "EVIDENCE_CONTESTED" for item in detail["evidence"])
 
 
 def test_public_study_does_not_evaluate_partial_inner_folds(tmp_path: Path):
@@ -2604,9 +2574,7 @@ def test_failed_binding_follows_a_replacement_attempt(tmp_path: Path):
     attempt = experiments.claim_next_attempt()
     assert attempt is not None
     assert attempt["attempt_id"] == dispatched["attempt_id"]
-    assert experiments.recover_abandoned_attempts(
-        container_reconciler=lambda cidfile: True
-    ) == 1
+    assert experiments.recover_abandoned_attempts(container_reconciler=lambda cidfile: True) == 1
     assert studies.advance(submitted["study_id"])["status"] == "ATTEMPT_FAILED"
     replacement = experiments.create_replacement_attempt(
         attempt["attempt_id"],
@@ -2679,9 +2647,7 @@ def test_holdout_access_is_recorded_before_dataset_materialization(
     original_materialize = coordinator.dataset_slice_factory.materialize
 
     def crash_after_materialization(*args, **kwargs):
-        assert coordinator.detail(submitted["study_id"])["holdout"]["access"] == (
-            "ACCESSED"
-        )
+        assert coordinator.detail(submitted["study_id"])["holdout"]["access"] == ("ACCESSED")
         original_materialize(*args, **kwargs)
         raise RuntimeError("crash during holdout materialization")
 
@@ -2746,9 +2712,7 @@ def _interrupted_terminal_holdout(tmp_path: Path):
     attempt = experiments.claim_next_attempt()
     assert attempt is not None
     assert attempt["attempt_id"] == dispatched["attempt_id"]
-    assert experiments.recover_abandoned_attempts(
-        container_reconciler=lambda cidfile: True
-    ) == 1
+    assert experiments.recover_abandoned_attempts(container_reconciler=lambda cidfile: True) == 1
     assert coordinator.advance(submitted["study_id"])["status"] == "ATTEMPT_FAILED"
     return studies, experiments, coordinator, submitted["study_id"], attempt
 
@@ -2756,9 +2720,7 @@ def _interrupted_terminal_holdout(tmp_path: Path):
 def test_failed_terminal_holdout_stays_accessed_without_research_outcome(
     tmp_path: Path,
 ):
-    studies, _, coordinator, study_id, attempt = _interrupted_terminal_holdout(
-        tmp_path
-    )
+    studies, _, coordinator, study_id, attempt = _interrupted_terminal_holdout(tmp_path)
 
     result = coordinator.advance(study_id)
     detail = studies.detail(study_id)
@@ -2775,16 +2737,11 @@ def test_failed_terminal_holdout_stays_accessed_without_research_outcome(
     assert detail["control_status"] == "FAILED"
     assert detail["holdout"]["access"] == "ACCESSED"
     assert detail["holdout"]["outcome"] == "NOT_RUN"
-    assert any(
-        event["event_type"] == "HOLDOUT_EXECUTION_FAILED"
-        for event in detail["events"]
-    )
+    assert any(event["event_type"] == "HOLDOUT_EXECUTION_FAILED" for event in detail["events"])
 
 
 def test_failed_terminal_holdout_follows_a_replacement_attempt(tmp_path: Path):
-    studies, experiments, coordinator, study_id, attempt = (
-        _interrupted_terminal_holdout(tmp_path)
-    )
+    studies, experiments, coordinator, study_id, attempt = _interrupted_terminal_holdout(tmp_path)
     replacement = experiments.create_replacement_attempt(
         attempt["attempt_id"],
         action_id="replacement-terminal-holdout",
@@ -2792,9 +2749,7 @@ def test_failed_terminal_holdout_follows_a_replacement_attempt(tmp_path: Path):
 
     result = coordinator.advance(study_id)
     detail = studies.detail(study_id)
-    binding = next(
-        item for item in detail["bindings"] if item["role"] == "TERMINAL_HOLDOUT"
-    )
+    binding = next(item for item in detail["bindings"] if item["role"] == "TERMINAL_HOLDOUT")
 
     assert result["status"] == "ATTEMPT_PENDING"
     assert result["attempt_id"] == replacement["attempt_id"]
@@ -2819,9 +2774,7 @@ def test_terminal_holdout_crash_after_access_never_redispatches(tmp_path: Path):
         if effect["role"] != "TERMINAL_HOLDOUT":
             return
         holdout_calls.append(action_id)
-        assert coordinator.detail(submitted["study_id"])["holdout"]["access"] == (
-            "ACCESSED"
-        )
+        assert coordinator.detail(submitted["study_id"])["holdout"]["access"] == ("ACCESSED")
         raise RuntimeError("crash after holdout access")
 
     coordinator = ParameterStudy(
@@ -2861,9 +2814,7 @@ def test_terminal_holdout_crash_after_access_never_redispatches(tmp_path: Path):
     result = restarted.advance(submitted["study_id"])
 
     assert result["status"] == "HOLDOUT_EXECUTION_AMBIGUOUS"
-    assert holdout_calls == [
-        f"study-internal:effect:{result['binding_id']}"
-    ]
+    assert holdout_calls == [f"study-internal:effect:{result['binding_id']}"]
     detail = restarted.detail(submitted["study_id"])
     assert detail["holdout"]["access"] == "ACCESSED"
     assert detail["holdout"]["outcome"] == "NOT_RUN"
@@ -2965,20 +2916,17 @@ def test_terminal_holdout_records_one_verified_champion_outcome(tmp_path: Path):
     assert detail["selection_outcome"] == "CHAMPION_SELECTED"
     assert detail["holdout"]["access"] == "ACCESSED"
     assert detail["holdout"]["outcome"] == "PASSED"
-    assert detail["holdout_claim"]["candidate_digest"] == detail[
-        "champion_evidence"
-    ]["candidate_digest"]
+    assert (
+        detail["holdout_claim"]["candidate_digest"]
+        == detail["champion_evidence"]["candidate_digest"]
+    )
     holdout_binding = next(
-        binding
-        for binding in detail["bindings"]
-        if binding["role"] == "TERMINAL_HOLDOUT"
+        binding for binding in detail["bindings"] if binding["role"] == "TERMINAL_HOLDOUT"
     )
     assert holdout_binding["state"] == "VERIFIED"
     assert detail["holdout_claim"]["binding_id"] == holdout_binding["binding_id"]
     assert detail["holdout_evidence"]["attempt_id"] == holdout_binding["attempt_id"]
-    assert [
-        event["event_type"] for event in detail["holdout_ledger"]
-    ] == ["GRANTED", "ACCESSED"]
+    assert [event["event_type"] for event in detail["holdout_ledger"]] == ["GRANTED", "ACCESSED"]
     assert coordinator.advance(submitted["study_id"])["status"] == "NO_CHANGE"
 
 
@@ -3120,9 +3068,7 @@ def test_optuna_ask_is_journaled_before_dispatch_and_replays_after_restart(
             "sequence": 1,
             "event_type": "SUGGESTION_RECORDED",
             "candidate_digest": detail["trials"][0]["candidate_digest"],
-            "sampled_parameters": {
-                "/operators/decision/buy_threshold_pct_per_day": 0.2
-            },
+            "sampled_parameters": {"/operators/decision/buy_threshold_pct_per_day": 0.2},
             "tell_state": None,
             "objective": None,
         }
@@ -3194,9 +3140,7 @@ def test_optuna_restarts_between_persisted_evaluation_tell_and_next_ask(
     else:
         pytest.fail("the first Optuna candidate was not independently evaluated")
 
-    assert [item["event_type"] for item in detail["suggestion_journal"]] == [
-        "SUGGESTION_RECORDED"
-    ]
+    assert [item["event_type"] for item in detail["suggestion_journal"]] == ["SUGGESTION_RECORDED"]
     studies = _restart_studies(studies, experiments, study_id)
     told = studies.advance(study_id)
     detail = studies.detail(study_id)
@@ -3207,9 +3151,10 @@ def test_optuna_restarts_between_persisted_evaluation_tell_and_next_ask(
         "INNER_EVALUATION_RECORDED",
     ]
     assert detail["suggestion_journal"][1]["tell_state"] == "COMPLETE"
-    assert detail["suggestion_journal"][1]["objective"] == evaluated["payload"][
-        "evaluation"
-    ]["validation_score"]
+    assert (
+        detail["suggestion_journal"][1]["objective"]
+        == evaluated["payload"]["evaluation"]["validation_score"]
+    )
     assert detail["suggestion_journal"][1]["sampled_parameters"] == {
         "/operators/decision/buy_threshold_pct_per_day": 0.2
     }
@@ -3226,10 +3171,7 @@ def test_optuna_restarts_between_persisted_evaluation_tell_and_next_ask(
         "SUGGESTION_RECORDED",
     ]
     _, replayed_history = _ScriptedOptunaSuggester.calls[-1]
-    assert replayed_history == [
-        item["event"]
-        for item in detail["suggestion_journal"][:2]
-    ]
+    assert replayed_history == [item["event"] for item in detail["suggestion_journal"][:2]]
 
 
 def test_optuna_failed_candidate_records_fail_without_score_and_continues(
@@ -3310,17 +3252,16 @@ def test_optuna_duplicate_is_journaled_without_creating_a_duplicate_trial(
     assert len(after_duplicate["trials"]) == 1
     assert unique["status"] == "SUGGESTION_RECORDED"
     assert len(detail["trials"]) == 2
-    assert [
-        item["event_type"] for item in detail["suggestion_journal"]
-    ] == [
+    assert [item["event_type"] for item in detail["suggestion_journal"]] == [
         "SUGGESTION_RECORDED",
         "INNER_EVALUATION_RECORDED",
         "DUPLICATE_SUGGESTION",
         "SUGGESTION_RECORDED",
     ]
-    assert detail["suggestion_journal"][0]["candidate_digest"] == detail[
-        "suggestion_journal"
-    ][2]["candidate_digest"]
+    assert (
+        detail["suggestion_journal"][0]["candidate_digest"]
+        == detail["suggestion_journal"][2]["candidate_digest"]
+    )
 
 
 def test_optuna_histories_are_round_local_and_exclude_outer_and_holdout_feedback(
@@ -3383,10 +3324,7 @@ def test_optuna_histories_are_round_local_and_exclude_outer_and_holdout_feedback
             }
             for event in history
         )
-        assert all(
-            event.get("role", "INNER_SCORE") == "INNER_SCORE"
-            for event in history
-        )
+        assert all(event.get("role", "INNER_SCORE") == "INNER_SCORE" for event in history)
     assert set(round_histories) == {"OUTER:1", "FINAL"}
     assert round_histories["OUTER:1"][0] == []
     assert round_histories["FINAL"][0] == []

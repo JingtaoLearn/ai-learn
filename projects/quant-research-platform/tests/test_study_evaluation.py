@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_platform.study_evaluation as study_evaluation
 import quant_platform.total_return_claims as total_return_claims
 from quant_platform.corporate_actions import (
     CorporateActionEvidenceError,
@@ -82,9 +83,7 @@ def _attempt_and_factory(
                     "content_digest": str(index + 2) * 64,
                     "parameters": operator["parameters"],
                 }
-                for index, (slot, operator) in enumerate(
-                    sorted(config["operators"].items())
-                )
+                for index, (slot, operator) in enumerate(sorted(config["operators"].items()))
             },
             "execution_identity": {"runner": "synthetic"},
         },
@@ -230,9 +229,7 @@ def _trusted_attempt_and_factory(
         },
     )
     config = validated.canonical
-    config["operators"]["decision"]["parameters"][
-        "buy_threshold_pct_per_day"
-    ] += candidate_variant
+    config["operators"]["decision"]["parameters"]["buy_threshold_pct_per_day"] += candidate_variant
     config["dataset"]["root"] = str(state)
     config["dataset"]["snapshot_id"] = derived["snapshot_id"]
     config["output_root"] = str(state / "study-runs")
@@ -532,10 +529,13 @@ def _mutate_and_reseal_trusted_run(
             target = root / "account_events.csv"
             frame = events
         elif case == "F1_EXTRA":
-            selected = events[
-                (events["account"] == "strategy")
-                & (events["event_type"] == "DIVIDEND_PAYMENT")
-            ].iloc[[0]].copy()
+            selected = (
+                events[
+                    (events["account"] == "strategy") & (events["event_type"] == "DIVIDEND_PAYMENT")
+                ]
+                .iloc[[0]]
+                .copy()
+            )
             events = pd.concat([events, selected], ignore_index=True)
             events = events.sort_values(["account", "Date", "sequence"], kind="stable")
             events.loc[events["account"] == "strategy", "sequence"] = range(
@@ -589,9 +589,7 @@ def _mutate_and_reseal_trusted_run(
             )
             metrics_path = root / "metrics.json"
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-            metrics["accounting_accounts"]["strategy"]["final_state"][
-                "outstanding_tax_fen"
-            ] = 1
+            metrics["accounting_accounts"]["strategy"]["final_state"]["outstanding_tax_fen"] = 1
             metrics["accounting_accounts"]["strategy"]["final_state"]["equity_fen"] -= 1
             metrics_path.write_text(
                 json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -641,9 +639,7 @@ def _mutate_and_reseal_trusted_run(
             raise AssertionError(case)
         if case != "N_PRICE_ONLY":
             manifest["identity"]["accounting"] = copy.deepcopy(accounting)
-        manifest["run_id"] = hashlib.sha256(
-            canonical_json_bytes(manifest["identity"])
-        ).hexdigest()
+        manifest["run_id"] = hashlib.sha256(canonical_json_bytes(manifest["identity"])).hexdigest()
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -791,9 +787,10 @@ def test_accounting_outcome_package_is_distinct_post_result_and_operator_inacces
         fold_window=fold_window,
     )
     binding = document["total_return_qualification"]["bindings"]
-    assert binding["corporate_action_evidence_sha256"] == package_manifest[
-        "corporate_action_evidence_sha256"
-    ]
+    assert (
+        binding["corporate_action_evidence_sha256"]
+        == package_manifest["corporate_action_evidence_sha256"]
+    )
     assert binding["view_corporate_action_evidence_sha256"] == view_digest
 
 
@@ -827,9 +824,7 @@ def test_accounting_outcome_role_and_post_result_binding_fail_closed(
 
 
 def _candidate_digest(attempt: dict) -> str:
-    return hashlib.sha256(
-        canonical_json_bytes(attempt["candidate_configuration"])
-    ).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(attempt["candidate_configuration"])).hexdigest()
 
 
 def _policy_evaluation(document: dict) -> dict:
@@ -900,7 +895,9 @@ def test_a3_request_payload_cannot_inject_verified_state_into_factory(tmp_path: 
     factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
     attempt["requested"]["claim_state"] = "AFTER_TAX_TOTAL_RETURN_VERIFIED"
 
-    with pytest.raises(RuntimeError, match="Attempt audit does not match canonical execution identity"):
+    with pytest.raises(
+        RuntimeError, match="Attempt audit does not match canonical execution identity"
+    ):
         factory.from_attempt(
             attempt,
             candidate_digest=_candidate_digest(attempt),
@@ -1113,9 +1110,7 @@ def test_n3_all_trusted_gate_failures_need_no_scalar_comparison_or_holdout(
 ):
     documents = [
         _price_only_document(tmp_path / "price", candidate_variant=6),
-        _trusted_document(
-            tmp_path / "exposed", historical_exposure="EXPOSED", candidate_variant=7
-        ),
+        _trusted_document(tmp_path / "exposed", historical_exposure="EXPOSED", candidate_variant=7),
     ]
     result = NestedChronologicalSelection().evaluate(
         outer_rounds=[],
@@ -1156,9 +1151,10 @@ def test_metric_document_factory_verifies_and_recomputes_account_evidence(
 ):
     document = _verified_document(tmp_path)
 
-    assert document["candidate_digest"] == document["candidate_binding"][
-        "strategy_configuration_digest"
-    ]
+    assert (
+        document["candidate_digest"]
+        == document["candidate_binding"]["strategy_configuration_digest"]
+    )
     assert document["fold_window"]["account_policy"] == "FORCE_FLAT_WITH_COST"
     assert document["scored_dates"] == ["2026-01-06", "2026-01-07"]
     assert set(document["reconciliation"].values()) == {True}
@@ -1176,9 +1172,7 @@ def test_metric_document_factory_rejects_a_digest_not_bound_to_artifacts(
     with pytest.raises(RuntimeError, match="result digest"):
         factory.from_attempt(
             attempt,
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
@@ -1236,6 +1230,47 @@ def test_robust_policy_returns_no_candidate_when_every_candidate_is_ineligible(
 
     assert result["eligibility"] == "INELIGIBLE"
     assert RobustWalkForwardPolicy().select([result]) is None
+
+
+def test_rejected_qualification_stops_before_scalar_evaluation(monkeypatch):
+    qualification = {
+        "candidate_digest": "a" * 64,
+        "state": "REJECTED",
+        "reason_codes": ["MATCHED_EXPOSURE_EXCESS_FAILED"],
+    }
+    monkeypatch.setattr(
+        study_evaluation,
+        "is_pristine_qualification",
+        lambda value: value is qualification,
+    )
+    result = RobustWalkForwardPolicy().evaluate_after_qualification("a" * 64, [], {}, qualification)
+    assert result["validation_score"] is None
+    assert result["ranking_position"] is None
+    assert result["eligible"] is False
+    assert result["explanation"] == {
+        "claim": "REJECTED_NO_EDGE",
+        "constraint_failures": ["MATCHED_EXPOSURE_EXCESS_FAILED"],
+    }
+
+
+def test_qualification_aware_ranking_rejects_forged_high_score_and_mixed_v1():
+    forged = {
+        "candidate_digest": "a" * 64,
+        "validation_score": 1_000_000.0,
+        "qualification": {"state": "QUALIFIED"},
+        "tie_break": {
+            "lower_maximum_drawdown": 0.0,
+            "lower_annual_turnover": 0.0,
+            "strategy_configuration_digest": "a" * 64,
+        },
+    }
+    policy = RobustWalkForwardPolicy()
+    with pytest.raises(EvaluationPolicyError, match="pristine QUALIFIED"):
+        policy.select([forged])
+    legacy = copy.deepcopy(forged)
+    del legacy["qualification"]
+    with pytest.raises(EvaluationPolicyError, match="cannot be mixed"):
+        policy.select([forged, legacy])
 
 
 def test_nested_selection_rejects_outer_evidence_in_inner_search(tmp_path: Path):
@@ -1325,9 +1360,7 @@ def test_metric_factory_rejects_artifacts_outside_state_root(tmp_path: Path):
     with pytest.raises(RuntimeError, match="state root"):
         factory.from_attempt(
             attempt,
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
@@ -1351,9 +1384,7 @@ def test_metric_factory_enforces_total_artifact_byte_bound(
     with pytest.raises(RuntimeError, match="total byte"):
         factory.from_attempt(
             attempt,
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
@@ -1369,9 +1400,7 @@ def test_metric_factory_rejects_hardlinked_artifact(tmp_path: Path):
     with pytest.raises(RuntimeError, match="immutable regular file"):
         factory.from_attempt(
             attempt,
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
@@ -1404,9 +1433,7 @@ def test_metric_factory_detects_state_root_swap_while_reading(
     with pytest.raises(RuntimeError, match="changed"):
         factory.from_attempt(
             attempt,
-            candidate_digest=hashlib.sha256(
-                canonical_json_bytes(candidate)
-            ).hexdigest(),
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
