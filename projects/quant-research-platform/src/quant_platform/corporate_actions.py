@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from types import MappingProxyType
@@ -102,13 +102,14 @@ def _calendar_anniversary(value: date, *, months: int = 0, years: int = 0) -> da
 
 
 def dividend_tax_burden(acquisition_date: date, transfer_settlement_date: date) -> Decimal:
-    """Return the frozen individual A-share burden at transfer settlement."""
+    """Return the frozen individual A-share burden through settlement's prior day."""
 
     if transfer_settlement_date <= acquisition_date:
         raise CorporateActionEvidenceError("transfer settlement must follow acquisition")
-    if transfer_settlement_date <= _calendar_anniversary(acquisition_date, months=1):
+    holding_period_endpoint = transfer_settlement_date - timedelta(days=1)
+    if holding_period_endpoint <= _calendar_anniversary(acquisition_date, months=1):
         return Decimal("0.20")
-    if transfer_settlement_date <= _calendar_anniversary(acquisition_date, years=1):
+    if holding_period_endpoint <= _calendar_anniversary(acquisition_date, years=1):
         return Decimal("0.10")
     return Decimal("0.00")
 

@@ -248,6 +248,7 @@ class _SettlementAccount:
         self.holdings = 0
         self.settled_holdings = 0
         self.receivable_fen = 0
+        self.unpaid_dividend_tax_base_fen = 0
         self.deferred_tax_base_fen = 0
         self.outstanding_tax_fen = 0
         self.sizing = sizing
@@ -277,6 +278,7 @@ class _SettlementAccount:
             "trade_holdings": self.holdings,
             "settled_holdings": self.settled_holdings,
             "receivable_fen": self.receivable_fen,
+            "unpaid_dividend_tax_base_fen": self.unpaid_dividend_tax_base_fen,
             "deferred_tax_base_fen": self.deferred_tax_base_fen,
             "outstanding_tax_fen": self.outstanding_tax_fen,
             "market_price_fen": self._last_mark_fen,
@@ -299,6 +301,25 @@ class _SettlementAccount:
         cost_fen: int = 0,
         note: str | None = None,
     ) -> None:
+        state = self._state()
+        non_negative_fields = (
+            "cash_fen",
+            "trade_holdings",
+            "settled_holdings",
+            "receivable_fen",
+            "unpaid_dividend_tax_base_fen",
+            "deferred_tax_base_fen",
+            "outstanding_tax_fen",
+            "market_price_fen",
+            "market_value_fen",
+        )
+        if any(state[field] < 0 for field in non_negative_fields):
+            raise ReplayError("account event contains a negative settlement state")
+        active_dividend_base = sum(
+            sum(lot["dividends"].values()) for lot in self.lots if lot["remaining_quantity"] > 0
+        )
+        if self.unpaid_dividend_tax_base_fen + self.deferred_tax_base_fen != active_dividend_base:
+            raise ReplayError("account event dividend tax-base identity failed")
         self._sequence += 1
         self.events.append(
             {
@@ -315,7 +336,7 @@ class _SettlementAccount:
                 "cash_delta_fen": cash_delta_fen,
                 "cost_fen": cost_fen,
                 "note": note,
-                **self._state(),
+                **state,
             }
         )
 
@@ -528,6 +549,14 @@ class _SettlementAccount:
                 allocation = _allocate_fen(value, quantity, available)
                 lot["dividends"][revision_id] -= allocation
                 dividend_fen += allocation
+                entitlement = self.entitlements.get(revision_id)
+                if entitlement is None:
+                    raise ReplayError("FIFO lot dividend has no entitlement state")
+                if entitlement["paid"]:
+                    self.deferred_tax_base_fen -= allocation
+                else:
+                    self.unpaid_dividend_tax_base_fen -= allocation
+                    entitlement["disposed_before_payment_fen"] += allocation
             burden = dividend_tax_burden(lot["acquisition_date"], event_date)
             chunks.append(
                 {
@@ -575,11 +604,12 @@ class _SettlementAccount:
         tax_remaining = tax_fen
         weight_remaining = sum((chunk["tax_weight"] for chunk in chunks), Decimal("0"))
         for index, chunk in enumerate(chunks):
+            chunk_weight = chunk["tax_weight"]
             if index == len(chunks) - 1 or weight_remaining == 0:
                 allocation = tax_remaining
             else:
                 allocation = int(
-                    (Decimal(tax_fen) * chunk["tax_weight"] / weight_remaining).quantize(
+                    (Decimal(tax_remaining) * chunk_weight / weight_remaining).quantize(
                         Decimal("1"), rounding=ROUND_HALF_UP
                     )
                 )
@@ -596,9 +626,7 @@ class _SettlementAccount:
             chunk.pop("tax_weight")
             self.closed_trades.append(chunk)
             tax_remaining -= allocation
-            weight_remaining -= Decimal(chunk["dividend_fen"]) * Decimal(chunk["tax_burden"])
-        disposed_dividend = sum(chunk["dividend_fen"] for chunk in chunks)
-        self.deferred_tax_base_fen -= disposed_dividend
+            weight_remaining -= chunk_weight
         if tax_fen:
             collection_date = self.schedule.collection_date(event_date)
             self.outstanding_tax_fen += tax_fen
@@ -638,12 +666,14 @@ class _SettlementAccount:
             remaining_fen -= allocation
             remaining_quantity -= lot_quantity
         self.receivable_fen += gross_fen
+        self.unpaid_dividend_tax_base_fen += gross_fen
         self.entitlements[action.event_revision_id] = {
             "action": action,
             "gross_fen": gross_fen,
             "quantity": quantity,
             "allocations": allocations,
             "paid": False,
+            "disposed_before_payment_fen": 0,
         }
         self._post(
             event_date,
@@ -660,8 +690,10 @@ class _SettlementAccount:
         if entitlement["paid"]:
             raise ReplayError("dividend entitlement was paid twice")
         gross_fen = entitlement["gross_fen"]
+        held_tax_base_fen = gross_fen - entitlement["disposed_before_payment_fen"]
         self.receivable_fen -= gross_fen
-        self.deferred_tax_base_fen += gross_fen
+        self.unpaid_dividend_tax_base_fen -= held_tax_base_fen
+        self.deferred_tax_base_fen += held_tax_base_fen
         self.cash_fen += gross_fen
         entitlement["paid"] = True
         self._post(
@@ -937,6 +969,7 @@ def _reconcile_settlement(
         "trade_holdings",
         "settled_holdings",
         "receivable_fen",
+        "unpaid_dividend_tax_base_fen",
         "deferred_tax_base_fen",
         "outstanding_tax_fen",
         "market_price_fen",
@@ -990,8 +1023,26 @@ def _reconcile_settlement(
         attributed_profit = int(trades["net_pnl_fen"].sum())
         checks["profit_identity"] &= expected_profit == attributed_profit
         checks["trade_net_pnl"] &= expected_profit == attributed_profit
+        tax_state_columns = [
+            "receivable_fen",
+            "unpaid_dividend_tax_base_fen",
+            "deferred_tax_base_fen",
+            "outstanding_tax_fen",
+        ]
+        latest = events.iloc[-1]
         checks["deferred_tax"] &= bool(
-            account.deferred_tax_base_fen >= 0 and account.outstanding_tax_fen >= 0
+            all(
+                all(int(value) >= 0 for value in events[column].tolist())
+                for column in tax_state_columns
+            )
+            and (
+                events["equity_fen"]
+                == events["cash_fen"]
+                + events["market_value_fen"]
+                + events["receivable_fen"]
+                - events["outstanding_tax_fen"]
+            ).all()
+            and all(latest[field] == final_state[field] for field in final_state)
         )
     checks["account_isolation"] = bool(
         set(account_events["account"]) == {"strategy", "zero_cost", "buy_and_hold"}

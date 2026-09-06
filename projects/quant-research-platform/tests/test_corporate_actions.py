@@ -462,21 +462,40 @@ def test_tax_policy_identity_and_natural_period_boundaries_are_exact():
     assert policy["payload"]["assumptions"]["currency_rounding"] == (
         "ROUND_HALF_UP_RESEARCH_ASSUMPTION"
     )
+    cases = [
+        ("2025-11-06", "2025-12-06", "0.20"),
+        ("2025-11-06", "2025-12-07", "0.20"),
+        ("2025-11-06", "2025-12-08", "0.10"),
+        ("2025-01-22", "2026-01-22", "0.10"),
+        ("2025-01-22", "2026-01-23", "0.10"),
+        ("2025-01-22", "2026-01-24", "0.00"),
+    ]
+    for acquisition, settlement, expected in cases:
+        assert (
+            str(
+                dividend_tax_burden(date.fromisoformat(acquisition), date.fromisoformat(settlement))
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize(
+    ("acquisition", "settlement", "expected"),
+    [
+        ("2025-01-31", "2025-02-28", "0.20"),
+        ("2025-01-31", "2025-03-01", "0.20"),
+        ("2025-01-31", "2025-03-02", "0.10"),
+        ("2024-02-29", "2025-02-28", "0.10"),
+        ("2024-02-29", "2025-03-01", "0.10"),
+        ("2024-02-29", "2025-03-02", "0.00"),
+    ],
+)
+def test_tax_period_calendar_fold_uses_day_before_settlement(
+    acquisition: str, settlement: str, expected: str
+):
     assert (
-        str(dividend_tax_burden(date.fromisoformat("2025-11-06"), date.fromisoformat("2025-12-06")))
-        == "0.20"
-    )
-    assert (
-        str(dividend_tax_burden(date.fromisoformat("2025-11-06"), date.fromisoformat("2025-12-07")))
-        == "0.10"
-    )
-    assert (
-        str(dividend_tax_burden(date.fromisoformat("2025-01-22"), date.fromisoformat("2026-01-22")))
-        == "0.10"
-    )
-    assert (
-        str(dividend_tax_burden(date.fromisoformat("2025-01-22"), date.fromisoformat("2026-01-23")))
-        == "0.00"
+        str(dividend_tax_burden(date.fromisoformat(acquisition), date.fromisoformat(settlement)))
+        == expected
     )
 
 

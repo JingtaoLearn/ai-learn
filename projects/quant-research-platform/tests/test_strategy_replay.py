@@ -1,10 +1,12 @@
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import quant_platform.strategy_replay as replay_module
-from quant_platform.corporate_actions import SettlementSchedule
+from quant_platform.corporate_actions import CashDividend, SettlementSchedule
 from quant_platform.strategy_config import validate_strategy_config
 from quant_platform.strategy_operators import all_in_quantity, cms_cost_breakdown
 from quant_platform.strategy_replay import ReplayError, replay_strategy
@@ -161,6 +163,44 @@ def _bocom_accounting_case():
         return [{"action": action, "reason": f"FIXED_{action}"}]
 
     return frame, config, schedule, {"decision": decision}, {"decision": {}}
+
+
+def _ledger_account(schedule: SettlementSchedule, account_id: str = "strategy"):
+    costs = {
+        "commission_rate": 0.0,
+        "minimum_commission_cny": 0.0,
+        "transfer_fee_rate": 0.0,
+        "sell_stamp_tax_rate": 0.0,
+        "buy_slippage_bps": 0.0,
+        "sell_slippage_bps": 0.0,
+    }
+    return replay_module._SettlementAccount(
+        account_id,
+        1000.0,
+        {"lot_size": 1, "target_fraction": 1.0},
+        costs,
+        schedule,
+    )
+
+
+def _assert_event_state_reconciles(account) -> None:
+    events = pd.DataFrame(account.events)
+    state_columns = [
+        "receivable_fen",
+        "unpaid_dividend_tax_base_fen",
+        "deferred_tax_base_fen",
+        "outstanding_tax_fen",
+    ]
+    assert all(
+        all(int(value) >= 0 for value in events[column].tolist()) for column in state_columns
+    )
+    assert (
+        events["equity_fen"]
+        == events["cash_fen"]
+        + events["market_value_fen"]
+        + events["receivable_fen"]
+        - events["outstanding_tax_fen"]
+    ).all()
 
 
 def test_replay_is_prior_only_and_records_required_daily_fields():
@@ -485,3 +525,227 @@ def test_tax_collection_after_settlement_keeps_insufficient_amount_outstanding()
     assert len(outstanding) == 1
     assert outstanding.iloc[0]["cash_delta_fen"] == 0
     assert outstanding.iloc[0]["outstanding_tax_fen"] > 0
+
+
+def test_not_held_account_ignores_multiple_dividend_events():
+    schedule = SettlementSchedule(
+        {"2026-01-01": "2026-01-02"},
+        {},
+    )
+    account = _ledger_account(schedule)
+    actions = (
+        CashDividend(
+            "event-a",
+            date(2026, 1, 3),
+            date(2026, 1, 4),
+            date(2026, 1, 5),
+            Decimal("0.10"),
+        ),
+        CashDividend(
+            "event-b",
+            date(2026, 1, 6),
+            date(2026, 1, 7),
+            date(2026, 1, 8),
+            Decimal("0.20"),
+        ),
+    )
+
+    for event_date in (
+        date(2026, 1, 3),
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 8),
+    ):
+        account.process_day(event_date, actions, 1.0)
+
+    assert not any(event["event_type"].startswith("DIVIDEND_") for event in account.events)
+    assert account.entitlements == {}
+    assert account.cash_fen == account.initial_capital_fen
+    assert account.receivable_fen == 0
+    assert account.unpaid_dividend_tax_base_fen == 0
+    assert account.deferred_tax_base_fen == 0
+    _assert_event_state_reconciles(account)
+
+
+def test_multiple_dividends_remain_separate_and_reconcile_exactly():
+    schedule = SettlementSchedule(
+        {
+            "2026-01-01": "2026-01-02",
+            "2026-01-10": "2026-01-11",
+        },
+        {"2026-01-11": "2026-01-12"},
+    )
+    account = _ledger_account(schedule)
+    actions = (
+        CashDividend(
+            "event-a",
+            date(2026, 1, 3),
+            date(2026, 1, 4),
+            date(2026, 1, 5),
+            Decimal("0.10"),
+        ),
+        CashDividend(
+            "event-b",
+            date(2026, 1, 6),
+            date(2026, 1, 7),
+            date(2026, 1, 8),
+            Decimal("0.20"),
+        ),
+    )
+
+    account._trade(date(2026, 1, 1), "BUY", 1.0, 2, "FIRST_LOT")
+    for event_date in (
+        date(2026, 1, 2),
+        date(2026, 1, 3),
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 8),
+    ):
+        account.process_day(event_date, actions, None)
+
+    assert account.deferred_tax_base_fen == 60
+    assert [
+        event["event_revision_id"]
+        for event in account.events
+        if event["event_type"] == "DIVIDEND_PAYMENT"
+    ] == ["event-a", "event-b"]
+    account._trade(date(2026, 1, 10), "SELL", 1.0, 2, "CLOSE")
+    account.process_day(date(2026, 1, 11), actions, None)
+    account.process_day(date(2026, 1, 12), actions, None)
+
+    assert account.closed_trades[0]["dividend_fen"] == 60
+    assert account.closed_trades[0]["tax_fen"] == 12
+    assert account.closed_trades[0]["net_pnl_fen"] == 48
+    assert account.deferred_tax_base_fen == 0
+    assert account.outstanding_tax_fen == 0
+    _assert_event_state_reconciles(account)
+
+
+def test_three_lot_fifo_tax_allocation_uses_advancing_remainder_state():
+    schedule = SettlementSchedule(
+        {
+            "2026-01-01": "2026-01-02",
+            "2026-01-02": "2026-01-03",
+            "2026-01-03": "2026-01-04",
+            "2026-01-07": "2026-01-08",
+        },
+        {"2026-01-08": "2026-01-09"},
+    )
+    account = _ledger_account(schedule)
+    action = CashDividend(
+        "three-lot-event",
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 6),
+        Decimal("1.00"),
+    )
+
+    account._trade(date(2026, 1, 1), "BUY", 1.0, 1, "LOT_1")
+    account.process_day(date(2026, 1, 2), (action,), None)
+    account._trade(date(2026, 1, 2), "BUY", 1.0, 3, "LOT_2")
+    account.process_day(date(2026, 1, 3), (action,), None)
+    account._trade(date(2026, 1, 3), "BUY", 1.0, 6, "LOT_3")
+    account.process_day(date(2026, 1, 4), (action,), None)
+    account.process_day(date(2026, 1, 5), (action,), None)
+    account.process_day(date(2026, 1, 6), (action,), None)
+    account._trade(date(2026, 1, 7), "SELL", 1.0, 10, "CLOSE_ALL")
+    account.process_day(date(2026, 1, 8), (action,), None)
+
+    assert [trade["quantity"] for trade in account.closed_trades] == [1, 3, 6]
+    assert [trade["dividend_fen"] for trade in account.closed_trades] == [100, 300, 600]
+    assert [trade["tax_fen"] for trade in account.closed_trades] == [20, 60, 120]
+    assert [trade["net_pnl_fen"] for trade in account.closed_trades] == [80, 240, 480]
+    assert sum(trade["tax_fen"] for trade in account.closed_trades) == 200
+    account.process_day(date(2026, 1, 9), (action,), None)
+    _assert_event_state_reconciles(account)
+
+
+def test_partial_disposals_consume_multiple_fifo_lots_exactly():
+    schedule = SettlementSchedule(
+        {
+            "2026-01-01": "2026-01-02",
+            "2026-01-02": "2026-01-03",
+            "2026-01-07": "2026-01-08",
+            "2026-01-09": "2026-01-10",
+        },
+        {
+            "2026-01-08": "2026-01-09",
+            "2026-01-10": "2026-01-11",
+        },
+    )
+    account = _ledger_account(schedule)
+    action = CashDividend(
+        "partial-event",
+        date(2026, 1, 4),
+        date(2026, 1, 5),
+        date(2026, 1, 5),
+        Decimal("1.00"),
+    )
+
+    account._trade(date(2026, 1, 1), "BUY", 1.0, 4, "LOT_1")
+    account.process_day(date(2026, 1, 2), (action,), None)
+    account._trade(date(2026, 1, 2), "BUY", 1.0, 6, "LOT_2")
+    account.process_day(date(2026, 1, 3), (action,), None)
+    account.process_day(date(2026, 1, 4), (action,), None)
+    account.process_day(date(2026, 1, 5), (action,), None)
+    account._trade(date(2026, 1, 7), "SELL", 1.0, 5, "PARTIAL_CLOSE")
+    account.process_day(date(2026, 1, 8), (action,), None)
+
+    assert [(trade["lot_id"], trade["quantity"]) for trade in account.closed_trades] == [
+        ("strategy-lot-000001", 4),
+        ("strategy-lot-000002", 1),
+    ]
+    assert [trade["tax_fen"] for trade in account.closed_trades] == [80, 20]
+    assert account.lots[1]["remaining_quantity"] == 5
+    assert account.deferred_tax_base_fen == 500
+    account.process_day(date(2026, 1, 9), (action,), None)
+    account._trade(date(2026, 1, 9), "SELL", 1.0, 5, "FINAL_CLOSE")
+    account.process_day(date(2026, 1, 10), (action,), None)
+    account.process_day(date(2026, 1, 11), (action,), None)
+
+    assert [(trade["lot_id"], trade["quantity"]) for trade in account.closed_trades] == [
+        ("strategy-lot-000001", 4),
+        ("strategy-lot-000002", 1),
+        ("strategy-lot-000002", 5),
+    ]
+    assert [trade["tax_fen"] for trade in account.closed_trades] == [80, 20, 100]
+    assert account.deferred_tax_base_fen == 0
+    _assert_event_state_reconciles(account)
+
+
+def test_disposal_before_payment_never_creates_negative_tax_state():
+    schedule = SettlementSchedule(
+        {
+            "2026-01-01": "2026-01-02",
+            "2026-01-04": "2026-01-05",
+        },
+        {"2026-01-05": "2026-01-06"},
+    )
+    account = _ledger_account(schedule)
+    action = CashDividend(
+        "pre-payment-event",
+        date(2026, 1, 3),
+        date(2026, 1, 4),
+        date(2026, 1, 10),
+        Decimal("1.00"),
+    )
+
+    account._trade(date(2026, 1, 1), "BUY", 1.0, 1, "ENTRY")
+    account.process_day(date(2026, 1, 2), (action,), None)
+    account.process_day(date(2026, 1, 3), (action,), None)
+    account._trade(date(2026, 1, 4), "SELL", 1.0, 1, "PRE_PAYMENT_EXIT")
+    account.process_day(date(2026, 1, 5), (action,), None)
+
+    assert account.receivable_fen == 100
+    assert account.unpaid_dividend_tax_base_fen == 0
+    assert account.deferred_tax_base_fen == 0
+    assert account.outstanding_tax_fen == 20
+    account.process_day(date(2026, 1, 6), (action,), None)
+    account.process_day(date(2026, 1, 10), (action,), None)
+
+    assert account.receivable_fen == 0
+    assert account.unpaid_dividend_tax_base_fen == 0
+    assert account.deferred_tax_base_fen == 0
+    assert account.outstanding_tax_fen == 0
+    assert account.closed_trades[0]["net_pnl_fen"] == 80
+    _assert_event_state_reconciles(account)
