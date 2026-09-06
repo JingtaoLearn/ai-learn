@@ -51,8 +51,6 @@ REQUIRED_ARTIFACTS = {
     "daily_replay.csv",
     "events.csv",
     "trades.csv",
-    "account_events.csv",
-    "account_trades.csv",
     "metrics.json",
     "cost_breakdown.json",
     "report.html",
@@ -344,6 +342,10 @@ def test_action_aware_run_binds_partial_claim_schedule_and_complete_account_ledg
     metrics = json.loads((target / "metrics.json").read_text())
     account_events = pd.read_csv(target / "account_events.csv")
 
+    assert set(path.name for path in target.iterdir()) == REQUIRED_ARTIFACTS | {
+        "account_events.csv",
+        "account_trades.csv",
+    }
     assert manifest["accounting"]["claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
     assert manifest["identity"]["accounting"] == manifest["accounting"]
     assert manifest["accounting"]["settlement_schedule"]["sha256"] == schedule.digest

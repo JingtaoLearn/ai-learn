@@ -40,13 +40,15 @@ ARTIFACT_NAMES = {
     "daily_replay.csv",
     "events.csv",
     "trades.csv",
-    "account_events.csv",
-    "account_trades.csv",
     "metrics.json",
     "cost_breakdown.json",
     "report.html",
 }
 HASHED_ARTIFACT_NAMES = ARTIFACT_NAMES - {"run_manifest.json"}
+SETTLEMENT_ARTIFACT_NAMES = ARTIFACT_NAMES | {
+    "account_events.csv",
+    "account_trades.csv",
+}
 PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/catalog.py", "catalog.py"),
     ("src/quant_platform/composition_worker.py", "composition_worker.py"),
@@ -578,13 +580,15 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
     _write_bytes(path, payload)
 
 
-def _file_manifest(directory: Path) -> dict[str, dict[str, Any]]:
+def _file_manifest(
+    directory: Path, artifact_names: set[str] = HASHED_ARTIFACT_NAMES
+) -> dict[str, dict[str, Any]]:
     return {
         name: {
             "sha256": _sha256((directory / name).read_bytes()),
             "size": (directory / name).stat().st_size,
         }
-        for name in sorted(HASHED_ARTIFACT_NAMES)
+        for name in sorted(artifact_names)
     }
 
 
@@ -741,14 +745,18 @@ def _verify_run(
             raise ValueError("run directory name does not match run ID")
         if stat.S_IMODE(target.stat().st_mode) & 0o222:
             raise ValueError("run directory is not immutable")
+        expected_artifact_names = (
+            SETTLEMENT_ARTIFACT_NAMES if accounting is not None else ARTIFACT_NAMES
+        )
         actual_names = {path.name for path in target.iterdir()}
-        if actual_names != ARTIFACT_NAMES:
+        if actual_names != expected_artifact_names:
             raise ValueError(
-                f"artifact set mismatch: expected={sorted(ARTIFACT_NAMES)}, "
+                f"artifact set mismatch: expected={sorted(expected_artifact_names)}, "
                 f"actual={sorted(actual_names)}"
             )
         artifact_payloads = {
-            name: _read_immutable_artifact(target / name) for name in sorted(ARTIFACT_NAMES)
+            name: _read_immutable_artifact(target / name)
+            for name in sorted(expected_artifact_names)
         }
 
         manifest = _require_object(
@@ -831,7 +839,8 @@ def _verify_run(
         if _sha256(_canonical_json(stored_config)) != config.config_sha256:
             raise ValueError("canonical config artifact checksum mismatch")
         files = _require_object(manifest["files"], "artifact checksum map")
-        if set(files) != HASHED_ARTIFACT_NAMES:
+        expected_hashed_names = expected_artifact_names - {"run_manifest.json"}
+        if set(files) != expected_hashed_names:
             raise ValueError("artifact checksum map is incomplete")
         for name, expected in files.items():
             expected = _require_object(expected, f"artifact checksum entry {name}")
@@ -982,8 +991,9 @@ def run_strategy_config(
         _write_csv(staging / "daily_replay.csv", replay.daily)
         _write_csv(staging / "events.csv", replay.events)
         _write_csv(staging / "trades.csv", replay.trades)
-        _write_csv(staging / "account_events.csv", replay.account_events)
-        _write_csv(staging / "account_trades.csv", replay.account_trades)
+        if accounting is not None:
+            _write_csv(staging / "account_events.csv", replay.account_events)
+            _write_csv(staging / "account_trades.csv", replay.account_trades)
         _write_json(staging / "metrics.json", replay.metrics)
         _write_json(staging / "cost_breakdown.json", replay.cost_breakdown)
         _write_bytes(staging / "report.html", report.encode("utf-8"))
@@ -1000,7 +1010,11 @@ def run_strategy_config(
             "git": git,
             "semantics": _semantics(accounting),
             "reconciliation": replay.reconciliation,
-            "files": _file_manifest(staging),
+            "files": _file_manifest(
+                staging,
+                (SETTLEMENT_ARTIFACT_NAMES if accounting is not None else ARTIFACT_NAMES)
+                - {"run_manifest.json"},
+            ),
         }
         if accounting is not None:
             manifest["accounting"] = accounting
