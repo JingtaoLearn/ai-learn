@@ -357,7 +357,7 @@ def _secure_environment_read(
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise BootstrapError(code, f"invalid environment member: {environment_member!r}")
     _assert_no_symlink(environment_root, code)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     directory_flags = flags | getattr(os, "O_DIRECTORY", 0)
     descriptors: list[int] = []
     try:
