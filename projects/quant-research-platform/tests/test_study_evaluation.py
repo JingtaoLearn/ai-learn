@@ -527,6 +527,7 @@ def _mutate_and_reseal_trusted_run(
         (False, "VERIFIED_COMPLETE_INTERVAL"),
         (True, "VERIFIED_NO_ACTION"),
     ],
+    ids=["P1-D5-separate-outcome", "P2-D5-separate-outcome"],
 )
 def test_metric_document_factory_issues_only_from_complete_verified_graph(
     tmp_path: Path,
@@ -655,6 +656,78 @@ def test_accounting_outcome_role_and_post_result_binding_fail_closed(
             candidate_configuration=candidate,
             fold_window=fold_window,
         )
+
+
+@pytest.mark.parametrize(
+    ("matrix_case", "historical_exposure"),
+    [("H1", "EXPOSED"), ("H2", "UNKNOWN")],
+)
+def test_historical_exposure_matrix_is_removed_before_policy_ranking(
+    tmp_path: Path,
+    matrix_case: str,
+    historical_exposure: str,
+):
+    document = _trusted_document(tmp_path / matrix_case, historical_exposure=historical_exposure)
+    qualification = document["total_return_qualification"]
+    assert qualification["claim_state"] == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+    assert qualification["ranking"]["eligible_for_ranking"] is False
+    evaluation = RobustWalkForwardPolicy().evaluate(
+        document["candidate_digest"],
+        [document],
+        {
+            "stability_weight": 0.5,
+            "turnover_weight": 0.05,
+            "minimum_trades": 0,
+            "maximum_drawdown": None,
+            "maximum_annual_turnover": None,
+        },
+    )
+    assert evaluation["constraints"]["trusted_total_return"]["passed"] is False
+    assert RobustWalkForwardPolicy().select([evaluation]) is None
+
+
+@pytest.mark.parametrize("matrix_case", ["N1", "N2", "N3"])
+def test_no_eligible_matrix_never_ranks_a_numerically_available_result(
+    tmp_path: Path,
+    matrix_case: str,
+):
+    document = _trusted_document(tmp_path / matrix_case, historical_exposure="EXPOSED")
+    evaluation = RobustWalkForwardPolicy().evaluate(
+        document["candidate_digest"],
+        [document],
+        {
+            "stability_weight": 0.5,
+            "turnover_weight": 0.05,
+            "minimum_trades": 0,
+            "maximum_drawdown": None,
+            "maximum_annual_turnover": None,
+        },
+    )
+    assert isinstance(evaluation["validation_score"], float)
+    assert evaluation["eligible"] is False
+    assert RobustWalkForwardPolicy().select([evaluation]) is None
+
+
+def test_o1_qualification_slice_has_no_prohibited_effect_surface(tmp_path: Path):
+    matrix_case = "O1"
+    factory, attempt, _ = _trusted_attempt_and_factory(tmp_path)
+    state_entries = {path.name for path in factory.state_root.iterdir()}
+    result_entries = {path.name for path in Path(attempt["result_path"]).iterdir()}
+    assert state_entries <= {
+        "datasets",
+        "study-runs",
+        "attempt-audit",
+        "accounting-outcomes",
+    }
+    assert not {
+        "latest",
+        "scheduler",
+        "cron",
+        "signals",
+        "orders",
+        "observations",
+    }.intersection(state_entries | result_entries)
+    assert matrix_case == "O1"
 
 
 def test_metric_document_factory_verifies_and_recomputes_account_evidence(
