@@ -12,6 +12,7 @@ import stat
 import weakref
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from .corporate_actions import (
     SettlementSchedule,
     accounting_cash_dividends,
     admit_corporate_action_evidence,
+    dividend_tax_burden,
     rounding_policy_identity,
     tax_policy_identity,
 )
@@ -597,6 +599,16 @@ _ACCOUNT_METRIC_FIELDS = frozenset(
 _INTEGER_TEXT = re.compile(r"-?(?:0|[1-9][0-9]*)")
 _MAX_LEDGER_ROWS = 200_000
 _MAX_EVIDENCE_BYTES = 128 * 1_048_576
+_OUTCOME_PACKAGE_FIELDS = {
+    "schema_version",
+    "use_role",
+    "checked_as_of",
+    "attached_after_result_digest",
+    "execution_view_snapshot_id",
+    "result_artifact_set_sha256",
+    "corporate_action_evidence_sha256",
+    "files",
+}
 
 
 def _evidence_json(payload: bytes, label: str) -> dict[str, Any]:
@@ -697,6 +709,122 @@ def _result_digest(payloads: Mapping[str, bytes]) -> str:
     return digest.hexdigest()
 
 
+def _artifact_set_digest(payloads: Mapping[str, bytes]) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+                for name, payload in sorted(payloads.items())
+            }
+        )
+    ).hexdigest()
+
+
+def _accounting_outcome_evidence(
+    *,
+    state_root: Path | str,
+    result_payloads: Mapping[str, bytes],
+    expected_result_digest: str,
+    execution_view_snapshot_id: str,
+) -> tuple[Any, datetime]:
+    state = Path(os.path.abspath(os.fspath(state_root)))
+    package = state / "accounting-outcomes" / expected_result_digest
+    try:
+        package.relative_to(state)
+        metadata = os.stat(package, follow_symlinks=False)
+    except (OSError, ValueError) as exc:
+        raise TotalReturnQualificationError(
+            "separate accounting outcome package is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o222
+    ):
+        raise TotalReturnQualificationError("accounting outcome package is not immutable")
+    manifest_path = package / "manifest.json"
+    try:
+        manifest_metadata = os.stat(manifest_path, follow_symlinks=False)
+        manifest_payload = manifest_path.read_bytes()
+    except OSError as exc:
+        raise TotalReturnQualificationError("accounting outcome manifest is unavailable") from exc
+    if (
+        not stat.S_ISREG(manifest_metadata.st_mode)
+        or stat.S_ISLNK(manifest_metadata.st_mode)
+        or manifest_metadata.st_nlink != 1
+        or stat.S_IMODE(manifest_metadata.st_mode) & 0o222
+    ):
+        raise TotalReturnQualificationError("accounting outcome manifest is not immutable")
+    manifest = _evidence_json(manifest_payload, "accounting outcome manifest")
+    if set(manifest) != _OUTCOME_PACKAGE_FIELDS or manifest.get("schema_version") != 1:
+        raise TotalReturnQualificationError("accounting outcome manifest fields are invalid")
+    if (
+        manifest.get("use_role") != "ACCOUNTING_OUTCOME"
+        or manifest.get("attached_after_result_digest") != expected_result_digest
+        or manifest.get("execution_view_snapshot_id") != execution_view_snapshot_id
+        or manifest.get("result_artifact_set_sha256") != _artifact_set_digest(result_payloads)
+    ):
+        raise TotalReturnQualificationError(
+            "accounting outcome package is not bound after the sealed result"
+        )
+    files = manifest.get("files")
+    if not isinstance(files, dict) or "corporate_actions.json" not in files:
+        raise TotalReturnQualificationError("accounting outcome artifact map is invalid")
+    if set(os.listdir(package)) != {"manifest.json", *files}:
+        raise TotalReturnQualificationError("accounting outcome artifact set is invalid")
+    package_payloads: dict[str, bytes] = {}
+    for name, descriptor in files.items():
+        if Path(name).name != name or name == "manifest.json":
+            raise TotalReturnQualificationError("accounting outcome artifact name is invalid")
+        path = package / name
+        before = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) & 0o222
+        ):
+            raise TotalReturnQualificationError("accounting outcome artifact is not immutable")
+        payload = path.read_bytes()
+        if descriptor != {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }:
+            raise TotalReturnQualificationError("accounting outcome artifact digest mismatch")
+        package_payloads[name] = payload
+    document = _evidence_json(
+        package_payloads.pop("corporate_actions.json"),
+        "accounting outcome corporate actions",
+    )
+    artifacts = {
+        descriptor["artifact_id"]: package_payloads[descriptor["path"]]
+        for descriptor in document.get("artifacts", [])
+        if isinstance(descriptor, dict) and descriptor.get("path") in package_payloads
+    }
+    try:
+        admitted = admit_corporate_action_evidence(document, artifacts)
+    except (KeyError, CorporateActionEvidenceError) as exc:
+        raise TotalReturnQualificationError("accounting outcome evidence is invalid") from exc
+    if (
+        admitted.digest != manifest.get("corporate_action_evidence_sha256")
+        or any(
+            revision.get("use_role") != "ACCOUNTING_OUTCOME"
+            for revision in admitted.document["revisions"]
+        )
+    ):
+        raise TotalReturnQualificationError("accounting outcome evidence role or identity is invalid")
+    checked_as_of = admitted.document["coverage"]["payload"].get("checked_as_of")
+    if checked_as_of != manifest.get("checked_as_of"):
+        raise TotalReturnQualificationError("accounting outcome checked-as-of differs")
+    try:
+        checked = datetime.fromisoformat(str(checked_as_of).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TotalReturnQualificationError("accounting outcome checked-as-of is invalid") from exc
+    if checked.tzinfo != timezone.utc:
+        raise TotalReturnQualificationError("accounting outcome checked-as-of is not UTC")
+    return admitted, checked
+
+
 def _csv_rows(
     payload: bytes,
     columns: tuple[str, ...],
@@ -744,7 +872,9 @@ def _date_value(value: Any, label: str) -> date:
 
 
 def _ledger_bindings_and_close(
-    payloads: Mapping[str, bytes], metrics: Mapping[str, Any]
+    payloads: Mapping[str, bytes],
+    metrics: Mapping[str, Any],
+    actions: tuple[Any, ...],
 ) -> tuple[dict[str, dict[str, str]], str, str]:
     events = _csv_rows(
         payloads["account_events.csv"],
@@ -769,11 +899,23 @@ def _ledger_bindings_and_close(
     close_date = _date_value(close, "accounting close")
     bindings: dict[str, dict[str, str]] = {}
     event_rows_by_account: dict[str, list[dict[str, Any]]] = {}
+    action_ids = {action.event_revision_id for action in actions}
+    if len(action_ids) != len(actions):
+        raise TotalReturnQualificationError("terminal corporate-action identity is duplicated")
     initial_capital: int | None = None
     for account in sorted(ACCOUNT_NAMES):
         account_events = [row for row in events if row["account"] == account]
         account_trades = [row for row in trades if row["account"] == account]
         event_rows_by_account[account] = account_events
+        corporate_action_rows = [row for row in account_events if row["event_revision_id"]]
+        if any(
+            row["event_revision_id"] not in action_ids
+            or row["event_type"] not in {"DIVIDEND_ENTITLEMENT", "DIVIDEND_PAYMENT"}
+            for row in corporate_action_rows
+        ):
+            raise TotalReturnQualificationError(
+                "account ledger contains a substituted corporate action"
+            )
         sequences = [row["sequence"] for row in account_events]
         if sequences != list(range(1, len(account_events) + 1)):
             raise TotalReturnQualificationError("account event sequence is incomplete")
@@ -890,6 +1032,79 @@ def _ledger_bindings_and_close(
             != after_tax_profit - gross_dividend + collected_tax
         ):
             raise TotalReturnQualificationError("account components do not reconcile")
+        expected_gross_dividend = 0
+        for action in actions:
+            action_rows = [
+                row
+                for row in corporate_action_rows
+                if row["event_revision_id"] == action.event_revision_id
+            ]
+            entitlement = [
+                row for row in action_rows if row["event_type"] == "DIVIDEND_ENTITLEMENT"
+            ]
+            payment = [row for row in action_rows if row["event_type"] == "DIVIDEND_PAYMENT"]
+            record_rows = [
+                row
+                for row in account_events
+                if _date_value(row["Date"], "account event date") == action.record_date
+            ]
+            if not entitlement and not payment:
+                if any(row["settled_holdings"] != 0 for row in record_rows):
+                    raise TotalReturnQualificationError(
+                        "corporate-action entitlement posting is missing"
+                    )
+                continue
+            if len(entitlement) != 1 or len(payment) != 1:
+                raise TotalReturnQualificationError(
+                    "corporate-action posting is missing, extra, or duplicated"
+                )
+            entitled = entitlement[0]
+            paid = payment[0]
+            quantity = entitled["quantity"]
+            gross_fen = int(
+                (action.gross_cash_per_share * Decimal(quantity) * Decimal(100)).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+            if (
+                quantity <= 0
+                or entitled["Date"] != action.record_date.isoformat()
+                or paid["Date"] != action.pay_date.isoformat()
+                or entitled["settled_holdings"] != quantity
+                or paid["quantity"] != quantity
+                or entitled["cash_delta_fen"] != 0
+                or paid["cash_delta_fen"] != gross_fen
+            ):
+                raise TotalReturnQualificationError(
+                    "corporate-action terms do not reconcile to the account ledger"
+                )
+            expected_gross_dividend += gross_fen
+        if expected_gross_dividend != gross_dividend:
+            raise TotalReturnQualificationError(
+                "account dividend postings do not match admitted terminal actions"
+            )
+        expected_tax = 0
+        for row in account_trades:
+            if row["exit_settlement_date"]:
+                burden = dividend_tax_burden(
+                    _date_value(row["entry_settlement_date"], "entry settlement"),
+                    _date_value(row["exit_settlement_date"], "exit settlement"),
+                )
+                if row["tax_burden"] != format(burden, ".2f"):
+                    raise TotalReturnQualificationError(
+                        "account dividend tax burden is not policy-derived"
+                    )
+                expected_tax += int(
+                    (Decimal(row["dividend_fen"]) * burden).quantize(
+                        Decimal("1"), rounding=ROUND_HALF_UP
+                    )
+                )
+            elif row["tax_fen"] != 0:
+                raise TotalReturnQualificationError("open account trade carries collected tax")
+        if expected_tax != sum(row["tax_fen"] for row in account_trades):
+            raise TotalReturnQualificationError(
+                "account dividend tax postings do not match admitted action terms"
+            )
         bindings[account] = {
             "events_sha256": hashlib.sha256(canonical_json_bytes(account_events)).hexdigest(),
             "trades_sha256": hashlib.sha256(canonical_json_bytes(account_trades)).hexdigest(),
@@ -1092,10 +1307,8 @@ def _verified_evidence_graph(
     lineage = dataset_manifest.get("lineage")
     parent = lineage.get("parent") if isinstance(lineage, dict) else None
     view_spec = lineage.get("view_spec") if isinstance(lineage, dict) else None
-    coverage = admitted.document["coverage"]
-    coverage_payload = coverage["payload"]
-    coverage_start = _date_value(coverage_payload["interval_start"], "coverage start")
-    coverage_end = _date_value(coverage_payload["interval_end"], "coverage end")
+    causal_coverage = admitted.document["coverage"]
+    causal_coverage_payload = causal_coverage["payload"]
     period_start = _date_value(metrics.get("period_start"), "accounting period start")
     period_end = _date_value(metrics.get("period_end"), "accounting period end")
     if (
@@ -1105,9 +1318,8 @@ def _verified_evidence_graph(
         or run_manifest.get("dataset_snapshot_id") != dataset_manifest.get("snapshot_id")
         or accounting.get("corporate_action_evidence_sha256") != admitted.digest
         or dataset_manifest.get("corporate_action_evidence_sha256") != admitted.digest
-        or coverage_payload.get("instrument") != instrument
-        or coverage_payload.get("market") not in {"XSHG", "XSHE"}
-        or not coverage_start <= period_start <= period_end <= coverage_end
+        or causal_coverage_payload.get("instrument") != instrument
+        or causal_coverage_payload.get("market") not in {"XSHG", "XSHE"}
     ):
         raise TotalReturnQualificationError("Dataset, coverage, and run bindings differ")
     if not isinstance(parent, dict) or not isinstance(view_spec, dict):
@@ -1120,38 +1332,79 @@ def _verified_evidence_graph(
         for revision in admitted.document["revisions"]
     ):
         raise TotalReturnQualificationError("corporate-action evidence leaks after the feature cutoff")
+    outcome, checked = _accounting_outcome_evidence(
+        state_root=state_root,
+        result_payloads=payloads,
+        expected_result_digest=expected_result_digest,
+        execution_view_snapshot_id=dataset_manifest["snapshot_id"],
+    )
+    coverage = outcome.document["coverage"]
+    coverage_payload = coverage["payload"]
+    coverage_start = _date_value(coverage_payload["interval_start"], "coverage start")
+    coverage_end = _date_value(coverage_payload["interval_end"], "coverage end")
+    if (
+        coverage_payload.get("instrument") != instrument
+        or coverage_payload.get("market") not in {"XSHG", "XSHE"}
+        or not coverage_start <= period_start <= period_end <= coverage_end
+        or checked.date() < period_end
+    ):
+        raise TotalReturnQualificationError("accounting outcome interval is invalid")
     checked_as_of = coverage_payload.get("checked_as_of")
     try:
-        checked = datetime.fromisoformat(str(checked_as_of).replace("Z", "+00:00"))
+        outcome_checked = datetime.fromisoformat(str(checked_as_of).replace("Z", "+00:00"))
     except ValueError as exc:
         raise TotalReturnQualificationError("outcome checked-as-of is invalid") from exc
-    if checked.tzinfo != timezone.utc or checked.date() < period_end:
+    if outcome_checked != checked:
         raise TotalReturnQualificationError("outcome evidence predates sealed decisions")
-    account_bindings, accounting_close, parity_digest = _ledger_bindings_and_close(
-        payloads, metrics
-    )
     tax, settlement, rounding = _verify_policy_and_schedule(
         accounting,
         payloads,
         coverage_start,
         coverage_end,
     )
-    actions = accounting_cash_dividends(admitted)
+    causal_actions = accounting_cash_dividends(admitted)
+    actions = accounting_cash_dividends(outcome)
+    if [
+        (
+            action.event_revision_id,
+            action.record_date,
+            action.ex_date,
+            action.pay_date,
+            action.gross_cash_per_share,
+        )
+        for action in causal_actions
+    ] != [
+        (
+            action.event_revision_id,
+            action.record_date,
+            action.ex_date,
+            action.pay_date,
+            action.gross_cash_per_share,
+        )
+        for action in actions
+    ]:
+        raise TotalReturnQualificationError(
+            "causal and accounting-outcome action terms differ"
+        )
+    account_bindings, accounting_close, parity_digest = _ledger_bindings_and_close(
+        payloads, metrics, actions
+    )
     terminal_ids = [action.event_revision_id for action in actions]
     if (
-        accounting.get("coverage_state") != coverage_payload.get("coverage_state")
-        or accounting.get("coverage_id") != coverage.get("coverage_id")
+        accounting.get("coverage_state") != causal_coverage_payload.get("coverage_state")
+        or accounting.get("coverage_id") != causal_coverage.get("coverage_id")
         or accounting.get("complete_contract_id") != admitted.document.get("complete_contract_id")
-        or accounting.get("event_revision_ids") != coverage_payload.get("event_revision_ids")
+        or accounting.get("event_revision_ids")
+        != causal_coverage_payload.get("event_revision_ids")
         or accounting.get("raw_artifact_sha256s")
         != sorted(admitted.artifact_bytes)
-        or not set(terminal_ids).issubset(set(coverage_payload.get("event_revision_ids", [])))
+        or terminal_ids != coverage_payload.get("event_revision_ids", [])
         or accounting.get("claim") not in SOURCE_ISSUER_CLAIMS["STRATEGY_RUNNER"]
     ):
         raise TotalReturnQualificationError("coverage or terminal event identity differs")
     bindings = {
-        "corporate_action_evidence_sha256": admitted.digest,
-        "raw_artifact_sha256s": sorted(admitted.artifact_bytes),
+        "corporate_action_evidence_sha256": outcome.digest,
+        "raw_artifact_sha256s": sorted(outcome.artifact_bytes),
         "event_revision_ids": list(coverage_payload["event_revision_ids"]),
         "tax_policy_id": tax["tax_policy_id"],
         "tax_policy_sha256": tax["sha256"],
@@ -1167,7 +1420,7 @@ def _verified_evidence_graph(
         "view_corporate_action_evidence_sha256": admitted.digest,
         "scoring_mask_sha256": dataset_manifest["scoring_mask_sha256"],
         "causal_feature_cutoff": feature_cutoff.isoformat(),
-        "accounting_outcome_checked_as_of": checked.isoformat().replace("+00:00", "Z"),
+        "accounting_outcome_checked_as_of": outcome_checked.isoformat().replace("+00:00", "Z"),
         "accounting_outcome_use_role": "ACCOUNTING_OUTCOME",
         "result_digest": expected_result_digest,
         "run_manifest_sha256": hashlib.sha256(payloads["run_manifest.json"]).hexdigest(),
@@ -1178,8 +1431,8 @@ def _verified_evidence_graph(
     }
     complete = coverage_payload["coverage_state"] in COMPLETE_COVERAGE_STATES
     if complete and (
-        not admitted.document.get("complete_enumeration_contract")
-        or admitted.document.get("complete_contract_id") is None
+        not outcome.document.get("complete_enumeration_contract")
+        or outcome.document.get("complete_contract_id") is None
     ):
         raise TotalReturnQualificationError("complete coverage contract is absent")
     checks = {field: True for field in CHECK_FIELDS}
@@ -1190,7 +1443,7 @@ def _verified_evidence_graph(
         "coverage_state": coverage_payload["coverage_state"],
         "coverage_basis": "COMPLETE_ENUMERATION_CONTRACT" if complete else "NONE",
         "coverage_id": coverage["coverage_id"],
-        "complete_contract_id": admitted.document.get("complete_contract_id"),
+        "complete_contract_id": outcome.document.get("complete_contract_id"),
         "equivalent_contract_approval_id": None,
         "bindings": bindings,
         "accounting_close": accounting_close,

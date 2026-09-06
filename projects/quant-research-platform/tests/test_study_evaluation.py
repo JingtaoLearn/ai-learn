@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import quant_platform.total_return_claims as total_return_claims
 from quant_platform.corporate_actions import admit_corporate_action_evidence
 from quant_platform.datasets import publish_snapshot
 from quant_platform.resolved_runner import _result_digest
@@ -136,6 +137,55 @@ def _verified_document(tmp_path: Path) -> dict:
     )
 
 
+def _seal_accounting_outcome(
+    state: Path,
+    result_path: Path,
+    result_digest: str,
+    execution_view_snapshot_id: str,
+    evidence,
+) -> None:
+    document = copy.deepcopy(evidence.document)
+    for revision in document["revisions"]:
+        revision["use_role"] = "ACCOUNTING_OUTCOME"
+    outcome = admit_corporate_action_evidence(document, evidence.artifact_bytes)
+    package = state / "accounting-outcomes" / result_digest
+    package.mkdir(parents=True)
+    payloads = {
+        "corporate_actions.json": (
+            json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode(),
+        **{
+            descriptor["path"]: outcome.artifact_bytes[descriptor["artifact_id"]]
+            for descriptor in document["artifacts"]
+        },
+    }
+    for name, payload in payloads.items():
+        path = package / name
+        path.write_bytes(payload)
+        path.chmod(0o444)
+    result_payloads = {path.name: path.read_bytes() for path in result_path.iterdir()}
+    manifest = {
+        "schema_version": 1,
+        "use_role": "ACCOUNTING_OUTCOME",
+        "checked_as_of": document["coverage"]["payload"]["checked_as_of"],
+        "attached_after_result_digest": result_digest,
+        "execution_view_snapshot_id": execution_view_snapshot_id,
+        "result_artifact_set_sha256": total_return_claims._artifact_set_digest(result_payloads),
+        "corporate_action_evidence_sha256": outcome.digest,
+        "files": {
+            name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+            for name, payload in sorted(payloads.items())
+        },
+    }
+    manifest_path = package / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o444)
+    package.chmod(0o555)
+
+
 def _trusted_attempt_and_factory(
     tmp_path: Path,
     *,
@@ -224,6 +274,13 @@ def _trusted_attempt_and_factory(
         "requested": requested,
         "resolved": resolved,
     }
+    _seal_accounting_outcome(
+        state,
+        Path(run["path"]),
+        attempt["result_digest"],
+        derived["snapshot_id"],
+        evidence,
+    )
     attempt["candidate_configuration"] = {
         "schema_version": 1,
         "template": {
@@ -283,11 +340,12 @@ def _mutate_and_reseal_trusted_run(
     attempt: dict,
     case: str,
 ) -> None:
+    prior_result_digest = attempt["result_digest"]
     root = Path(attempt["result_path"])
     root.chmod(0o755)
     for path in root.iterdir():
         path.chmod(0o644)
-    if case in {"L1", "L2", "L5", "I2"}:
+    if case in {"L1", "L2", "L3", "L4", "L5", "I2"}:
         events = pd.read_csv(root / "account_events.csv", dtype=str, keep_default_na=False)
         trades = pd.read_csv(root / "account_trades.csv", dtype=str, keep_default_na=False)
         if case == "L1":
@@ -296,6 +354,15 @@ def _mutate_and_reseal_trusted_run(
             frame = trades
         elif case == "L2":
             events.loc[0, "account"] = "rogue"
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "L3":
+            events.loc[events["event_revision_id"] != "", "event_revision_id"] = "f" * 64
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "L4":
+            selected = (events["account"] == "zero_cost") & (events["event_revision_id"] != "")
+            events.loc[selected, "event_revision_id"] = "f" * 64
             target = root / "account_events.csv"
             frame = events
         elif case == "L5":
@@ -360,6 +427,24 @@ def _mutate_and_reseal_trusted_run(
     root.chmod(0o555)
     attempt["result_path"] = str(root)
     attempt["result_digest"] = _result_digest(root)
+    prior_package = factory.state_root / "accounting-outcomes" / prior_result_digest
+    package = factory.state_root / "accounting-outcomes" / attempt["result_digest"]
+    prior_package.chmod(0o755)
+    manifest_path = prior_package / "manifest.json"
+    manifest_path.chmod(0o644)
+    outcome_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    outcome_manifest["attached_after_result_digest"] = attempt["result_digest"]
+    outcome_manifest["result_artifact_set_sha256"] = total_return_claims._artifact_set_digest(
+        {path.name: path.read_bytes() for path in root.iterdir()}
+    )
+    manifest_path.write_text(
+        json.dumps(outcome_manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o444)
+    prior_package.chmod(0o555)
+    if prior_package != package:
+        prior_package.rename(package)
     audit_path = factory.state_root / "attempt-audit" / f"{attempt['attempt_id']}.json"
     audit_path.chmod(0o644)
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -403,7 +488,10 @@ def test_metric_document_factory_issues_only_from_complete_verified_graph(
     assert evaluation["constraints"]["trusted_total_return"]["passed"] is True
 
 
-@pytest.mark.parametrize("case", ["C4", "T1", "T2", "L1", "L2", "L5", "I2", "R1", "R2"])
+@pytest.mark.parametrize(
+    "case",
+    ["C4", "T1", "T2", "L1", "L2", "L3", "L4", "L5", "I2", "R1", "R2"],
+)
 def test_adversarial_accounting_rows_reject_through_metric_document_factory(
     tmp_path: Path,
     case: str,
