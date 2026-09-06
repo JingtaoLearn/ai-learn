@@ -768,7 +768,7 @@ def _ledger_bindings_and_close(
         if sequences != list(range(1, len(account_events) + 1)):
             raise TotalReturnQualificationError("account event sequence is incomplete")
         event_dates = [_date_value(row["Date"], "account event date") for row in account_events]
-        if event_dates != sorted(event_dates) or event_dates[-1] != close_date:
+        if event_dates != sorted(event_dates) or event_dates[-1] > close_date:
             raise TotalReturnQualificationError("account event close or ordering is invalid")
         account_facts = facts[account]
         if not isinstance(account_facts, dict) or set(account_facts) != _ACCOUNT_METRIC_FIELDS:
