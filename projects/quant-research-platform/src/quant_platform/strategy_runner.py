@@ -23,7 +23,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from .datasets import _verified_scoring_bounds, _verify_snapshot
+from .corporate_actions import SettlementSchedule, tax_policy_identity
+from .datasets import _verified_action_evidence, _verified_scoring_bounds, _verify_snapshot
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
 from .strategy_replay import replay_strategy
 from .strategy_report import render_report, verified_cjk_font_identity
@@ -44,9 +45,14 @@ ARTIFACT_NAMES = {
     "report.html",
 }
 HASHED_ARTIFACT_NAMES = ARTIFACT_NAMES - {"run_manifest.json"}
+SETTLEMENT_ARTIFACT_NAMES = ARTIFACT_NAMES | {
+    "account_events.csv",
+    "account_trades.csv",
+}
 PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/catalog.py", "catalog.py"),
     ("src/quant_platform/composition_worker.py", "composition_worker.py"),
+    ("src/quant_platform/corporate_actions.py", "corporate_actions.py"),
     ("src/quant_platform/datasets.py", "datasets.py"),
     ("src/quant_platform/experiment_service.py", "experiment_service.py"),
     ("src/quant_platform/__init__.py", "__init__.py"),
@@ -91,12 +97,45 @@ RECONCILIATION_FIELDS = {
     "profit_identity",
     "trade_net_pnl",
 }
+SETTLEMENT_RECONCILIATION_FIELDS = RECONCILIATION_FIELDS | {
+    "integer_fen",
+    "settled_quantity",
+    "account_isolation",
+    "deferred_tax",
+}
 SEMANTICS = {
     "account_return_scope": "price_return_only_without_dividend_or_corporate_action_cash_flows",
     "decision_information": "signal_history_ends_before_execution_session",
     "execution_price": "raw_open",
     "terminal_mark": "raw_close",
 }
+
+
+def _settlement_accounting(evidence_sha256: str, schedule: SettlementSchedule) -> dict[str, Any]:
+    return {
+        "claim": "KNOWN_EVENT_CORRECTED_PARTIAL",
+        "corporate_action_evidence_sha256": evidence_sha256,
+        "tax_policy": tax_policy_identity(),
+        "settlement_schedule": {
+            "sha256": schedule.digest,
+            "document": schedule.document,
+        },
+    }
+
+
+def _semantics(accounting: dict[str, Any] | None) -> dict[str, Any]:
+    if accounting is None:
+        return dict(SEMANTICS)
+    return {
+        "account_return_scope": "known_event_corrected_partial_after_tax",
+        "decision_information": "signal_history_ends_before_execution_session",
+        "execution_price": "raw_open",
+        "terminal_mark": "raw_close",
+        "money_posting": "integer_fen_round_half_up_research_assumption",
+        "holding_period_endpoint": "day_before_transfer_settlement",
+        "fifo": "per_securities_account_end_of_day_net_change",
+        "tax_collection": "after_transfer_settlement_next_trading_day",
+    }
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -148,12 +187,10 @@ def _git_identity(project_root: Path | None) -> dict[str, Any]:
         repository = Path(repository_output).resolve(strict=True)
         project_relative = project_root.relative_to(repository)
         tracked_metadata = [
-            (project_relative / relative).as_posix()
-            for relative in PROJECT_SOURCE_PATHS
+            (project_relative / relative).as_posix() for relative in PROJECT_SOURCE_PATHS
         ]
         subprocess.run(
-            ["git", "-C", str(repository), "ls-files", "--error-unmatch", "--"]
-            + tracked_metadata,
+            ["git", "-C", str(repository), "ls-files", "--error-unmatch", "--"] + tracked_metadata,
             check=True,
             capture_output=True,
             text=True,
@@ -211,9 +248,7 @@ def _read_source_payload(
         if not stat.S_ISREG(before.st_mode):
             raise StrategyRunError(f"effective source input is unsafe: {label}")
         if before.st_nlink != 1:
-            raise StrategyRunError(
-                f"effective source input has an unsafe hard link count: {label}"
-            )
+            raise StrategyRunError(f"effective source input has an unsafe hard link count: {label}")
         descriptor = os.open(
             target,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
@@ -222,29 +257,21 @@ def _read_source_payload(
         try:
             opened = os.fstat(descriptor)
             if _source_file_identity(opened) != _source_file_identity(before):
-                raise StrategyRunError(
-                    f"effective source input changed while opening: {label}"
-                )
+                raise StrategyRunError(f"effective source input changed while opening: {label}")
             chunks: list[bytes] = []
             while chunk := os.read(descriptor, 1024 * 1024):
                 chunks.append(chunk)
             after = os.fstat(descriptor)
             if _source_file_identity(after) != _source_file_identity(opened):
-                raise StrategyRunError(
-                    f"effective source input changed while hashing: {label}"
-                )
+                raise StrategyRunError(f"effective source input changed while hashing: {label}")
             payload = b"".join(chunks)
             if len(payload) != after.st_size:
-                raise StrategyRunError(
-                    f"effective source input read was incomplete: {label}"
-                )
+                raise StrategyRunError(f"effective source input read was incomplete: {label}")
         finally:
             os.close(descriptor)
         current = os.stat(target, dir_fd=directory_fd, follow_symlinks=False)
         if _source_file_identity(current) != _source_file_identity(after):
-            raise StrategyRunError(
-                f"effective source input path changed while hashing: {label}"
-            )
+            raise StrategyRunError(f"effective source input path changed while hashing: {label}")
     except StrategyRunError:
         raise
     except OSError as exc:
@@ -309,10 +336,9 @@ def _open_anchored_directory(path: Path, label: str) -> Iterator[int]:
         after = os.fstat(descriptor)
         _require_no_symlink_components(path, label)
         current = os.stat(path, follow_symlinks=False)
-        if (
-            _directory_identity(after) != _directory_identity(opened)
-            or _directory_identity(current) != _directory_identity(opened)
-        ):
+        if _directory_identity(after) != _directory_identity(opened) or _directory_identity(
+            current
+        ) != _directory_identity(opened):
             raise StrategyRunError(f"{label} changed while hashing: {path}")
     except StrategyRunError:
         raise
@@ -330,17 +356,13 @@ def _validate_project_layout_at(root_fd: int, label: str) -> None:
     try:
         for relative in PROJECT_SOURCE_PATHS:
             try:
-                metadata = os.stat(
-                    relative, dir_fd=root_fd, follow_symlinks=False
-                )
+                metadata = os.stat(relative, dir_fd=root_fd, follow_symlinks=False)
             except FileNotFoundError as exc:
                 raise StrategyRunError(
                     f"{label} is missing required source input: {relative}"
                 ) from exc
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise StrategyRunError(
-                    f"{label} has an unsafe required source input: {relative}"
-                )
+                raise StrategyRunError(f"{label} has an unsafe required source input: {relative}")
         try:
             src_fd = os.open("src", flags, dir_fd=root_fd)
             package_fd = os.open("quant_platform", flags, dir_fd=src_fd)
@@ -350,9 +372,7 @@ def _validate_project_layout_at(root_fd: int, label: str) -> None:
             ) from exc
         for source_label, filename in PACKAGE_SOURCE_PATHS:
             try:
-                metadata = os.stat(
-                    filename, dir_fd=package_fd, follow_symlinks=False
-                )
+                metadata = os.stat(filename, dir_fd=package_fd, follow_symlinks=False)
             except FileNotFoundError as exc:
                 raise StrategyRunError(
                     f"{label} is missing required source input: {source_label}"
@@ -364,9 +384,7 @@ def _validate_project_layout_at(root_fd: int, label: str) -> None:
     except StrategyRunError:
         raise
     except OSError as exc:
-        raise StrategyRunError(
-            f"{label} does not have the exact expected project layout"
-        ) from exc
+        raise StrategyRunError(f"{label} does not have the exact expected project layout") from exc
     finally:
         if package_fd >= 0:
             os.close(package_fd)
@@ -386,8 +404,7 @@ def _validate_project_root(path: Path | str, label: str) -> Path:
 
 def _is_recognizable_project_root(path: Path) -> bool:
     return all(
-        os.path.lexists(path / relative)
-        for relative in ("pyproject.toml", "src/quant_platform")
+        os.path.lexists(path / relative) for relative in ("pyproject.toml", "src/quant_platform")
     )
 
 
@@ -425,17 +442,10 @@ def _discover_project_root(
     if validated:
         return validated[0]
 
-    loaded_package = _absolute_path(
-        package_root or Path(__file__).resolve(strict=True).parent
-    )
-    if (
-        loaded_package.name == "quant_platform"
-        and loaded_package.parent.name == "src"
-    ):
+    loaded_package = _absolute_path(package_root or Path(__file__).resolve(strict=True).parent)
+    if loaded_package.name == "quant_platform" and loaded_package.parent.name == "src":
         editable_root = loaded_package.parent.parent
-        return _validate_project_root(
-            editable_root, "editable-layout project root"
-        )
+        return _validate_project_root(editable_root, "editable-layout project root")
     raise StrategyRunError(
         "complete project source root is required; run from the project source "
         "checkout or pass --project-root (or set QUANT_PLATFORM_PROJECT_ROOT)"
@@ -469,22 +479,14 @@ def _effective_source_identity(
         digest.update(payload)
         digest.update(b"\0")
 
-    with _open_anchored_directory(
-        package_root, "loaded quant_platform package"
-    ) as package_fd:
+    with _open_anchored_directory(package_root, "loaded quant_platform package") as package_fd:
         for label, filename in PACKAGE_SOURCE_PATHS:
             bind_input(label, package_root / filename, package_fd)
-    with _open_anchored_directory(
-        discovered_root, "discovered project root"
-    ) as project_fd:
+    with _open_anchored_directory(discovered_root, "discovered project root") as project_fd:
         _validate_project_layout_at(project_fd, "discovered project root")
         for relative in PROJECT_SOURCE_PATHS:
             bind_input(relative, discovered_root / relative, project_fd)
-    runtime = (
-        _runtime_identity(font_identity)
-        if font_identity is not None
-        else _runtime_identity()
-    )
+    runtime = _runtime_identity(font_identity) if font_identity is not None else _runtime_identity()
     digest.update(b"runtime\0")
     digest.update(_canonical_json(runtime))
     return digest.hexdigest(), files, runtime, _git_identity(discovered_root)
@@ -515,9 +517,7 @@ def _bound_snapshot(
         raise StrategyRunError("dataset snapshot verifier did not return its frame")
     manifest, frame = verified
     if manifest["metadata"]["instrument"] != instrument:
-        raise StrategyRunError(
-            "configured dataset instrument does not match snapshot metadata"
-        )
+        raise StrategyRunError("configured dataset instrument does not match snapshot metadata")
     if manifest["schema_version"] == 3:
         try:
             scoring_start, scoring_end = _verified_scoring_bounds(
@@ -526,23 +526,18 @@ def _bound_snapshot(
                 frame,
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:
-            raise StrategyRunError(
-                f"dataset scoring mask verification failed: {exc}"
-            ) from exc
+            raise StrategyRunError(f"dataset scoring mask verification failed: {exc}") from exc
         parameters = config.template_parameters
         if parameters["evaluation_start"] != scoring_start:
             raise StrategyRunError(
-                "template evaluation_start must exactly match derived "
-                "lineage scoring_start"
+                "template evaluation_start must exactly match derived lineage scoring_start"
             )
         if parameters["evaluation_end"] != scoring_end:
             raise StrategyRunError(
-                "template evaluation_end must exactly match derived "
-                "lineage scoring_end"
+                "template evaluation_end must exactly match derived lineage scoring_end"
             )
         if (
-            manifest["lineage"]["view_spec"]["account_policy"]
-            == "FORCE_FLAT_WITH_COST"
+            manifest["lineage"]["view_spec"]["account_policy"] == "FORCE_FLAT_WITH_COST"
             and parameters["terminal_handling"] != "force_liquidate"
         ):
             raise StrategyRunError(
@@ -552,13 +547,16 @@ def _bound_snapshot(
 
 
 def _write_json(path: Path, value: Any) -> None:
-    payload = json.dumps(
-        value,
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8") + b"\n"
+    payload = (
+        json.dumps(
+            value,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
     with path.open("xb") as stream:
         stream.write(payload)
         stream.flush()
@@ -582,13 +580,15 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
     _write_bytes(path, payload)
 
 
-def _file_manifest(directory: Path) -> dict[str, dict[str, Any]]:
+def _file_manifest(
+    directory: Path, artifact_names: set[str] = HASHED_ARTIFACT_NAMES
+) -> dict[str, dict[str, Any]]:
     return {
         name: {
             "sha256": _sha256((directory / name).read_bytes()),
             "size": (directory / name).stat().st_size,
         }
-        for name in sorted(HASHED_ARTIFACT_NAMES)
+        for name in sorted(artifact_names)
     }
 
 
@@ -734,6 +734,7 @@ def _verify_run(
     source_files: dict[str, str],
     runtime: dict[str, str],
     composition_digest: str | None = None,
+    accounting: dict[str, Any] | None = None,
     *,
     require_name: bool = True,
 ) -> dict[str, Any]:
@@ -744,21 +745,22 @@ def _verify_run(
             raise ValueError("run directory name does not match run ID")
         if stat.S_IMODE(target.stat().st_mode) & 0o222:
             raise ValueError("run directory is not immutable")
+        expected_artifact_names = (
+            SETTLEMENT_ARTIFACT_NAMES if accounting is not None else ARTIFACT_NAMES
+        )
         actual_names = {path.name for path in target.iterdir()}
-        if actual_names != ARTIFACT_NAMES:
+        if actual_names != expected_artifact_names:
             raise ValueError(
-                f"artifact set mismatch: expected={sorted(ARTIFACT_NAMES)}, "
+                f"artifact set mismatch: expected={sorted(expected_artifact_names)}, "
                 f"actual={sorted(actual_names)}"
             )
         artifact_payloads = {
             name: _read_immutable_artifact(target / name)
-            for name in sorted(ARTIFACT_NAMES)
+            for name in sorted(expected_artifact_names)
         }
 
         manifest = _require_object(
-            _load_strict_json(
-                artifact_payloads["run_manifest.json"], "run manifest"
-            ),
+            _load_strict_json(artifact_payloads["run_manifest.json"], "run manifest"),
             "run manifest",
         )
         expected_fields = {
@@ -776,6 +778,8 @@ def _verify_run(
             "reconciliation",
             "files",
         }
+        if accounting is not None:
+            expected_fields.add("accounting")
         if set(manifest) != expected_fields:
             raise ValueError("run manifest fields are invalid")
         if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
@@ -789,6 +793,10 @@ def _verify_run(
         }
         if composition_digest is not None:
             identity["composition_digest"] = composition_digest
+        if accounting is not None:
+            identity["accounting"] = accounting
+            if manifest["accounting"] != accounting:
+                raise ValueError("accounting identity inputs do not match")
         manifest_identity = _require_object(manifest["identity"], "run identity")
         if set(manifest_identity) != set(identity) or manifest_identity != identity:
             raise ValueError("run identity inputs do not match")
@@ -800,16 +808,11 @@ def _verify_run(
             raise ValueError("config checksum binding mismatch")
         if manifest["dataset_snapshot_id"] != dataset_manifest["snapshot_id"]:
             raise ValueError("dataset snapshot binding mismatch")
-        if (
-            manifest["dataset_canonical_sha256"]
-            != dataset_manifest["canonical_sha256"]
-        ):
+        if manifest["dataset_canonical_sha256"] != dataset_manifest["canonical_sha256"]:
             raise ValueError("dataset canonical checksum binding mismatch")
         if manifest["source_sha256"] != source_sha256:
             raise ValueError("effective source checksum binding mismatch")
-        manifest_source_files = _validate_sha_map(
-            manifest["source_files"], "source files"
-        )
+        manifest_source_files = _validate_sha_map(manifest["source_files"], "source files")
         if manifest_source_files != source_files:
             raise ValueError("effective source file checksums mismatch")
         manifest_runtime = _validate_runtime(manifest["runtime"])
@@ -817,32 +820,30 @@ def _verify_run(
             raise ValueError("runtime identity mismatch")
         _validate_git(manifest["git"])
         semantics = _require_object(manifest["semantics"], "semantics")
-        if semantics != SEMANTICS:
+        if semantics != _semantics(accounting):
             raise ValueError("financial semantics mismatch")
-        reconciliation = _require_object(
-            manifest["reconciliation"], "reconciliation"
+        reconciliation = _require_object(manifest["reconciliation"], "reconciliation")
+        reconciliation_fields = (
+            SETTLEMENT_RECONCILIATION_FIELDS if accounting is not None else RECONCILIATION_FIELDS
         )
-        if set(reconciliation) != RECONCILIATION_FIELDS or not all(
+        if set(reconciliation) != reconciliation_fields or not all(
             type(passed) is bool for passed in reconciliation.values()
         ):
             raise ValueError("stored reconciliation gates are invalid")
         if not all(reconciliation.values()):
             raise ValueError("stored reconciliation gates are not all true")
 
-        stored_config = _load_strict_json(
-            artifact_payloads["config.json"], "canonical config"
-        )
+        stored_config = _load_strict_json(artifact_payloads["config.json"], "canonical config")
         if stored_config != config.canonical:
             raise ValueError("canonical config artifact mismatch")
         if _sha256(_canonical_json(stored_config)) != config.config_sha256:
             raise ValueError("canonical config artifact checksum mismatch")
         files = _require_object(manifest["files"], "artifact checksum map")
-        if set(files) != HASHED_ARTIFACT_NAMES:
+        expected_hashed_names = expected_artifact_names - {"run_manifest.json"}
+        if set(files) != expected_hashed_names:
             raise ValueError("artifact checksum map is incomplete")
         for name, expected in files.items():
-            expected = _require_object(
-                expected, f"artifact checksum entry {name}"
-            )
+            expected = _require_object(expected, f"artifact checksum entry {name}")
             if (
                 set(expected) != {"sha256", "size"}
                 or not isinstance(expected["sha256"], str)
@@ -870,15 +871,26 @@ def run_strategy_config(
     config_path: Path | str,
     *,
     project_root: Path | str | None = None,
-    implementations: Mapping[
-        str, Callable[[dict[str, Any], dict[str, Any]], Any]
-    ]
-    | None = None,
+    implementations: Mapping[str, Callable[[dict[str, Any], dict[str, Any]], Any]] | None = None,
     implementation_parameters: Mapping[str, Mapping[str, Any]] | None = None,
     composition_digest: str | None = None,
+    settlement_schedule: SettlementSchedule | None = None,
 ) -> dict[str, str]:
     config = load_strategy_config(config_path)
     dataset_path, dataset_manifest, frame = _bound_snapshot(config)
+    action_evidence = None
+    accounting = None
+    if dataset_manifest["schema_version"] in {4, 5}:
+        if settlement_schedule is None:
+            raise StrategyRunError(
+                "action-aware dataset requires an explicit transfer-settlement mapping"
+            )
+        action_evidence = _verified_action_evidence(dataset_path, dataset_manifest)
+        accounting = _settlement_accounting(action_evidence.digest, settlement_schedule)
+    elif settlement_schedule is not None:
+        raise StrategyRunError(
+            "settlement schedule cannot be applied without admitted corporate-action evidence"
+        )
     source_identity = (
         _effective_source_identity(project_root=project_root)
         if project_root is not None
@@ -896,6 +908,8 @@ def run_strategy_config(
         if not re.fullmatch(r"[0-9a-f]{64}", composition_digest):
             raise StrategyRunError("composition digest must be a lowercase SHA-256 value")
         identity["composition_digest"] = composition_digest
+    if accounting is not None:
+        identity["accounting"] = accounting
     run_id = _sha256(_canonical_json(identity))
     output_root = Path(config.canonical["output_root"]).resolve()
     target = output_root / run_id
@@ -910,6 +924,7 @@ def run_strategy_config(
             source_files,
             runtime,
             composition_digest,
+            accounting,
         )
         return {
             "status": "NO_CHANGE",
@@ -919,7 +934,16 @@ def run_strategy_config(
             "dataset_snapshot_id": dataset_manifest["snapshot_id"],
         }
 
-    if implementations:
+    if action_evidence is not None:
+        replay = replay_strategy(
+            frame,
+            config,
+            implementations=implementations,
+            implementation_parameters=implementation_parameters,
+            corporate_action_evidence=action_evidence,
+            settlement_schedule=settlement_schedule,
+        )
+    elif implementations:
         replay = replay_strategy(
             frame,
             config,
@@ -942,7 +966,9 @@ def run_strategy_config(
         },
         "git_commit": git["commit"],
         "git_dirty": git["dirty"],
-        }
+    }
+    if accounting is not None:
+        provenance["accounting"] = accounting
     if implementations is not None and "report" in implementations:
         report_payload = {
             "title": config.template_parameters["instrument_display_name"],
@@ -965,6 +991,9 @@ def run_strategy_config(
         _write_csv(staging / "daily_replay.csv", replay.daily)
         _write_csv(staging / "events.csv", replay.events)
         _write_csv(staging / "trades.csv", replay.trades)
+        if accounting is not None:
+            _write_csv(staging / "account_events.csv", replay.account_events)
+            _write_csv(staging / "account_trades.csv", replay.account_trades)
         _write_json(staging / "metrics.json", replay.metrics)
         _write_json(staging / "cost_breakdown.json", replay.cost_breakdown)
         _write_bytes(staging / "report.html", report.encode("utf-8"))
@@ -979,10 +1008,16 @@ def run_strategy_config(
             "source_files": source_files,
             "runtime": runtime,
             "git": git,
-            "semantics": SEMANTICS,
+            "semantics": _semantics(accounting),
             "reconciliation": replay.reconciliation,
-            "files": _file_manifest(staging),
+            "files": _file_manifest(
+                staging,
+                (SETTLEMENT_ARTIFACT_NAMES if accounting is not None else ARTIFACT_NAMES)
+                - {"run_manifest.json"},
+            ),
         }
+        if accounting is not None:
+            manifest["accounting"] = accounting
         _write_json(staging / "run_manifest.json", manifest)
         _fsync_directory(staging)
         _seal(staging)
@@ -996,6 +1031,7 @@ def run_strategy_config(
             source_files,
             runtime,
             composition_digest,
+            accounting,
             require_name=False,
         )
         try:
@@ -1013,6 +1049,7 @@ def run_strategy_config(
                 source_files,
                 runtime,
                 composition_digest,
+                accounting,
             )
             status = "NO_CHANGE"
         else:
@@ -1029,6 +1066,7 @@ def run_strategy_config(
             source_files,
             runtime,
             composition_digest,
+            accounting,
         )
         return {
             "status": status,
