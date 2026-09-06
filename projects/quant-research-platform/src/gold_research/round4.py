@@ -6,21 +6,41 @@ import io
 import json
 import math
 import shutil
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+matplotlib.use("Agg", force=True)
+matplotlib.rcdefaults()
+matplotlib.rcParams.update(
+    {
+        "backend": "Agg",
+        "font.family": ["sans-serif"],
+        "font.sans-serif": ["DejaVu Sans"],
+        "text.usetex": False,
+        "figure.dpi": 100.0,
+        "savefig.dpi": 130.0,
+    }
+)
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib import font_manager  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
-from .backtest import backtest, metrics, trade_ledger
-from .round3 import completed_signal_close
-from .run import _data_hash, canonical_hash, get_git_state, stable_run_id
-from .strategies import (
+from .backtest import backtest, metrics, trade_ledger  # noqa: E402
+from .round3 import completed_signal_close  # noqa: E402
+from .run import (  # noqa: E402
+    _data_hash,
+    capture_source_authority,
+    launch_round4_worker,
+    revalidate_execution_identity,
+    seal_execution_identity,
+    stable_run_id,
+)
+from .strategies import (  # noqa: E402
     absolute_momentum_signal,
     buy_hold_signal,
     donchian_signal,
@@ -40,7 +60,38 @@ CANDIDATE_NAMES = [
     "temperature_63",
 ]
 REQUIRED_SYMBOLS = {"GC=F", "GLD"}
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROVENANCE_CONTEXT = getattr(sys, "_gold_round4_provenance_context", None)
+
+
+def _restrict_fonts_to_matplotlib_payload() -> None:
+    if _PROVENANCE_CONTEXT is None:
+        data_root = Path(matplotlib.get_data_path()).resolve()
+        allowed_paths = {
+            str(Path(entry.fname).resolve())
+            for entry in font_manager.fontManager.ttflist
+            if Path(entry.fname).resolve().is_relative_to(data_root)
+        }
+    else:
+        allowed_paths = set(_PROVENANCE_CONTEXT["matplotlib_font_paths"])
+        if not allowed_paths:
+            raise RuntimeError("Matplotlib RECORD contains no usable font")
+    allowed = [
+        entry
+        for entry in font_manager.fontManager.ttflist
+        if str(Path(entry.fname).resolve()) in allowed_paths
+    ]
+    if not allowed:
+        raise RuntimeError("Matplotlib package contains no usable RECORD-bound font")
+    font_manager.fontManager.ttflist = allowed
+
+
+_restrict_fonts_to_matplotlib_payload()
+
+
+def _run_with_resource_audit_suspended(provenance_context: dict, operation):
+    """Run provenance metadata I/O outside the separately sealed resource-open audit."""
+    with provenance_context["resource_tracker"].suspended():
+        return operation()
 
 
 def round4_signals(close: pd.Series) -> dict[str, pd.Series]:
@@ -376,15 +427,22 @@ def _render_report(
 <section><h2>Provenance</h2><pre><code>{provenance}</code></pre></section></body></html>"""
 
 
-def run_round4_research(
+def _run_round4_worker(
     data: dict[str, pd.DataFrame],
     output_root: Path,
     *,
     cost_grid_bps: tuple[float, ...] = (5.0, 20.0),
     analysis_date: str | pd.Timestamp | datetime | None = None,
     data_manifest: dict | None = None,
+    _provenance_context: dict,
 ) -> dict:
-    """Run the immutable Round 4 three-year retrospective pseudo-OOS study."""
+    """Calculate, attest, and atomically publish inside the isolated worker."""
+    source_capture = _run_with_resource_audit_suspended(
+        _provenance_context,
+        lambda: capture_source_authority(_provenance_context["provenance"]),
+    )
+    if dict(source_capture.source_identity) != _provenance_context["source_identity"]:
+        raise RuntimeError("SOURCE_CHANGED_DURING_RUN: worker source differs from bootstrap capture")
     costs = _validate_costs(cost_grid_bps)
     normalized = _normalize(data)
     created_at = datetime.now(timezone.utc)
@@ -427,7 +485,6 @@ def run_round4_research(
         "study_label": "retrospective pseudo-OOS",
     }
     data_hash = _data_hash(normalized)
-    git = get_git_state(PROJECT_ROOT)
 
     candidate_results: dict[tuple[str, float, str], pd.DataFrame] = {}
     summary_rows: list[dict] = []
@@ -617,16 +674,39 @@ def run_round4_research(
         else pd.DataFrame(columns=trade_columns)
     )
 
+    chart = _price_chart(completed["GC=F"].reindex(evaluation_index), markers, "GC=F", best_frozen)
+    source_observation = dict(source_capture.observation)
+    preflight_manifest = {
+        "created_at": created_at.isoformat(),
+        "data_hash": data_hash,
+        "git": source_observation["git"],
+        "data_manifest": data_manifest,
+    }
+    _render_report(
+        "preflight",
+        config,
+        preflight_manifest,
+        candidate_summary,
+        walk_forward_folds,
+        pseudo_summary,
+        latest_signals,
+        chart,
+    )
+    execution_identity = seal_execution_identity(_provenance_context)
     config_for_identity = dict(config)
-    run_id = stable_run_id(config_for_identity, data_hash, canonical_hash(git))
+    run_id = stable_run_id(config_for_identity, data_hash, execution_identity)
+    _run_with_resource_audit_suspended(_provenance_context, source_capture.revalidate)
+    source_observation["publication_sha256"] = source_capture.source_identity["sha256"]
     manifest = {
         "run_id": run_id,
         "created_at": created_at.isoformat(),
         "data_hash": data_hash,
-        "git": git,
+        "git": source_observation["git"],
+        "source_identity": dict(source_capture.source_identity),
+        "execution_identity": execution_identity,
+        "source_observation": source_observation,
         "data_manifest": data_manifest,
     }
-    chart = _price_chart(completed["GC=F"].reindex(evaluation_index), markers, "GC=F", best_frozen)
     report = _render_report(
         run_id,
         config,
@@ -662,8 +742,30 @@ def run_round4_research(
         for artifact in temporary_dir.iterdir():
             artifact.chmod(0o644)
         temporary_dir.chmod(0o755)
+        revalidate_execution_identity(_provenance_context, execution_identity)
+        _run_with_resource_audit_suspended(_provenance_context, source_capture.revalidate)
         temporary_dir.rename(run_dir)
     except Exception:
         shutil.rmtree(temporary_dir, ignore_errors=True)
         raise
     return {"run_id": run_id, "run_dir": str(run_dir), "config": config}
+
+
+def run_round4_research(
+    data: dict[str, pd.DataFrame],
+    output_root: Path,
+    *,
+    cost_grid_bps: tuple[float, ...] = (5.0, 20.0),
+    analysis_date: str | pd.Timestamp | datetime | None = None,
+    data_manifest: dict | None = None,
+    source_provenance: dict | None = None,
+) -> dict:
+    """Launch one fresh, provenance-bound Round 4 worker."""
+    return launch_round4_worker(
+        data,
+        output_root,
+        cost_grid_bps=cost_grid_bps,
+        analysis_date=analysis_date,
+        data_manifest=data_manifest,
+        source_provenance=source_provenance,
+    )
