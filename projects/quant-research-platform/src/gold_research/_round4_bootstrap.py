@@ -893,6 +893,7 @@ class _ResourceTracker:
             if (value := sysconfig.get_path(key))
         )
         self.executable = Path(sys.executable).resolve()
+        self.process_maps = Path("/proc/self/maps").resolve()
         self.fixed_read_paths = frozenset(
             {Path("/usr/share/zoneinfo/Etc/UTC")} if os.environ.get("TZ") == "UTC" else set()
         )
@@ -959,7 +960,7 @@ class _ResourceTracker:
             return
         if path == self.private_root or self.private_root in path.parents:
             return
-        if path == Path("/proc/self/maps"):
+        if path == self.process_maps:
             return
         if path == self.executable:
             return
