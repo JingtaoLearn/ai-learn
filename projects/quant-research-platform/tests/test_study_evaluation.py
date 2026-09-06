@@ -1,13 +1,19 @@
 import copy
 import hashlib
 import json
+import math
+import shutil
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import quant_platform.total_return_claims as total_return_claims
-from quant_platform.corporate_actions import admit_corporate_action_evidence
+from quant_platform.corporate_actions import (
+    CorporateActionEvidenceError,
+    admit_corporate_action_evidence,
+    identity_digest,
+)
 from quant_platform.datasets import publish_snapshot
 from quant_platform.resolved_runner import _result_digest
 from quant_platform.schemas import canonical_json_bytes
@@ -191,6 +197,7 @@ def _trusted_attempt_and_factory(
     *,
     no_action: bool = False,
     historical_exposure: str = "PRISTINE",
+    candidate_variant: int = 0,
 ) -> tuple[MetricDocumentFactory, dict, dict]:
     frame, validated, schedule, implementations, parameters = _bocom_accounting_case()
     state = tmp_path / "state"
@@ -223,6 +230,9 @@ def _trusted_attempt_and_factory(
         },
     )
     config = validated.canonical
+    config["operators"]["decision"]["parameters"][
+        "buy_threshold_pct_per_day"
+    ] += candidate_variant
     config["dataset"]["root"] = str(state)
     config["dataset"]["snapshot_id"] = derived["snapshot_id"]
     config["output_root"] = str(state / "study-runs")
@@ -335,38 +345,123 @@ def _trusted_document(tmp_path: Path, **options) -> dict:
     )
 
 
-_FACTORY_MATRIX_MUTATORS = {
-    "C1": "F1_EXTRA",
-    "C2": "L5",
-    "C3": "C4",
-    "C4": "C4",
-    "C5": "C4",
-    "A1": "C4",
-    "A2": "C4",
-    "A3": "C4",
-    "A4": "C4",
-    "A5": "C4",
-    "A6": "C4",
-    "A7": "C4",
-    "A8": "C4",
-    "T1": "T1",
-    "T2": "T2",
-    "T3": "L5",
-    "T4": "L5",
-    "T5": "L5",
-    "L1": "L1",
-    "L2": "L2",
-    "L3": "L3",
-    "L4": "L4",
-    "L5": "L5",
-    "I1": "I2",
-    "I2": "I2",
-    "I3": "I2",
-    "R1": "R1",
-    "R2": "R2",
-    "D1": "C4",
-    "D2": "C4",
+_POLICY_PARAMETERS = {
+    "stability_weight": 0.5,
+    "turnover_weight": 0.05,
+    "minimum_trades": 0,
+    "maximum_drawdown": None,
+    "maximum_annual_turnover": None,
 }
+
+
+_FACTORY_MATRIX_FAILURES = {
+    "C1": "quarantined action evidence cannot be accounted",
+    "C2": "accounting outcome evidence is invalid",
+    "C3": "accounting outcome evidence is invalid",
+    "C4": "coverage or terminal event identity differs",
+    "C5": "accounting outcome evidence is invalid",
+    "A1": "coverage or terminal event identity differs",
+    "T1": "tax or rounding policy identity is invalid",
+    "T2": "settlement policy digest is invalid",
+    "T3": "trade settlement posting is incomplete",
+    "T4": "account settlement or tax remains open",
+    "T5": "account ledger contains a negative state",
+    "L1": "account trade ledger lacks the three accounts",
+    "L2": "account event ledger lacks the three accounts",
+    "L3": "control initial capital differs",
+    "L4": "strategy and zero-cost control parity failed",
+    "L5": "account cash or quantity does not reconcile",
+    "I1": "account frozen metrics are not bounded integers",
+    "I2": "account event ledger quantity is not an exact integer",
+    "I3": "non-finite value in metrics",
+    "R1": "account frozen metric fields are invalid",
+    "R2": "account components do not reconcile",
+}
+
+
+def _load_outcome_evidence(factory: MetricDocumentFactory, result_digest: str):
+    package = factory.state_root / "accounting-outcomes" / result_digest
+    document = json.loads((package / "corporate_actions.json").read_text(encoding="utf-8"))
+    artifacts = {
+        descriptor["artifact_id"]: (package / descriptor["path"]).read_bytes()
+        for descriptor in document["artifacts"]
+    }
+    return admit_corporate_action_evidence(document, artifacts)
+
+
+def _rewrite_outcome_package(
+    factory: MetricDocumentFactory,
+    attempt: dict,
+    case: str,
+) -> None:
+    package = factory.state_root / "accounting-outcomes" / attempt["result_digest"]
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    document = json.loads((package / "corporate_actions.json").read_text(encoding="utf-8"))
+    artifacts = {
+        descriptor["artifact_id"]: (package / descriptor["path"]).read_bytes()
+        for descriptor in document["artifacts"]
+    }
+    if case == "C1":
+        conflict = copy.deepcopy(document["revisions"][0])
+        conflict["payload"]["gross_cash_per_share"] = "0.1663"
+        conflict_id = identity_digest(
+            "quant-platform/corporate-action-revision/v1", conflict["payload"]
+        )
+        conflict["event_revision_id"] = conflict_id
+        conflict["normalization_digest"] = conflict_id
+        document["revisions"].append(conflict)
+        document["coverage"]["payload"]["event_revision_ids"].append(conflict_id)
+        document["coverage"]["coverage_id"] = identity_digest(
+            "quant-platform/corporate-action-coverage/v1",
+            document["coverage"]["payload"],
+        )
+        manifest["corporate_action_evidence_sha256"] = admit_corporate_action_evidence(
+            document, artifacts
+        ).digest
+    elif case == "C2":
+        document["coverage"]["payload"]["interval_start"] = "2025-12-25"
+        document["coverage"]["coverage_id"] = identity_digest(
+            "quant-platform/corporate-action-coverage/v1",
+            document["coverage"]["payload"],
+        )
+    elif case == "C3":
+        artifact_id = document["artifacts"][0]["artifact_id"]
+        artifacts[artifact_id] += b"corrupt"
+    elif case == "C5":
+        document["coverage"]["payload"]["coverage_state"] = "STALE_COMPLETE"
+        document["coverage"]["coverage_id"] = identity_digest(
+            "quant-platform/corporate-action-coverage/v1",
+            document["coverage"]["payload"],
+        )
+    else:
+        raise AssertionError(case)
+
+    shutil.rmtree(package)
+    package.mkdir()
+    payloads = {
+        "corporate_actions.json": (
+            json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode(),
+        **{
+            descriptor["path"]: artifacts[descriptor["artifact_id"]]
+            for descriptor in document["artifacts"]
+        },
+    }
+    for name, payload in payloads.items():
+        path = package / name
+        path.write_bytes(payload)
+        path.chmod(0o444)
+    manifest["files"] = {
+        name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        for name, payload in sorted(payloads.items())
+    }
+    manifest_path = package / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o444)
+    package.chmod(0o555)
 
 
 def _mutate_and_reseal_trusted_run(
@@ -374,9 +469,12 @@ def _mutate_and_reseal_trusted_run(
     attempt: dict,
     case: str,
 ) -> None:
-    case = _FACTORY_MATRIX_MUTATORS.get(case, case)
     prior_result_digest = attempt["result_digest"]
     root = Path(attempt["result_path"])
+    if case in {"C1", "C2", "C3", "C5"}:
+        _rewrite_outcome_package(factory, attempt, case)
+        return
+    outcome_evidence = _load_outcome_evidence(factory, prior_result_digest)
     root.chmod(0o755)
     for path in root.iterdir():
         path.chmod(0o644)
@@ -386,7 +484,12 @@ def _mutate_and_reseal_trusted_run(
         "L3",
         "L4",
         "L5",
+        "I1",
         "I2",
+        "I3",
+        "T3",
+        "T4",
+        "T5",
         "F1_MISSING",
         "F1_EXTRA",
     }:
@@ -401,12 +504,18 @@ def _mutate_and_reseal_trusted_run(
             target = root / "account_events.csv"
             frame = events
         elif case == "L3":
-            events.loc[events["event_revision_id"] != "", "event_revision_id"] = "f" * 64
-            target = root / "account_events.csv"
-            frame = events
+            metrics_path = root / "metrics.json"
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            metrics["accounting_accounts"]["zero_cost"]["initial_capital_fen"] += 1
+            metrics_path.write_text(
+                json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            target = None
+            frame = None
         elif case == "L4":
-            selected = (events["account"] == "zero_cost") & (events["event_revision_id"] != "")
-            events.loc[selected, "event_revision_id"] = "f" * 64
+            selected = events["account"] == "zero_cost"
+            events.loc[selected.idxmax(), "note"] += "-undeclared"
             target = root / "account_events.csv"
             frame = events
         elif case == "F1_MISSING":
@@ -435,11 +544,66 @@ def _mutate_and_reseal_trusted_run(
             events.loc[0, "cash_delta_fen"] = str(int(events.loc[0, "cash_delta_fen"]) + 1)
             target = root / "account_events.csv"
             frame = events
-        else:
+        elif case == "I1":
+            metrics_path = root / "metrics.json"
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            metrics["accounting_accounts"]["strategy"]["gross_dividend_fen"] = True
+            metrics_path.write_text(
+                json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            target = None
+            frame = None
+        elif case == "I2":
             events.loc[0, "quantity"] = "1.0"
             target = root / "account_events.csv"
             frame = events
-        target.write_text(frame.to_csv(index=False, lineterminator="\n"), encoding="utf-8")
+        elif case == "I3":
+            metrics_path = root / "metrics.json"
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            metrics["period_start"] = math.nan
+            metrics_path.write_text(
+                json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            target = None
+            frame = None
+        elif case == "T3":
+            selected = (events["account"] == "strategy") & (
+                events["event_type"] == "ACQUISITION_SETTLEMENT"
+            )
+            events = events.drop(events[selected].index[0])
+            events.loc[events["account"] == "strategy", "sequence"] = range(
+                1, int((events["account"] == "strategy").sum()) + 1
+            )
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "T4":
+            final_index = events[events["account"] == "strategy"].index[-1]
+            events.loc[final_index, "outstanding_tax_fen"] = "1"
+            events.loc[final_index, "equity_fen"] = str(
+                int(events.loc[final_index, "equity_fen"]) - 1
+            )
+            metrics_path = root / "metrics.json"
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            metrics["accounting_accounts"]["strategy"]["final_state"][
+                "outstanding_tax_fen"
+            ] = 1
+            metrics["accounting_accounts"]["strategy"]["final_state"]["equity_fen"] -= 1
+            metrics_path.write_text(
+                json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "T5":
+            events.loc[0, "outstanding_tax_fen"] = "-1"
+            target = root / "account_events.csv"
+            frame = events
+        else:
+            raise AssertionError(case)
+        if target is not None:
+            target.write_text(frame.to_csv(index=False, lineterminator="\n"), encoding="utf-8")
     elif case in {"R1", "R2"}:
         metrics_path = root / "metrics.json"
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -457,14 +621,20 @@ def _mutate_and_reseal_trusted_run(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         accounting = manifest["accounting"]
         if case == "T1":
-            accounting["tax_policy"]["sha256"] = "0" * 64
+            accounting["tax_policy"].pop("tax_policy_id")
         elif case == "T2":
-            accounting["settlement_schedule"]["sha256"] = "0" * 64
+            accounting["settlement_schedule"]["policy_id"] = "0" * 64
         elif case == "C4":
             accounting["coverage_id"] = "0" * 64
+        elif case == "A1":
+            accounting["claim"] = "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+        elif case == "N_PRICE_ONLY":
+            manifest.pop("accounting")
+            manifest["identity"].pop("accounting")
         else:
             raise AssertionError(case)
-        manifest["identity"]["accounting"] = copy.deepcopy(accounting)
+        if case != "N_PRICE_ONLY":
+            manifest["identity"]["accounting"] = copy.deepcopy(accounting)
         manifest["run_id"] = hashlib.sha256(
             canonical_json_bytes(manifest["identity"])
         ).hexdigest()
@@ -494,23 +664,15 @@ def _mutate_and_reseal_trusted_run(
     attempt["result_path"] = str(root)
     attempt["result_digest"] = _result_digest(root)
     prior_package = factory.state_root / "accounting-outcomes" / prior_result_digest
-    package = factory.state_root / "accounting-outcomes" / attempt["result_digest"]
-    prior_package.chmod(0o755)
-    manifest_path = prior_package / "manifest.json"
-    manifest_path.chmod(0o644)
-    outcome_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    outcome_manifest["attached_after_result_digest"] = attempt["result_digest"]
-    outcome_manifest["result_artifact_set_sha256"] = total_return_claims._artifact_set_digest(
-        {path.name: path.read_bytes() for path in root.iterdir()}
-    )
-    manifest_path.write_text(
-        json.dumps(outcome_manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    manifest_path.chmod(0o444)
-    prior_package.chmod(0o555)
-    if prior_package != package:
-        prior_package.rename(package)
+    shutil.rmtree(prior_package)
+    if case != "N_PRICE_ONLY":
+        _seal_accounting_outcome(
+            factory.state_root,
+            root,
+            attempt["result_digest"],
+            attempt["resolved"]["dataset"]["snapshot_id"],
+            outcome_evidence,
+        )
     audit_path = factory.state_root / "attempt-audit" / f"{attempt['attempt_id']}.json"
     audit_path.chmod(0o644)
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -556,20 +718,19 @@ def test_metric_document_factory_issues_only_from_complete_verified_graph(
 
 
 @pytest.mark.parametrize(
-    "case",
-    sorted(_FACTORY_MATRIX_MUTATORS),
+    ("case", "failure"),
+    sorted(_FACTORY_MATRIX_FAILURES.items()),
 )
 def test_adversarial_accounting_rows_reject_through_metric_document_factory(
     tmp_path: Path,
     case: str,
+    failure: str,
 ):
     factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
     candidate = attempt["candidate_configuration"]
     _mutate_and_reseal_trusted_run(factory, attempt, case)
 
-    with pytest.raises(
-        RuntimeError, match="account|policy|coverage|integer|reconcil|digest|settlement"
-    ):
+    with pytest.raises((RuntimeError, CorporateActionEvidenceError), match=failure):
         factory.from_attempt(
             attempt,
             candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
@@ -658,6 +819,174 @@ def test_accounting_outcome_role_and_post_result_binding_fail_closed(
         )
 
 
+def _candidate_digest(attempt: dict) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(attempt["candidate_configuration"])
+    ).hexdigest()
+
+
+def _policy_evaluation(document: dict) -> dict:
+    return RobustWalkForwardPolicy().evaluate(
+        document["candidate_digest"], [document], _POLICY_PARAMETERS
+    )
+
+
+def _replace_qualification_and_reseal_document(document: dict, qualification: dict) -> None:
+    document["total_return_qualification"] = qualification
+    document["document_digest"] = hashlib.sha256(
+        canonical_json_bytes(
+            {key: value for key, value in document.items() if key != "document_digest"}
+        )
+    ).hexdigest()
+
+
+def _partial_record(record: dict) -> dict:
+    partial = copy.deepcopy(record)
+    partial["claim_state"] = "KNOWN_EVENT_CORRECTED_PARTIAL"
+    partial["coverage_state"] = "VERIFIED_EVENTS"
+    partial["coverage_basis"] = "NONE"
+    partial["complete_contract_id"] = None
+    partial["checks"]["coverage_complete"] = False
+    partial["ranking"] = {
+        "eligible_for_ranking": False,
+        "eligible_for_promotion": False,
+        "historical_exposure": "PRISTINE",
+        "reason_codes": ["KNOWN_EVENT_PARTIAL"],
+    }
+    partial["transition"] = {
+        "prior_qualification_id": None,
+        "from_state": None,
+        "to_state": "KNOWN_EVENT_CORRECTED_PARTIAL",
+        "same_corporate_action_evidence": False,
+    }
+    partial["qualification_id"] = total_return_claims.qualification_id(
+        {key: value for key, value in partial.items() if key != "qualification_id"}
+    )
+    total_return_claims._validate_record(partial, None)
+    return partial
+
+
+@pytest.mark.parametrize("case", ["A2", "A4"])
+def test_study_or_plain_dictionary_cannot_reseal_factory_authority(
+    tmp_path: Path,
+    case: str,
+):
+    document = _trusted_document(tmp_path / case)
+    if case == "A2":
+        forged = copy.deepcopy(document["total_return_qualification"])
+        forged["claim_state"] = "PRICE_RETURN_ONLY"
+        forged["qualification_id"] = total_return_claims.qualification_id(
+            {key: value for key, value in forged.items() if key != "qualification_id"}
+        )
+        _replace_qualification_and_reseal_document(document, forged)
+        supplied = document
+    else:
+        supplied = dict(document)
+
+    with pytest.raises(EvaluationPolicyError, match="not pristine MetricDocumentFactory-issued"):
+        RobustWalkForwardPolicy().evaluate(
+            supplied["candidate_digest"], [supplied], _POLICY_PARAMETERS
+        )
+
+
+def test_a3_request_payload_cannot_inject_verified_state_into_factory(tmp_path: Path):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
+    attempt["requested"]["claim_state"] = "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+
+    with pytest.raises(RuntimeError, match="Attempt audit does not match canonical execution identity"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=_candidate_digest(attempt),
+            candidate_configuration=attempt["candidate_configuration"],
+            fold_window=fold_window,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "failure"),
+    [
+        ("A5", "same evidence cannot upgrade to verified"),
+        ("A6", "qualification transition is illegal"),
+        ("A7", "transition target is invalid"),
+        ("A8", "source issuer/claim combination is forbidden"),
+    ],
+)
+def test_transition_and_source_authority_rows_reject_before_policy(
+    tmp_path: Path,
+    case: str,
+    failure: str,
+):
+    document = _trusted_document(tmp_path / case)
+    verified = copy.deepcopy(document["total_return_qualification"])
+    prior = None
+    if case == "A5":
+        prior = _partial_record(verified)
+        forged = copy.deepcopy(verified)
+        forged["transition"] = {
+            "prior_qualification_id": prior["qualification_id"],
+            "from_state": "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "to_state": "AFTER_TAX_TOTAL_RETURN_VERIFIED",
+            "same_corporate_action_evidence": True,
+        }
+    elif case == "A6":
+        prior = verified
+        forged = _partial_record(verified)
+        forged["transition"] = {
+            "prior_qualification_id": prior["qualification_id"],
+            "from_state": "AFTER_TAX_TOTAL_RETURN_VERIFIED",
+            "to_state": "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "same_corporate_action_evidence": False,
+        }
+    elif case == "A7":
+        forged = copy.deepcopy(verified)
+        forged["transition"]["to_state"] = "PRICE_RETURN_ONLY"
+    else:
+        forged = copy.deepcopy(verified)
+        forged["source_issuer"] = "CORPORATE_ACTION_COLLECTOR"
+        forged["source_total_return_claim"] = "PRICE_RETURN_ONLY"
+    forged["qualification_id"] = total_return_claims.qualification_id(
+        {key: value for key, value in forged.items() if key != "qualification_id"}
+    )
+    prior_bytes = canonical_json_bytes(prior) if prior is not None else None
+
+    with pytest.raises(total_return_claims.TotalReturnQualificationError, match=failure):
+        total_return_claims._validate_record(forged, prior_bytes)
+    _replace_qualification_and_reseal_document(document, forged)
+    with pytest.raises(EvaluationPolicyError, match="not pristine MetricDocumentFactory-issued"):
+        RobustWalkForwardPolicy().evaluate(
+            document["candidate_digest"], [document], _POLICY_PARAMETERS
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "mutation", "failure"),
+    [
+        ("D1", "root", "Metric Documents require an access-bounded derived dataset"),
+        ("D2", "interval", "fold window does not match dataset scoring identity"),
+    ],
+)
+def test_dataset_binding_rows_fail_at_the_factory_seam(
+    tmp_path: Path,
+    case: str,
+    mutation: str,
+    failure: str,
+):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path / case)
+    supplied_window = copy.deepcopy(fold_window)
+    if mutation == "root":
+        attempt["resolved"]["dataset"]["lineage"]["kind"] = "root"
+    else:
+        supplied_window["scoring_end"] = supplied_window["scoring_start"]
+
+    with pytest.raises(RuntimeError, match=failure):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=_candidate_digest(attempt),
+            candidate_configuration=attempt["candidate_configuration"],
+            fold_window=supplied_window,
+        )
+
+
 @pytest.mark.parametrize(
     ("matrix_case", "historical_exposure"),
     [("H1", "EXPOSED"), ("H2", "UNKNOWN")],
@@ -671,41 +1000,115 @@ def test_historical_exposure_matrix_is_removed_before_policy_ranking(
     qualification = document["total_return_qualification"]
     assert qualification["claim_state"] == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
     assert qualification["ranking"]["eligible_for_ranking"] is False
-    evaluation = RobustWalkForwardPolicy().evaluate(
-        document["candidate_digest"],
-        [document],
-        {
-            "stability_weight": 0.5,
-            "turnover_weight": 0.05,
-            "minimum_trades": 0,
-            "maximum_drawdown": None,
-            "maximum_annual_turnover": None,
-        },
+    expected_reason = (
+        "HISTORICALLY_EXPOSED"
+        if historical_exposure == "EXPOSED"
+        else "HISTORICAL_EXPOSURE_UNKNOWN"
     )
+    assert qualification["ranking"]["reason_codes"] == [expected_reason]
+    evaluation = _policy_evaluation(document)
     assert evaluation["constraints"]["trusted_total_return"]["passed"] is False
     assert RobustWalkForwardPolicy().select([evaluation]) is None
 
-
-@pytest.mark.parametrize("matrix_case", ["N1", "N2", "N3"])
-def test_no_eligible_matrix_never_ranks_a_numerically_available_result(
-    tmp_path: Path,
-    matrix_case: str,
-):
-    document = _trusted_document(tmp_path / matrix_case, historical_exposure="EXPOSED")
-    evaluation = RobustWalkForwardPolicy().evaluate(
-        document["candidate_digest"],
-        [document],
-        {
-            "stability_weight": 0.5,
-            "turnover_weight": 0.05,
-            "minimum_trades": 0,
-            "maximum_drawdown": None,
-            "maximum_annual_turnover": None,
-        },
+    contradictory = copy.deepcopy(qualification)
+    contradictory["ranking"]["eligible_for_ranking"] = True
+    contradictory["ranking"]["eligible_for_promotion"] = True
+    contradictory["qualification_id"] = total_return_claims.qualification_id(
+        {key: value for key, value in contradictory.items() if key != "qualification_id"}
     )
-    assert isinstance(evaluation["validation_score"], float)
-    assert evaluation["eligible"] is False
-    assert RobustWalkForwardPolicy().select([evaluation]) is None
+    with pytest.raises(
+        total_return_claims.TotalReturnQualificationError,
+        match="ranking eligibility contradicts qualification",
+    ):
+        total_return_claims._validate_record(contradictory, None)
+    _replace_qualification_and_reseal_document(document, contradictory)
+    with pytest.raises(EvaluationPolicyError, match="not pristine MetricDocumentFactory-issued"):
+        RobustWalkForwardPolicy().evaluate(
+            document["candidate_digest"], [document], _POLICY_PARAMETERS
+        )
+
+
+def _price_only_document(tmp_path: Path, *, candidate_variant: int) -> dict:
+    factory, attempt, fold_window = _trusted_attempt_and_factory(
+        tmp_path, candidate_variant=candidate_variant
+    )
+    _mutate_and_reseal_trusted_run(factory, attempt, "N_PRICE_ONLY")
+    return factory.from_attempt(
+        attempt,
+        candidate_digest=_candidate_digest(attempt),
+        candidate_configuration=attempt["candidate_configuration"],
+        fold_window=fold_window,
+    )
+
+
+def test_n1_heterogeneous_all_ineligible_has_no_champion_or_holdout(tmp_path: Path):
+    price_only = _price_only_document(tmp_path / "price", candidate_variant=1)
+    exposed = _trusted_document(
+        tmp_path / "exposed", historical_exposure="EXPOSED", candidate_variant=2
+    )
+    unknown = _trusted_document(
+        tmp_path / "unknown", historical_exposure="UNKNOWN", candidate_variant=3
+    )
+    documents = [price_only, exposed, unknown]
+    qualifications = [document["total_return_qualification"] for document in documents]
+    assert qualifications[0]["claim_state"] == "PRICE_RETURN_ONLY"
+    assert qualifications[0]["ranking"]["reason_codes"] == ["PRICE_ONLY"]
+    assert qualifications[1]["ranking"]["reason_codes"] == ["HISTORICALLY_EXPOSED"]
+    assert qualifications[2]["ranking"]["reason_codes"] == ["HISTORICAL_EXPOSURE_UNKNOWN"]
+
+    result = NestedChronologicalSelection().evaluate(
+        outer_rounds=[],
+        final_inner_evidence={document["candidate_digest"]: [document] for document in documents},
+        parameters=_POLICY_PARAMETERS,
+    )
+    assert result["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert result["champion"] is None
+    assert result["holdout_outcome"] == "NOT_RUN"
+    assert all(not item["eligible"] for item in result["final_candidate_evaluations"])
+
+
+def test_n2_numerically_better_partial_is_removed_before_trusted_ranking(tmp_path: Path):
+    untrusted_document = _price_only_document(tmp_path / "partial", candidate_variant=4)
+    trusted_document = _trusted_document(tmp_path / "trusted", candidate_variant=5)
+    partial = _policy_evaluation(untrusted_document)
+    trusted = _policy_evaluation(trusted_document)
+    partial["total_return_qualifications"] = [
+        total_return_claims.read_time_classification(
+            source_issuer="STRATEGY_RUNNER",
+            source_total_return_claim="KNOWN_EVENT_CORRECTED_PARTIAL",
+            coverage_state="VERIFIED_EVENTS",
+        )
+    ]
+    partial["validation_score"] = trusted["validation_score"] + 1_000.0
+    assert partial["total_return_qualifications"][0]["claim_state"] == (
+        "KNOWN_EVENT_CORRECTED_PARTIAL"
+    )
+    assert partial["eligible"] is False
+    assert trusted["eligible"] is True
+
+    selected = RobustWalkForwardPolicy().select([partial, trusted])
+    assert selected is not None
+    assert selected["candidate_digest"] == trusted_document["candidate_digest"]
+    assert selected["validation_score"] < partial["validation_score"]
+
+
+def test_n3_all_trusted_gate_failures_need_no_scalar_comparison_or_holdout(
+    tmp_path: Path,
+):
+    documents = [
+        _price_only_document(tmp_path / "price", candidate_variant=6),
+        _trusted_document(
+            tmp_path / "exposed", historical_exposure="EXPOSED", candidate_variant=7
+        ),
+    ]
+    result = NestedChronologicalSelection().evaluate(
+        outer_rounds=[],
+        final_inner_evidence={document["candidate_digest"]: [document] for document in documents},
+        parameters=_POLICY_PARAMETERS,
+    )
+    assert result["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
+    assert result["champion"] is None
+    assert result["holdout_outcome"] == "NOT_RUN"
 
 
 def test_o1_qualification_slice_has_no_prohibited_effect_surface(tmp_path: Path):
