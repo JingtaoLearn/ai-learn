@@ -1,7 +1,9 @@
+import copy
 import hashlib
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from quant_platform.corporate_actions import admit_corporate_action_evidence
@@ -276,6 +278,98 @@ def _trusted_document(tmp_path: Path, **options) -> dict:
     )
 
 
+def _mutate_and_reseal_trusted_run(
+    factory: MetricDocumentFactory,
+    attempt: dict,
+    case: str,
+) -> None:
+    root = Path(attempt["result_path"])
+    root.chmod(0o755)
+    for path in root.iterdir():
+        path.chmod(0o644)
+    if case in {"L1", "L2", "L5", "I2"}:
+        events = pd.read_csv(root / "account_events.csv", dtype=str, keep_default_na=False)
+        trades = pd.read_csv(root / "account_trades.csv", dtype=str, keep_default_na=False)
+        if case == "L1":
+            trades = trades[trades["account"] != "buy_and_hold"]
+            target = root / "account_trades.csv"
+            frame = trades
+        elif case == "L2":
+            events.loc[0, "account"] = "rogue"
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "L5":
+            events.loc[0, "cash_delta_fen"] = str(int(events.loc[0, "cash_delta_fen"]) + 1)
+            target = root / "account_events.csv"
+            frame = events
+        else:
+            events.loc[0, "quantity"] = "1.0"
+            target = root / "account_events.csv"
+            frame = events
+        target.write_text(frame.to_csv(index=False, lineterminator="\n"), encoding="utf-8")
+    elif case in {"R1", "R2"}:
+        metrics_path = root / "metrics.json"
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        strategy = metrics["accounting_accounts"]["strategy"]
+        if case == "R1":
+            strategy.pop("gross_dividend_fen")
+        else:
+            strategy["after_tax_profit_fen"] += 1
+        metrics_path.write_text(
+            json.dumps(metrics, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        manifest_path = root / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        accounting = manifest["accounting"]
+        if case == "T1":
+            accounting["tax_policy"]["sha256"] = "0" * 64
+        elif case == "T2":
+            accounting["settlement_schedule"]["sha256"] = "0" * 64
+        elif case == "C4":
+            accounting["coverage_id"] = "0" * 64
+        else:
+            raise AssertionError(case)
+        manifest["identity"]["accounting"] = copy.deepcopy(accounting)
+        manifest["run_id"] = hashlib.sha256(
+            canonical_json_bytes(manifest["identity"])
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    manifest_path = root / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for name in manifest["files"]:
+        payload = (root / name).read_bytes()
+        manifest["files"][name] = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    if root.name != manifest["run_id"]:
+        renamed = root.parent / manifest["run_id"]
+        root.rename(renamed)
+        root = renamed
+    for path in root.iterdir():
+        path.chmod(0o444)
+    root.chmod(0o555)
+    attempt["result_path"] = str(root)
+    attempt["result_digest"] = _result_digest(root)
+    audit_path = factory.state_root / "attempt-audit" / f"{attempt['attempt_id']}.json"
+    audit_path.chmod(0o644)
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["run_id"] = root.name
+    audit["result_path"] = str(root)
+    audit["result_digest"] = attempt["result_digest"]
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    audit_path.chmod(0o444)
+
+
 @pytest.mark.parametrize(
     ("no_action", "coverage_state"),
     [
@@ -307,6 +401,24 @@ def test_metric_document_factory_issues_only_from_complete_verified_graph(
         },
     )
     assert evaluation["constraints"]["trusted_total_return"]["passed"] is True
+
+
+@pytest.mark.parametrize("case", ["C4", "T1", "T2", "L1", "L2", "L5", "I2", "R1", "R2"])
+def test_adversarial_accounting_rows_reject_through_metric_document_factory(
+    tmp_path: Path,
+    case: str,
+):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
+    candidate = attempt["candidate_configuration"]
+    _mutate_and_reseal_trusted_run(factory, attempt, case)
+
+    with pytest.raises(RuntimeError, match="account|policy|coverage|integer|reconcil|digest"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
 
 
 def test_metric_document_factory_verifies_and_recomputes_account_evidence(

@@ -120,15 +120,16 @@ def test_full_record_mutations_reject_before_capability_issuance(tmp_path: Path)
         lambda value: value["ranking"].__setitem__("historical_exposure", "EXPOSED"),
         lambda value: value["ranking"].__setitem__("historical_exposure", "UNKNOWN"),
         lambda value: value["transition"].__setitem__("to_state", "PRICE_RETURN_ONLY"),
-        lambda value: value.__setitem__("source_issuer", "CORPORATE_ACTION_COLLECTOR"),
+        lambda value: (
+            value.__setitem__("source_issuer", "CORPORATE_ACTION_COLLECTOR"),
+            value.__setitem__("source_total_return_claim", "PRICE_RETURN_ONLY"),
+        ),
         lambda value: value["bindings"].__setitem__("settlement_policy_id", None),
         lambda value: value.__setitem__("issuer", "STUDY_EVALUATOR"),
         lambda value: value.__setitem__("schema_version", True),
         lambda value: value["checks"].__setitem__("issuer_authorized", False),
         lambda value: value["ranking"].__setitem__("eligible_for_ranking", False),
-        lambda value: value["coverage_state"].__setitem__ if False else value.__setitem__(
-            "coverage_state", "UNKNOWN_MISSING"
-        ),
+        lambda value: value.__setitem__("coverage_state", "UNKNOWN_MISSING"),
     ]
     for mutate in mutations:
         candidate = copy.deepcopy(record)
