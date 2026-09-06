@@ -909,6 +909,19 @@ def seal_execution_identity(context: Mapping[str, object]) -> dict[str, object]:
         raise ProvenanceError(
             "DEPENDENCY_CHANGED_DURING_RUN", "root requirement contract changed during run"
         )
+    if fresh["dependency_identity"] != context["dependency_identity"]:
+        raise ProvenanceError(
+            "DEPENDENCY_CHANGED_DURING_RUN",
+            "dependency environment differs from the bootstrap capture",
+        )
+    if (
+        fresh["runtime_identity"] != context["runtime_identity"]
+        or fresh["process_identity"] != context["process_identity"]
+    ):
+        raise ProvenanceError(
+            "RUNTIME_CHANGED_DURING_RUN",
+            "runtime or process environment differs from the bootstrap capture",
+        )
     loaded = _loaded_module_identity(context)
     native = _native_identity(context)
     render = _render_identity(context)
@@ -936,7 +949,24 @@ def seal_execution_identity(context: Mapping[str, object]) -> dict[str, object]:
 def revalidate_execution_identity(
     context: Mapping[str, object], sealed: Mapping[str, object]
 ) -> None:
-    current = seal_execution_identity(context)
+    try:
+        current = seal_execution_identity(context)
+    except Exception as exc:
+        observed_code = getattr(exc, "code", None)
+        if observed_code in {
+            "DEPENDENCY_IDENTITY_INVALID",
+            "PACKAGE_METADATA_UNAVAILABLE",
+        }:
+            raise ProvenanceError(
+                "DEPENDENCY_CHANGED_DURING_RUN",
+                "dependency environment became invalid after identity seal",
+            ) from exc
+        if observed_code == "RUNTIME_IDENTITY_INVALID":
+            raise ProvenanceError(
+                "RUNTIME_CHANGED_DURING_RUN",
+                "runtime environment became invalid after identity seal",
+            ) from exc
+        raise
     if current != sealed:
         if current["dependency_identity"] != sealed["dependency_identity"]:
             code = "DEPENDENCY_CHANGED_DURING_RUN"

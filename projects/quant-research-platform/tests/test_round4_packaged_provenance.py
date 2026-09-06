@@ -5,11 +5,16 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import io
+import os
+import shutil
+import socket
 import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Mapping
 
+import pandas as pd
 import pytest
 
 from gold_research import _round4_bootstrap as bootstrap
@@ -18,11 +23,16 @@ from gold_research.round4 import _run_with_resource_audit_suspended
 from gold_research.run import (
     ProvenanceError,
     _canonical_source_identity,
+    _enumerate_release_files,
     _package_source_capture,
     _release_source_capture,
     _validate_member_name,
     _validate_source_provenance,
 )
+from gold_research.round4 import run_round4_research
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _record_digest(data: bytes) -> str:
@@ -466,13 +476,47 @@ def test_final_revalidation_recaptures_dependency_runtime_and_process(monkeypatc
         run_module.revalidate_execution_identity(context, sealed)
 
 
+@pytest.mark.parametrize(
+    ("member", "code"),
+    [
+        ("dependency_identity", "DEPENDENCY_CHANGED_DURING_RUN"),
+        ("runtime_identity", "RUNTIME_CHANGED_DURING_RUN"),
+        ("process_identity", "RUNTIME_CHANGED_DURING_RUN"),
+    ],
+)
+def test_initial_seal_rejects_bootstrap_to_current_environment_drift(
+    monkeypatch, member, code
+):
+    bootstrap_environment = {
+        "root_requirement_contract": {"name": "gold"},
+        "dependency_identity": {"sha256": "dependency-a"},
+        "runtime_identity": {"sha256": "runtime-a"},
+        "process_identity": {"sha256": "process-a"},
+    }
+    current_environment = dict(bootstrap_environment)
+    current_environment[member] = {"sha256": f"{member}-b"}
+    context = {
+        **bootstrap_environment,
+        "source_identity": {"sha256": "source"},
+        "recapture_environment": lambda: current_environment,
+    }
+    monkeypatch.setattr(run_module, "_loaded_module_identity", lambda value: {"sha256": "modules"})
+    monkeypatch.setattr(run_module, "_native_identity", lambda value: {"sha256": "native"})
+    monkeypatch.setattr(run_module, "_render_identity", lambda value: {"sha256": "render"})
+
+    with pytest.raises(ProvenanceError, match=code):
+        run_module.seal_execution_identity(context)
+
+
 def test_resource_tracker_rejects_external_and_post_seal_resources(tmp_path):
     private_root = tmp_path / "private"
     private_root.mkdir()
     first = tmp_path / "matplotlib" / "fonts" / "first.ttf"
     second = tmp_path / "matplotlib" / "fonts" / "second.ttf"
-    external = tmp_path / "system" / "external.ttf"
-    for path in (first, second, external):
+    external_font = tmp_path / "system" / "external.ttf"
+    external_generic = tmp_path / "system" / "external.json"
+    post_seal_generic = tmp_path / "system" / "after.dat"
+    for path in (first, second, external_font, external_generic, post_seal_generic):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(path.name.encode())
     allowed = {
@@ -491,12 +535,16 @@ def test_resource_tracker_rejects_external_and_post_seal_resources(tmp_path):
     }
     tracker = bootstrap._ResourceTracker(allowed, (tmp_path,), private_root)
     tracker("open", (str(first), "rb", 0))
+    with pytest.raises(bootstrap.BootstrapError, match="EXECUTION_RESOURCE_UNBOUND"):
+        tracker("open", (str(external_generic), "rb", 0))
     tracker.seal()
 
     with pytest.raises(bootstrap.BootstrapError, match="new resource opened after seal"):
         tracker("open", (str(second), "rb", 0))
     with pytest.raises(bootstrap.BootstrapError, match="resource is not RECORD-bound"):
-        tracker("open", (str(external), "rb", 0))
+        tracker("open", (str(external_font), "rb", 0))
+    with pytest.raises(bootstrap.BootstrapError, match="EXECUTION_RESOURCE_UNBOUND"):
+        tracker("open", (str(post_seal_generic), "rb", 0))
 
 
 def test_provenance_metadata_operations_suspend_only_the_resource_audit():
@@ -522,3 +570,224 @@ def test_provenance_metadata_operations_suspend_only_the_resource_audit():
         == "captured"
     )
     assert not tracker.active
+
+
+def _release_fixture(tmp_path: Path, *, anchor: str | None = None, injection: str = ""):
+    release = tmp_path / "release"
+    shutil.copytree(PROJECT_ROOT / "src", release / "src", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(PROJECT_ROOT / "pyproject.toml", release / "pyproject.toml")
+    if anchor is not None:
+        round4_path = release / "src" / "gold_research" / "round4.py"
+        source = round4_path.read_text()
+        assert source.count(anchor) == 1
+        round4_path.write_text(source.replace(anchor, injection, 1))
+    files, _, _ = _enumerate_release_files(release)
+    provenance = {
+        "mode": "release",
+        "source_root": str(release),
+        "expected_source_sha256": str(_canonical_source_identity(files)["sha256"]),
+    }
+    return release, provenance
+
+
+def _exact_worker_data() -> dict[str, pd.DataFrame]:
+    index = pd.bdate_range("2021-01-04", periods=1200)
+    prices = pd.Series([100.0 + index_value * 0.02 for index_value in range(1200)], index=index)
+    return {
+        "GC=F": pd.DataFrame({"Open": prices * 0.999, "Close": prices}, index=index),
+        "GLD": pd.DataFrame({"Open": prices * 1.001, "Close": prices * 1.002}, index=index),
+    }
+
+
+def _assert_exact_worker_failure(
+    tmp_path: Path, provenance: Mapping[str, object], expected_code: str
+) -> None:
+    output_root = tmp_path / "published"
+    with pytest.raises(ProvenanceError, match=expected_code):
+        run_round4_research(
+            _exact_worker_data(),
+            output_root,
+            analysis_date="2025-08-08",
+            source_provenance=dict(provenance),
+        )
+    assert not output_root.exists() or not any(output_root.iterdir())
+
+
+@pytest.mark.parametrize("phase", ["before-seal", "after-seal"])
+def test_exact_worker_rejects_generic_external_resource_with_zero_publication(tmp_path, phase):
+    external = tmp_path / "external" / ("before.json" if phase == "before-seal" else "after.dat")
+    external.parent.mkdir()
+    external.write_text("unbound")
+    seal = "    execution_identity = seal_execution_identity(_provenance_context)\n"
+    external_read = f"    Path({str(external)!r}).read_bytes()\n"
+    injection = external_read + seal if phase == "before-seal" else seal + external_read
+    _, provenance = _release_fixture(tmp_path, anchor=seal, injection=injection)
+
+    _assert_exact_worker_failure(tmp_path, provenance, "EXECUTION_RESOURCE_UNBOUND")
+
+
+def test_exact_worker_rejects_post_capture_source_replacement_with_zero_publication(tmp_path):
+    release = tmp_path / "release"
+    target = release / "src" / "gold_research" / "__init__.py"
+    anchor = (
+        "    if dict(source_capture.source_identity) != _provenance_context[\"source_identity\"]:\n"
+        "        raise RuntimeError(\"SOURCE_CHANGED_DURING_RUN: worker source differs from bootstrap capture\")\n"
+    )
+    injection = anchor + f"    Path({str(target)!r}).write_bytes(b\"# replaced after capture\\n\")\n"
+    _, provenance = _release_fixture(tmp_path, anchor=anchor, injection=injection)
+
+    _assert_exact_worker_failure(tmp_path, provenance, "SOURCE_CHANGED_DURING_RUN")
+
+
+def test_exact_worker_rejects_sourceless_first_party_bytecode_with_zero_publication(tmp_path):
+    release, _ = _release_fixture(tmp_path)
+    source = release / "src" / "gold_research" / "strategies.py"
+    source.unlink()
+    cache = source.parent / "__pycache__"
+    cache.mkdir()
+    (cache / "strategies.cpython-312.pyc").write_bytes(b"not executable source")
+    files, _, _ = _enumerate_release_files(release)
+    provenance = {
+        "mode": "release",
+        "source_root": str(release),
+        "expected_source_sha256": str(_canonical_source_identity(files)["sha256"]),
+    }
+
+    _assert_exact_worker_failure(tmp_path, provenance, "SOURCE_SET_MISMATCH")
+
+
+def test_exact_worker_rejects_changed_direct_pin_with_zero_publication(tmp_path):
+    release, _ = _release_fixture(tmp_path)
+    pyproject = release / "pyproject.toml"
+    text = pyproject.read_text()
+    assert "pandas==2.3.1" in text
+    pyproject.write_text(text.replace("pandas==2.3.1", "pandas==0.0.1", 1))
+    files, _, _ = _enumerate_release_files(release)
+    provenance = {
+        "mode": "release",
+        "source_root": str(release),
+        "expected_source_sha256": str(_canonical_source_identity(files)["sha256"]),
+    }
+
+    _assert_exact_worker_failure(tmp_path, provenance, "DEPENDENCY_IDENTITY_INVALID")
+
+
+def test_exact_worker_rejects_undeclared_optional_import_with_zero_publication(tmp_path):
+    packaging_spec = importlib.util.find_spec("packaging")
+    assert packaging_spec is not None and packaging_spec.origin is not None
+    rogue = Path(packaging_spec.origin).resolve().parent.parent / "qr_undeclared_optional.py"
+    assert not rogue.exists()
+    rogue.write_text("VALUE = 'unverified'\n")
+    anchor = "    costs = _validate_costs(cost_grid_bps)\n"
+    injection = "    import qr_undeclared_optional\n" + anchor
+    try:
+        _, provenance = _release_fixture(tmp_path, anchor=anchor, injection=injection)
+        _assert_exact_worker_failure(tmp_path, provenance, "UNVERIFIED_LOADED_MODULE")
+    finally:
+        rogue.unlink(missing_ok=True)
+
+
+def _coherent_record_replacement(
+    distribution: importlib.metadata.PathDistribution, payload_path: Path
+) -> tuple[bytes, bytes, bytes, bytes]:
+    record_path = Path(str(distribution._path)) / "RECORD"
+    original_payload = payload_path.read_bytes()
+    original_record = record_path.read_bytes()
+    changed_payload = original_payload + b"\n# coherent provenance replacement\n"
+    rows = list(csv.reader(io.StringIO(original_record.decode("utf-8"))))
+    matching = [
+        row
+        for row in rows
+        if len(row) == 3 and Path(str(distribution.locate_file(row[0]))).resolve() == payload_path
+    ]
+    assert len(matching) == 1
+    matching[0][1] = _record_digest(changed_payload)
+    matching[0][2] = str(len(changed_payload))
+    output = io.StringIO()
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    return original_payload, original_record, changed_payload, output.getvalue().encode("utf-8")
+
+
+def test_exact_worker_rejects_executed_a_but_coherently_attested_b_with_zero_publication(tmp_path):
+    distribution = importlib.metadata.distribution("packaging")
+    assert isinstance(distribution, importlib.metadata.PathDistribution)
+    packaging_spec = importlib.util.find_spec("packaging")
+    assert packaging_spec is not None and packaging_spec.origin is not None
+    payload_path = Path(packaging_spec.origin).resolve()
+    record_path = Path(str(distribution._path)) / "RECORD"
+    original_payload, original_record, changed_payload, changed_record = _coherent_record_replacement(
+        distribution, payload_path
+    )
+    seal = "    execution_identity = seal_execution_identity(_provenance_context)\n"
+    injection = (
+        f"    Path({str(payload_path)!r}).write_bytes(base64.b64decode({base64.b64encode(changed_payload)!r}))\n"
+        f"    Path({str(record_path)!r}).write_bytes(base64.b64decode({base64.b64encode(changed_record)!r}))\n"
+        + seal
+    )
+    try:
+        _, provenance = _release_fixture(tmp_path, anchor=seal, injection=injection)
+        _assert_exact_worker_failure(tmp_path, provenance, "DEPENDENCY_CHANGED_DURING_RUN")
+    finally:
+        payload_path.write_bytes(original_payload)
+        record_path.write_bytes(original_record)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "missing",
+        "directory",
+        "target-symlink",
+        "intermediate-symlink",
+        "root-symlink",
+        "hardlink",
+        "fifo",
+        "socket",
+        "device",
+    ],
+)
+def test_secure_environment_read_rejects_complete_non_regular_and_link_matrix(tmp_path, kind):
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    member = "payload"
+    target = environment / member
+    open_socket = None
+    if kind == "missing":
+        pass
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "target-symlink":
+        real = environment / "real"
+        real.write_bytes(b"payload")
+        target.symlink_to(real)
+    elif kind == "intermediate-symlink":
+        real = environment / "real"
+        real.mkdir()
+        (real / "payload").write_bytes(b"payload")
+        (environment / "alias").symlink_to(real, target_is_directory=True)
+        member = "alias/payload"
+    elif kind == "root-symlink":
+        real = tmp_path / "real-environment"
+        real.mkdir()
+        (real / member).write_bytes(b"payload")
+        linked = tmp_path / "linked-environment"
+        linked.symlink_to(real, target_is_directory=True)
+        environment = linked
+    elif kind == "hardlink":
+        real = environment / "real"
+        real.write_bytes(b"payload")
+        os.link(real, target)
+    elif kind == "fifo":
+        os.mkfifo(target)
+    elif kind == "socket":
+        open_socket = socket.socket(socket.AF_UNIX)
+        open_socket.bind(str(target))
+    else:
+        environment = Path("/")
+        member = "dev/null"
+    try:
+        with pytest.raises(bootstrap.BootstrapError, match="DEPENDENCY_IDENTITY_INVALID"):
+            bootstrap._secure_environment_read(environment, member)
+    finally:
+        if open_socket is not None:
+            open_socket.close()

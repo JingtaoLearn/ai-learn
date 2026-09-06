@@ -887,6 +887,15 @@ class _ResourceTracker:
         self.sealed_paths: frozenset[str] | None = None
         self.suspend_depth = 0
         self.font_bootstrap = True
+        self.stdlib_roots = tuple(
+            Path(value).resolve()
+            for key in ("stdlib", "platstdlib")
+            if (value := sysconfig.get_path(key))
+        )
+        self.executable = Path(sys.executable).resolve()
+        self.system_runtime_roots = tuple(
+            path for path in (Path("/usr/lib"), Path("/lib"), Path("/lib64")) if path.exists()
+        )
         self.font_directories = tuple(
             path.parent
             for path_string, record in self.allowed_files.items()
@@ -947,12 +956,19 @@ class _ResourceTracker:
             return
         if path == self.private_root or self.private_root in path.parents:
             return
-        resource_like = path.suffix.lower() in _FONT_SUFFIXES | {".mplstyle", ".rc"}
-        resource_like = resource_like or path.name in {"matplotlibrc", "fontlist.json"}
-        if _inside(path, self.site_roots) or resource_like:
-            raise BootstrapError(
-                "EXECUTION_RESOURCE_UNBOUND", f"resource is not RECORD-bound: {path}"
-            )
+        if path == Path("/proc/self/maps"):
+            return
+        if path == self.executable:
+            return
+        if _inside(path, self.stdlib_roots) and path.suffix.lower() in _CODE_SUFFIXES:
+            return
+        if _inside(path, self.system_runtime_roots) and (
+            path.suffix.lower() in _CODE_SUFFIXES or ".so" in path.name
+        ):
+            return
+        raise BootstrapError(
+            "EXECUTION_RESOURCE_UNBOUND", f"resource is not RECORD-bound: {path}"
+        )
 
     def seal(self) -> None:
         self.sealed_paths = frozenset(self.opened)
