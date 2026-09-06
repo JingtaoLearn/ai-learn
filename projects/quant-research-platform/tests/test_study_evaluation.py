@@ -183,6 +183,8 @@ def test_robust_policy_is_transparent_and_uses_all_deterministic_tie_breaks(
     ranked = sorted([second, first], key=policy.ranking_key)
 
     assert first["eligible"] is True
+    assert first["constraints"]["trusted_total_return"]["passed"] is True
+    assert first["total_return_qualifications"] == []
     assert first["validation_score"] == (
         first["independent_metrics"]["median_fold_net_sharpe"]
         - 0.5 * first["independent_metrics"]["mad_fold_net_sharpe"]

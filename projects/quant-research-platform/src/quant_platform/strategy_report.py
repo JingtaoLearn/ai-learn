@@ -397,6 +397,23 @@ def render_report(
         for key, value in sorted(provenance.items())
     )
     current = "持仓" if metrics["current_position"] == "LONG" else "空仓"
+    source_claim = metrics.get("accounting_status", "PRICE_RETURN_ONLY")
+    accounting_accounts = metrics.get("accounting_accounts")
+    accounting_section = (
+        "<section><h2>冻结的公司行动账户事实</h2>"
+        f"<p>来源声明：<code>{html.escape(str(source_claim), quote=True)}</code>。"
+        "本报告只显示运行时冻结的账本事实，不重新计算或升级可信资格。</p>"
+        f"<pre>{html.escape(json.dumps(accounting_accounts, sort_keys=True, ensure_ascii=False))}</pre>"
+        "</section>"
+        if isinstance(accounting_accounts, Mapping)
+        else ""
+    )
+    limitation = (
+        "已知公司行动已按冻结政策入账，但来源覆盖并非完整权威枚举；"
+        "该 Attempt 仍是 KNOWN_EVENT_CORRECTED_PARTIAL，不具备排名或晋升资格。"
+        if source_claim == "KNOWN_EVENT_CORRECTED_PARTIAL"
+        else "这是价格收益账户。除非另有可信资格，否则不代表包含分红现金流的股东总回报。"
+    )
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -442,7 +459,8 @@ code{{overflow-wrap:anywhere;white-space:normal}}pre{{max-width:100%;overflow-x:
 <section><h2>事件明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{event_table}</div></div></section>
 <section><h2>交易明细</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll">{trade_table}</div></div><p class="muted">仓位收益率按该笔投入资金计算，不包含账户剩余现金；账户组合收益见上方账户摘要。未平交易只含买入成本，不计虚构卖出成本，也不纳入完整交易胜率。</p></section>
 <section><h2>可复现来源</h2><p class="scroll-hint">← 左右滑动查看完整表格 →</p><div class="table-shell"><div class="scroll"><table>{provenance_rows}</table></div></div></section>
-<section><h2>口径限制</h2><p class="warning">这是价格收益账户。除非数据和账本另行提供分红及公司行动现金流，否则不代表包含分红现金流的股东总回报，也不构成投资建议。</p>
+{accounting_section}
+<section><h2>口径限制</h2><p class="warning">{html.escape(limitation)}不构成投资建议。</p>
 <pre>{html.escape(json.dumps(result.reconciliation, sort_keys=True, ensure_ascii=False))}</pre></section>
 </main>
 <div class="lightbox" id="chart-lightbox" role="dialog" aria-modal="true" aria-label="放大的三面板策略图" hidden><button type="button" class="lightbox-close" id="chart-close" aria-label="关闭放大图表">×</button><img id="chart-enlarged" alt="放大的价格趋势、斜率阈值和累计权益三面板图"></div>

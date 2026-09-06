@@ -23,7 +23,14 @@ REVISION_DOMAIN = "quant-platform/corporate-action-revision/v1"
 COVERAGE_DOMAIN = "quant-platform/corporate-action-coverage/v1"
 EVIDENCE_DOMAIN = "quant-platform/corporate-action-evidence/v1"
 TAX_POLICY_DOMAIN = "quant-platform/tax-policy/v1"
-COVERAGE_STATES = {"VERIFIED_EVENTS", "VERIFIED_NO_ACTION", "UNKNOWN_MISSING"}
+SETTLEMENT_POLICY_DOMAIN = "quant-platform/settlement-policy/v1"
+ROUNDING_POLICY_DOMAIN = "quant-platform/rounding-policy/v1"
+COVERAGE_STATES = {
+    "VERIFIED_EVENTS",
+    "VERIFIED_NO_ACTION",
+    "VERIFIED_COMPLETE_INTERVAL",
+    "UNKNOWN_MISSING",
+}
 USE_ROLES = {"CAUSAL_FEATURE", "ACCOUNTING_OUTCOME"}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
@@ -70,6 +77,18 @@ TAX_POLICY_PAYLOAD = {
     "unknowns": ["OFFICIAL_CURRENCY_ROUNDING", "TRADE_DATE_TO_SETTLEMENT_MAPPING"],
 }
 TAX_POLICY_ID = "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223"
+ROUNDING_POLICY_PAYLOAD = {
+    "schema_version": 1,
+    "policy": ROUNDING_ASSUMPTION,
+    "currency": "CNY",
+    "minor_unit": "FEN",
+}
+SYNTHETIC_COMPLETE_CONTRACT = {
+    "schema_version": 1,
+    "source_contract_version": "synthetic-complete-enumeration@1",
+    "scope": "DETERMINISTIC_NON_OBSERVATIONAL_TEST_FIXTURE_ONLY",
+    "coverage_states": ["VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"],
+}
 
 
 class CorporateActionEvidenceError(ValueError):
@@ -166,6 +185,10 @@ class SettlementSchedule:
     def digest(self) -> str:
         return hashlib.sha256(canonical_json_bytes(self.document)).hexdigest()
 
+    @property
+    def policy_id(self) -> str:
+        return identity_digest(SETTLEMENT_POLICY_DOMAIN, self.document)
+
     def settlement_date(self, trade_date: date) -> date:
         value = self.trade_to_settlement.get(trade_date.isoformat())
         if value is None:
@@ -252,7 +275,21 @@ def tax_policy_identity() -> dict[str, Any]:
 
     if identity_digest(TAX_POLICY_DOMAIN, TAX_POLICY_PAYLOAD) != TAX_POLICY_ID:
         raise CorporateActionEvidenceError("frozen tax policy identity mismatch")
-    return {"tax_policy_id": TAX_POLICY_ID, "payload": copy.deepcopy(TAX_POLICY_PAYLOAD)}
+    return {
+        "tax_policy_id": TAX_POLICY_ID,
+        "sha256": hashlib.sha256(canonical_json_bytes(TAX_POLICY_PAYLOAD)).hexdigest(),
+        "payload": copy.deepcopy(TAX_POLICY_PAYLOAD),
+    }
+
+
+def rounding_policy_identity() -> dict[str, Any]:
+    """Return the exact versioned integer-fen rounding policy identity."""
+
+    return {
+        "rounding_policy_id": identity_digest(ROUNDING_POLICY_DOMAIN, ROUNDING_POLICY_PAYLOAD),
+        "sha256": hashlib.sha256(canonical_json_bytes(ROUNDING_POLICY_PAYLOAD)).hexdigest(),
+        "payload": copy.deepcopy(ROUNDING_POLICY_PAYLOAD),
+    }
 
 
 def _require_fields(value: Any, fields: set[str], label: str) -> dict[str, Any]:
@@ -669,6 +706,7 @@ def admit_corporate_action_evidence(
         "collector_version",
         "source_contract_version",
         "complete_enumeration_contract",
+        "complete_contract_id",
         "requests",
         "retrievals",
         "artifacts",
@@ -678,24 +716,46 @@ def admit_corporate_action_evidence(
         "total_return_claim",
         "projection",
     }
-    if set(value) not in (allowed_fields - {"projection"}, allowed_fields):
+    compatible_fields = allowed_fields - {"projection", "complete_contract_id"}
+    if set(value) not in (
+        compatible_fields,
+        compatible_fields | {"projection"},
+        allowed_fields - {"projection"},
+        allowed_fields,
+    ):
         raise CorporateActionEvidenceError("corporate-action evidence fields are invalid")
     if value["schema_version"] != 1:
         raise CorporateActionEvidenceError("unsupported corporate-action evidence schema")
-    if value["collector_version"] != "accepted-audit-import@1":
-        raise CorporateActionEvidenceError(
-            "collector_version is outside the accepted source contract"
-        )
-    if value["source_contract_version"] != "bocom-xshg-dividend@1":
+    source_contract = value["source_contract_version"]
+    if source_contract == "bocom-xshg-dividend@1":
+        if value["collector_version"] != "accepted-audit-import@1":
+            raise CorporateActionEvidenceError(
+                "collector_version is outside the accepted source contract"
+            )
+    elif source_contract == "synthetic-complete-enumeration@1":
+        if value["collector_version"] != "synthetic-complete-fixture@1":
+            raise CorporateActionEvidenceError("synthetic complete collector identity is invalid")
+    else:
         raise CorporateActionEvidenceError(
             "source_contract_version is outside the accepted source contract"
         )
     if type(value["complete_enumeration_contract"]) is not bool:
         raise CorporateActionEvidenceError("complete-enumeration contract flag is invalid")
-    if value["complete_enumeration_contract"]:
+    complete_contract_id = value.get("complete_contract_id")
+    if source_contract == "bocom-xshg-dividend@1" and value["complete_enumeration_contract"]:
         raise CorporateActionEvidenceError(
             "BOCOM/XSHG v1 has no admitted complete-enumeration contract"
         )
+    expected_complete_contract_id = identity_digest(
+        "quant-platform/complete-enumeration-contract/v1", SYNTHETIC_COMPLETE_CONTRACT
+    )
+    if source_contract == "synthetic-complete-enumeration@1" and (
+        value["complete_enumeration_contract"] is not True
+        or complete_contract_id != expected_complete_contract_id
+    ):
+        raise CorporateActionEvidenceError("synthetic complete-enumeration contract is invalid")
+    if source_contract == "bocom-xshg-dividend@1" and complete_contract_id is not None:
+        raise CorporateActionEvidenceError("BOCOM/XSHG v1 cannot name a complete contract")
     if not isinstance(value["findings"], list) or not all(
         isinstance(item, str) for item in value["findings"]
     ):
@@ -802,12 +862,16 @@ def admit_corporate_action_evidence(
         raise CorporateActionEvidenceError("coverage limitations are invalid")
     if state == "VERIFIED_EVENTS" and not revision_ids:
         raise CorporateActionEvidenceError("VERIFIED_EVENTS requires an accepted revision")
-    if state == "VERIFIED_NO_ACTION" and not value["complete_enumeration_contract"]:
+    if state in {"VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"} and not value[
+        "complete_enumeration_contract"
+    ]:
         raise CorporateActionEvidenceError(
-            "VERIFIED_NO_ACTION requires an admitted complete-enumeration contract"
+            "complete coverage requires an admitted complete-enumeration contract"
         )
     if state == "VERIFIED_NO_ACTION" and revision_ids:
         raise CorporateActionEvidenceError("VERIFIED_NO_ACTION cannot contain events")
+    if state == "VERIFIED_COMPLETE_INTERVAL" and not revision_ids:
+        raise CorporateActionEvidenceError("VERIFIED_COMPLETE_INTERVAL requires terminal events")
     expected_claim = "KNOWN_EVENT_CORRECTED_PARTIAL" if state == "VERIFIED_EVENTS" else "FORBIDDEN"
     if value["total_return_claim"] != expected_claim:
         raise CorporateActionEvidenceError(
@@ -990,11 +1054,13 @@ def accounting_cash_dividends(evidence: CorporateActionEvidence) -> tuple[CashDi
     if not evidence.publishable:
         raise CorporateActionEvidenceError("quarantined action evidence cannot be accounted")
     if (
-        coverage["coverage_state"] != "VERIFIED_EVENTS"
-        or document["total_return_claim"] != "KNOWN_EVENT_CORRECTED_PARTIAL"
+        coverage["coverage_state"]
+        not in {"VERIFIED_EVENTS", "VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"}
+        or document["total_return_claim"]
+        not in {"KNOWN_EVENT_CORRECTED_PARTIAL", "FORBIDDEN"}
     ):
         raise CorporateActionEvidenceError(
-            "accounting requires VERIFIED_EVENTS / KNOWN_EVENT_CORRECTED_PARTIAL"
+            "accounting requires admitted event coverage and a collector source fact"
         )
     revisions = document["revisions"]
     notices_to_revision = {

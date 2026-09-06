@@ -2579,6 +2579,7 @@ def test_failed_attempts_progress_to_no_eligible_candidate(tmp_path: Path):
 
     assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
     assert detail["decision_summary"] is None
+    assert detail["rankings"] == []
     assert detail["holdout"] == {
         "access": "SEALED",
         "outcome": "NOT_RUN",

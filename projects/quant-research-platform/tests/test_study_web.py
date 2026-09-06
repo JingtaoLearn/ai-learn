@@ -147,6 +147,17 @@ def _study_detail() -> dict:
                     },
                     "constraint_failures": ["minimum_trades"],
                 },
+                "total_return_qualifications": [
+                    {
+                        "qualification_id": None,
+                        "issuer": None,
+                        "claim_state": "KNOWN_EVENT_CORRECTED_PARTIAL",
+                        "coverage_state": "VERIFIED_EVENTS",
+                        "ranking": {
+                            "reason_codes": ["KNOWN_EVENT_PARTIAL"],
+                        },
+                    }
+                ],
             }
         ],
         "unranked_trials": [],
@@ -385,6 +396,9 @@ def test_study_pages_expose_research_evidence_and_escape_values(
     )
     assert "Ineligible" in ranking
     assert "minimum_trades" in ranking
+    assert "KNOWN_EVENT_CORRECTED_PARTIAL" in ranking
+    assert "KNOWN_EVENT_PARTIAL" in ranking
+    assert "UNVERIFIED" in ranking
     assert study.text.index('data-testid="decision-summary"') < study.text.index(
         'id="holdout-evidence-heading"'
     )

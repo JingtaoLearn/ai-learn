@@ -322,6 +322,9 @@ def test_snapshot_detail_projects_action_evidence_and_legacy_unknown_without_mut
     assert legacy_detail["corporate_actions"] == {
         "coverage_state": "UNKNOWN_MISSING",
         "coverage_id": None,
+        "source_contract_version": None,
+        "complete_enumeration_contract": False,
+        "complete_contract_id": None,
         "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
         "events": [],
         "artifacts": [],
@@ -329,6 +332,22 @@ def test_snapshot_detail_projects_action_evidence_and_legacy_unknown_without_mut
         "retrievals": [],
         "findings": [],
         "total_return_claim": "FORBIDDEN",
+        "effective_total_return": {
+            "schema_version": 1,
+            "qualification_id": None,
+            "issuer": None,
+            "source_issuer": "HISTORICAL_RECORD",
+            "source_total_return_claim": "FORBIDDEN",
+            "claim_state": "PRICE_RETURN_ONLY",
+            "coverage_state": "UNKNOWN_MISSING",
+            "ranking": {
+                "eligible_for_ranking": False,
+                "eligible_for_promotion": False,
+                "historical_exposure": "UNKNOWN",
+                "reason_codes": ["PRICE_ONLY"],
+            },
+            "trusted_qualification_absent": True,
+        },
         "explanation": "Unknown or partial corporate-action evidence is not verified total return.",
     }
     assert {path.name: path.read_bytes() for path in legacy_dir.iterdir()} == legacy_before
@@ -358,6 +377,14 @@ def test_snapshot_detail_projects_action_evidence_and_legacy_unknown_without_mut
         "4597787c599a4c476c3ad7e1bfa45fb1b633cf73f01a7e4ff28284fd87a04747"
     )
     assert corporate_actions["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
+    assert corporate_actions["complete_enumeration_contract"] is False
+    assert corporate_actions["complete_contract_id"] is None
+    assert corporate_actions["effective_total_return"]["claim_state"] == (
+        "KNOWN_EVENT_CORRECTED_PARTIAL"
+    )
+    assert corporate_actions["effective_total_return"]["ranking"][
+        "eligible_for_ranking"
+    ] is False
 
 
 def test_incomplete_range_fetches_one_generation_and_publishes_provenance(

@@ -156,6 +156,23 @@ def test_report_rules_are_literal_config_derived_and_complete():
     assert "不代表包含分红现金流的股东总回报" in html
 
 
+def test_report_displays_frozen_partial_accounting_without_upgrading_it():
+    result = _result()
+    result.metrics["accounting_status"] = "KNOWN_EVENT_CORRECTED_PARTIAL"
+    result.metrics["accounting_accounts"] = {
+        "strategy": {
+            "gross_dividend_fen": 100,
+            "collected_tax_fen": 10,
+            "outstanding_tax_fen": 0,
+        }
+    }
+    rendered = render_report(result, _config(), _provenance())
+    assert "冻结的公司行动账户事实" in rendered
+    assert "KNOWN_EVENT_CORRECTED_PARTIAL" in rendered
+    assert "gross_dividend_fen" in rendered
+    assert "AFTER_TAX_TOTAL_RETURN_VERIFIED" not in rendered
+
+
 def test_report_contains_required_panels_summary_tables_and_provenance():
     html = render_report(
         _result(),

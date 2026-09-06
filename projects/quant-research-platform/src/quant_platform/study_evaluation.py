@@ -21,8 +21,15 @@ import pandas as pd
 from .datasets import _verify_snapshot
 from .schemas import canonical_json_bytes
 from .strategy_replay import COST_FIELDS, EVENT_COLUMNS, TRADE_COLUMNS
-from .strategy_runner import RECONCILIATION_FIELDS
+from .strategy_runner import RECONCILIATION_FIELDS, SETTLEMENT_RECONCILIATION_FIELDS
 from .study_contracts import normalize_fold_window
+from .total_return_claims import (
+    BINDING_FIELDS,
+    CHECK_FIELDS,
+    qualification_record,
+    qualify_total_return,
+    read_time_classification,
+)
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -33,6 +40,10 @@ RESULT_ARTIFACTS = (
     "metrics.json",
     "cost_breakdown.json",
 )
+SETTLEMENT_RESULT_ARTIFACTS = RESULT_ARTIFACTS + (
+    "account_events.csv",
+    "account_trades.csv",
+)
 MAX_ARTIFACT_BYTES = {
     "config.json": 1_048_576,
     "run_manifest.json": 1_048_576,
@@ -42,6 +53,8 @@ MAX_ARTIFACT_BYTES = {
     "metrics.json": 1_048_576,
     "cost_breakdown.json": 1_048_576,
     "report.html": 16 * 1_048_576,
+    "account_events.csv": 64 * 1_048_576,
+    "account_trades.csv": 64 * 1_048_576,
 }
 MAX_ATTEMPT_AUDIT_BYTES = 4 * 1_048_576
 MAX_TOTAL_RESULT_BYTES = 128 * 1_048_576
@@ -491,6 +504,200 @@ def _candidate_attempt_binding(
     }
 
 
+def _a_share_total_return_qualification(
+    *,
+    instrument: str,
+    dataset_manifest: Mapping[str, Any],
+    run_manifest: Mapping[str, Any],
+    payloads: Mapping[str, bytes],
+    result_digest: str,
+    metrics: Mapping[str, Any],
+    historical_exposure: str,
+) -> dict[str, Any] | None:
+    if not instrument.endswith((".SS", ".SZ")):
+        return None
+    accounting = run_manifest.get("accounting")
+    if not isinstance(accounting, Mapping):
+        return read_time_classification(
+            source_issuer="STRATEGY_RUNNER",
+            source_total_return_claim="PRICE_RETURN_ONLY",
+            coverage_state="UNKNOWN_MISSING",
+        )
+    if "account_events.csv" not in payloads or "account_trades.csv" not in payloads:
+        raise MetricDocumentValidationError("A-share accounting ledgers are missing")
+    try:
+        account_events = pd.read_csv(BytesIO(payloads["account_events.csv"]))
+        account_trades = pd.read_csv(BytesIO(payloads["account_trades.csv"]))
+    except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+        raise MetricDocumentValidationError("A-share accounting ledgers are invalid") from exc
+    account_facts = metrics.get("accounting_accounts")
+    if not isinstance(account_facts, Mapping) or set(account_facts) != {
+        "strategy",
+        "zero_cost",
+        "buy_and_hold",
+    }:
+        raise MetricDocumentValidationError("three-account frozen metrics are missing")
+    account_bindings = {}
+    for account in ("strategy", "zero_cost", "buy_and_hold"):
+        facts = account_facts[account]
+        final_state = facts.get("final_state") if isinstance(facts, Mapping) else None
+        if not isinstance(final_state, Mapping) or any(type(value) is not int for value in final_state.values()):
+            raise MetricDocumentValidationError("account final state is not exact integer evidence")
+        account_bindings[account] = {
+            "events_sha256": _sha256(
+                account_events[account_events["account"] == account]
+                .to_csv(index=False, lineterminator="\n")
+                .encode("utf-8")
+            ),
+            "trades_sha256": _sha256(
+                account_trades[account_trades["account"] == account]
+                .to_csv(index=False, lineterminator="\n")
+                .encode("utf-8")
+            ),
+            "final_state_sha256": _sha256(canonical_json_bytes(dict(final_state))),
+        }
+    lineage = dataset_manifest.get("lineage")
+    parent = lineage.get("parent", {}) if isinstance(lineage, Mapping) else {}
+    files = run_manifest.get("files")
+    if not isinstance(files, Mapping):
+        raise MetricDocumentValidationError("run manifest file bindings are missing")
+    tax = accounting.get("tax_policy")
+    settlement = accounting.get("settlement_schedule")
+    rounding = accounting.get("rounding_policy")
+    if not all(isinstance(item, Mapping) for item in (tax, settlement, rounding)):
+        raise MetricDocumentValidationError("accounting policy identities are missing")
+    tax = dict(tax or {})
+    settlement = dict(settlement or {})
+    rounding = dict(rounding or {})
+    bindings: dict[str, Any] = {field: None for field in BINDING_FIELDS}
+    bindings.update(
+        {
+            "corporate_action_evidence_sha256": accounting.get(
+                "corporate_action_evidence_sha256"
+            ),
+            "raw_artifact_sha256s": list(accounting.get("raw_artifact_sha256s", [])),
+            "event_revision_ids": list(accounting.get("event_revision_ids", [])),
+            "tax_policy_id": tax.get("tax_policy_id"),
+            "tax_policy_sha256": tax.get("sha256"),
+            "settlement_policy_id": settlement.get("policy_id"),
+            "settlement_policy_sha256": settlement.get("sha256"),
+            "rounding_policy_id": rounding.get("rounding_policy_id"),
+            "rounding_policy_sha256": rounding.get("sha256"),
+            "parent_snapshot_id": parent.get("snapshot_id"),
+            "execution_view_snapshot_id": dataset_manifest.get("snapshot_id"),
+            "parent_corporate_action_evidence_sha256": parent.get(
+                "corporate_action_evidence_sha256"
+            ),
+            "view_corporate_action_evidence_sha256": dataset_manifest.get(
+                "corporate_action_evidence_sha256"
+            ),
+            "scoring_mask_sha256": dataset_manifest.get("scoring_mask_sha256"),
+            "causal_feature_cutoff": accounting.get("accounting_close_date")
+            or metrics.get("period_end"),
+            "accounting_outcome_checked_as_of": (
+                f"{accounting.get('accounting_close_date') or metrics.get('period_end')}T00:00:00Z"
+            ),
+            "accounting_outcome_use_role": "ACCOUNTING_OUTCOME",
+            "result_digest": result_digest,
+            "run_manifest_sha256": _sha256(payloads["run_manifest.json"]),
+            "account_events_sha256": files.get("account_events.csv", {}).get("sha256"),
+            "account_trades_sha256": files.get("account_trades.csv", {}).get("sha256"),
+            "accounts": account_bindings,
+            "control_parity_sha256": _sha256(canonical_json_bytes(account_bindings)),
+        }
+    )
+    coverage_state = accounting.get("coverage_state", "UNKNOWN_MISSING")
+    complete_contract_id = accounting.get("complete_contract_id")
+    exact_integer = all(
+        pd.api.types.is_integer_dtype(account_events[column])
+        for column in account_events
+        if column
+        in {
+            "sequence",
+            "quantity",
+            "trade_quantity_delta",
+            "settled_quantity_delta",
+            "cash_delta_fen",
+            "cost_fen",
+            "cash_fen",
+            "trade_holdings",
+            "settled_holdings",
+            "receivable_fen",
+            "unpaid_dividend_tax_base_fen",
+            "deferred_tax_base_fen",
+            "outstanding_tax_fen",
+            "market_price_fen",
+            "market_value_fen",
+            "equity_fen",
+        }
+    )
+    settled = all(
+        all(
+            facts["final_state"][field] == 0
+            for field in (
+                "trade_holdings",
+                "settled_holdings",
+                "receivable_fen",
+                "unpaid_dividend_tax_base_fen",
+                "deferred_tax_base_fen",
+                "outstanding_tax_fen",
+            )
+        )
+        for facts in account_facts.values()
+    )
+    checks = {field: True for field in CHECK_FIELDS}
+    checks.update(
+        {
+            "dataset_binding": (
+                accounting.get("corporate_action_evidence_sha256")
+                == dataset_manifest.get("corporate_action_evidence_sha256")
+            ),
+            "coverage_complete": coverage_state
+            in {"VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"},
+            "event_set_complete": coverage_state
+            in {"VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"},
+            "policy_applicable": all(
+                bindings[field] is not None
+                for field in (
+                    "tax_policy_id",
+                    "tax_policy_sha256",
+                    "settlement_policy_id",
+                    "settlement_policy_sha256",
+                    "rounding_policy_id",
+                    "rounding_policy_sha256",
+                )
+            ),
+            "strategy_control_parity": set(account_events["account"])
+            == {"strategy", "zero_cost", "buy_and_hold"},
+            "ledgers_complete": set(account_trades["account"])
+            == {"strategy", "zero_cost", "buy_and_hold"},
+            "exact_fen_quantity": exact_integer,
+            "settled": settled,
+            "causal_separation": isinstance(lineage, Mapping)
+            and lineage.get("kind") == "derived_view",
+            "controls_and_metrics": True,
+        }
+    )
+    source_claim = accounting.get("claim")
+    if not isinstance(source_claim, str):
+        raise MetricDocumentValidationError("runner source claim is missing")
+    qualification = qualify_total_return(
+        source_issuer="STRATEGY_RUNNER",
+        source_total_return_claim=source_claim,
+        coverage_state=coverage_state,
+        coverage_basis=(
+            "COMPLETE_ENUMERATION_CONTRACT" if complete_contract_id is not None else "NONE"
+        ),
+        coverage_id=accounting.get("coverage_id"),
+        complete_contract_id=complete_contract_id,
+        equivalent_contract_approval_id=None,
+        bindings=bindings,
+        checks=checks,
+        historical_exposure=historical_exposure,
+    )
+    return qualification_record(qualification)
+
+
 class MetricDocumentFactory:
     """Verify immutable run artifacts and derive policy-safe account metrics."""
 
@@ -602,7 +809,13 @@ class MetricDocumentFactory:
         if not isinstance(result_path, (str, Path)):
             raise MetricDocumentValidationError("result directory is unavailable")
         root = Path(result_path).absolute()
-        required = {*RESULT_ARTIFACTS, "run_manifest.json", "config.json", "report.html"}
+        base_required = {*RESULT_ARTIFACTS, "run_manifest.json", "config.json", "report.html"}
+        settlement_required = {
+            *SETTLEMENT_RESULT_ARTIFACTS,
+            "run_manifest.json",
+            "config.json",
+            "report.html",
+        }
         with _root_relative_directory(
             self.state_root,
             root,
@@ -614,7 +827,11 @@ class MetricDocumentFactory:
                     "result directory is not immutable"
                 )
             names = set(os.listdir(result_descriptor))
-            if names != required:
+            if names == base_required:
+                required = base_required
+            elif names == settlement_required:
+                required = settlement_required
+            else:
                 raise MetricDocumentValidationError(
                     "result artifact set is incomplete or unexpected"
                 )
@@ -872,9 +1089,14 @@ class MetricDocumentFactory:
                 "ledger, equity, cost, and metric artifacts do not reconcile"
             )
         stored_reconciliation = run_manifest.get("reconciliation")
+        expected_reconciliation_fields = (
+            SETTLEMENT_RECONCILIATION_FIELDS
+            if "account_events.csv" in payloads
+            else RECONCILIATION_FIELDS
+        )
         if (
             not isinstance(stored_reconciliation, dict)
-            or set(stored_reconciliation) != RECONCILIATION_FIELDS
+            or set(stored_reconciliation) != expected_reconciliation_fields
             or any(value is not True for value in stored_reconciliation.values())
         ):
             raise MetricDocumentValidationError("run manifest reconciliation is not successful")
@@ -1119,9 +1341,22 @@ class MetricDocumentFactory:
                 "reported drawdown or trade metrics do not reconcile"
             )
         _finite(independent, "independent_metrics")
+        historical_exposure = requested.get("historical_exposure", "UNKNOWN")
+        if historical_exposure not in {"PRISTINE", "EXPOSED", "UNKNOWN"}:
+            raise MetricDocumentValidationError("historical exposure state is invalid")
+        total_return_qualification = _a_share_total_return_qualification(
+            instrument=instrument,
+            dataset_manifest=manifest,
+            run_manifest=run_manifest,
+            payloads=payloads,
+            result_digest=result_digest,
+            metrics=metrics,
+            historical_exposure=historical_exposure,
+        )
         document = {
                 "schema_version": 1,
                 "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
+                "instrument": instrument,
                 "candidate_digest": candidate_digest,
                 "candidate_binding": candidate_binding,
                 "experiment_id": experiment_id,
@@ -1138,6 +1373,7 @@ class MetricDocumentFactory:
                 ],
                 "metrics": independent,
                 "reported_metrics": metrics,
+                "total_return_qualification": total_return_qualification,
                 "reconciliation": {
                     "immutable_artifacts": True,
                     "scoring_mask": True,
@@ -1194,6 +1430,7 @@ class RobustWalkForwardPolicy:
         required_document_fields = {
             "schema_version",
             "metric_engine",
+            "instrument",
             "candidate_digest",
             "candidate_binding",
             "experiment_id",
@@ -1207,6 +1444,7 @@ class RobustWalkForwardPolicy:
             "net_daily_returns",
             "metrics",
             "reported_metrics",
+            "total_return_qualification",
             "reconciliation",
             "document_digest",
         }
@@ -1349,12 +1587,38 @@ class RobustWalkForwardPolicy:
             float(document["metrics"]["maximum_drawdown"]) for document in ordered
         )
         closed_trades = sum(int(document["metrics"]["closed_trades"]) for document in ordered)
+        trusted_total_return = all(
+            (
+                not document["instrument"].endswith((".SS", ".SZ"))
+                or (
+                    isinstance(document["total_return_qualification"], Mapping)
+                    and document["total_return_qualification"].get("issuer")
+                    == "quant-platform/total-return-qualification@1"
+                    and document["total_return_qualification"].get("claim_state")
+                    == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+                    and document["total_return_qualification"].get("ranking", {}).get(
+                        "eligible_for_ranking"
+                    )
+                    is True
+                    and document["total_return_qualification"].get("ranking", {}).get(
+                        "historical_exposure"
+                    )
+                    == "PRISTINE"
+                )
+            )
+            for document in ordered
+        )
         validation_score = (
             fold_median
             - stability_weight * fold_mad
             - turnover_weight * annual_turnover
         )
         constraints = {
+            "trusted_total_return": {
+                "actual": trusted_total_return,
+                "limit": True,
+                "passed": trusted_total_return,
+            },
             "minimum_trades": {
                 "actual": closed_trades,
                 "limit": minimum_trades,
@@ -1417,6 +1681,11 @@ class RobustWalkForwardPolicy:
             },
             "metric_document_digests": [
                 document["document_digest"] for document in ordered
+            ],
+            "total_return_qualifications": [
+                deepcopy(document["total_return_qualification"])
+                for document in ordered
+                if document["total_return_qualification"] is not None
             ],
         }
         if not math.isfinite(validation_score):
