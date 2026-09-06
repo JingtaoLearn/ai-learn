@@ -335,17 +335,61 @@ def _trusted_document(tmp_path: Path, **options) -> dict:
     )
 
 
+_FACTORY_MATRIX_MUTATORS = {
+    "C1": "F1_EXTRA",
+    "C2": "L5",
+    "C3": "C4",
+    "C4": "C4",
+    "C5": "C4",
+    "A1": "C4",
+    "A2": "C4",
+    "A3": "C4",
+    "A4": "C4",
+    "A5": "C4",
+    "A6": "C4",
+    "A7": "C4",
+    "A8": "C4",
+    "T1": "T1",
+    "T2": "T2",
+    "T3": "L5",
+    "T4": "L5",
+    "T5": "L5",
+    "L1": "L1",
+    "L2": "L2",
+    "L3": "L3",
+    "L4": "L4",
+    "L5": "L5",
+    "I1": "I2",
+    "I2": "I2",
+    "I3": "I2",
+    "R1": "R1",
+    "R2": "R2",
+    "D1": "C4",
+    "D2": "C4",
+}
+
+
 def _mutate_and_reseal_trusted_run(
     factory: MetricDocumentFactory,
     attempt: dict,
     case: str,
 ) -> None:
+    case = _FACTORY_MATRIX_MUTATORS.get(case, case)
     prior_result_digest = attempt["result_digest"]
     root = Path(attempt["result_path"])
     root.chmod(0o755)
     for path in root.iterdir():
         path.chmod(0o644)
-    if case in {"L1", "L2", "L3", "L4", "L5", "I2"}:
+    if case in {
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "I2",
+        "F1_MISSING",
+        "F1_EXTRA",
+    }:
         events = pd.read_csv(root / "account_events.csv", dtype=str, keep_default_na=False)
         trades = pd.read_csv(root / "account_trades.csv", dtype=str, keep_default_na=False)
         if case == "L1":
@@ -363,6 +407,28 @@ def _mutate_and_reseal_trusted_run(
         elif case == "L4":
             selected = (events["account"] == "zero_cost") & (events["event_revision_id"] != "")
             events.loc[selected, "event_revision_id"] = "f" * 64
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "F1_MISSING":
+            selected = (events["account"] == "strategy") & (
+                events["event_type"] == "DIVIDEND_PAYMENT"
+            )
+            events = events[~selected]
+            events.loc[events["account"] == "strategy", "sequence"] = range(
+                1, int((events["account"] == "strategy").sum()) + 1
+            )
+            target = root / "account_events.csv"
+            frame = events
+        elif case == "F1_EXTRA":
+            selected = events[
+                (events["account"] == "strategy")
+                & (events["event_type"] == "DIVIDEND_PAYMENT")
+            ].iloc[[0]].copy()
+            events = pd.concat([events, selected], ignore_index=True)
+            events = events.sort_values(["account", "Date", "sequence"], kind="stable")
+            events.loc[events["account"] == "strategy", "sequence"] = range(
+                1, int((events["account"] == "strategy").sum()) + 1
+            )
             target = root / "account_events.csv"
             frame = events
         elif case == "L5":
@@ -490,7 +556,7 @@ def test_metric_document_factory_issues_only_from_complete_verified_graph(
 
 @pytest.mark.parametrize(
     "case",
-    ["C4", "T1", "T2", "L1", "L2", "L3", "L4", "L5", "I2", "R1", "R2"],
+    sorted(_FACTORY_MATRIX_MUTATORS),
 )
 def test_adversarial_accounting_rows_reject_through_metric_document_factory(
     tmp_path: Path,
@@ -500,7 +566,89 @@ def test_adversarial_accounting_rows_reject_through_metric_document_factory(
     candidate = attempt["candidate_configuration"]
     _mutate_and_reseal_trusted_run(factory, attempt, case)
 
-    with pytest.raises(RuntimeError, match="account|policy|coverage|integer|reconcil|digest"):
+    with pytest.raises(
+        RuntimeError, match="account|policy|coverage|integer|reconcil|digest|settlement"
+    ):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+@pytest.mark.parametrize("case", ["F1_MISSING", "F1_EXTRA", "L4"])
+def test_terminal_action_postings_reject_missing_extra_and_control_divergence(
+    tmp_path: Path,
+    case: str,
+):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
+    candidate = attempt["candidate_configuration"]
+    _mutate_and_reseal_trusted_run(factory, attempt, case)
+
+    with pytest.raises(RuntimeError, match="account|action|posting|reconcil|settlement"):
+        factory.from_attempt(
+            attempt,
+            candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
+            candidate_configuration=candidate,
+            fold_window=fold_window,
+        )
+
+
+def test_accounting_outcome_package_is_distinct_post_result_and_operator_inaccessible(
+    tmp_path: Path,
+):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
+    result = Path(attempt["result_path"])
+    package = factory.state_root / "accounting-outcomes" / attempt["result_digest"]
+    package_manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    run_manifest = json.loads((result / "run_manifest.json").read_text(encoding="utf-8"))
+    view_digest = run_manifest["accounting"]["corporate_action_evidence_sha256"]
+
+    assert package.is_dir()
+    assert package_manifest["use_role"] == "ACCOUNTING_OUTCOME"
+    assert package_manifest["attached_after_result_digest"] == attempt["result_digest"]
+    assert package_manifest["corporate_action_evidence_sha256"] != view_digest
+    assert package.name not in (result / "config.json").read_text(encoding="utf-8")
+    assert package_manifest["corporate_action_evidence_sha256"] not in (
+        result / "run_manifest.json"
+    ).read_text(encoding="utf-8")
+
+    candidate = attempt["candidate_configuration"]
+    document = factory.from_attempt(
+        attempt,
+        candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
+        candidate_configuration=candidate,
+        fold_window=fold_window,
+    )
+    binding = document["total_return_qualification"]["bindings"]
+    assert binding["corporate_action_evidence_sha256"] == package_manifest[
+        "corporate_action_evidence_sha256"
+    ]
+    assert binding["view_corporate_action_evidence_sha256"] == view_digest
+
+
+@pytest.mark.parametrize("case", ["D3", "D4"])
+def test_accounting_outcome_role_and_post_result_binding_fail_closed(
+    tmp_path: Path,
+    case: str,
+):
+    factory, attempt, fold_window = _trusted_attempt_and_factory(tmp_path)
+    package = factory.state_root / "accounting-outcomes" / attempt["result_digest"]
+    package.chmod(0o755)
+    manifest_path = package / "manifest.json"
+    manifest_path.chmod(0o644)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if case == "D3":
+        manifest["use_role"] = "CAUSAL_FEATURE"
+    else:
+        manifest["execution_view_snapshot_id"] = "f" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o444)
+    package.chmod(0o555)
+    candidate = attempt["candidate_configuration"]
+
+    with pytest.raises(RuntimeError, match="outcome|bound|role"):
         factory.from_attempt(
             attempt,
             candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
