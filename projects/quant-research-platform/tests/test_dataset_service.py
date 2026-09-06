@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -33,6 +35,7 @@ from quant_platform.experiment_service import ExperimentService
 from quant_platform.schemas import canonical_json_bytes
 
 from test_experiment_service import _task
+from test_market_sessions import live_evidence
 
 
 METADATA = {
@@ -1836,3 +1839,173 @@ def test_catalog_registration_is_immutable(tmp_path: Path):
     service.register(ITEM)
     with pytest.raises(DatasetResolutionError, match="immutable.*conflict"):
         service.register(replace(ITEM, name="Renamed dataset"))
+
+
+class RangeAuditedSource:
+    provider = "xshg-audited-daily-v1"
+
+    def __init__(self, bars: pd.DataFrame, *, return_all: bool = False):
+        self.bars = bars
+        self.return_all = return_all
+        self.fetch_calls: list[tuple[str, str, str]] = []
+
+    def fetch(self, instrument: str, start: str, end: str) -> FetchedDailyBars:
+        self.fetch_calls.append((instrument, start, end))
+        selected = (
+            self.bars.reset_index(drop=True)
+            if self.return_all
+            else self.bars[
+                self.bars["Date"].between(pd.Timestamp(start), pd.Timestamp(end))
+            ].reset_index(drop=True)
+        )
+        return FetchedDailyBars(
+            bars=selected,
+            source_identity={
+                "provider": self.provider,
+                "instrument": instrument,
+                "requested_start": start,
+                "requested_end": end,
+            },
+        )
+
+    def latest_available_close(self, instrument: str) -> str:
+        return str(self.bars["Date"].max().date())
+
+
+class RangeEvidenceSource:
+    def __init__(self, values):
+        self.values = values
+        self.calls: list[tuple[str, str, str]] = []
+
+    def fetch(self, instrument: str, start: str, end: str):
+        self.calls.append((instrument, start, end))
+        return self.values[(instrument, start, end)]
+
+
+def _audited_service(tmp_path: Path, source, evidence_source) -> DatasetService:
+    item = replace(
+        ITEM,
+        provider="xshg-audited-daily-v1",
+        default_start="2026-08-31",
+    )
+    catalog = initialize_catalog(tmp_path / "state")
+    service = DatasetService(
+        catalog,
+        sources={source.provider: source},
+        calendars={"XSHG": FixedCalendar(["2026-08-31", "2026-09-01"])},
+        market_session_sources={"XSHG": evidence_source},
+    )
+    service.register(item)
+    return service
+
+
+def test_audited_resolve_backfill_and_no_change_refetch_one_overlap(tmp_path: Path, monkeypatch):
+    one, _, _ = live_evidence(monkeypatch)
+    source = RangeAuditedSource(_bars(["2026-08-31"], [6.10]))
+    evidence_source = RangeEvidenceSource(
+        {("601328.SS", "2026-08-31", "2026-08-31"): one}
+    )
+    service = _audited_service(tmp_path, source, evidence_source)
+
+    first = service.resolve("601328.SS", "2026-08-31", "2026-08-31")
+    second = service.resolve("601328.SS", "2026-08-31", "2026-08-31")
+    third = service.resolve("601328.SS", "2026-08-31", "2026-08-31")
+
+    assert first["snapshot_id"] == second["snapshot_id"] == third["snapshot_id"]
+    assert second["update_id"] == third["update_id"]
+    assert source.fetch_calls == [
+        ("601328.SS", "2026-08-31", "2026-08-31"),
+        ("601328.SS", "2026-08-31", "2026-08-31"),
+        ("601328.SS", "2026-08-31", "2026-08-31"),
+    ]
+
+
+def test_audited_append_refetches_t_minus_one_and_accepts_equal_overlap(
+    tmp_path: Path, monkeypatch
+):
+    first_evidence, _, _ = live_evidence(monkeypatch)
+    second_evidence, _, _ = live_evidence(
+        monkeypatch, start="2026-08-31", end="2026-09-01"
+    )
+    source = RangeAuditedSource(_bars(["2026-08-31", "2026-09-01"], [6.10, 6.20]))
+    service = _audited_service(
+        tmp_path,
+        source,
+        RangeEvidenceSource(
+            {
+                ("601328.SS", "2026-08-31", "2026-08-31"): first_evidence,
+                ("601328.SS", "2026-08-31", "2026-09-01"): second_evidence,
+            }
+        ),
+    )
+
+    service.resolve("601328.SS", "2026-08-31", "2026-08-31")
+    result = service.resolve("601328.SS", "2026-08-31", "2026-09-01")
+
+    assert source.fetch_calls[-1] == ("601328.SS", "2026-08-31", "2026-09-01")
+    assert result["snapshot_data_end"] == "2026-09-01"
+
+
+def test_audited_provider_gap_and_unexpected_date_fail_without_pointer_movement(
+    tmp_path: Path, monkeypatch
+):
+    evidence, _, _ = live_evidence(
+        monkeypatch, start="2026-08-31", end="2026-09-01"
+    )
+    for bars, message in [
+        (_bars(["2026-08-31"]), "PROVIDER_INCOMPLETE"),
+        (_bars(["2026-08-31", "2026-09-01", "2026-09-02"]), "PROVIDER_UNEXPECTED_DATE"),
+    ]:
+        case_root = tmp_path / message
+        source = RangeAuditedSource(bars, return_all=message == "PROVIDER_UNEXPECTED_DATE")
+        service = _audited_service(
+            case_root,
+            source,
+            RangeEvidenceSource(
+                {("601328.SS", "2026-08-31", "2026-09-01"): evidence}
+            ),
+        )
+        with pytest.raises(DatasetResolutionError, match=message):
+            service.resolve("601328.SS", "2026-08-31", "2026-09-01")
+        assert not (service.catalog.state_root / "datasets").exists()
+
+
+def test_barrier_controlled_stale_generation_restarts_with_fresh_overlap(
+    tmp_path: Path, monkeypatch
+):
+    evidence, _, _ = live_evidence(monkeypatch)
+    source = RangeAuditedSource(_bars(["2026-08-31"], [6.20]))
+    evidence_source = RangeEvidenceSource(
+        {("601328.SS", "2026-08-31", "2026-08-31"): evidence}
+    )
+    service = _audited_service(tmp_path, source, evidence_source)
+    root = service.catalog.state_root
+    metadata = replace(ITEM, provider="xshg-audited-daily-v1").metadata
+    original = publish_snapshot(_bars(["2026-08-31"], [6.10]), root, metadata)
+    barrier = threading.Barrier(2)
+    real_reconcile = dataset_service_module.reconcile_daily_history
+    calls = 0
+
+    def paused_reconcile(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            barrier.wait(timeout=5)
+            barrier.wait(timeout=5)
+        return real_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(dataset_service_module, "reconcile_daily_history", paused_reconcile)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            service.resolve, "601328.SS", "2026-08-31", "2026-08-31"
+        )
+        barrier.wait(timeout=5)
+        advanced = publish_snapshot(_bars(["2026-08-31"], [6.20]), root, metadata)
+        assert advanced["snapshot_id"] != original["snapshot_id"]
+        barrier.wait(timeout=5)
+        result = pending.result(timeout=10)
+
+    assert calls == 2
+    assert len(source.fetch_calls) == 2
+    assert len(evidence_source.calls) == 2
+    assert result["snapshot_id"] == advanced["snapshot_id"]
