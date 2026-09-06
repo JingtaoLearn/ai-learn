@@ -434,6 +434,23 @@ def test_bocom_known_event_settlement_matches_checksum_bound_integer_fen_oracle(
     assert result.metrics["dividend_tax_cny"] == 212.57
     assert result.metrics["accounting_close_date"] == "2026-07-02"
     assert all(result.reconciliation.values())
+    assert set(result.account_final_states) == {"strategy", "zero_cost", "buy_and_hold"}
+    assert set(result.metrics["accounting_accounts"]) == set(result.account_final_states)
+    assert all(
+        type(value) is int
+        for account in result.metrics["accounting_accounts"].values()
+        for value in (
+            account["initial_capital_fen"],
+            account["gross_dividend_fen"],
+            account["net_dividend_fen"],
+            account["deferred_tax_fen"],
+            account["collected_tax_fen"],
+            account["outstanding_tax_fen"],
+            account["trading_cost_fen"],
+            account["price_profit_fen"],
+            account["after_tax_profit_fen"],
+        )
+    )
 
     event_types = set(result.account_events["event_type"])
     assert {

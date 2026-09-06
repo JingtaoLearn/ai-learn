@@ -29,6 +29,7 @@
   <h2>Canonical result</h2>
   {% if canonical_attempt and canonical_metrics %}
   <p>The first successful immutable Attempt remains canonical for this experiment.</p>
+  {% if canonical_metrics.get("accounting_status") %}<div class="notice compact-notice" data-testid="total-return-source-claim"><strong>Source total-return claim: {{ canonical_metrics.accounting_status }}</strong><p>This Attempt displays frozen source accounting facts only. A trusted Study qualification is separate; partial or missing qualification is ranking- and promotion-ineligible.</p>{% if canonical_metrics.get("accounting_accounts") %}<pre>{{ canonical_metrics.accounting_accounts|canonical_json }}</pre>{% endif %}</div>{% endif %}
   <dl class="technical">
     <dt>Canonical attempt</dt><dd>{{ canonical_attempt.attempt_id[:12] }}…</dd>
     <dt>Result digest</dt><dd>{{ canonical_attempt.result_digest[:12] }}…</dd>

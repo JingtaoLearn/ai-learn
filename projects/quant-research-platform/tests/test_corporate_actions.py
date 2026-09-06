@@ -9,6 +9,7 @@ import pytest
 
 from quant_platform.corporate_actions import (
     CorporateActionEvidenceError,
+    SYNTHETIC_COMPLETE_CONTRACT,
     SettlementSchedule,
     accounting_cash_dividends,
     admit_corporate_action_evidence,
@@ -87,6 +88,44 @@ def bocom_evidence_inputs() -> dict:
 
 def bocom_evidence():
     return admit_corporate_action_evidence(**bocom_evidence_inputs())
+
+
+def synthetic_complete_evidence_inputs(*, no_action: bool = False) -> dict:
+    inputs = bocom_evidence_inputs()
+    document = inputs["document"]
+    document["collector_version"] = "synthetic-complete-fixture@1"
+    document["source_contract_version"] = "synthetic-complete-enumeration@1"
+    document["complete_enumeration_contract"] = True
+    document["complete_contract_id"] = identity_digest(
+        "quant-platform/complete-enumeration-contract/v1", SYNTHETIC_COMPLETE_CONTRACT
+    )
+    coverage = document["coverage"]["payload"]
+    coverage["coverage_state"] = (
+        "VERIFIED_NO_ACTION" if no_action else "VERIFIED_COMPLETE_INTERVAL"
+    )
+    coverage["limitations"] = []
+    coverage["checked_as_of"] = "2026-07-02T00:00:00Z"
+    document["total_return_claim"] = "FORBIDDEN"
+    if no_action:
+        document["requests"] = []
+        document["retrievals"] = []
+        document["artifacts"] = []
+        document["revisions"] = []
+        coverage["event_revision_ids"] = []
+        coverage["query_retrieval_ids"] = []
+        inputs["artifact_bytes"] = {}
+    else:
+        retrieval = document["retrievals"][0]
+        retrieval["payload"]["started_at"] = "2025-08-14T00:00:00Z"
+        retrieval["payload"]["completed_at"] = "2025-08-14T00:00:00Z"
+        retrieval["retrieval_id"] = identity_digest(
+            "quant-platform/source-retrieval/v1", retrieval["payload"]
+        )
+        document["revisions"][0]["available_at"] = "2025-08-14T00:00:00Z"
+    document["coverage"]["coverage_id"] = identity_digest(
+        "quant-platform/corporate-action-coverage/v1", coverage
+    )
+    return inputs
 
 
 def _append_correction(
@@ -451,6 +490,31 @@ def test_strict_json_rejects_duplicate_keys_and_floats():
         load_strict_json(b'{"a":1,"a":2}')
     with pytest.raises(CorporateActionEvidenceError, match="floating-point"):
         load_strict_json(b'{"a":1.5}')
+
+
+@pytest.mark.parametrize(
+    ("no_action", "expected_state", "expected_actions"),
+    [
+        (False, "VERIFIED_COMPLETE_INTERVAL", 1),
+        (True, "VERIFIED_NO_ACTION", 0),
+    ],
+)
+def test_distinct_synthetic_contract_admits_complete_non_observational_coverage(
+    no_action: bool, expected_state: str, expected_actions: int
+):
+    evidence = admit_corporate_action_evidence(
+        **synthetic_complete_evidence_inputs(no_action=no_action)
+    )
+    assert evidence.document["coverage"]["payload"]["coverage_state"] == expected_state
+    assert evidence.document["total_return_claim"] == "FORBIDDEN"
+    assert len(accounting_cash_dividends(evidence)) == expected_actions
+
+
+def test_bocom_contract_still_rejects_complete_contract_identity():
+    inputs = bocom_evidence_inputs()
+    inputs["document"]["complete_contract_id"] = "a" * 64
+    with pytest.raises(CorporateActionEvidenceError, match="cannot name a complete"):
+        admit_corporate_action_evidence(**inputs)
 
 
 def test_tax_policy_identity_and_natural_period_boundaries_are_exact():

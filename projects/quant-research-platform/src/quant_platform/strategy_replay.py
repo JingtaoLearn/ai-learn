@@ -86,6 +86,7 @@ class ReplayResult:
     reconciliation: dict[str, bool]
     account_events: pd.DataFrame
     account_trades: pd.DataFrame
+    account_final_states: dict[str, dict[str, int]]
 
 
 class _Account:
@@ -1380,6 +1381,10 @@ def replay_strategy(
             )
         trades = pd.DataFrame(trade_rows, columns=TRADE_COLUMNS)
         final_states = [item._state() for item in settlement_accounts]
+        account_final_states = {
+            item.account_id: dict(state)
+            for item, state in zip(settlement_accounts, final_states, strict=True)
+        }
         daily.loc[daily.index[-1], ["cash", "market_value", "equity"]] = [
             fen_to_cny(final_states[0]["cash_fen"]),
             fen_to_cny(final_states[0]["market_value_fen"]),
@@ -1396,6 +1401,7 @@ def replay_strategy(
         account_events.insert(2, "event_type", "TRADE_EXECUTION")
         account_trades = trades.copy()
         account_trades.insert(0, "account", "strategy")
+        account_final_states = {}
     equity = daily["equity"]
     drawdown = equity / equity.cummax() - 1.0
     closed = trades[trades["status"] == "CLOSED"]
@@ -1422,9 +1428,56 @@ def replay_strategy(
     }
     if isinstance(account, _SettlementAccount):
         strategy_events = account_events[account_events["account"] == "strategy"]
+        source_claim = (
+            "KNOWN_EVENT_CORRECTED_PARTIAL"
+            if corporate_action_evidence.document["revisions"]
+            else "PRICE_RETURN_ONLY"
+        )
+        account_facts = {}
+        for settlement_account in settlement_accounts:
+            events_for_account = account_events[
+                account_events["account"] == settlement_account.account_id
+            ]
+            gross_dividend_fen = int(
+                events_for_account.loc[
+                    events_for_account["event_type"] == "DIVIDEND_PAYMENT",
+                    "cash_delta_fen",
+                ].sum()
+            )
+            collected_tax_fen = -int(
+                events_for_account.loc[
+                    events_for_account["event_type"] == "TAX_COLLECTION",
+                    "cash_delta_fen",
+                ].sum()
+            )
+            trading_cost_fen = int(
+                events_for_account.loc[
+                    events_for_account["event_type"] == "TRADE_COST", "cost_fen"
+                ].sum()
+            )
+            final_state = account_final_states[settlement_account.account_id]
+            account_facts[settlement_account.account_id] = {
+                "initial_capital_fen": settlement_account.initial_capital_fen,
+                "final_state": final_state,
+                "gross_dividend_fen": gross_dividend_fen,
+                "net_dividend_fen": gross_dividend_fen - collected_tax_fen,
+                "deferred_tax_fen": final_state["deferred_tax_base_fen"],
+                "collected_tax_fen": collected_tax_fen,
+                "outstanding_tax_fen": final_state["outstanding_tax_fen"],
+                "trading_cost_fen": trading_cost_fen,
+                "price_profit_fen": (
+                    final_state["equity_fen"]
+                    - settlement_account.initial_capital_fen
+                    - gross_dividend_fen
+                    + collected_tax_fen
+                ),
+                "after_tax_profit_fen": (
+                    final_state["equity_fen"] - settlement_account.initial_capital_fen
+                ),
+            }
         metrics.update(
             {
-                "accounting_status": "KNOWN_EVENT_CORRECTED_PARTIAL",
+                "accounting_status": source_claim,
                 "corporate_action_evidence_sha256": corporate_action_evidence.digest,
                 "tax_policy_id": tax_policy_identity()["tax_policy_id"],
                 "settlement_schedule_sha256": settlement_schedule.digest,
@@ -1446,6 +1499,7 @@ def replay_strategy(
                     )
                 ),
                 "outstanding_tax_cny": fen_to_cny(account.outstanding_tax_fen),
+                "accounting_accounts": account_facts,
             }
         )
         reconciliation = _reconcile_settlement(settlement_accounts, account_events, account_trades)
@@ -1460,4 +1514,5 @@ def replay_strategy(
         reconciliation=reconciliation,
         account_events=account_events,
         account_trades=account_trades,
+        account_final_states=account_final_states,
     )

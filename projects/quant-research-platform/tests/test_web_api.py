@@ -234,6 +234,12 @@ def test_authenticated_dataset_detail_api_preserves_bocom_view_evidence(
     )
     assert evidence["limitations"] == ["NO_COMPLETE_AUTHORITATIVE_ENUMERATION"]
     assert evidence["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
+    assert evidence["complete_enumeration_contract"] is False
+    assert evidence["complete_contract_id"] is None
+    assert evidence["effective_total_return"]["claim_state"] == (
+        "KNOWN_EVENT_CORRECTED_PARTIAL"
+    )
+    assert evidence["effective_total_return"]["ranking"]["eligible_for_ranking"] is False
 
 
 def test_public_health_and_security_headers(tmp_path: Path):

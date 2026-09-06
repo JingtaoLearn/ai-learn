@@ -39,6 +39,7 @@ from .market_sessions import (
 )
 from .updates import ConcurrentUpdateError, reconcile_daily_history, snapshot_update_lineage
 from .yahoo import yahoo_chart_url
+from .total_return_claims import read_time_classification
 
 
 DATASET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=-]{0,63}$")
@@ -1230,6 +1231,11 @@ class DatasetService:
                 corporate_actions = {
                     "coverage_state": coverage["payload"]["coverage_state"],
                     "coverage_id": coverage["coverage_id"],
+                    "source_contract_version": document["source_contract_version"],
+                    "complete_enumeration_contract": document[
+                        "complete_enumeration_contract"
+                    ],
+                    "complete_contract_id": document.get("complete_contract_id"),
                     "limitations": coverage["payload"]["limitations"],
                     "events": document["revisions"],
                     "artifacts": document["artifacts"],
@@ -1237,6 +1243,11 @@ class DatasetService:
                     "retrievals": document["retrievals"],
                     "findings": document["findings"],
                     "total_return_claim": document["total_return_claim"],
+                    "effective_total_return": read_time_classification(
+                        source_issuer="CORPORATE_ACTION_COLLECTOR",
+                        source_total_return_claim=document["total_return_claim"],
+                        coverage_state=coverage["payload"]["coverage_state"],
+                    ),
                     "explanation": (
                         "Known events with incomplete interval coverage are not verified "
                         "total return."
@@ -1249,6 +1260,9 @@ class DatasetService:
                 corporate_actions = {
                     "coverage_state": "UNKNOWN_MISSING",
                     "coverage_id": None,
+                    "source_contract_version": None,
+                    "complete_enumeration_contract": False,
+                    "complete_contract_id": None,
                     "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
                     "events": [],
                     "artifacts": [],
@@ -1256,6 +1270,11 @@ class DatasetService:
                     "retrievals": [],
                     "findings": [],
                     "total_return_claim": "FORBIDDEN",
+                    "effective_total_return": read_time_classification(
+                        source_issuer="HISTORICAL_RECORD",
+                        source_total_return_claim="FORBIDDEN",
+                        coverage_state="UNKNOWN_MISSING",
+                    ),
                     "explanation": (
                         "Unknown or partial corporate-action evidence is not verified "
                         "total return."

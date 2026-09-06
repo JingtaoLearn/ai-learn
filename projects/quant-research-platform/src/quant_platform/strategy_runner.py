@@ -23,7 +23,12 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from .corporate_actions import SettlementSchedule, tax_policy_identity
+from .corporate_actions import (
+    CorporateActionEvidence,
+    SettlementSchedule,
+    rounding_policy_identity,
+    tax_policy_identity,
+)
 from .datasets import _verified_action_evidence, _verified_scoring_bounds, _verify_snapshot
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
 from .strategy_replay import replay_strategy
@@ -66,6 +71,7 @@ PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/strategy_replay.py", "strategy_replay.py"),
     ("src/quant_platform/strategy_report.py", "strategy_report.py"),
     ("src/quant_platform/strategy_runner.py", "strategy_runner.py"),
+    ("src/quant_platform/total_return_claims.py", "total_return_claims.py"),
     ("src/quant_platform/study_contracts.py", "study_contracts.py"),
     ("src/quant_platform/study_datasets.py", "study_datasets.py"),
     ("src/quant_platform/worker.py", "worker.py"),
@@ -111,15 +117,31 @@ SEMANTICS = {
 }
 
 
-def _settlement_accounting(evidence_sha256: str, schedule: SettlementSchedule) -> dict[str, Any]:
+def _settlement_accounting(
+    evidence: CorporateActionEvidence, schedule: SettlementSchedule
+) -> dict[str, Any]:
+    document = evidence.document
+    coverage = document["coverage"]
     return {
-        "claim": "KNOWN_EVENT_CORRECTED_PARTIAL",
-        "corporate_action_evidence_sha256": evidence_sha256,
+        "claim": (
+            "KNOWN_EVENT_CORRECTED_PARTIAL" if document["revisions"] else "PRICE_RETURN_ONLY"
+        ),
+        "corporate_action_evidence_sha256": evidence.digest,
+        "coverage_state": coverage["payload"]["coverage_state"],
+        "coverage_id": coverage["coverage_id"],
+        "source_contract_version": document["source_contract_version"],
+        "complete_contract_id": document.get("complete_contract_id"),
+        "event_revision_ids": list(coverage["payload"]["event_revision_ids"]),
+        "raw_artifact_sha256s": sorted(
+            item["artifact_id"] for item in document.get("artifacts", [])
+        ),
         "tax_policy": tax_policy_identity(),
         "settlement_schedule": {
+            "policy_id": schedule.policy_id,
             "sha256": schedule.digest,
             "document": schedule.document,
         },
+        "rounding_policy": rounding_policy_identity(),
     }
 
 
@@ -571,13 +593,16 @@ def _write_bytes(path: Path, payload: bytes) -> None:
 
 
 def _write_csv(path: Path, frame: pd.DataFrame) -> None:
-    payload = frame.to_csv(
+    _write_bytes(path, _csv_bytes(frame))
+
+
+def _csv_bytes(frame: pd.DataFrame) -> bytes:
+    return frame.to_csv(
         index=False,
         date_format="%Y-%m-%d",
         float_format="%.17g",
         lineterminator="\n",
     ).encode("utf-8")
-    _write_bytes(path, payload)
 
 
 def _file_manifest(
@@ -886,7 +911,7 @@ def run_strategy_config(
                 "action-aware dataset requires an explicit transfer-settlement mapping"
             )
         action_evidence = _verified_action_evidence(dataset_path, dataset_manifest)
-        accounting = _settlement_accounting(action_evidence.digest, settlement_schedule)
+        accounting = _settlement_accounting(action_evidence, settlement_schedule)
     elif settlement_schedule is not None:
         raise StrategyRunError(
             "settlement schedule cannot be applied without admitted corporate-action evidence"

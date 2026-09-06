@@ -284,6 +284,11 @@ def test_v5_view_and_experiment_exclude_accounting_outcome_from_causal_evidence(
 
     assert manifest["schema_version"] == 5
     assert descriptor["revisions"] == []
+    assert evidence.document["revisions"][0]["use_role"] == "ACCOUNTING_OUTCOME"
+    assert all(
+        revision.get("use_role") == "CAUSAL_FEATURE"
+        for revision in descriptor["revisions"]
+    )
     assert descriptor["projection"]["excluded_revisions"] == [
         {
             "event_revision_id": evidence.document["revisions"][0]["event_revision_id"],

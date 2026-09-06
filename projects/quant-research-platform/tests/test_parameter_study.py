@@ -879,6 +879,7 @@ def _persist_production_completed_study(
         document = {
             "schema_version": 1,
             "metric_engine": METRIC_ENGINE_IDENTITY,
+            "instrument": attempt["resolved"]["dataset"]["instrument"],
             "candidate_digest": candidate_digest,
             "candidate_binding": {
                 "strategy_configuration": candidate_configuration,
@@ -908,6 +909,7 @@ def _persist_production_completed_study(
             "net_daily_returns": [{"date": scored_date, "net_return": 0.01}],
             "metrics": metrics,
             "reported_metrics": metrics,
+            "total_return_qualification": None,
             "reconciliation": {
                 "immutable_artifacts": True,
                 "scoring_mask": True,
@@ -2579,6 +2581,7 @@ def test_failed_attempts_progress_to_no_eligible_candidate(tmp_path: Path):
 
     assert detail["selection_outcome"] == "NO_ELIGIBLE_CANDIDATE"
     assert detail["decision_summary"] is None
+    assert detail["rankings"] == []
     assert detail["holdout"] == {
         "access": "SEALED",
         "outcome": "NOT_RUN",

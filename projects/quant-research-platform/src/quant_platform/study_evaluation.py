@@ -21,8 +21,14 @@ import pandas as pd
 from .datasets import _verify_snapshot
 from .schemas import canonical_json_bytes
 from .strategy_replay import COST_FIELDS, EVENT_COLUMNS, TRADE_COLUMNS
-from .strategy_runner import RECONCILIATION_FIELDS
+from .strategy_runner import RECONCILIATION_FIELDS, SETTLEMENT_RECONCILIATION_FIELDS
 from .study_contracts import normalize_fold_window
+from .total_return_claims import (
+    TotalReturnQualificationError,
+    qualification_record,
+    qualify_total_return,
+    read_time_classification,
+)
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -33,6 +39,10 @@ RESULT_ARTIFACTS = (
     "metrics.json",
     "cost_breakdown.json",
 )
+SETTLEMENT_RESULT_ARTIFACTS = RESULT_ARTIFACTS + (
+    "account_events.csv",
+    "account_trades.csv",
+)
 MAX_ARTIFACT_BYTES = {
     "config.json": 1_048_576,
     "run_manifest.json": 1_048_576,
@@ -42,6 +52,8 @@ MAX_ARTIFACT_BYTES = {
     "metrics.json": 1_048_576,
     "cost_breakdown.json": 1_048_576,
     "report.html": 16 * 1_048_576,
+    "account_events.csv": 64 * 1_048_576,
+    "account_trades.csv": 64 * 1_048_576,
 }
 MAX_ATTEMPT_AUDIT_BYTES = 4 * 1_048_576
 MAX_TOTAL_RESULT_BYTES = 128 * 1_048_576
@@ -491,6 +503,52 @@ def _candidate_attempt_binding(
     }
 
 
+def _a_share_total_return_qualification(
+    *,
+    state_root: Path,
+    result_path: Path,
+    instrument: str,
+    dataset_snapshot_id: str,
+    dataset_manifest: Mapping[str, Any],
+    run_manifest: Mapping[str, Any],
+    result_digest: str,
+    historical_exposure: str,
+) -> dict[str, Any] | None:
+    if re.fullmatch(r"[0-9]{6}\.(?:SS|SZ)", instrument) is None:
+        return None
+    accounting = run_manifest.get("accounting")
+    if not isinstance(accounting, Mapping):
+        return read_time_classification(
+            source_issuer="STRATEGY_RUNNER",
+            source_total_return_claim="PRICE_RETURN_ONLY",
+            coverage_state="UNKNOWN_MISSING",
+        )
+    if (
+        accounting.get("claim") == "KNOWN_EVENT_CORRECTED_PARTIAL"
+        and accounting.get("coverage_state") == "VERIFIED_EVENTS"
+    ):
+        return read_time_classification(
+            source_issuer="STRATEGY_RUNNER",
+            source_total_return_claim="KNOWN_EVENT_CORRECTED_PARTIAL",
+            coverage_state="VERIFIED_EVENTS",
+            attempted_after_tax=True,
+        )
+    try:
+        qualification = qualify_total_return(
+            state_root=state_root,
+            result_path=result_path,
+            instrument=instrument,
+            expected_dataset_snapshot_id=dataset_snapshot_id,
+            expected_result_digest=result_digest,
+            historical_exposure=historical_exposure,
+        )
+    except TotalReturnQualificationError as exc:
+        raise MetricDocumentValidationError(
+            f"A-share total-return evidence failed trusted qualification: {exc}"
+        ) from exc
+    return qualification_record(qualification)
+
+
 class MetricDocumentFactory:
     """Verify immutable run artifacts and derive policy-safe account metrics."""
 
@@ -602,7 +660,13 @@ class MetricDocumentFactory:
         if not isinstance(result_path, (str, Path)):
             raise MetricDocumentValidationError("result directory is unavailable")
         root = Path(result_path).absolute()
-        required = {*RESULT_ARTIFACTS, "run_manifest.json", "config.json", "report.html"}
+        base_required = {*RESULT_ARTIFACTS, "run_manifest.json", "config.json", "report.html"}
+        settlement_required = {
+            *SETTLEMENT_RESULT_ARTIFACTS,
+            "run_manifest.json",
+            "config.json",
+            "report.html",
+        }
         with _root_relative_directory(
             self.state_root,
             root,
@@ -614,7 +678,11 @@ class MetricDocumentFactory:
                     "result directory is not immutable"
                 )
             names = set(os.listdir(result_descriptor))
-            if names != required:
+            if names == base_required:
+                required = base_required
+            elif names == settlement_required:
+                required = settlement_required
+            else:
                 raise MetricDocumentValidationError(
                     "result artifact set is incomplete or unexpected"
                 )
@@ -829,6 +897,7 @@ class MetricDocumentFactory:
         initial = float(metrics["initial_capital_cny"])
         final = float(daily["equity"].iloc[-1])
         total_cost = float(events["total_cost_cny"].sum())
+        settlement_mode = "account_events.csv" in payloads
         scored_market = dataset_frame.loc[
             dataset_frame["Date"].dt.strftime("%Y-%m-%d").isin(scored_dates),
             ["Date", "Open", "Close"],
@@ -849,11 +918,14 @@ class MetricDocumentFactory:
                 rtol=1e-12,
                 atol=1e-8,
             )
-            or not np.allclose(
-                daily["cash"] + daily["market_value"],
-                daily["equity"],
-                rtol=1e-12,
-                atol=1e-8,
+            or (
+                not settlement_mode
+                and not np.allclose(
+                    daily["cash"] + daily["market_value"],
+                    daily["equity"],
+                    rtol=1e-12,
+                    atol=1e-8,
+                )
             )
             or not _close(final, float(metrics["final_equity_cny"]), scale=initial)
             or not _close(final - initial, float(metrics["net_profit_cny"]), scale=initial)
@@ -872,9 +944,14 @@ class MetricDocumentFactory:
                 "ledger, equity, cost, and metric artifacts do not reconcile"
             )
         stored_reconciliation = run_manifest.get("reconciliation")
+        expected_reconciliation_fields = (
+            SETTLEMENT_RECONCILIATION_FIELDS
+            if "account_events.csv" in payloads
+            else RECONCILIATION_FIELDS
+        )
         if (
             not isinstance(stored_reconciliation, dict)
-            or set(stored_reconciliation) != RECONCILIATION_FIELDS
+            or set(stored_reconciliation) != expected_reconciliation_fields
             or any(value is not True for value in stored_reconciliation.values())
         ):
             raise MetricDocumentValidationError("run manifest reconciliation is not successful")
@@ -899,7 +976,7 @@ class MetricDocumentFactory:
         expected_cash = initial
         expected_holdings = 0
         cumulative_cost = 0.0
-        for daily_row in daily.itertuples(index=False):
+        for daily_row in (() if settlement_mode else daily.itertuples(index=False)):
             date = daily_row.Date
             day_events = events.loc[events["Date"] == date]
             if (
@@ -1021,7 +1098,7 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError(
                     f"cost breakdown does not reconcile: {field}"
                 )
-        for trade in trades.to_dict("records"):
+        for trade in (() if settlement_mode else trades.to_dict("records")):
             gross = (float(trade["exit_price"]) - float(trade["entry_price"])) * int(
                 trade["quantity"]
             )
@@ -1040,7 +1117,7 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError("trade ledger does not reconcile")
         expected_trades: list[tuple[dict[str, Any], dict[str, Any]]] = []
         open_event: dict[str, Any] | None = None
-        for event in events.to_dict("records"):
+        for event in (() if settlement_mode else events.to_dict("records")):
             if event["side"] == "BUY":
                 if open_event is not None:
                     raise MetricDocumentValidationError(
@@ -1054,14 +1131,20 @@ class MetricDocumentFactory:
                     )
                 expected_trades.append((open_event, event))
                 open_event = None
-        if open_event is not None or len(expected_trades) != len(trades):
+        if not settlement_mode and (
+            open_event is not None or len(expected_trades) != len(trades)
+        ):
             raise MetricDocumentValidationError(
                 "trade ledger does not match ordered execution events"
             )
-        for trade, (entry, exit_) in zip(
-            trades.to_dict("records"),
-            expected_trades,
-            strict=True,
+        for trade, (entry, exit_) in (
+            ()
+            if settlement_mode
+            else zip(
+                trades.to_dict("records"),
+                expected_trades,
+                strict=True,
+            )
         ):
             if (
                 trade["entry_date"] != entry["Date"]
@@ -1119,9 +1202,23 @@ class MetricDocumentFactory:
                 "reported drawdown or trade metrics do not reconcile"
             )
         _finite(independent, "independent_metrics")
+        historical_exposure = requested.get("historical_exposure", "UNKNOWN")
+        if historical_exposure not in {"PRISTINE", "EXPOSED", "UNKNOWN"}:
+            raise MetricDocumentValidationError("historical exposure state is invalid")
+        total_return_qualification = _a_share_total_return_qualification(
+            state_root=self.state_root,
+            result_path=root,
+            instrument=instrument,
+            dataset_snapshot_id=snapshot_id,
+            dataset_manifest=manifest,
+            run_manifest=run_manifest,
+            result_digest=result_digest,
+            historical_exposure=historical_exposure,
+        )
         document = {
                 "schema_version": 1,
                 "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
+                "instrument": instrument,
                 "candidate_digest": candidate_digest,
                 "candidate_binding": candidate_binding,
                 "experiment_id": experiment_id,
@@ -1138,6 +1235,7 @@ class MetricDocumentFactory:
                 ],
                 "metrics": independent,
                 "reported_metrics": metrics,
+                "total_return_qualification": total_return_qualification,
                 "reconciliation": {
                     "immutable_artifacts": True,
                     "scoring_mask": True,
@@ -1194,6 +1292,7 @@ class RobustWalkForwardPolicy:
         required_document_fields = {
             "schema_version",
             "metric_engine",
+            "instrument",
             "candidate_digest",
             "candidate_binding",
             "experiment_id",
@@ -1207,6 +1306,7 @@ class RobustWalkForwardPolicy:
             "net_daily_returns",
             "metrics",
             "reported_metrics",
+            "total_return_qualification",
             "reconciliation",
             "document_digest",
         }
@@ -1349,12 +1449,38 @@ class RobustWalkForwardPolicy:
             float(document["metrics"]["maximum_drawdown"]) for document in ordered
         )
         closed_trades = sum(int(document["metrics"]["closed_trades"]) for document in ordered)
+        trusted_total_return = all(
+            (
+                re.fullmatch(r"[0-9]{6}\.(?:SS|SZ)", document["instrument"]) is None
+                or (
+                    isinstance(document["total_return_qualification"], Mapping)
+                    and document["total_return_qualification"].get("issuer")
+                    == "quant-platform/total-return-qualification@1"
+                    and document["total_return_qualification"].get("claim_state")
+                    == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+                    and document["total_return_qualification"].get("ranking", {}).get(
+                        "eligible_for_ranking"
+                    )
+                    is True
+                    and document["total_return_qualification"].get("ranking", {}).get(
+                        "historical_exposure"
+                    )
+                    == "PRISTINE"
+                )
+            )
+            for document in ordered
+        )
         validation_score = (
             fold_median
             - stability_weight * fold_mad
             - turnover_weight * annual_turnover
         )
         constraints = {
+            "trusted_total_return": {
+                "actual": trusted_total_return,
+                "limit": True,
+                "passed": trusted_total_return,
+            },
             "minimum_trades": {
                 "actual": closed_trades,
                 "limit": minimum_trades,
@@ -1417,6 +1543,11 @@ class RobustWalkForwardPolicy:
             },
             "metric_document_digests": [
                 document["document_digest"] for document in ordered
+            ],
+            "total_return_qualifications": [
+                deepcopy(document["total_return_qualification"])
+                for document in ordered
+                if document["total_return_qualification"] is not None
             ],
         }
         if not math.isfinite(validation_score):

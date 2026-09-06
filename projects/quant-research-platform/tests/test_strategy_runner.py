@@ -41,6 +41,7 @@ PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/strategy_replay.py": "strategy_replay.py",
     "src/quant_platform/strategy_report.py": "strategy_report.py",
     "src/quant_platform/strategy_runner.py": "strategy_runner.py",
+    "src/quant_platform/total_return_claims.py": "total_return_claims.py",
     "src/quant_platform/study_contracts.py": "study_contracts.py",
     "src/quant_platform/study_datasets.py": "study_datasets.py",
     "src/quant_platform/worker.py": "worker.py",
@@ -349,6 +350,12 @@ def test_action_aware_run_binds_partial_claim_schedule_and_complete_account_ledg
     assert manifest["accounting"]["claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
     assert manifest["identity"]["accounting"] == manifest["accounting"]
     assert manifest["accounting"]["settlement_schedule"]["sha256"] == schedule.digest
+    assert manifest["accounting"]["settlement_schedule"]["policy_id"] == schedule.policy_id
+    assert manifest["accounting"]["coverage_state"] == "VERIFIED_EVENTS"
+    assert manifest["accounting"]["complete_contract_id"] is None
+    assert len(manifest["accounting"]["rounding_policy"]["rounding_policy_id"]) == 64
+    assert manifest["files"]["account_events.csv"]["sha256"]
+    assert manifest["files"]["account_trades.csv"]["sha256"]
     assert manifest["accounting"]["tax_policy"]["tax_policy_id"] == (
         "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223"
     )
