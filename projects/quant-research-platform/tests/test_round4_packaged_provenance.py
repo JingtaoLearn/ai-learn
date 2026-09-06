@@ -790,20 +790,32 @@ def test_exact_worker_rejects_post_seal_dependency_stat_drift_with_zero_publicat
         target.chmod(original_mode)
 
 
-def test_exact_worker_executes_authority_b_and_ignores_stale_a_bytecode(tmp_path):
-    release, _ = _release_fixture(tmp_path)
+def test_exact_worker_executes_authority_b_not_imported_parent_a(tmp_path):
+    anchor = "    data_hash = _data_hash(normalized)\n"
+    injection = '    config["authority_marker"] = "B-only-executed-behavior"\n' + anchor
+    release, provenance = _release_fixture(tmp_path, anchor=anchor, injection=injection)
+    output_root = tmp_path / "published"
+
+    result = run_round4_research(
+        _exact_worker_data(),
+        output_root,
+        analysis_date="2025-08-08",
+        source_provenance=provenance,
+    )
+
+    config = json.loads((output_root / result["run_id"] / "config.json").read_text())
+    assert config["authority_marker"] == "B-only-executed-behavior"
+    assert len(list(output_root.iterdir())) == 1
+
+
+def test_exact_worker_ignores_stale_first_party_bytecode(tmp_path):
+    anchor = "    data_hash = _data_hash(normalized)\n"
+    injection = '    config["bytecode_marker"] = "source-B"\n' + anchor
+    release, provenance = _release_fixture(tmp_path, anchor=anchor, injection=injection)
     init_path = release / "src" / "gold_research" / "__init__.py"
-    init_path.write_bytes(init_path.read_bytes() + b"\nAUTHORITY_MARKER = 'B'\n")
     cache = init_path.parent / "__pycache__"
     cache.mkdir()
     (cache / "__init__.cpython-312.pyc").write_bytes(b"stale authority A bytecode")
-    files, _, _ = _enumerate_release_files(release)
-    expected_source = _canonical_source_identity(files)
-    provenance = {
-        "mode": "release",
-        "source_root": str(release),
-        "expected_source_sha256": str(expected_source["sha256"]),
-    }
     output_root = tmp_path / "published"
 
     result = run_round4_research(
@@ -814,7 +826,9 @@ def test_exact_worker_executes_authority_b_and_ignores_stale_a_bytecode(tmp_path
     )
 
     manifest = json.loads((output_root / result["run_id"] / "run_manifest.json").read_text())
-    assert manifest["source_identity"] == expected_source
+    config = json.loads((output_root / result["run_id"] / "config.json").read_text())
+    assert config["bytecode_marker"] == "source-B"
+    assert manifest["source_identity"]["sha256"] == provenance["expected_source_sha256"]
     assert len(list(output_root.iterdir())) == 1
 
 
@@ -877,3 +891,337 @@ def test_secure_environment_read_rejects_complete_non_regular_and_link_matrix(tm
     finally:
         if open_socket is not None:
             open_socket.close()
+
+
+def _published_manifest(output_root: Path, result: Mapping[str, object]) -> dict:
+    return json.loads(
+        (output_root / str(result["run_id"]) / "run_manifest.json").read_text()
+    )
+
+
+def _rewrite_record_member(
+    distribution: importlib.metadata.PathDistribution,
+    payload_path: Path,
+    changed_payload: bytes,
+) -> tuple[bytes, bytes, Path]:
+    record_path = Path(str(distribution._path)) / "RECORD"
+    original_payload = payload_path.read_bytes()
+    original_record = record_path.read_bytes()
+    rows = list(csv.reader(io.StringIO(original_record.decode("utf-8"))))
+    matching = [
+        row
+        for row in rows
+        if len(row) == 3 and Path(str(distribution.locate_file(row[0]))).resolve() == payload_path
+    ]
+    assert len(matching) == 1
+    matching[0][1] = _record_digest(changed_payload)
+    matching[0][2] = str(len(changed_payload))
+    output = io.StringIO()
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    payload_path.write_bytes(changed_payload)
+    record_path.write_bytes(output.getvalue().encode("utf-8"))
+    return original_payload, original_record, record_path
+
+
+def test_exact_worker_valid_transitive_version_change_changes_identity_and_run_id(tmp_path):
+    _, provenance = _release_fixture(tmp_path)
+    baseline_root = tmp_path / "baseline"
+    baseline = run_round4_research(
+        _exact_worker_data(),
+        baseline_root,
+        analysis_date="2025-08-08",
+        source_provenance=provenance,
+    )
+    baseline_manifest = _published_manifest(baseline_root, baseline)
+
+    distribution = importlib.metadata.distribution("pytz")
+    assert isinstance(distribution, importlib.metadata.PathDistribution)
+    metadata_path = Path(str(distribution._path)) / "METADATA"
+    old_version = distribution.version
+    new_version = f"{old_version}+provenance"
+    changed_metadata = metadata_path.read_bytes().replace(
+        f"Version: {old_version}\n".encode(),
+        f"Version: {new_version}\n".encode(),
+        1,
+    )
+    assert changed_metadata != metadata_path.read_bytes()
+    original_metadata, original_record, record_path = _rewrite_record_member(
+        distribution, metadata_path, changed_metadata
+    )
+    try:
+        changed_root = tmp_path / "changed"
+        changed = run_round4_research(
+            _exact_worker_data(),
+            changed_root,
+            analysis_date="2025-08-08",
+            source_provenance=provenance,
+        )
+        changed_manifest = _published_manifest(changed_root, changed)
+    finally:
+        metadata_path.write_bytes(original_metadata)
+        record_path.write_bytes(original_record)
+
+    baseline_execution = baseline_manifest["execution_identity"]
+    changed_execution = changed_manifest["execution_identity"]
+    assert baseline_manifest["source_identity"] == changed_manifest["source_identity"]
+    assert baseline_execution["dependency_identity"]["sha256"] != (
+        changed_execution["dependency_identity"]["sha256"]
+    )
+    changed_pytz = next(
+        row
+        for row in changed_execution["dependency_identity"]["distributions"]
+        if row["name"] == "pytz"
+    )
+    assert changed_pytz["version"] == new_version
+    assert baseline["run_id"] != changed["run_id"]
+
+
+def test_exact_worker_rejects_runtime_field_mutation_with_zero_publication(tmp_path):
+    anchor = "        revalidate_execution_identity(_provenance_context, execution_identity)\n"
+    injection = (
+        "        _original_recapture = _provenance_context[\"recapture_environment\"]\n"
+        "        def _runtime_changed_recapture():\n"
+        "            _changed = _original_recapture()\n"
+        "            _runtime = dict(_changed[\"runtime_identity\"])\n"
+        "            _runtime[\"version\"] = str(_runtime[\"version\"]) + \"-changed\"\n"
+        "            _changed[\"runtime_identity\"] = _runtime\n"
+        "            return _changed\n"
+        "        _provenance_context[\"recapture_environment\"] = _runtime_changed_recapture\n"
+        + anchor
+    )
+    _, provenance = _release_fixture(tmp_path, anchor=anchor, injection=injection)
+
+    _assert_exact_worker_failure(tmp_path, provenance, "RUNTIME_CHANGED_DURING_RUN")
+
+
+@pytest.mark.parametrize(
+    ("kind", "setup", "operation"),
+    [
+        ("rc", "axes.facecolor: red\n", "matplotlib.rc_file({path!r})"),
+        ("font", "not-a-font", "font_manager.get_font({path!r})"),
+        ("cache", "{}", "font_manager.json_load({path!r})"),
+    ],
+)
+def test_exact_worker_rejects_external_matplotlib_inputs_with_zero_publication(
+    tmp_path, kind, setup, operation
+):
+    external = tmp_path / "external" / {
+        "rc": "matplotlibrc",
+        "font": "external.ttf",
+        "cache": "fontlist-v390.json",
+    }[kind]
+    external.parent.mkdir()
+    external.write_text(setup)
+    seal = "    execution_identity = seal_execution_identity(_provenance_context)\n"
+    injection = f"    {operation.format(path=str(external))}\n" + seal
+    _, provenance = _release_fixture(tmp_path, anchor=seal, injection=injection)
+
+    _assert_exact_worker_failure(tmp_path, provenance, "EXECUTION_RESOURCE_UNBOUND")
+
+
+def test_exact_worker_authorized_record_font_change_changes_render_identity_and_run_id(tmp_path):
+    _, provenance = _release_fixture(tmp_path)
+    baseline_root = tmp_path / "baseline"
+    baseline = run_round4_research(
+        _exact_worker_data(),
+        baseline_root,
+        analysis_date="2025-08-08",
+        source_provenance=provenance,
+    )
+    baseline_manifest = _published_manifest(baseline_root, baseline)
+    baseline_execution = baseline_manifest["execution_identity"]
+    font_record = baseline_execution["render_identity"]["fonts"][0]
+    record_member = next(
+        owner["record_member"]
+        for owner in font_record["owners"]
+        if owner["distribution_name"] == "matplotlib"
+    )
+
+    distribution = importlib.metadata.distribution("matplotlib")
+    assert isinstance(distribution, importlib.metadata.PathDistribution)
+    font_path = Path(str(distribution.locate_file(record_member))).resolve()
+    original_font, original_record, record_path = _rewrite_record_member(
+        distribution,
+        font_path,
+        font_path.read_bytes() + b"\nrecord-bound-font-identity-change\n",
+    )
+    try:
+        changed_root = tmp_path / "changed"
+        changed = run_round4_research(
+            _exact_worker_data(),
+            changed_root,
+            analysis_date="2025-08-08",
+            source_provenance=provenance,
+        )
+        changed_manifest = _published_manifest(changed_root, changed)
+    finally:
+        font_path.write_bytes(original_font)
+        record_path.write_bytes(original_record)
+
+    changed_execution = changed_manifest["execution_identity"]
+    assert baseline_manifest["source_identity"] == changed_manifest["source_identity"]
+    assert baseline_execution["render_identity"]["sha256"] != (
+        changed_execution["render_identity"]["sha256"]
+    )
+    assert baseline_execution["render_identity"]["fonts"][0]["sha256"] != (
+        changed_execution["render_identity"]["fonts"][0]["sha256"]
+    )
+    assert baseline["run_id"] != changed["run_id"]
+
+
+def test_exact_worker_rejects_mapped_native_addition_after_seal_with_zero_publication(tmp_path):
+    extension_spec = importlib.util.find_spec("_ssl")
+    assert extension_spec is not None and extension_spec.origin is not None
+    native_path = Path(extension_spec.origin).resolve()
+    seal = "    execution_identity = seal_execution_identity(_provenance_context)\n"
+    injection = (
+        seal
+        + "    import ctypes as _provenance_ctypes\n"
+        + f"    _provenance_native = _provenance_ctypes.CDLL({str(native_path)!r})\n"
+    )
+    _, provenance = _release_fixture(tmp_path, anchor=seal, injection=injection)
+
+    _assert_exact_worker_failure(tmp_path, provenance, "NATIVE_IDENTITY_INVALID")
+
+
+def test_exact_worker_ignores_unrelated_parent_git_authority(tmp_path):
+    parent = tmp_path / "unrelated-parent"
+    parent.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=parent, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=parent, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=parent, check=True)
+    (parent / "unrelated.txt").write_text("parent authority only\n")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=parent, check=True)
+    subprocess.run(["git", "commit", "-qm", "unrelated"], cwd=parent, check=True)
+    release, provenance = _release_fixture(parent)
+    output_root = tmp_path / "published"
+
+    result = run_round4_research(
+        _exact_worker_data(),
+        output_root,
+        analysis_date="2025-08-08",
+        source_provenance=provenance,
+    )
+    manifest = _published_manifest(output_root, result)
+
+    assert manifest["git"]["commit"] is None
+    assert manifest["git"]["project_tree_oid"] is None
+    assert manifest["git"]["reason"] == "release-root-has-no-verified-git-context"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("missing-root", "SOURCE_ROOT_INVALID"),
+        ("relative-root", "SOURCE_ROOT_INVALID"),
+        ("lexical-traversal", "SOURCE_ROOT_INVALID"),
+        ("root-symlink", "SOURCE_SYMLINK_REJECTED"),
+        ("intermediate-symlink", "SOURCE_SYMLINK_REJECTED"),
+        ("file-symlink", "SOURCE_SYMLINK_REJECTED"),
+        ("empty-set", "SOURCE_SET_EMPTY"),
+        ("missing-package-root", "SOURCE_ROOT_INVALID"),
+        ("extra-file", "SOURCE_CONTENT_MISMATCH"),
+        ("missing-file", "SOURCE_CONTENT_MISMATCH"),
+        ("modified-bytes", "SOURCE_CONTENT_MISMATCH"),
+        ("expected-digest", "SOURCE_CONTENT_MISMATCH"),
+        ("expected-git", "GIT_IDENTITY_MISMATCH"),
+    ],
+)
+def test_public_release_source_failure_matrix_has_zero_publication(tmp_path, case, expected_code):
+    if case == "missing-root":
+        provenance = {
+            "mode": "release",
+            "source_root": str(tmp_path / "absent"),
+            "expected_source_sha256": "0" * 64,
+        }
+    elif case == "relative-root":
+        provenance = {
+            "mode": "release",
+            "source_root": "relative/release",
+            "expected_source_sha256": "0" * 64,
+        }
+    else:
+        release, provenance = _release_fixture(tmp_path)
+        if case == "lexical-traversal":
+            provenance["source_root"] = str(release.parent / "segment" / ".." / release.name)
+        elif case == "root-symlink":
+            linked = tmp_path / "linked-release"
+            linked.symlink_to(release, target_is_directory=True)
+            provenance["source_root"] = str(linked)
+        elif case == "intermediate-symlink":
+            package = release / "src" / "gold_research"
+            real = tmp_path / "real-gold-research"
+            package.rename(real)
+            package.symlink_to(real, target_is_directory=True)
+        elif case == "file-symlink":
+            source = release / "src" / "gold_research" / "__init__.py"
+            real = tmp_path / "real-init.py"
+            source.rename(real)
+            source.symlink_to(real)
+        elif case == "empty-set":
+            shutil.rmtree(release / "src" / "gold_research")
+            shutil.rmtree(release / "src" / "quant_platform")
+            (release / "src" / "gold_research").mkdir()
+            (release / "src" / "quant_platform").mkdir()
+        elif case == "missing-package-root":
+            shutil.rmtree(release / "src" / "quant_platform")
+        elif case == "extra-file":
+            (release / "src" / "gold_research" / "extra.py").write_text("EXTRA = True\n")
+        elif case == "missing-file":
+            (release / "src" / "gold_research" / "__init__.py").unlink()
+        elif case == "modified-bytes":
+            target = release / "src" / "gold_research" / "__init__.py"
+            target.write_bytes(target.read_bytes() + b"# changed\n")
+        elif case == "expected-digest":
+            provenance["expected_source_sha256"] = "0" * 64
+        elif case == "expected-git":
+            provenance["expected_git_commit"] = "0" * 40
+
+    _assert_exact_worker_failure(tmp_path, provenance, expected_code)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("missing-package-root", "SOURCE_ROOT_INVALID"),
+        ("extra-file", "SOURCE_SET_MISMATCH"),
+        ("missing-file", "SOURCE_ROOT_INVALID"),
+        ("modified-bytes", "SOURCE_CONTENT_MISMATCH"),
+        ("record-mismatch", "SOURCE_CONTENT_MISMATCH"),
+        ("unhashed-record", "SOURCE_SET_MISMATCH"),
+        ("duplicate-authority", "PROVENANCE_AUTHORITY_AMBIGUOUS"),
+    ],
+)
+def test_public_package_failure_matrix_has_zero_publication(
+    tmp_path, monkeypatch, case, expected_code
+):
+    distribution, _, _ = _make_matching_package_and_release(tmp_path)
+    distributions = [distribution, distribution] if case == "duplicate-authority" else [distribution]
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda: iter(distributions))
+    installation = tmp_path / "installed"
+    record = installation / "gold_quant_research-0.1.0.dist-info" / "RECORD"
+    if case == "missing-package-root":
+        shutil.rmtree(installation / "quant_platform")
+    elif case == "extra-file":
+        (installation / "gold_research" / "extra.py").write_text("EXTRA = True\n")
+    elif case == "missing-file":
+        (installation / "gold_research" / "__init__.py").unlink()
+    elif case in {"modified-bytes", "record-mismatch"}:
+        target = installation / "gold_research" / "__init__.py"
+        target.write_bytes(target.read_bytes() + b"# changed\n")
+    elif case == "unhashed-record":
+        rows = list(csv.reader(io.StringIO(record.read_text())))
+        rows[0][1:] = ["", ""]
+        output = io.StringIO()
+        csv.writer(output, lineterminator="\n").writerows(rows)
+        record.write_text(output.getvalue())
+
+    output_root = tmp_path / "published"
+    with pytest.raises(ProvenanceError, match=expected_code):
+        run_round4_research(
+            _exact_worker_data(),
+            output_root,
+            analysis_date="2025-08-08",
+            source_provenance={"mode": "package", "distribution": "gold-quant-research"},
+        )
+    assert not output_root.exists() or not any(output_root.iterdir())
