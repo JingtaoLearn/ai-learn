@@ -1,8 +1,10 @@
 import hashlib
 import json
+import os
 import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -15,10 +17,16 @@ from quant_platform.datasets import (
     snapshot_status,
 )
 from quant_platform.updates import (
+    ConcurrentUpdateError,
     load_update_record,
     reconcile_daily_history,
     snapshot_update_lineage,
 )
+from quant_platform.market_sessions import (
+    EXPECTED_SESSIONS_SOURCE_KIND,
+    POLICY_VERSION,
+)
+from test_market_sessions import live_evidence
 
 
 METADATA = {
@@ -750,3 +758,455 @@ def test_concurrent_reconciliations_serialize_without_losing_updates(
         "2026-08-19",
         "2026-08-20",
     ]
+
+
+def _audited_metadata(instrument: str = "601288.SS") -> dict[str, str]:
+    return METADATA | {"instrument": instrument, "provider": "xshg-audited-daily-v1"}
+
+
+def _v2_reconcile(
+    root: Path,
+    bars: pd.DataFrame,
+    sessions: list[str],
+    evidence,
+    *,
+    prior: str | None,
+    overlap: tuple[str, ...] = (),
+    metadata: dict[str, str] | None = None,
+):
+    metadata = metadata or _audited_metadata()
+    start, end = sessions[0], sessions[-1]
+    return reconcile_daily_history(
+        bars,
+        sessions,
+        root,
+        metadata,
+        start,
+        end,
+        source_identity={
+            "provider": "xshg-audited-daily-v1",
+            "instrument": metadata["instrument"],
+            "generation": "test-live",
+        },
+        expected_sessions_source={
+            "kind": EXPECTED_SESSIONS_SOURCE_KIND,
+            "market": "XSHG",
+            "instrument": metadata["instrument"],
+            "start": start,
+            "end": end,
+            "evidence_sha256": evidence.digest,
+            "policy_version": POLICY_VERSION,
+        },
+        expected_prior_snapshot_id=prior,
+        protected_overlap_dates=overlap,
+        market_session_evidence=evidence,
+    )
+
+
+def test_v2_first_backfill_seals_official_evidence_and_lineage(tmp_path: Path, monkeypatch):
+    fetched, _, _ = live_evidence(
+        monkeypatch, instrument="601288.SS", start="2026-08-31", end="2026-08-31"
+    )
+    result = _v2_reconcile(
+        tmp_path, _bars(["2026-08-31"]), ["2026-08-31"], fetched.evidence, prior=None
+    )
+    record = load_update_record(tmp_path, "601288.SS", str(result["update_id"]))
+    target = Path(str(result["update_path"])).parent
+
+    assert record["schema_version"] == 2
+    assert record["market_session_evidence_sha256"] == fetched.evidence.digest
+    assert record["expected_sessions_source"]["kind"] == EXPECTED_SESSIONS_SOURCE_KIND
+    assert set(path.name for path in target.iterdir()) == {
+        "update.json",
+        "market_sessions.json",
+        *record["market_session_evidence_files"]["artifacts"].values(),
+    }
+    assert all(path.stat().st_mode & 0o222 == 0 for path in target.iterdir())
+    assert snapshot_update_lineage(
+        tmp_path, "601288.SS", str(result["snapshot_id"])
+    )["market_session_evidence_sha256"] == fetched.evidence.digest
+
+
+@pytest.mark.parametrize(
+    "v2_field",
+    [
+        "market_session_evidence_sha256",
+        "market_session_evidence_files",
+        "prior_corporate_action_evidence_sha256",
+        "result_corporate_action_evidence_sha256",
+    ],
+)
+def test_loader_rejects_each_v1_record_v2_only_field(
+    tmp_path: Path, monkeypatch, v2_field: str
+):
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    result = _v2_reconcile(
+        tmp_path, _bars(["2026-08-31"]), ["2026-08-31"], fetched.evidence, prior=None
+    )
+    original_path = Path(str(result["update_path"]))
+    original = json.loads(original_path.read_text())
+    identity = {
+        key: value
+        for key, value in original.items()
+        if key not in {"update_id", "created_at"}
+    }
+    identity["schema_version"] = 1
+    identity["expected_sessions_source"] = {"bogus": True}
+    for field in {
+        "market_session_evidence_sha256",
+        "market_session_evidence_files",
+        "prior_corporate_action_evidence_sha256",
+        "result_corporate_action_evidence_sha256",
+    } - {v2_field}:
+        identity.pop(field)
+    if v2_field == "market_session_evidence_files":
+        identity[v2_field] = {"bogus": True}
+    update_id = hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    target = tmp_path / "updates" / "601288.SS" / update_id
+    target.mkdir()
+    record = identity | {
+        "update_id": update_id,
+        "created_at": original["created_at"],
+    }
+    (target / "update.json").write_text(
+        json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    )
+    (target / "update.json").chmod(0o444)
+    target.chmod(0o555)
+
+    with pytest.raises(RuntimeError, match="unexpected or missing record fields"):
+        load_update_record(tmp_path, "601288.SS", update_id)
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_loader_requires_exact_integer_update_schema_version(
+    tmp_path: Path, schema_version
+):
+    result = _reconcile(
+        tmp_path,
+        _bars(["2026-08-18"]),
+        ["2026-08-18"],
+        "2026-08-18",
+        "2026-08-18",
+    )
+    original = json.loads(Path(str(result["update_path"])).read_text())
+    identity = {
+        key: value
+        for key, value in original.items()
+        if key not in {"update_id", "created_at"}
+    }
+    identity["schema_version"] = schema_version
+    update_id = hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    target = tmp_path / "updates" / "601288.SS" / update_id
+    target.mkdir()
+    record = identity | {
+        "update_id": update_id,
+        "created_at": original["created_at"],
+    }
+    (target / "update.json").write_text(
+        json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    )
+    (target / "update.json").chmod(0o444)
+    target.chmod(0o555)
+
+    with pytest.raises(RuntimeError, match="schema version"):
+        load_update_record(tmp_path, "601288.SS", update_id)
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["expected_session_count", "fetched_rows", "revision_count"],
+)
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_loader_requires_exact_integer_update_count_fields(
+    tmp_path: Path, location: str, value
+):
+    result = _reconcile(
+        tmp_path,
+        _bars(["2026-08-18"]),
+        ["2026-08-18"],
+        "2026-08-18",
+        "2026-08-18",
+    )
+    original = json.loads(Path(str(result["update_path"])).read_text())
+    identity = {
+        key: item
+        for key, item in original.items()
+        if key not in {"update_id", "created_at"}
+    }
+    if location == "fetched_rows":
+        identity["fetched"]["rows"] = value
+    else:
+        identity[location] = value
+    update_id = hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    target = tmp_path / "updates" / "601288.SS" / update_id
+    target.mkdir()
+    record = identity | {
+        "update_id": update_id,
+        "created_at": original["created_at"],
+    }
+    (target / "update.json").write_text(
+        json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    )
+    (target / "update.json").chmod(0o444)
+    target.chmod(0o555)
+
+    with pytest.raises(RuntimeError, match="count fields"):
+        load_update_record(tmp_path, "601288.SS", update_id)
+
+
+@pytest.mark.parametrize("location", ["claim_schema", "expected_session_count"])
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_lineage_loader_requires_exact_integer_identity_fields(
+    tmp_path: Path, location: str, value
+):
+    result = reconcile_daily_history(
+        _bars(["2026-08-18"]),
+        ["2026-08-18"],
+        tmp_path,
+        METADATA,
+        "2026-08-18",
+        "2026-08-18",
+        source_identity={
+            "provider": METADATA["provider"],
+            "instrument": METADATA["instrument"],
+        },
+        expected_sessions_source={"calendar": "XSHG"},
+    )
+    claim_path = (
+        tmp_path
+        / "snapshot-lineage"
+        / METADATA["instrument"]
+        / str(result["snapshot_id"])
+        / "lineage.json"
+    )
+    claim = json.loads(claim_path.read_text())
+    if location == "claim_schema":
+        claim["schema_version"] = value
+    else:
+        claim["lineage"]["expected_session_count"] = value
+    identity = {
+        key: item for key, item in claim.items() if key != "claim_sha256"
+    }
+    claim["claim_sha256"] = hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    claim_path.parent.chmod(0o755)
+    claim_path.chmod(0o644)
+    claim_path.write_text(
+        json.dumps(claim, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    )
+    claim_path.chmod(0o444)
+    claim_path.parent.chmod(0o555)
+
+    with pytest.raises(RuntimeError, match="identity|expected-session count"):
+        snapshot_update_lineage(
+            tmp_path, METADATA["instrument"], str(result["snapshot_id"])
+        )
+
+
+def test_v2_rejects_wrong_expected_source_kind_before_publication(tmp_path: Path, monkeypatch):
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    with pytest.raises(DatasetValidationError, match="expected-session source mismatch"):
+        reconcile_daily_history(
+            _bars(["2026-08-31"]),
+            ["2026-08-31"],
+            tmp_path,
+            _audited_metadata(),
+            "2026-08-31",
+            "2026-08-31",
+            source_identity={
+                "provider": "xshg-audited-daily-v1",
+                "instrument": "601288.SS",
+            },
+            expected_sessions_source={
+                "kind": "XSHG_OFFICIAL_ELIGIBLE_SESSIONS_V1",
+                "market": "XSHG",
+                "instrument": "601288.SS",
+                "start": "2026-08-31",
+                "end": "2026-08-31",
+                "evidence_sha256": fetched.evidence.digest,
+                "policy_version": POLICY_VERSION,
+            },
+            expected_prior_snapshot_id=None,
+            market_session_evidence=fetched.evidence,
+        )
+    assert not (tmp_path / "updates").exists()
+
+
+def test_v2_tampered_or_writable_evidence_fails_verification(tmp_path: Path, monkeypatch):
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    result = _v2_reconcile(
+        tmp_path, _bars(["2026-08-31"]), ["2026-08-31"], fetched.evidence, prior=None
+    )
+    record_path = Path(str(result["update_path"]))
+    record = json.loads(record_path.read_text())
+    artifact = record_path.parent / next(
+        iter(record["market_session_evidence_files"]["artifacts"].values())
+    )
+    artifact.chmod(0o644)
+
+    with pytest.raises(RuntimeError, match="writable"):
+        load_update_record(tmp_path, "601288.SS", str(result["update_id"]))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["undeclared", "missing", "symlink", "hardlink", "document", "directory"],
+)
+def test_v2_evidence_topology_and_tampering_fail_closed(
+    tmp_path: Path, monkeypatch, tamper: str
+):
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    result = _v2_reconcile(
+        tmp_path, _bars(["2026-08-31"]), ["2026-08-31"], fetched.evidence, prior=None
+    )
+    target = Path(str(result["update_path"])).parent
+    record = json.loads(Path(str(result["update_path"])).read_text())
+    artifact = target / next(
+        iter(record["market_session_evidence_files"]["artifacts"].values())
+    )
+    target.chmod(0o755)
+    if tamper == "undeclared":
+        (target / "extra.bin").write_bytes(b"x")
+    elif tamper == "missing":
+        artifact.unlink()
+    elif tamper == "symlink":
+        artifact.unlink()
+        outside = tmp_path / "outside.bin"
+        outside.write_bytes(b"x")
+        artifact.symlink_to(outside)
+    elif tamper == "hardlink":
+        os.link(artifact, tmp_path / "hardlink.bin")
+    elif tamper == "document":
+        document = target / "market_sessions.json"
+        document.chmod(0o644)
+        document.write_bytes(b"{}\n")
+        document.chmod(0o444)
+    else:
+        pass
+
+    with pytest.raises(RuntimeError, match="corrupt|symlink|hard link|writable"):
+        load_update_record(tmp_path, "601288.SS", str(result["update_id"]))
+
+
+def test_v2_non_publishable_synthetic_evidence_rejects_before_writes(
+    tmp_path: Path, monkeypatch
+):
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    synthetic = replace(fetched.evidence, publishable=False)
+    with pytest.raises(DatasetValidationError, match="not publishable"):
+        _v2_reconcile(
+            tmp_path,
+            _bars(["2026-08-31"]),
+            ["2026-08-31"],
+            synthetic,
+            prior=None,
+        )
+    assert not (tmp_path / "updates").exists()
+
+
+def test_v2_generation_token_rejects_stale_prior_before_publication(tmp_path: Path, monkeypatch):
+    prior = publish_snapshot(_bars(["2026-08-31"]), tmp_path, _audited_metadata())
+    snapshot_update_lineage(tmp_path, "601288.SS", str(prior["snapshot_id"]))
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    latest = tmp_path / "datasets" / "601288.SS" / "latest.json"
+    before = latest.read_bytes()
+
+    with pytest.raises(ConcurrentUpdateError, match="CONCURRENT_UPDATE"):
+        _v2_reconcile(
+            tmp_path,
+            _bars(["2026-08-31"]),
+            ["2026-08-31"],
+            fetched.evidence,
+            prior="0" * 64,
+            overlap=("2026-08-31",),
+        )
+    assert latest.read_bytes() == before
+    assert not (tmp_path / "updates" / "601288.SS").exists()
+
+
+def test_v2_cross_source_overlap_conflict_preserves_latest(tmp_path: Path, monkeypatch):
+    prior = publish_snapshot(_bars(["2026-08-31"], [6.10]), tmp_path, _audited_metadata())
+    snapshot_update_lineage(tmp_path, "601288.SS", str(prior["snapshot_id"]))
+    fetched, _, _ = live_evidence(monkeypatch, instrument="601288.SS")
+    latest = tmp_path / "datasets" / "601288.SS" / "latest.json"
+    before = latest.read_bytes()
+
+    with pytest.raises(DatasetValidationError, match="SOURCE_CONFLICT.*prior_snapshot_id"):
+        _v2_reconcile(
+            tmp_path,
+            _bars(["2026-08-31"], [6.20]),
+            ["2026-08-31"],
+            fetched.evidence,
+            prior=str(prior["snapshot_id"]),
+            overlap=("2026-08-31",),
+        )
+    assert latest.read_bytes() == before
+
+
+def test_v2_schema4_carries_exact_corporate_action_evidence(tmp_path: Path, monkeypatch):
+    from test_corporate_actions import bocom_evidence
+
+    metadata = _audited_metadata("601328.SS")
+    action_evidence = bocom_evidence()
+    prior = publish_snapshot(
+        _bars(["2026-08-31"]),
+        tmp_path,
+        metadata,
+        corporate_action_evidence=action_evidence,
+    )
+    snapshot_update_lineage(tmp_path, "601328.SS", str(prior["snapshot_id"]))
+    fetched, _, _ = live_evidence(monkeypatch)
+    result = _v2_reconcile(
+        tmp_path,
+        _bars(["2026-08-31"]),
+        ["2026-08-31"],
+        fetched.evidence,
+        prior=str(prior["snapshot_id"]),
+        overlap=("2026-08-31",),
+        metadata=metadata,
+    )
+    prior_target = Path(str(prior["path"]))
+    result_target = Path(str(result["path"]))
+    prior_manifest = json.loads((prior_target / "manifest.json").read_text())
+    result_manifest = json.loads((result_target / "manifest.json").read_text())
+
+    assert result_manifest["schema_version"] == 4
+    assert result_manifest["corporate_action_evidence_sha256"] == prior_manifest[
+        "corporate_action_evidence_sha256"
+    ]
+    for name in set(prior_manifest["files"]["corporate_action_artifacts"].values()) | {
+        "corporate_actions.json"
+    }:
+        assert (result_target / name).read_bytes() == (prior_target / name).read_bytes()

@@ -22,6 +22,7 @@ from .dataset_lineage import (
     _same_inode,
     _sha256,
     _validate_metadata,
+    _verified_snapshot_update_lineage,
     load_update_record as load_update_record,
     snapshot_update_lineage,
 )
@@ -29,14 +30,23 @@ from .datasets import (
     _atomic_json,
     _normalize_frame,
     _verify_snapshot,
+    _verified_action_evidence,
     publish_snapshot,
     snapshot_status,
+)
+from .market_sessions import (
+    EXPECTED_SESSIONS_SOURCE_KIND,
+    POLICY_VERSION,
+    MarketSessionEvidence,
 )
 from .schemas import SchemaValidationError, canonical_json_bytes
 
 
 class ConcurrentUpdateError(RuntimeError):
     """Raised when latest changes before a reconciled update can commit."""
+
+
+_UNSET = object()
 
 
 def _session_date(value: Any, label: str) -> pd.Timestamp:
@@ -143,6 +153,23 @@ def _write_update_record(directory_fd: int, record: dict[str, Any]) -> int:
         os.close(descriptor)
 
 
+def _write_update_file(directory_fd: int, name: str, payload: bytes) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(name, flags, 0o600, dir_fd=directory_fd)
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written == 0:
+                raise OSError(f"short write while publishing {name}")
+            remaining = remaining[written:]
+        os.fchmod(descriptor, 0o444)
+        os.fsync(descriptor)
+        return os.dup(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _discard_staging_directory(
     updates_fd: int, staging_name: str, staging_fd: int
 ) -> None:
@@ -153,15 +180,19 @@ def _discard_staging_directory(
     if not stat.S_ISDIR(entry.st_mode) or not _same_inode(entry, os.fstat(staging_fd)):
         return
     os.fchmod(staging_fd, 0o700)
-    try:
-        os.unlink("update.json", dir_fd=staging_fd)
-    except FileNotFoundError:
-        pass
+    for name in os.listdir(staging_fd):
+        try:
+            os.unlink(name, dir_fd=staging_fd)
+        except FileNotFoundError:
+            pass
     os.rmdir(staging_name, dir_fd=updates_fd)
 
 
 def _publish_update_record(
-    root: Path, instrument: str, identity: dict[str, Any]
+    root: Path,
+    instrument: str,
+    identity: dict[str, Any],
+    market_session_evidence: MarketSessionEvidence | None = None,
 ) -> tuple[str, Path]:
     root = root.resolve()
     update_id = _sha256(_canonical_json(identity))
@@ -221,6 +252,26 @@ def _publish_update_record(
                             )
                         finally:
                             os.close(record_fd)
+                        if market_session_evidence is not None:
+                            evidence_files = {
+                                "market_sessions.json": market_session_evidence.json_bytes(),
+                                **{
+                                    f"market-session-{artifact_id}.bin": payload
+                                    for artifact_id, payload in market_session_evidence.artifact_bytes.items()
+                                },
+                            }
+                            for name, payload in evidence_files.items():
+                                evidence_fd = _write_update_file(staging_fd, name, payload)
+                                try:
+                                    _require_pinned_entry(
+                                        staging_fd,
+                                        name,
+                                        evidence_fd,
+                                        f"staged {name}",
+                                        directory=False,
+                                    )
+                                finally:
+                                    os.close(evidence_fd)
                         os.fchmod(staging_fd, 0o555)
                         os.fsync(staging_fd)
                         _require_pinned_entry(
@@ -275,7 +326,16 @@ def _publish_update_record(
                     record_fd: int | None = None
                     try:
                         try:
-                            if set(os.listdir(target_fd)) != {"update.json"}:
+                            expected_entries = {"update.json"}
+                            if market_session_evidence is not None:
+                                expected_entries |= {
+                                    "market_sessions.json",
+                                    *(
+                                        f"market-session-{artifact_id}.bin"
+                                        for artifact_id in market_session_evidence.artifact_bytes
+                                    ),
+                                }
+                            if set(os.listdir(target_fd)) != expected_entries:
                                 raise ValueError(
                                     "target directory has unexpected entries"
                                 )
@@ -354,6 +414,7 @@ def _publish_update_record(
             os.close(verification_root_fd)
     finally:
         os.close(root_fd)
+    load_update_record(root, instrument, update_id)
     return update_id, record_path
 
 
@@ -374,6 +435,26 @@ def _commit_latest(
     _atomic_json(pointer, {"snapshot_id": snapshot_id, "path": snapshot_id})
 
 
+def _normalized_overlap_row(frame: pd.DataFrame, session: pd.Timestamp) -> bytes:
+    row = frame.loc[
+        frame["Date"] == session,
+        ["Date", "Open", "High", "Low", "Close", "Volume"],
+    ]
+    if len(row) != 1:
+        raise DatasetValidationError("SOURCE_CONFLICT: protected overlap row is not unique")
+    values = row.iloc[0]
+    return canonical_json_bytes(
+        {
+            "Date": str(values["Date"].date()),
+            "Open": float(values["Open"]),
+            "High": float(values["High"]),
+            "Low": float(values["Low"]),
+            "Close": float(values["Close"]),
+            "Volume": float(values["Volume"]),
+        }
+    )
+
+
 def reconcile_daily_history(
     fetched_bars: pd.DataFrame,
     expected_sessions: Iterable[Any],
@@ -384,6 +465,9 @@ def reconcile_daily_history(
     *,
     source_identity: dict[str, Any] | None = None,
     expected_sessions_source: dict[str, Any] | None = None,
+    expected_prior_snapshot_id: str | None | object = _UNSET,
+    protected_overlap_dates: tuple[str, ...] = (),
+    market_session_evidence: MarketSessionEvidence | None = None,
 ) -> dict[str, str | int]:
     """Reconcile requested daily bars into a verified immutable history snapshot."""
 
@@ -394,9 +478,7 @@ def reconcile_daily_history(
             "source and expected-session provenance must be supplied together"
         )
     if source_identity is not None:
-        source_identity = _validated_provenance_identity(
-            source_identity, "source identity"
-        )
+        source_identity = _validated_provenance_identity(source_identity, "source identity")
         expected_sessions_source = _validated_provenance_identity(
             expected_sessions_source, "expected sessions source"
         )
@@ -422,21 +504,79 @@ def reconcile_daily_history(
         normalized_fetched["Date"].between(request_start, request_end)
     ].reset_index(drop=True)
 
+    is_v2 = market_session_evidence is not None
+    if is_v2:
+        if source_identity is None or expected_sessions_source is None:
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: v2 provenance is required"
+            )
+        if not isinstance(market_session_evidence, MarketSessionEvidence):
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: market-session evidence type is invalid"
+            )
+        if not market_session_evidence.publishable:
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: market-session evidence is not publishable"
+            )
+        evidence_scope = market_session_evidence.document.get("scope")
+        if evidence_scope != {
+            "market": "XSHG",
+            "instrument": normalized_metadata["instrument"],
+            "start": str(request_start.date()),
+            "end": str(request_end.date()),
+            "timezone": "Asia/Shanghai",
+        }:
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: market-session evidence scope mismatch"
+            )
+        if tuple(market_session_evidence.document.get("eligible_sessions", ())) != tuple(
+            str(value.date()) for value in sessions
+        ):
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: eligible sessions mismatch"
+            )
+        expected_projection = {
+            "kind": EXPECTED_SESSIONS_SOURCE_KIND,
+            "market": "XSHG",
+            "instrument": normalized_metadata["instrument"],
+            "start": str(request_start.date()),
+            "end": str(request_end.date()),
+            "evidence_sha256": market_session_evidence.digest,
+            "policy_version": POLICY_VERSION,
+        }
+        if expected_sessions_source != expected_projection:
+            raise DatasetValidationError(
+                "UPDATE_EVIDENCE_PUBLICATION_FAILED: expected-session source mismatch"
+            )
+        if expected_prior_snapshot_id is _UNSET:
+            raise DatasetValidationError(
+                "CONCURRENT_UPDATE: v2 reconciliation requires a prior-generation token"
+            )
+
     instrument = normalized_metadata["instrument"]
     with _InstrumentLock(root, instrument):
         prior_snapshot_id: str | None = None
+        prior_manifest: dict[str, Any] | None = None
+        prior_action_evidence = None
         previous = pd.DataFrame(columns=normalized_fetched.columns)
         latest_pointer = root / "datasets" / instrument / "latest.json"
         if latest_pointer.exists():
             prior = snapshot_status(root, instrument)
             prior_snapshot_id = prior["snapshot_id"]
-            prior_path = Path(prior["path"])
-            verified = _verify_snapshot(
-                prior_path, prior_snapshot_id, include_frame=True
-            )
+        if expected_prior_snapshot_id is not _UNSET and prior_snapshot_id != expected_prior_snapshot_id:
+            raise ConcurrentUpdateError("CONCURRENT_UPDATE: latest snapshot generation changed")
+        if prior_snapshot_id is not None:
+            prior_path = root / "datasets" / instrument / prior_snapshot_id
+            verified = _verify_snapshot(prior_path, prior_snapshot_id, include_frame=True)
             if not isinstance(verified, tuple):
                 raise RuntimeError("snapshot verifier did not return the prior frame")
             prior_manifest, previous = verified
+            if prior_manifest["schema_version"] in {3, 5}:
+                raise DatasetValidationError(
+                    "UPDATE_PRIOR_IS_DERIVED_VIEW: latest snapshot is not an update root"
+                )
+            if prior_manifest["schema_version"] not in {1, 2, 4}:
+                raise DatasetValidationError("UPDATE_PRIOR_IS_DERIVED_VIEW: unsupported prior root")
             mismatches = [
                 field
                 for field, value in normalized_metadata.items()
@@ -450,6 +590,47 @@ def reconcile_daily_history(
                 raise DatasetValidationError(
                     "fetched column schema must match the latest snapshot schema"
                 )
+            if is_v2:
+                _verified_snapshot_update_lineage(root, instrument, prior_snapshot_id)
+
+        if is_v2:
+            fetched_order = tuple(normalized_fetched["Date"])
+            prior_dates = set(previous["Date"])
+            recomputed_overlap = tuple(
+                str(value.date()) for value in fetched_order if value in prior_dates
+            )
+            if tuple(protected_overlap_dates) != recomputed_overlap:
+                raise DatasetValidationError(
+                    "SOURCE_CONFLICT: protected overlap set does not match selected generation"
+                )
+            for value in fetched_order:
+                rendered = str(value.date())
+                if rendered not in protected_overlap_dates:
+                    continue
+                if _normalized_overlap_row(previous, value) != _normalized_overlap_row(
+                    normalized_fetched, value
+                ):
+                    assert prior_snapshot_id is not None
+                    prior_lineage = _verified_snapshot_update_lineage(
+                        root, instrument, prior_snapshot_id
+                    )
+                    raise DatasetValidationError(
+                        "SOURCE_CONFLICT: overlap differs; "
+                        f"prior_snapshot_id={prior_snapshot_id}; "
+                        f"prior_source={prior_lineage.get('source')}; "
+                        f"fetched_source={source_identity}"
+                    )
+            if prior_manifest is not None and prior_manifest["schema_version"] == 4:
+                assert prior_snapshot_id is not None
+                try:
+                    prior_action_evidence = _verified_action_evidence(
+                        root / "datasets" / instrument / prior_snapshot_id,
+                        prior_manifest,
+                    )
+                except (KeyError, OSError, RuntimeError, ValueError) as exc:
+                    raise DatasetValidationError(
+                        f"CORPORATE_ACTION_EVIDENCE_INVALID: {exc}"
+                    ) from exc
 
         revision_count = _revision_count(previous, requested_fetched)
         fetched_dates = set(requested_fetched["Date"])
@@ -464,16 +645,31 @@ def reconcile_daily_history(
         missing = [session for session in sessions if session not in merged_dates]
         if missing:
             rendered = ", ".join(str(value.date()) for value in missing)
-            raise DatasetValidationError(
-                f"missing expected sessions after merge: {rendered}"
-            )
+            raise DatasetValidationError(f"missing expected sessions after merge: {rendered}")
         merged = _normalize_frame(merged_input)
 
         snapshot = publish_snapshot(
-            merged, root, normalized_metadata, update_latest=False
+            merged,
+            root,
+            normalized_metadata,
+            update_latest=False,
+            corporate_action_evidence=prior_action_evidence,
         )
-        identity = {
-            "schema_version": 1,
+        result_manifest = _verify_snapshot(Path(snapshot["path"]), snapshot["snapshot_id"])
+        if isinstance(result_manifest, tuple):
+            result_manifest = result_manifest[0]
+        prior_action_digest = (
+            prior_manifest.get("corporate_action_evidence_sha256")
+            if prior_manifest is not None
+            else None
+        )
+        result_action_digest = result_manifest.get("corporate_action_evidence_sha256")
+        if is_v2 and prior_action_digest != result_action_digest:
+            raise DatasetValidationError(
+                "CORPORATE_ACTION_EVIDENCE_DOWNGRADE: result action evidence changed"
+            )
+        identity: dict[str, Any] = {
+            "schema_version": 2 if is_v2 else 1,
             "metadata": normalized_metadata,
             "request": {
                 "start": str(request_start.date()),
@@ -493,14 +689,34 @@ def reconcile_daily_history(
         if source_identity is not None:
             identity["source"] = source_identity
             identity["expected_sessions_source"] = expected_sessions_source
-        update_id, update_path = _publish_update_record(root, instrument, identity)
+        if market_session_evidence is not None:
+            artifact_files = {
+                artifact_id: f"market-session-{artifact_id}.bin"
+                for artifact_id in sorted(market_session_evidence.artifact_bytes)
+            }
+            identity |= {
+                "market_session_evidence_sha256": market_session_evidence.digest,
+                "market_session_evidence_files": {
+                    "document": "market_sessions.json",
+                    "artifacts": artifact_files,
+                },
+                "prior_corporate_action_evidence_sha256": prior_action_digest,
+                "result_corporate_action_evidence_sha256": result_action_digest,
+            }
+        if market_session_evidence is None:
+            update_id, update_path = _publish_update_record(root, instrument, identity)
+        else:
+            update_id, update_path = _publish_update_record(
+                root, instrument, identity, market_session_evidence
+            )
         snapshot_update_lineage(root, instrument, snapshot["snapshot_id"])
-        _commit_latest(
-            root,
-            instrument,
-            snapshot["snapshot_id"],
-            prior_snapshot_id,
-        )
+        _commit_latest(root, instrument, snapshot["snapshot_id"], prior_snapshot_id)
+        loaded = load_update_record(root, instrument, update_id)
+        if loaded["result_snapshot_id"] != snapshot["snapshot_id"]:
+            raise RuntimeError("published update does not bind the result snapshot")
+        latest = snapshot_status(root, instrument)
+        if latest["snapshot_id"] != snapshot["snapshot_id"]:
+            raise ConcurrentUpdateError("CONCURRENT_UPDATE: latest readback mismatch")
         return snapshot | {
             "update_id": update_id,
             "update_path": str(update_path),

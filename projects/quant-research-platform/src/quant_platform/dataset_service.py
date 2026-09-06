@@ -31,7 +31,13 @@ from .datasets import (
     snapshot_status,
 )
 from .schemas import SchemaValidationError, canonical_json_bytes
-from .updates import reconcile_daily_history, snapshot_update_lineage
+from .market_sessions import (
+    EXPECTED_SESSIONS_SOURCE_KIND,
+    POLICY_VERSION,
+    MarketSessionEvidenceError,
+    MarketSessionEvidenceSource,
+)
+from .updates import ConcurrentUpdateError, reconcile_daily_history, snapshot_update_lineage
 from .yahoo import yahoo_chart_url
 
 
@@ -1050,10 +1056,12 @@ class DatasetService:
         *,
         sources: dict[str, DailyBarsSource] | None = None,
         calendars: dict[str, SessionSource] | None = None,
+        market_session_sources: dict[str, MarketSessionEvidenceSource] | None = None,
     ):
         self.catalog = catalog
         self.sources = sources or {YahooChartSource.provider: YahooChartSource()}
         self.calendars = calendars or {"XSHG": XSHGCalendar()}
+        self.market_session_sources = market_session_sources or {}
 
     def register(self, item: DatasetCatalogItem) -> dict[str, str]:
         if not DATASET_ID.fullmatch(item.dataset_id):
@@ -1331,6 +1339,191 @@ class DatasetService:
                 and manifest["canonical_sha256"] == canonical_sha256
             )
 
+    def _resolve_audited_xshg(
+        self,
+        item: DatasetCatalogItem,
+        start: str,
+        end: str,
+    ) -> dict[str, Any]:
+        try:
+            source = self.sources[item.provider]
+        except KeyError as exc:
+            raise DatasetResolutionError(
+                f"dataset source is unavailable: {item.provider}"
+            ) from exc
+        try:
+            session_source = self.market_session_sources[item.market]
+        except KeyError as exc:
+            raise DatasetResolutionError(
+                f"official market-session source is unavailable: {item.market}"
+            ) from exc
+
+        for generation in range(2):
+            latest = self._latest(item)
+            manifest: dict[str, Any] | None = latest[0] if latest else None
+            previous = latest[1] if latest else None
+            selected_prior_snapshot_id = manifest["snapshot_id"] if manifest else None
+            if manifest is not None:
+                if manifest["schema_version"] in {3, 5}:
+                    raise DatasetResolutionError(
+                        "UPDATE_PRIOR_IS_DERIVED_VIEW: latest snapshot is not an update root"
+                    )
+                if manifest["schema_version"] not in {1, 2, 4}:
+                    raise DatasetResolutionError(
+                        "UPDATE_PRIOR_IS_DERIVED_VIEW: unsupported prior root"
+                    )
+                try:
+                    snapshot_update_lineage(
+                        self.catalog.state_root,
+                        item.instrument,
+                        selected_prior_snapshot_id,
+                    )
+                except (DatasetValidationError, OSError, RuntimeError) as exc:
+                    raise DatasetResolutionError(
+                        f"dataset update lineage failed verification: {exc}"
+                    ) from exc
+            try:
+                fetched_sessions = session_source.fetch(item.instrument, start, end)
+            except MarketSessionEvidenceError as exc:
+                raise DatasetResolutionError(str(exc)) from exc
+            expected_sessions = list(fetched_sessions.eligible_sessions)
+            if not expected_sessions:
+                raise DatasetResolutionError("NO_ELIGIBLE_SESSIONS: selected range has no sessions")
+            if expected_sessions != sorted(set(expected_sessions)):
+                raise DatasetResolutionError(
+                    "SUSPENSION_RESPONSE_INVALID: eligible sessions must be ordered unique"
+                )
+            if expected_sessions[0] < start or expected_sessions[-1] > end:
+                raise DatasetResolutionError(
+                    "SUSPENSION_RESPONSE_INVALID: eligible sessions fall outside the request"
+                )
+
+            previous_dates = set(
+                previous["Date"].dt.strftime("%Y-%m-%d")
+                if previous is not None
+                else []
+            )
+            missing = [value for value in expected_sessions if value not in previous_dates]
+            if previous is None:
+                selected_sessions = expected_sessions
+            elif missing:
+                first_missing = expected_sessions.index(missing[0])
+                selected_sessions = expected_sessions[max(0, first_missing - 1) :]
+            else:
+                selected_sessions = [expected_sessions[-1]]
+            fetch_start = selected_sessions[0]
+            fetch_end = selected_sessions[-1]
+            fetched = source.fetch(item.instrument, fetch_start, fetch_end)
+            if not isinstance(fetched, FetchedDailyBars):
+                raise DatasetResolutionError("PROVIDER_INCOMPLETE: source returned no generation")
+            if not isinstance(fetched.source_identity, dict):
+                raise DatasetResolutionError("PROVIDER_INCOMPLETE: source identity must be an object")
+            if (
+                fetched.source_identity.get("provider") != item.provider
+                or fetched.source_identity.get("instrument") != item.instrument
+            ):
+                raise DatasetResolutionError(
+                    "PROVIDER_INCOMPLETE: source identity does not match the request"
+                )
+            try:
+                canonical_json_bytes(fetched.source_identity)
+                fetched_frame = _normalize_frame(fetched.bars)
+            except (DatasetValidationError, SchemaValidationError) as exc:
+                raise DatasetResolutionError(f"PROVIDER_INCOMPLETE: {exc}") from exc
+            if previous is not None:
+                previous_columns = list(previous.columns)
+                if any(column not in fetched_frame.columns for column in previous_columns):
+                    raise DatasetResolutionError(
+                        "PROVIDER_INCOMPLETE: fetched schema cannot extend the prior root"
+                    )
+                fetched_frame = fetched_frame.loc[:, previous_columns]
+            fetched_dates = fetched_frame["Date"].dt.strftime("%Y-%m-%d").tolist()
+            absent = [value for value in selected_sessions if value not in fetched_dates]
+            if absent:
+                raise DatasetResolutionError(
+                    "PROVIDER_INCOMPLETE: missing eligible sessions: " + ", ".join(absent)
+                )
+            unexpected = sorted(set(fetched_dates) - set(selected_sessions))
+            if unexpected or fetched_dates != selected_sessions:
+                raise DatasetResolutionError(
+                    "PROVIDER_UNEXPECTED_DATE: " + ", ".join(unexpected or fetched_dates)
+                )
+            protected_overlap_dates = tuple(
+                value for value in selected_sessions if value in previous_dates
+            )
+            evidence = fetched_sessions.evidence
+            expected_sessions_source = {
+                "kind": EXPECTED_SESSIONS_SOURCE_KIND,
+                "market": item.market,
+                "instrument": item.instrument,
+                "start": start,
+                "end": end,
+                "evidence_sha256": evidence.digest,
+                "policy_version": POLICY_VERSION,
+            }
+            try:
+                update = reconcile_daily_history(
+                    fetched_frame,
+                    expected_sessions,
+                    self.catalog.state_root,
+                    item.metadata,
+                    start,
+                    end,
+                    source_identity=fetched.source_identity,
+                    expected_sessions_source=expected_sessions_source,
+                    expected_prior_snapshot_id=selected_prior_snapshot_id,
+                    protected_overlap_dates=protected_overlap_dates,
+                    market_session_evidence=evidence,
+                )
+            except ConcurrentUpdateError as exc:
+                if generation == 0:
+                    continue
+                raise DatasetResolutionError("CONCURRENT_UPDATE: second generation drift") from exc
+            except DatasetValidationError as exc:
+                raise DatasetResolutionError(str(exc)) from exc
+
+            verified = _verify_snapshot(
+                Path(str(update["path"])),
+                str(update["snapshot_id"]),
+                include_frame=True,
+            )
+            if not isinstance(verified, tuple):
+                raise DatasetResolutionError("snapshot verifier did not return repaired market data")
+            manifest, repaired = verified
+            repaired_dates = set(repaired["Date"].dt.strftime("%Y-%m-%d"))
+            remaining = [value for value in expected_sessions if value not in repaired_dates]
+            if remaining:
+                raise DatasetResolutionError(
+                    "PROVIDER_INCOMPLETE: repaired snapshot remains incomplete: "
+                    + ", ".join(remaining)
+                )
+            lineage = snapshot_update_lineage(
+                self.catalog.state_root,
+                item.instrument,
+                manifest["snapshot_id"],
+            )
+            return {
+                "dataset_id": item.dataset_id,
+                "name": item.name,
+                "instrument": item.instrument,
+                "provider": item.provider,
+                "market": item.market,
+                "currency": item.currency,
+                "adjustment": item.adjustment,
+                "requested_start": start,
+                "requested_end": end,
+                "effective_start": expected_sessions[0],
+                "effective_end": expected_sessions[-1],
+                "snapshot_id": manifest["snapshot_id"],
+                "canonical_sha256": manifest["canonical_sha256"],
+                "snapshot_data_start": manifest["data_start"],
+                "snapshot_data_end": manifest["data_end"],
+                "lineage": lineage,
+                "update_id": update["update_id"],
+                "update_path": update["update_path"],
+            }
+        raise DatasetResolutionError("CONCURRENT_UPDATE: generation retry exhausted")
+
     def resolve(self, dataset_id: str, start: str, end: str) -> dict[str, Any]:
         start = _date(start, "dataset range start")
         end = _date(end, "dataset range end")
@@ -1339,6 +1532,8 @@ class DatasetService:
                 "dataset range start must not be after range end"
             )
         item = self._item(dataset_id)
+        if item.provider == AuditedXshgDailySource.provider:
+            return self._resolve_audited_xshg(item, start, end)
         calendar = self._calendar(item)
         expected_sessions = [
             _date(session, "expected trading session")

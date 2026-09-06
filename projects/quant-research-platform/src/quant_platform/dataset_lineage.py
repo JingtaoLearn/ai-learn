@@ -13,6 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .market_sessions import (
+    EXPECTED_SESSIONS_SOURCE_KIND,
+    POLICY_VERSION,
+    MarketSessionEvidenceError,
+    admit_market_session_evidence,
+)
 from .schemas import SchemaValidationError, canonical_json_bytes
 
 
@@ -30,6 +36,21 @@ UPDATE_IDENTITY_FIELDS = {
     "prior_snapshot_id",
     "result_snapshot_id",
     "revision_count",
+}
+UPDATE_V2_ADDITIONAL_FIELDS = {
+    "market_session_evidence_sha256",
+    "market_session_evidence_files",
+    "prior_corporate_action_evidence_sha256",
+    "result_corporate_action_evidence_sha256",
+}
+EXPECTED_SESSIONS_SOURCE_FIELDS = {
+    "kind",
+    "market",
+    "instrument",
+    "start",
+    "end",
+    "evidence_sha256",
+    "policy_version",
 }
 
 
@@ -425,16 +446,146 @@ def _read_update_record(directory_fd: int) -> tuple[dict[str, Any], int]:
         os.close(descriptor)
 
 
+def _read_update_file(directory_fd: int, name: str, label: str) -> tuple[bytes, int]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{label} is not a regular file")
+        if metadata.st_mode & 0o222:
+            raise ValueError(f"{label} is writable")
+        if metadata.st_nlink != 1:
+            raise ValueError(f"{label} has an unsafe hard link count")
+        if metadata.st_size > 16 * 1024 * 1024:
+            raise ValueError(f"{label} exceeds the size limit")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 64 * 1024):
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        if len(payload) != metadata.st_size:
+            raise ValueError(f"{label} changed while reading")
+        if _immutable_state(os.fstat(descriptor)) != _immutable_state(metadata):
+            raise ValueError(f"{label} changed while reading")
+        return payload, os.dup(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_expected_sessions_source(
+    value: Any,
+    *,
+    metadata: dict[str, str],
+    request: dict[str, str],
+    evidence_sha256: str,
+) -> None:
+    if not isinstance(value, dict) or set(value) != EXPECTED_SESSIONS_SOURCE_FIELDS:
+        raise ValueError("record expected-session source fields are invalid")
+    if value != {
+        "kind": EXPECTED_SESSIONS_SOURCE_KIND,
+        "market": "XSHG",
+        "instrument": metadata["instrument"],
+        "start": request["start"],
+        "end": request["end"],
+        "evidence_sha256": evidence_sha256,
+        "policy_version": POLICY_VERSION,
+    }:
+        raise ValueError("record expected-session source identity is invalid")
+
+
+def _validate_v2_evidence(
+    target_fd: int,
+    stored: dict[str, Any],
+) -> tuple[set[str], dict[str, int]]:
+    files = stored.get("market_session_evidence_files")
+    if not isinstance(files, dict) or set(files) != {"document", "artifacts"}:
+        raise ValueError("market-session evidence file map is invalid")
+    artifacts = files["artifacts"]
+    if files["document"] != "market_sessions.json" or not isinstance(artifacts, dict):
+        raise ValueError("market-session evidence file map is invalid")
+    if not all(
+        isinstance(artifact_id, str)
+        and UPDATE_ID.fullmatch(artifact_id)
+        and path == f"market-session-{artifact_id}.bin"
+        for artifact_id, path in artifacts.items()
+    ):
+        raise ValueError("market-session artifact file map is invalid")
+    document_payload, document_fd = _read_update_file(
+        target_fd, "market_sessions.json", "market-session evidence"
+    )
+    descriptors = {"market_sessions.json": document_fd}
+    try:
+        document = json.loads(
+            document_payload.decode("utf-8"),
+            object_pairs_hook=_strict_json_pairs,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON value: {value}")
+            ),
+        )
+        if document_payload != _canonical_json(document) + b"\n":
+            raise ValueError("market-session evidence JSON is not canonical")
+        evidence_artifacts: dict[str, bytes] = {}
+        for artifact_id, path in artifacts.items():
+            payload, descriptor = _read_update_file(
+                target_fd, path, f"market-session artifact {artifact_id}"
+            )
+            descriptors[path] = descriptor
+            evidence_artifacts[artifact_id] = payload
+        evidence = admit_market_session_evidence(document, evidence_artifacts)
+        if not evidence.publishable:
+            raise ValueError("market-session evidence is not publishable")
+        if evidence.digest != stored["market_session_evidence_sha256"]:
+            raise ValueError("market-session evidence digest mismatch")
+        if document["scope"] != {
+            "market": "XSHG",
+            "instrument": stored["metadata"]["instrument"],
+            "start": stored["request"]["start"],
+            "end": stored["request"]["end"],
+            "timezone": "Asia/Shanghai",
+        }:
+            raise ValueError("market-session evidence scope mismatch")
+        sessions = document["eligible_sessions"]
+        payload = b"quant-platform-expected-sessions-v1\0" + "".join(
+            f"{value}\n" for value in sessions
+        ).encode()
+        if (
+            stored["expected_sessions_sha256"] != _sha256(payload)
+            or stored["expected_session_count"] != len(sessions)
+        ):
+            raise ValueError("market-session evidence expected-session identity mismatch")
+        _validate_expected_sessions_source(
+            stored["expected_sessions_source"],
+            metadata=stored["metadata"],
+            request=stored["request"],
+            evidence_sha256=evidence.digest,
+        )
+    except (KeyError, MarketSessionEvidenceError, TypeError, UnicodeDecodeError) as exc:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise ValueError(f"market-session evidence is invalid: {exc}") from exc
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise
+    return {"update.json", "market_sessions.json", *artifacts.values()}, descriptors
+
+
 def _validate_stored_update_record(
     stored: Any, update_id: str
 ) -> dict[str, Any]:
     if not isinstance(stored, dict):
         raise ValueError("record must be a JSON object")
+    schema_version = stored.get("schema_version")
+    if type(schema_version) is not int or schema_version not in {1, 2}:
+        raise ValueError("record schema version is invalid")
     identity_fields = set(stored) - {"update_id", "created_at"}
-    allowed = (
-        UPDATE_IDENTITY_FIELDS,
-        UPDATE_IDENTITY_FIELDS | {"source", "expected_sessions_source"},
-    )
+    source_fields = {"source", "expected_sessions_source"}
+    if schema_version == 1:
+        allowed = (UPDATE_IDENTITY_FIELDS, UPDATE_IDENTITY_FIELDS | source_fields)
+    else:
+        allowed = (
+            UPDATE_IDENTITY_FIELDS | source_fields | UPDATE_V2_ADDITIONAL_FIELDS,
+        )
     if identity_fields not in allowed:
         raise ValueError("unexpected or missing record fields")
     if stored.get("update_id") != update_id:
@@ -447,11 +598,20 @@ def _validate_stored_update_record(
     if _sha256(_canonical_json(identity)) != update_id:
         raise ValueError("record identity hash mismatch")
     datetime.fromisoformat(stored["created_at"])
-    if stored.get("schema_version") != 1:
-        raise ValueError("record schema version is invalid")
     metadata = _validate_metadata(stored["metadata"])
     if metadata != stored["metadata"]:
         raise ValueError("record metadata is not canonical")
+    count_fields = {
+        "expected_session_count": stored.get("expected_session_count"),
+        "fetched rows": (
+            stored.get("fetched", {}).get("rows")
+            if isinstance(stored.get("fetched"), dict)
+            else None
+        ),
+        "revision_count": stored.get("revision_count"),
+    }
+    if any(type(value) is not int or value < 0 for value in count_fields.values()):
+        raise ValueError("record count fields are invalid")
     if "source" in stored:
         if (
             not isinstance(stored["source"], dict)
@@ -461,6 +621,19 @@ def _validate_stored_update_record(
             raise ValueError("record source identity does not match metadata")
         if not isinstance(stored["expected_sessions_source"], dict):
             raise ValueError("record expected-session source is invalid")
+    if schema_version == 2:
+        for field in (
+            "market_session_evidence_sha256",
+            "prior_corporate_action_evidence_sha256",
+            "result_corporate_action_evidence_sha256",
+        ):
+            value = stored[field]
+            if value is not None and (
+                not isinstance(value, str) or UPDATE_ID.fullmatch(value) is None
+            ):
+                raise ValueError(f"record {field} is invalid")
+        if stored["market_session_evidence_sha256"] is None:
+            raise ValueError("record market-session evidence digest is invalid")
     if (
         not isinstance(stored.get("expected_sessions_sha256"), str)
         or UPDATE_ID.fullmatch(stored["expected_sessions_sha256"]) is None
@@ -490,6 +663,7 @@ def load_update_record(
     updates_fd: int | None = None
     target_fd: int | None = None
     record_fd: int | None = None
+    evidence_fds: dict[str, int] = {}
     try:
         store_fd, _ = _open_directory_at(root_fd, "updates", "store root")
         if store_fd is None:
@@ -508,12 +682,23 @@ def load_update_record(
             raise FileNotFoundError(f"update provenance does not exist: {update_id}")
         try:
             target_metadata = os.fstat(target_fd)
-            if set(os.listdir(target_fd)) != {"update.json"}:
-                raise ValueError("target directory has unexpected entries")
             stored, record_fd = _read_update_record(target_fd)
             if target_metadata.st_mode & 0o222:
                 raise ValueError("target directory is writable")
             stored = _validate_stored_update_record(stored, update_id)
+            expected_entries = {"update.json"}
+            if stored["schema_version"] == 2:
+                expected_entries, evidence_fds = _validate_v2_evidence(target_fd, stored)
+            if set(os.listdir(target_fd)) != expected_entries:
+                raise ValueError("target directory has unexpected entries")
+            for name, descriptor in evidence_fds.items():
+                _require_pinned_entry(
+                    target_fd,
+                    name,
+                    descriptor,
+                    f"evidence file {name}",
+                    directory=False,
+                )
             _require_pinned_entry(
                 root_fd, "updates", store_fd, "store root", directory=True
             )
@@ -550,6 +735,8 @@ def load_update_record(
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise RuntimeError(f"corrupt update provenance {target}: {exc}") from exc
     finally:
+        for descriptor in evidence_fds.values():
+            os.close(descriptor)
         if record_fd is not None:
             os.close(record_fd)
         if target_fd is not None:
@@ -583,6 +770,17 @@ def snapshot_update_lineage(
         return claimed
 
 
+def _verified_snapshot_update_lineage(
+    root: Path | str, instrument: str, snapshot_id: str
+) -> dict[str, Any]:
+    """Load an existing immutable lineage claim without creating or locking it."""
+
+    claimed = _load_snapshot_lineage_claim(Path(root).resolve(), instrument, snapshot_id)
+    if claimed is None:
+        raise RuntimeError("snapshot lineage claim is missing")
+    return claimed
+
+
 def _candidate_snapshot_lineage(
     root: Path, instrument: str, snapshot_id: str
 ) -> dict[str, Any]:
@@ -609,7 +807,7 @@ def _candidate_snapshot_lineage(
     if not candidates:
         return {"kind": "legacy_snapshot"}
     record = min(candidates, key=lambda value: value["update_id"])
-    return {
+    lineage = {
         "kind": "verified_update",
         "update_id": record["update_id"],
         "source": record["source"],
@@ -617,6 +815,19 @@ def _candidate_snapshot_lineage(
         "expected_sessions_sha256": record["expected_sessions_sha256"],
         "expected_session_count": record["expected_session_count"],
     }
+    if record["schema_version"] == 2:
+        lineage |= {
+            "market_session_evidence_sha256": record[
+                "market_session_evidence_sha256"
+            ],
+            "prior_corporate_action_evidence_sha256": record[
+                "prior_corporate_action_evidence_sha256"
+            ],
+            "result_corporate_action_evidence_sha256": record[
+                "result_corporate_action_evidence_sha256"
+            ],
+        }
+    return lineage
 
 
 def _lineage_claim_identity(
@@ -641,12 +852,25 @@ def _validate_lineage(lineage: Any) -> dict[str, Any]:
         "expected_sessions_sha256",
         "expected_session_count",
     }
-    if not isinstance(lineage, dict) or set(lineage) != expected:
+    v2_expected = expected | {
+        "market_session_evidence_sha256",
+        "prior_corporate_action_evidence_sha256",
+        "result_corporate_action_evidence_sha256",
+    }
+    if not isinstance(lineage, dict) or frozenset(lineage) not in {
+        frozenset(expected),
+        frozenset(v2_expected),
+    }:
         raise ValueError("snapshot lineage fields are invalid")
     if lineage["kind"] != "verified_update":
         raise ValueError("snapshot lineage kind is invalid")
     if UPDATE_ID.fullmatch(str(lineage["update_id"])) is None:
         raise ValueError("snapshot lineage update ID is invalid")
+    if (
+        type(lineage["expected_session_count"]) is not int
+        or lineage["expected_session_count"] < 0
+    ):
+        raise ValueError("snapshot lineage expected-session count is invalid")
     canonical_json_bytes(lineage)
     return lineage
 
@@ -707,7 +931,8 @@ def _load_snapshot_lineage_claim(
         raise RuntimeError(f"snapshot lineage claim fields are invalid: {target}")
     identity = _lineage_claim_identity(instrument, snapshot_id, claim["lineage"])
     if (
-        claim["schema_version"] != 1
+        type(claim["schema_version"]) is not int
+        or claim["schema_version"] != 1
         or claim["instrument"] != instrument
         or claim["snapshot_id"] != snapshot_id
         or claim["claim_sha256"] != _sha256(_canonical_json(identity))
