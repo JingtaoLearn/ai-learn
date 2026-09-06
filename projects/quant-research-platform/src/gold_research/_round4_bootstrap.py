@@ -893,6 +893,9 @@ class _ResourceTracker:
             if (value := sysconfig.get_path(key))
         )
         self.executable = Path(sys.executable).resolve()
+        self.fixed_read_paths = frozenset(
+            {Path("/usr/share/zoneinfo/Etc/UTC")} if os.environ.get("TZ") == "UTC" else set()
+        )
         self.system_runtime_roots = tuple(
             path for path in (Path("/usr/lib"), Path("/lib"), Path("/lib64")) if path.exists()
         )
@@ -959,6 +962,8 @@ class _ResourceTracker:
         if path == Path("/proc/self/maps"):
             return
         if path == self.executable:
+            return
+        if path in self.fixed_read_paths:
             return
         if _inside(path, self.stdlib_roots) and path.suffix.lower() in _CODE_SUFFIXES:
             return
