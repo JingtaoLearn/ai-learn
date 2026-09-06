@@ -436,6 +436,7 @@ def _rewrite_outcome_package(
     else:
         raise AssertionError(case)
 
+    package.chmod(0o755)
     shutil.rmtree(package)
     package.mkdir()
     payloads = {
@@ -664,6 +665,7 @@ def _mutate_and_reseal_trusted_run(
     attempt["result_path"] = str(root)
     attempt["result_digest"] = _result_digest(root)
     prior_package = factory.state_root / "accounting-outcomes" / prior_result_digest
+    prior_package.chmod(0o755)
     shutil.rmtree(prior_package)
     if case != "N_PRICE_ONLY":
         _seal_accounting_outcome(
