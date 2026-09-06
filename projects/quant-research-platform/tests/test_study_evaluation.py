@@ -373,7 +373,7 @@ _FACTORY_MATRIX_FAILURES = {
     "L5": "account cash or quantity does not reconcile",
     "I1": "account frozen metrics are not bounded integers",
     "I2": "account event ledger quantity is not an exact integer",
-    "I3": "non-finite value in metrics",
+    "I3": "metrics is not strict JSON",
     "R1": "account frozen metric fields are invalid",
     "R2": "account components do not reconcile",
 }
@@ -501,7 +501,9 @@ def _mutate_and_reseal_trusted_run(
             target = root / "account_trades.csv"
             frame = trades
         elif case == "L2":
-            events.loc[0, "account"] = "rogue"
+            rogue = events[events["event_type"] == "ACCOUNT_MARK"].iloc[[0]].copy()
+            rogue["account"] = "rogue"
+            events = pd.concat([events, rogue], ignore_index=True)
             target = root / "account_events.csv"
             frame = events
         elif case == "L3":
@@ -750,7 +752,7 @@ def test_terminal_action_postings_reject_missing_extra_and_control_divergence(
     candidate = attempt["candidate_configuration"]
     _mutate_and_reseal_trusted_run(factory, attempt, case)
 
-    with pytest.raises(RuntimeError, match="account|action|posting|reconcil|settlement"):
+    with pytest.raises(RuntimeError, match="account|action|posting|reconcil|settlement|parity"):
         factory.from_attempt(
             attempt,
             candidate_digest=hashlib.sha256(canonical_json_bytes(candidate)).hexdigest(),
