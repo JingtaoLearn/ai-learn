@@ -18,6 +18,8 @@ from quant_platform.datasets import publish_snapshot
 from quant_platform.strategy_runner import StrategyRunError, run_strategy_config
 from quant_platform.study_contracts import INFORMATION_INTERVAL
 from quant_platform.study_datasets import ExecutionDatasetSliceFactory
+from test_corporate_actions import bocom_evidence
+from test_strategy_replay import _bocom_accounting_case
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
@@ -25,6 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SOURCE_LABELS = {
     "src/quant_platform/catalog.py": "catalog.py",
     "src/quant_platform/composition_worker.py": "composition_worker.py",
+    "src/quant_platform/corporate_actions.py": "corporate_actions.py",
     "src/quant_platform/datasets.py": "datasets.py",
     "src/quant_platform/experiment_service.py": "experiment_service.py",
     "src/quant_platform/__init__.py": "__init__.py",
@@ -48,6 +51,8 @@ REQUIRED_ARTIFACTS = {
     "daily_replay.csv",
     "events.csv",
     "trades.csv",
+    "account_events.csv",
+    "account_trades.csv",
     "metrics.json",
     "cost_breakdown.json",
     "report.html",
@@ -172,6 +177,32 @@ def _foundation(tmp_path: Path) -> Path:
     return path
 
 
+def _action_foundation(tmp_path: Path):
+    frame, validated, schedule, implementations, parameters = _bocom_accounting_case()
+    state = tmp_path / "state"
+    snapshot = publish_snapshot(
+        frame,
+        state,
+        {
+            "instrument": "601328.SS",
+            "provider": "checksum-bound-fixture",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "mixed-raw-and-adjusted-signal",
+        },
+        corporate_action_evidence=bocom_evidence(),
+    )
+    config = validated.canonical
+    config["dataset"]["root"] = str(state)
+    config["dataset"]["snapshot_id"] = snapshot["snapshot_id"]
+    config["output_root"] = str(tmp_path / "runs")
+    path = tmp_path / "action-strategy.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    implementations["report"] = lambda *_args, **_kwargs: "<!doctype html><html></html>"
+    parameters["report"] = {}
+    return path, schedule, implementations, parameters
+
+
 def _derived_foundation(
     tmp_path: Path,
     *,
@@ -204,12 +235,7 @@ def _derived_foundation(
     parameters["evaluation_end"] = evaluation_end
     parameters["terminal_handling"] = "force_liquidate"
     config_path.write_text(json.dumps(config), encoding="utf-8")
-    parent_path = (
-        state
-        / "datasets"
-        / config["dataset"]["instrument"]
-        / parent_id
-    )
+    parent_path = state / "datasets" / config["dataset"]["instrument"] / parent_id
     return config_path, parent_path, derived
 
 
@@ -296,30 +322,57 @@ def test_run_publishes_complete_atomic_read_only_artifacts(tmp_path: Path):
     assert "src/quant_platform/study_contracts.py" in manifest["source_files"]
     assert set(manifest["files"]) == REQUIRED_ARTIFACTS - {"run_manifest.json"}
     assert stat.S_IMODE(target.stat().st_mode) == 0o555
-    assert all(
-        stat.S_IMODE(path.stat().st_mode) == 0o444 for path in target.iterdir()
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o444 for path in target.iterdir())
+
+
+def test_action_aware_run_binds_partial_claim_schedule_and_complete_account_ledgers(
+    tmp_path: Path,
+):
+    config_path, schedule, implementations, parameters = _action_foundation(tmp_path)
+
+    with pytest.raises(StrategyRunError, match="explicit transfer-settlement"):
+        run_strategy_config(config_path)
+
+    published = run_strategy_config(
+        config_path,
+        settlement_schedule=schedule,
+        implementations=implementations,
+        implementation_parameters=parameters,
     )
+    target = Path(published["path"])
+    manifest = json.loads((target / "run_manifest.json").read_text())
+    metrics = json.loads((target / "metrics.json").read_text())
+    account_events = pd.read_csv(target / "account_events.csv")
+
+    assert manifest["accounting"]["claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
+    assert manifest["identity"]["accounting"] == manifest["accounting"]
+    assert manifest["accounting"]["settlement_schedule"]["sha256"] == schedule.digest
+    assert manifest["accounting"]["tax_policy"]["tax_policy_id"] == (
+        "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223"
+    )
+    assert set(account_events["account"]) == {
+        "strategy",
+        "zero_cost",
+        "buy_and_hold",
+    }
+    assert metrics["final_equity_cny"] == 87377.93
+    assert metrics["buy_hold_final_equity_cny"] == 87632.78
+    assert "AFTER_TAX_TOTAL_RETURN_VERIFIED" not in json.dumps(manifest)
 
 
 def test_exact_rerun_verifies_and_returns_same_immutable_run(tmp_path: Path):
     config_path = _foundation(tmp_path)
     first = run_strategy_config(config_path)
-    before = {
-        path.name: path.read_bytes() for path in Path(first["path"]).iterdir()
-    }
+    before = {path.name: path.read_bytes() for path in Path(first["path"]).iterdir()}
 
     second = run_strategy_config(config_path)
 
     assert second["status"] == "NO_CHANGE"
     assert second["run_id"] == first["run_id"]
-    assert {
-        path.name: path.read_bytes() for path in Path(second["path"]).iterdir()
-    } == before
+    assert {path.name: path.read_bytes() for path in Path(second["path"]).iterdir()} == before
 
 
-def test_concurrent_identical_publications_reuse_one_verified_run(
-    tmp_path: Path, monkeypatch
-):
+def test_concurrent_identical_publications_reuse_one_verified_run(tmp_path: Path, monkeypatch):
     config_path = _foundation(tmp_path)
     monkeypatch.setattr(
         runner_module,
@@ -336,9 +389,7 @@ def test_concurrent_identical_publications_reuse_one_verified_run(
 
 
 @pytest.mark.parametrize("artifact", ["metrics.json", "events.csv", "run_manifest.json"])
-def test_existing_run_corruption_fails_closed_without_repair(
-    tmp_path: Path, artifact: str
-):
+def test_existing_run_corruption_fails_closed_without_repair(tmp_path: Path, artifact: str):
     config_path = _foundation(tmp_path)
     published = run_strategy_config(config_path)
     target = Path(published["path"])
@@ -422,9 +473,7 @@ def test_effective_source_identity_hashes_loaded_wheel_package_with_stable_label
     package_root = _synthetic_package(
         tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
     )
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
 
     _, files, _, git = runner_module._effective_source_identity(
         project_root=project_root,
@@ -454,9 +503,7 @@ def test_evaluation_policy_source_does_not_change_strategy_runner_identity(
     )
     evaluation_source = package_root / "study_evaluation.py"
     evaluation_source.write_text("POLICY_VERSION = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
     font = {
         "path": "/verified/font.ttc",
         "family": "Verified CJK",
@@ -484,15 +531,21 @@ def test_project_root_discovery_supports_editable_layout_and_explicit_override(
     unrelated_cwd = tmp_path / "elsewhere"
     unrelated_cwd.mkdir()
 
-    assert runner_module._discover_project_root(
-        explicit_root=explicit,
-        cwd=unrelated_cwd,
-        package_root=PROJECT_ROOT / "src" / "quant_platform",
-    ) == explicit
-    assert runner_module._discover_project_root(
-        cwd=PROJECT_ROOT / "tests",
-        package_root=PROJECT_ROOT / "src" / "quant_platform",
-    ) == PROJECT_ROOT
+    assert (
+        runner_module._discover_project_root(
+            explicit_root=explicit,
+            cwd=unrelated_cwd,
+            package_root=PROJECT_ROOT / "src" / "quant_platform",
+        )
+        == explicit
+    )
+    assert (
+        runner_module._discover_project_root(
+            cwd=PROJECT_ROOT / "tests",
+            package_root=PROJECT_ROOT / "src" / "quant_platform",
+        )
+        == PROJECT_ROOT
+    )
 
 
 def test_invalid_explicit_or_environment_project_root_fails_without_cwd_fallback(
@@ -585,9 +638,7 @@ def test_directory_traversal_prefers_o_path_without_using_it_for_source_files(
         opens.append((os.fspath(path), flags))
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
     monkeypatch.setattr(runner_module.os, "open", record_open)
 
     runner_module._effective_source_identity(
@@ -600,9 +651,7 @@ def test_directory_traversal_prefers_o_path_without_using_it_for_source_files(
     )
 
     directory_opens = [
-        (path, flags)
-        for path, flags in opens
-        if flags & getattr(os, "O_DIRECTORY", 0)
+        (path, flags) for path, flags in opens if flags & getattr(os, "O_DIRECTORY", 0)
     ]
     source_opens = [
         (path, flags)
@@ -632,9 +681,7 @@ def test_o_path_descriptor_traversal_and_source_hash_survive_read_denied_directo
             raise PermissionError("read-only directory open denied by PrivateTmp probe")
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
     monkeypatch.setattr(runner_module.os, "open", deny_read_only_directories)
 
     _, files, _, _ = runner_module._effective_source_identity(
@@ -646,12 +693,14 @@ def test_o_path_descriptor_traversal_and_source_hash_survive_read_denied_directo
         },
     )
 
-    assert files["src/quant_platform/catalog.py"] == sha256(
-        (package_root / "catalog.py").read_bytes()
-    ).hexdigest()
-    assert files["pyproject.toml"] == sha256(
-        (project_root / "pyproject.toml").read_bytes()
-    ).hexdigest()
+    assert (
+        files["src/quant_platform/catalog.py"]
+        == sha256((package_root / "catalog.py").read_bytes()).hexdigest()
+    )
+    assert (
+        files["pyproject.toml"]
+        == sha256((project_root / "pyproject.toml").read_bytes()).hexdigest()
+    )
 
 
 @pytest.mark.skipif(
@@ -730,18 +779,14 @@ def test_project_root_discovery_rejects_recognizable_incomplete_editable_root(
         )
 
 
-def test_wheel_layout_without_checkout_requires_validated_project_root(
-    tmp_path: Path, monkeypatch
-):
+def test_wheel_layout_without_checkout_requires_validated_project_root(tmp_path: Path, monkeypatch):
     package_root = _synthetic_package(
         tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "quant_platform"
     )
     cwd = tmp_path / "runtime"
     cwd.mkdir()
     monkeypatch.delenv("QUANT_PLATFORM_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
 
     with pytest.raises(
         StrategyRunError,
@@ -777,9 +822,7 @@ def test_effective_source_identity_detects_project_root_swap_while_hashing(
             project_root.symlink_to(replacement, target_is_directory=True)
         return original(path, label, **kwargs)
 
-    monkeypatch.setattr(
-        runner_module, "__file__", str(package_root / "strategy_runner.py")
-    )
+    monkeypatch.setattr(runner_module, "__file__", str(package_root / "strategy_runner.py"))
     monkeypatch.setattr(runner_module, "_read_source_payload", swap_root)
 
     with pytest.raises(StrategyRunError, match="changed|symlink|unsafe"):
@@ -830,9 +873,7 @@ def test_effective_source_hash_binds_runtime_versions(tmp_path: Path, monkeypatc
     first = run_strategy_config(config_path)
     baseline, _, runtime, _ = runner_module._effective_source_identity()
     changed_runtime = runtime | {"numpy": runtime["numpy"] + "-changed"}
-    monkeypatch.setattr(
-        runner_module, "_runtime_identity", lambda: changed_runtime
-    )
+    monkeypatch.setattr(runner_module, "_runtime_identity", lambda: changed_runtime)
 
     mutated, _, recorded_runtime, _ = runner_module._effective_source_identity()
     second = run_strategy_config(config_path)
@@ -943,10 +984,7 @@ def test_dataset_tamper_and_publication_failure_leave_no_run(tmp_path: Path, mon
     config_path = _foundation(tmp_path)
     config = json.loads(config_path.read_text())
     snapshot = (
-        Path(config["dataset"]["root"])
-        / "datasets"
-        / "SYNTH.SS"
-        / config["dataset"]["snapshot_id"]
+        Path(config["dataset"]["root"]) / "datasets" / "SYNTH.SS" / config["dataset"]["snapshot_id"]
     )
     (snapshot / "data.parquet").chmod(0o644)
     (snapshot / "data.parquet").write_bytes(b"tampered")
@@ -977,9 +1015,7 @@ def test_configured_instrument_must_match_snapshot_metadata(tmp_path: Path):
         run_strategy_config(config_path)
 
 
-def test_runner_uses_verified_frame_and_detects_post_verify_mutation(
-    tmp_path: Path, monkeypatch
-):
+def test_runner_uses_verified_frame_and_detects_post_verify_mutation(tmp_path: Path, monkeypatch):
     config_path = _foundation(tmp_path)
     original_bound_snapshot = runner_module._bound_snapshot
     original_replay = runner_module.replay_strategy
@@ -1023,9 +1059,7 @@ def test_persisted_json_is_strict_finite_and_canonical_config_is_bound(tmp_path:
 
 
 def test_csv_float_serialization_round_trips_binary64(tmp_path: Path):
-    frame = pd.DataFrame(
-        {"value": [0.12345678901234566, 6.200000000000001]}
-    )
+    frame = pd.DataFrame({"value": [0.12345678901234566, 6.200000000000001]})
     path = tmp_path / "precise.csv"
 
     runner_module._write_csv(path, frame)
@@ -1034,9 +1068,7 @@ def test_csv_float_serialization_round_trips_binary64(tmp_path: Path):
     assert restored["value"].tolist() == frame["value"].tolist()
 
 
-def test_immutable_run_rejects_hardlinked_artifact_and_cli_returns_json(
-    tmp_path: Path, capsys
-):
+def test_immutable_run_rejects_hardlinked_artifact_and_cli_returns_json(tmp_path: Path, capsys):
     config_path = _foundation(tmp_path)
     published = run_strategy_config(config_path)
     artifact = Path(published["path"]) / "metrics.json"
@@ -1054,9 +1086,7 @@ def test_immutable_run_rejects_hardlinked_artifact_and_cli_returns_json(
     assert "StrategyRunError" in failure["error"]
 
 
-def test_immutable_run_detects_artifact_swap_between_stat_and_open(
-    tmp_path: Path, monkeypatch
-):
+def test_immutable_run_detects_artifact_swap_between_stat_and_open(tmp_path: Path, monkeypatch):
     config_path = _foundation(tmp_path)
     published = run_strategy_config(config_path)
     target = Path(published["path"])

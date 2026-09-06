@@ -2,29 +2,27 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from quant_platform.corporate_actions import (
     CorporateActionEvidenceError,
+    SettlementSchedule,
+    accounting_cash_dividends,
     admit_corporate_action_evidence,
+    dividend_tax_burden,
     identity_digest,
     load_strict_json,
     project_corporate_action_evidence,
+    tax_policy_identity,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-IDENTITY_FIXTURE = (
-    PROJECT_ROOT / "docs" / "fixtures" / "corporate-actions" / "identity-v1.json"
-)
-PDF_FIXTURE = (
-    Path(__file__).parent
-    / "fixtures"
-    / "corporate_actions"
-    / "bocom_2025H1_dividend.pdf"
-)
+IDENTITY_FIXTURE = PROJECT_ROOT / "docs" / "fixtures" / "corporate-actions" / "identity-v1.json"
+PDF_FIXTURE = Path(__file__).parent / "fixtures" / "corporate_actions" / "bocom_2025H1_dividend.pdf"
 
 
 def _vectors() -> dict:
@@ -46,9 +44,7 @@ def bocom_evidence_inputs() -> dict:
             "collector_version": "accepted-audit-import@1",
             "source_contract_version": "bocom-xshg-dividend@1",
             "complete_enumeration_contract": False,
-            "requests": [
-                {"request_id": request["expected_sha256"], "payload": request["payload"]}
-            ],
+            "requests": [{"request_id": request["expected_sha256"], "payload": request["payload"]}],
             "retrievals": [
                 {
                     "retrieval_id": retrieval["expected_sha256"],
@@ -126,13 +122,12 @@ def test_all_accepted_identity_vectors_reproduce_exactly():
 
     assert len(raw) == fixture["raw_artifact_vector"]["body_bytes"]
     assert hashlib.sha256(raw).hexdigest() == fixture["raw_artifact_vector"]["body_sha256"]
-    assert identity_digest(fixture["domain_tags"]["artifact"], raw) == fixture[
-        "raw_artifact_vector"
-    ]["expected_artifact_id"]
+    assert (
+        identity_digest(fixture["domain_tags"]["artifact"], raw)
+        == fixture["raw_artifact_vector"]["expected_artifact_id"]
+    )
     for vector in fixture["vectors"]:
-        assert identity_digest(vector["domain_tag"], vector["payload"]) == vector[
-            "expected_sha256"
-        ]
+        assert identity_digest(vector["domain_tag"], vector["payload"]) == vector["expected_sha256"]
 
 
 def test_bocom_evidence_admission_preserves_exact_source_and_event_identities():
@@ -176,9 +171,7 @@ def test_request_retrieval_parser_and_normalization_mismatches_fail_closed():
     mutations = [
         (lambda document: document["requests"][0].__setitem__("request_id", "0" * 64), "request"),
         (
-            lambda document: document["retrievals"][0].__setitem__(
-                "retrieval_id", "0" * 64
-            ),
+            lambda document: document["retrievals"][0].__setitem__("retrieval_id", "0" * 64),
             "retrieval",
         ),
         (
@@ -188,9 +181,7 @@ def test_request_retrieval_parser_and_normalization_mismatches_fail_closed():
             "revision",
         ),
         (
-            lambda document: document["revisions"][0].__setitem__(
-                "normalization_digest", "0" * 64
-            ),
+            lambda document: document["revisions"][0].__setitem__("normalization_digest", "0" * 64),
             "normalization",
         ),
     ]
@@ -249,9 +240,7 @@ def test_rehashed_wrong_parser_and_source_contract_still_fail_closed():
 
 def test_rehashed_wrong_official_url_still_fails_closed():
     inputs = bocom_evidence_inputs()
-    wrong_url = (
-        "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=wrong"
-    )
+    wrong_url = "https://www.bankcomm.com/BankCommSite/file/fileDownload.html?fileId=wrong"
     inputs["document"]["artifacts"][0]["source_url"] = wrong_url
     retrieval = inputs["document"]["retrievals"][0]
     retrieval["payload"]["final_url"] = wrong_url
@@ -302,9 +291,10 @@ def test_causal_projection_excludes_post_cutoff_revision_and_changes_identity():
     assert before.document["revisions"] == []
     assert before.document["coverage"]["payload"]["coverage_state"] == "UNKNOWN_MISSING"
     assert before.document["total_return_claim"] == "FORBIDDEN"
-    assert "CAUSAL_CUTOFF_EXCLUDES_ACTION_EVIDENCE" in before.document["coverage"][
-        "payload"
-    ]["limitations"]
+    assert (
+        "CAUSAL_CUTOFF_EXCLUDES_ACTION_EVIDENCE"
+        in before.document["coverage"]["payload"]["limitations"]
+    )
     assert after_close.document["revisions"] == []
     assert after_close.document["projection"]["decision_cutoff"] == {
         "market": "XSHG",
@@ -319,9 +309,10 @@ def test_causal_projection_excludes_post_cutoff_revision_and_changes_identity():
             "reason": "AVAILABLE_AFTER_DECISION_CUTOFF",
         }
     ]
-    assert after.document["revisions"][0]["event_revision_id"] == evidence.document[
-        "revisions"
-    ][0]["event_revision_id"]
+    assert (
+        after.document["revisions"][0]["event_revision_id"]
+        == evidence.document["revisions"][0]["event_revision_id"]
+    )
     assert before.digest != after.digest
     assert after.document["revisions"][0]["use_role"] == "CAUSAL_FEATURE"
     assert after.document["total_return_claim"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
@@ -460,3 +451,67 @@ def test_strict_json_rejects_duplicate_keys_and_floats():
         load_strict_json(b'{"a":1,"a":2}')
     with pytest.raises(CorporateActionEvidenceError, match="floating-point"):
         load_strict_json(b'{"a":1.5}')
+
+
+def test_tax_policy_identity_and_natural_period_boundaries_are_exact():
+    policy = tax_policy_identity()
+
+    assert policy["tax_policy_id"] == (
+        "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223"
+    )
+    assert policy["payload"]["assumptions"]["currency_rounding"] == (
+        "ROUND_HALF_UP_RESEARCH_ASSUMPTION"
+    )
+    assert (
+        str(dividend_tax_burden(date.fromisoformat("2025-11-06"), date.fromisoformat("2025-12-06")))
+        == "0.20"
+    )
+    assert (
+        str(dividend_tax_burden(date.fromisoformat("2025-11-06"), date.fromisoformat("2025-12-07")))
+        == "0.10"
+    )
+    assert (
+        str(dividend_tax_burden(date.fromisoformat("2025-01-22"), date.fromisoformat("2026-01-22")))
+        == "0.10"
+    )
+    assert (
+        str(dividend_tax_burden(date.fromisoformat("2025-01-22"), date.fromisoformat("2026-01-23")))
+        == "0.00"
+    )
+
+
+def test_settlement_schedule_requires_explicit_transfer_and_collection_dates():
+    schedule = SettlementSchedule(
+        {"2026-01-05": "2026-01-06"},
+        {"2026-01-06": "2026-01-07"},
+    )
+
+    assert schedule.settlement_date(date.fromisoformat("2026-01-05")) == date.fromisoformat(
+        "2026-01-06"
+    )
+    assert schedule.collection_date(date.fromisoformat("2026-01-06")) == date.fromisoformat(
+        "2026-01-07"
+    )
+    with pytest.raises(CorporateActionEvidenceError, match="unknown"):
+        schedule.settlement_date(date.fromisoformat("2026-01-08"))
+    with pytest.raises(CorporateActionEvidenceError, match="after transfer settlement"):
+        SettlementSchedule(
+            {"2026-01-05": "2026-01-06"},
+            {"2026-01-06": "2026-01-06"},
+        )
+
+
+def test_accounting_projection_selects_only_explicit_terminal_correction():
+    inputs = bocom_evidence_inputs()
+    correction = _append_correction(
+        inputs,
+        notice_id="临2025-080",
+        corrects_notice_id="临2025-079",
+        amount="0.1663",
+        available_at="2026-08-31T15:07:00Z",
+    )
+
+    actions = accounting_cash_dividends(admit_corporate_action_evidence(**inputs))
+
+    assert [action.event_revision_id for action in actions] == [correction["event_revision_id"]]
+    assert str(actions[0].gross_cash_per_share) == "0.1663"

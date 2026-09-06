@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import calendar
 import hashlib
 import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -20,6 +22,7 @@ SERIES_DOMAIN = "quant-platform/corporate-action-series/v1"
 REVISION_DOMAIN = "quant-platform/corporate-action-revision/v1"
 COVERAGE_DOMAIN = "quant-platform/corporate-action-coverage/v1"
 EVIDENCE_DOMAIN = "quant-platform/corporate-action-evidence/v1"
+TAX_POLICY_DOMAIN = "quant-platform/tax-policy/v1"
 COVERAGE_STATES = {"VERIFIED_EVENTS", "VERIFIED_NO_ACTION", "UNKNOWN_MISSING"}
 USE_ROLES = {"CAUSAL_FEATURE", "ACCOUNTING_OUTCOME"}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -33,10 +36,150 @@ _BOCOM_REQUEST_URL = "https://www.bankcomm.com/BankCommSite/file/fileDownload.ht
 _BOCOM_ARTIFACT_URL = f"{_BOCOM_REQUEST_URL}?fileId=94697c067ebe4427a4165910712df44d"
 _XSHG_TIMEZONE = "Asia/Shanghai"
 _XSHG_SESSION_CLOSE = time(15, 0)
+FEN_PER_CNY = Decimal("100")
+ROUNDING_ASSUMPTION = "ROUND_HALF_UP_RESEARCH_ASSUMPTION"
+TAX_POLICY_PAYLOAD = {
+    "account_scope": "PER_SECURITIES_ACCOUNT_WITH_SEPARATE_CUSTODIAN_PARTITIONS",
+    "acquisition_scope": "SUPPORTED_PUBLIC_OR_TRANSFER_MARKET_A_SHARE",
+    "assumptions": {"currency_rounding": ROUNDING_ASSUMPTION},
+    "brackets": [
+        {
+            "actual_burden": "0.20",
+            "holding_period": "UP_TO_AND_INCLUDING_ONE_NATURAL_MONTH",
+        },
+        {
+            "actual_burden": "0.10",
+            "holding_period": "OVER_ONE_NATURAL_MONTH_THROUGH_ONE_NATURAL_YEAR",
+        },
+        {"actual_burden": "0.00", "holding_period": "OVER_ONE_NATURAL_YEAR"},
+    ],
+    "checked_at": "2026-08-31T15:28:12Z",
+    "collection": "AFTER_TRANSFER_SETTLEMENT_NEXT_TRADING_DAY_PROCESS",
+    "effective_record_date_start": "2015-09-09",
+    "fifo": "PER_SECURITIES_ACCOUNT_END_OF_DAY_NET_CHANGE",
+    "holding_period_endpoint": "DAY_BEFORE_TRANSFER_SETTLEMENT",
+    "policy_family": "CN-INDIVIDUAL-A-2015-101",
+    "policy_version": 1,
+    "schema_version": 1,
+    "source_artifact_ids": [
+        "8d66656959a6d24afe8eee860700d319b8d52eaa18dea4f72115d421cd4235a3",
+        "cfde8e517c8d5989eef3ffed8fb203e5e5aadfc793f61b6ec345c22f72a85363",
+        "4f2bc55a4899497d2a7e1bec59f9fd71b7437fc29e8a343be9d4f09bbc129e62",
+    ],
+    "taxpayer_scope": "ORDINARY_MAINLAND_INDIVIDUAL",
+    "unknowns": ["OFFICIAL_CURRENCY_ROUNDING", "TRADE_DATE_TO_SETTLEMENT_MAPPING"],
+}
+TAX_POLICY_ID = "ea2910dace5c605a6ddd39b8346f7f12003689641c7db4b56a56ca3c015d3223"
 
 
 class CorporateActionEvidenceError(ValueError):
     """Raised when corporate-action evidence cannot be admitted exactly."""
+
+
+def cny_to_fen(value: Decimal | str | int) -> int:
+    """Post an exact CNY value at the versioned research minor-unit assumption."""
+
+    try:
+        decimal = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise CorporateActionEvidenceError("money value is not an exact decimal") from exc
+    if not decimal.is_finite():
+        raise CorporateActionEvidenceError("money value must be finite")
+    return int((decimal * FEN_PER_CNY).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def fen_to_cny(value: int) -> float:
+    if type(value) is not int:
+        raise CorporateActionEvidenceError("fen value must be an integer")
+    return float(Decimal(value) / FEN_PER_CNY)
+
+
+def _calendar_anniversary(value: date, *, months: int = 0, years: int = 0) -> date:
+    year = value.year + years + (value.month - 1 + months) // 12
+    month = (value.month - 1 + months) % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def dividend_tax_burden(acquisition_date: date, transfer_settlement_date: date) -> Decimal:
+    """Return the frozen individual A-share burden at transfer settlement."""
+
+    if transfer_settlement_date <= acquisition_date:
+        raise CorporateActionEvidenceError("transfer settlement must follow acquisition")
+    if transfer_settlement_date <= _calendar_anniversary(acquisition_date, months=1):
+        return Decimal("0.20")
+    if transfer_settlement_date <= _calendar_anniversary(acquisition_date, years=1):
+        return Decimal("0.10")
+    return Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class CashDividend:
+    event_revision_id: str
+    record_date: date
+    ex_date: date
+    pay_date: date
+    gross_cash_per_share: Decimal
+
+
+@dataclass(frozen=True)
+class SettlementSchedule:
+    """Explicit research mapping for facts the admitted official policy leaves unknown."""
+
+    trade_to_settlement: Mapping[str, str]
+    settlement_to_collection: Mapping[str, str]
+    assumption: str = "EXPLICIT_TRANSFER_SETTLEMENT_AND_COLLECTION_DATES_V1"
+
+    def __post_init__(self) -> None:
+        trade_map = dict(self.trade_to_settlement)
+        collection_map = dict(self.settlement_to_collection)
+        if not trade_map:
+            raise CorporateActionEvidenceError("settlement schedule must contain trade mappings")
+        for trade, settlement in trade_map.items():
+            trade_date = _date(trade, "trade settlement mapping trade")
+            settlement_date = _date(settlement, "trade settlement mapping settlement")
+            if settlement_date < trade_date:
+                raise CorporateActionEvidenceError("transfer settlement precedes trade")
+        for settlement, collection in collection_map.items():
+            settlement_date = _date(settlement, "tax collection mapping settlement")
+            collection_date = _date(collection, "tax collection mapping collection")
+            if collection_date <= settlement_date:
+                raise CorporateActionEvidenceError(
+                    "tax collection must be after transfer settlement"
+                )
+        if not isinstance(self.assumption, str) or not self.assumption:
+            raise CorporateActionEvidenceError("settlement assumption must be explicit")
+        object.__setattr__(self, "trade_to_settlement", MappingProxyType(trade_map))
+        object.__setattr__(self, "settlement_to_collection", MappingProxyType(collection_map))
+
+    @property
+    def document(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "assumption": self.assumption,
+            "trade_to_settlement": dict(self.trade_to_settlement),
+            "settlement_to_collection": dict(self.settlement_to_collection),
+        }
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(canonical_json_bytes(self.document)).hexdigest()
+
+    def settlement_date(self, trade_date: date) -> date:
+        value = self.trade_to_settlement.get(trade_date.isoformat())
+        if value is None:
+            raise CorporateActionEvidenceError(
+                f"transfer settlement mapping is unknown for {trade_date.isoformat()}"
+            )
+        return _date(value, "transfer settlement")
+
+    def collection_date(self, settlement_date: date) -> date:
+        value = self.settlement_to_collection.get(settlement_date.isoformat())
+        if value is None:
+            raise CorporateActionEvidenceError(
+                f"next-trading-day collection mapping is unknown for {settlement_date.isoformat()}"
+            )
+        return _date(value, "tax collection")
 
 
 def _reject_float(value: str) -> None:
@@ -103,6 +246,14 @@ def identity_digest(domain_tag: str, payload: Any) -> str:
     return hashlib.sha256(domain_tag.encode("utf-8") + b"\0" + body).hexdigest()
 
 
+def tax_policy_identity() -> dict[str, Any]:
+    """Return the checksum-bound accepted tax policy or fail closed."""
+
+    if identity_digest(TAX_POLICY_DOMAIN, TAX_POLICY_PAYLOAD) != TAX_POLICY_ID:
+        raise CorporateActionEvidenceError("frozen tax policy identity mismatch")
+    return {"tax_policy_id": TAX_POLICY_ID, "payload": copy.deepcopy(TAX_POLICY_PAYLOAD)}
+
+
 def _require_fields(value: Any, fields: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
         raise CorporateActionEvidenceError(f"{label} fields are invalid")
@@ -147,13 +298,17 @@ def _causal_decision_cutoff(available_through: str) -> tuple[date, datetime, dic
         tzinfo=ZoneInfo(_XSHG_TIMEZONE),
     )
     cutoff_utc = local_cutoff.astimezone(timezone.utc)
-    return cutoff_date, cutoff_utc, {
-        "market": "XSHG",
-        "signal_time": "SESSION_CLOSE",
-        "timezone": _XSHG_TIMEZONE,
-        "local_time": "15:00:00",
-        "timestamp_utc": cutoff_utc.isoformat().replace("+00:00", "Z"),
-    }
+    return (
+        cutoff_date,
+        cutoff_utc,
+        {
+            "market": "XSHG",
+            "signal_time": "SESSION_CLOSE",
+            "timezone": _XSHG_TIMEZONE,
+            "local_time": "15:00:00",
+            "timestamp_utc": cutoff_utc.isoformat().replace("+00:00", "Z"),
+        },
+    )
 
 
 def _validate_bocom_url(value: Any, label: str) -> str:
@@ -161,10 +316,16 @@ def _validate_bocom_url(value: Any, label: str) -> str:
         raise CorporateActionEvidenceError(f"{label} source URL is invalid")
     parsed = urlsplit(value)
     if (
-        parsed.scheme.lower(),
-        (parsed.hostname or "").lower(),
-        parsed.path,
-    ) != _BOCOM_URL or parsed.username or parsed.password or parsed.fragment:
+        (
+            parsed.scheme.lower(),
+            (parsed.hostname or "").lower(),
+            parsed.path,
+        )
+        != _BOCOM_URL
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
         raise CorporateActionEvidenceError(f"{label} source URL is outside the BOCOM contract")
     if parsed.port not in (None, 443):
         raise CorporateActionEvidenceError(f"{label} source URL has an invalid port")
@@ -199,7 +360,9 @@ def _validate_request(item: Any) -> str:
     }:
         raise CorporateActionEvidenceError("request query is outside the accepted source contract")
     if payload["headers"] != {"accept": "application/pdf"}:
-        raise CorporateActionEvidenceError("request headers are outside the accepted source contract")
+        raise CorporateActionEvidenceError(
+            "request headers are outside the accepted source contract"
+        )
     request_id = _require_sha256(item["request_id"], "request ID")
     if identity_digest(REQUEST_DOMAIN, payload) != request_id:
         raise CorporateActionEvidenceError("request identity mismatch")
@@ -268,7 +431,9 @@ def _validate_retrieval(
     if payload["final_url"] != artifact["source_url"]:
         raise CorporateActionEvidenceError("retrieval source URL mismatch")
     if _validate_bocom_url(payload["final_url"], "retrieval") != _BOCOM_ARTIFACT_URL:
-        raise CorporateActionEvidenceError("retrieval source URL does not match the accepted source")
+        raise CorporateActionEvidenceError(
+            "retrieval source URL does not match the accepted source"
+        )
     retrieval_id = _require_sha256(item["retrieval_id"], "retrieval ID")
     if identity_digest(RETRIEVAL_DOMAIN, payload) != retrieval_id:
         raise CorporateActionEvidenceError("retrieval identity mismatch")
@@ -299,13 +464,18 @@ def _validate_revision(
         {"schema_version", "instrument", "market", "event_class", "root_notice_id"},
         "event series",
     )
-    if series != {
-        "schema_version": 1,
-        "instrument": "601328.SS",
-        "market": "XSHG",
-        "event_class": "CASH_DIVIDEND",
-        "root_notice_id": series["root_notice_id"],
-    } or not isinstance(series["root_notice_id"], str) or not series["root_notice_id"]:
+    if (
+        series
+        != {
+            "schema_version": 1,
+            "instrument": "601328.SS",
+            "market": "XSHG",
+            "event_class": "CASH_DIVIDEND",
+            "root_notice_id": series["root_notice_id"],
+        }
+        or not isinstance(series["root_notice_id"], str)
+        or not series["root_notice_id"]
+    ):
         raise CorporateActionEvidenceError("event series is outside BOCOM/XSHG v1 scope")
     payload = _require_fields(
         item["payload"],
@@ -420,9 +590,9 @@ def _correction_and_conflict_findings(
             target_revision = revisions_by_id[target]
             if target_revision["event_series"] != revision["event_series"]:
                 raise CorporateActionEvidenceError("correction link crosses an Event Series")
-            if _timestamp(
-                revision["available_at"], "correction availability"
-            ) < _timestamp(target_revision["available_at"], "corrected availability"):
+            if _timestamp(revision["available_at"], "correction availability") < _timestamp(
+                target_revision["available_at"], "corrected availability"
+            ):
                 raise CorporateActionEvidenceError(
                     "correction availability precedes corrected evidence"
                 )
@@ -478,8 +648,8 @@ def _correction_and_conflict_findings(
     for revision_ids in by_series.values():
         for index, left in enumerate(revision_ids):
             for right in revision_ids[index + 1 :]:
-                explicitly_related = (
-                    left in reachable_parents(right) or right in reachable_parents(left)
+                explicitly_related = left in reachable_parents(right) or right in reachable_parents(
+                    left
                 )
                 if not explicitly_related and terms_by_id[left] != terms_by_id[right]:
                     quarantined.update((left, right))
@@ -512,7 +682,9 @@ def admit_corporate_action_evidence(
     if value["schema_version"] != 1:
         raise CorporateActionEvidenceError("unsupported corporate-action evidence schema")
     if value["collector_version"] != "accepted-audit-import@1":
-        raise CorporateActionEvidenceError("collector_version is outside the accepted source contract")
+        raise CorporateActionEvidenceError(
+            "collector_version is outside the accepted source contract"
+        )
     if value["source_contract_version"] != "bocom-xshg-dividend@1":
         raise CorporateActionEvidenceError(
             "source_contract_version is outside the accepted source contract"
@@ -539,14 +711,11 @@ def admit_corporate_action_evidence(
     artifacts_by_id = {item.get("artifact_id"): item for item in value["artifacts"]}
     if len(artifacts_by_id) != len(value["artifacts"]):
         raise CorporateActionEvidenceError("duplicate artifact identity")
-    artifact_ids = [
-        _validate_artifact(item, artifact_bytes) for item in value["artifacts"]
-    ]
+    artifact_ids = [_validate_artifact(item, artifact_bytes) for item in value["artifacts"]]
     if set(artifact_bytes) != set(artifact_ids):
         raise CorporateActionEvidenceError("artifact byte set does not match descriptor")
     retrieval_ids = [
-        _validate_retrieval(item, set(request_ids), artifacts_by_id)
-        for item in value["retrievals"]
+        _validate_retrieval(item, set(request_ids), artifacts_by_id) for item in value["retrievals"]
     ]
     if len(retrieval_ids) != len(set(retrieval_ids)):
         raise CorporateActionEvidenceError("duplicate retrieval identity")
@@ -569,8 +738,7 @@ def admit_corporate_action_evidence(
         source_retrievals = [
             retrieval
             for retrieval in value["retrievals"]
-            if retrieval["payload"]["artifact_id"]
-            in revision["payload"]["source_artifact_ids"]
+            if retrieval["payload"]["artifact_id"] in revision["payload"]["source_artifact_ids"]
         ]
         if not source_retrievals or available_at < max(
             _timestamp(item["payload"]["completed_at"], "retrieval completion")
@@ -701,9 +869,7 @@ def admit_corporate_action_evidence(
             excluded_revisions
         ):
             raise CorporateActionEvidenceError("causal projection exclusions are duplicated")
-        if {item["event_revision_id"] for item in excluded_revisions}.intersection(
-            revision_ids
-        ):
+        if {item["event_revision_id"] for item in excluded_revisions}.intersection(revision_ids):
             raise CorporateActionEvidenceError(
                 "causal projection revision is both included and excluded"
             )
@@ -769,13 +935,9 @@ def project_corporate_action_evidence(
         for retrieval in document["retrievals"]
         if retrieval["payload"]["artifact_id"] in selected_artifact_ids
     ]
-    selected_request_ids = {
-        retrieval["payload"]["request_id"] for retrieval in selected_retrievals
-    }
+    selected_request_ids = {retrieval["payload"]["request_id"] for retrieval in selected_retrievals}
     document["requests"] = [
-        request
-        for request in document["requests"]
-        if request["request_id"] in selected_request_ids
+        request for request in document["requests"] if request["request_id"] in selected_request_ids
     ]
     document["retrievals"] = selected_retrievals
     document["artifacts"] = selected_artifacts
@@ -806,9 +968,7 @@ def project_corporate_action_evidence(
             if limitation not in limitations:
                 limitations.append(limitation)
         coverage_payload["limitations"] = limitations
-    document["coverage"]["coverage_id"] = identity_digest(
-        COVERAGE_DOMAIN, coverage_payload
-    )
+    document["coverage"]["coverage_id"] = identity_digest(COVERAGE_DOMAIN, coverage_payload)
     document["projection"] = {
         "parent_evidence_sha256": evidence.digest,
         "available_through": available_through,
@@ -816,7 +976,53 @@ def project_corporate_action_evidence(
         "excluded_revisions": excluded_revisions,
     }
     selected_bytes = {
-        artifact_id: evidence.artifact_bytes[artifact_id]
-        for artifact_id in selected_artifact_ids
+        artifact_id: evidence.artifact_bytes[artifact_id] for artifact_id in selected_artifact_ids
     }
     return admit_corporate_action_evidence(document, selected_bytes)
+
+
+def accounting_cash_dividends(evidence: CorporateActionEvidence) -> tuple[CashDividend, ...]:
+    """Project one accepted terminal revision per Event Series for account settlement."""
+
+    document = evidence.document
+    coverage = document["coverage"]["payload"]
+    if not evidence.publishable:
+        raise CorporateActionEvidenceError("quarantined action evidence cannot be accounted")
+    if (
+        coverage["coverage_state"] != "VERIFIED_EVENTS"
+        or document["total_return_claim"] != "KNOWN_EVENT_CORRECTED_PARTIAL"
+    ):
+        raise CorporateActionEvidenceError(
+            "accounting requires VERIFIED_EVENTS / KNOWN_EVENT_CORRECTED_PARTIAL"
+        )
+    revisions = document["revisions"]
+    notices_to_revision = {
+        notice: revision["event_revision_id"]
+        for revision in revisions
+        for notice in revision["payload"]["contributing_notice_ids"]
+    }
+    corrected_ids = {
+        notices_to_revision[notice]
+        for revision in revisions
+        for notice in revision["payload"]["correction_links"]
+    }
+    terminal = [
+        revision for revision in revisions if revision["event_revision_id"] not in corrected_ids
+    ]
+    by_series: dict[str, dict[str, Any]] = {}
+    for revision in terminal:
+        logical_id = revision["payload"]["logical_event_id"]
+        if logical_id in by_series:
+            raise CorporateActionEvidenceError("Event Series has multiple terminal revisions")
+        by_series[logical_id] = revision
+    actions = tuple(
+        CashDividend(
+            event_revision_id=revision["event_revision_id"],
+            record_date=_date(revision["payload"]["record_date"], "record"),
+            ex_date=_date(revision["payload"]["ex_date"], "ex"),
+            pay_date=_date(revision["payload"]["pay_date"], "pay"),
+            gross_cash_per_share=Decimal(revision["payload"]["gross_cash_per_share"]),
+        )
+        for revision in by_series.values()
+    )
+    return tuple(sorted(actions, key=lambda item: (item.record_date, item.event_revision_id)))

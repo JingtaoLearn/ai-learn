@@ -4,9 +4,11 @@ import pandas as pd
 import pytest
 
 import quant_platform.strategy_replay as replay_module
+from quant_platform.corporate_actions import SettlementSchedule
 from quant_platform.strategy_config import validate_strategy_config
 from quant_platform.strategy_operators import all_in_quantity, cms_cost_breakdown
 from quant_platform.strategy_replay import ReplayError, replay_strategy
+from test_corporate_actions import bocom_evidence
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
@@ -95,6 +97,72 @@ def _frame() -> pd.DataFrame:
     return frame
 
 
+def _bocom_accounting_case():
+    dates = [
+        "2025-08-13",
+        "2025-08-14",
+        "2025-08-15",
+        "2025-08-18",
+        "2025-11-06",
+        "2025-11-07",
+        "2025-12-24",
+        "2025-12-25",
+        "2026-01-22",
+        "2026-01-23",
+        "2026-01-26",
+        "2026-03-31",
+        "2026-04-01",
+        "2026-06-30",
+    ]
+    trade_prices = {
+        "2025-08-15": 7.610000133514404,
+        "2025-11-06": 7.340000152587891,
+        "2026-01-22": 6.739999771118164,
+        "2026-03-31": 6.989999771118164,
+        "2026-06-30": 6.539999961853027,
+    }
+    frame = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(dates),
+            "Open": [trade_prices.get(value, 7.0) for value in dates],
+            "High": [trade_prices.get(value, 7.0) + 0.1 for value in dates],
+            "Low": [trade_prices.get(value, 7.0) - 0.1 for value in dates],
+            "Close": [trade_prices.get(value, 7.0) for value in dates],
+            "Volume": [10000 + index for index in range(len(dates))],
+            "AdjustedClose": [100.0 + index for index in range(len(dates))],
+        }
+    )
+    canonical = _config(terminal_handling="force_liquidate").canonical
+    canonical["dataset"]["instrument"] = "601328.SS"
+    parameters = canonical["template"]["parameters"]
+    parameters["evaluation_start"] = "2025-08-15"
+    parameters["evaluation_end"] = "2026-06-30"
+    canonical["operators"]["cost"]["parameters"]["buy_slippage_bps"] = 5.0
+    canonical["operators"]["cost"]["parameters"]["sell_slippage_bps"] = 5.0
+    config = validate_strategy_config(canonical)
+    schedule = SettlementSchedule(
+        {
+            "2025-08-15": "2025-08-18",
+            "2025-11-06": "2025-11-07",
+            "2026-01-22": "2026-01-23",
+            "2026-03-31": "2026-04-01",
+            "2026-06-30": "2026-07-01",
+        },
+        {
+            "2026-01-23": "2026-01-26",
+            "2026-07-01": "2026-07-02",
+        },
+    )
+    action_by_position = {2: "BUY", 6: "SELL", 9: "BUY"}
+
+    def decision(inputs, _parameters):
+        position = len(inputs["statistics"]) - 1
+        action = action_by_position.get(position, "HOLD")
+        return [{"action": action, "reason": f"FIXED_{action}"}]
+
+    return frame, config, schedule, {"decision": decision}, {"decision": {}}
+
+
 def test_replay_is_prior_only_and_records_required_daily_fields():
     result = replay_strategy(_frame(), _config())
     daily = result.daily
@@ -178,12 +246,8 @@ def test_events_use_raw_open_and_costs_reconcile_exactly():
     assert events.iloc[0]["commission_cny"] >= 5.0
     assert events.iloc[0]["stamp_tax_cny"] == 0.0
     assert events.iloc[1]["stamp_tax_cny"] > 0.0
-    assert events["total_cost_cny"].sum() == pytest.approx(
-        daily["total_cost_cny"].sum()
-    )
-    assert result.cost_breakdown["total_cost_cny"] == pytest.approx(
-        events["total_cost_cny"].sum()
-    )
+    assert events["total_cost_cny"].sum() == pytest.approx(daily["total_cost_cny"].sum())
+    assert result.cost_breakdown["total_cost_cny"] == pytest.approx(events["total_cost_cny"].sum())
 
 
 def test_open_terminal_trade_has_entry_cost_only_and_is_not_a_closed_win():
@@ -221,25 +285,15 @@ def test_optional_terminal_liquidation_sells_all_at_final_raw_open():
         cost_parameters=costs,
         **sizing,
     )
-    entry_cost = cms_cost_breakdown(
-        side="BUY", raw_price=10.0, quantity=quantity, **costs
-    )["total_cost_cny"]
-    exit_cost = cms_cost_breakdown(
-        side="SELL", raw_price=10.5, quantity=quantity, **costs
-    )["total_cost_cny"]
-    expected_buy_hold = (
-        100000.0
-        - quantity * 10.0
-        - entry_cost
-        + quantity * 10.5
-        - exit_cost
-    )
-    assert result.metrics["buy_hold_final_equity_cny"] == pytest.approx(
-        expected_buy_hold
-    )
-    assert result.metrics["buy_hold_total_cost_cny"] == pytest.approx(
-        entry_cost + exit_cost
-    )
+    entry_cost = cms_cost_breakdown(side="BUY", raw_price=10.0, quantity=quantity, **costs)[
+        "total_cost_cny"
+    ]
+    exit_cost = cms_cost_breakdown(side="SELL", raw_price=10.5, quantity=quantity, **costs)[
+        "total_cost_cny"
+    ]
+    expected_buy_hold = 100000.0 - quantity * 10.0 - entry_cost + quantity * 10.5 - exit_cost
+    assert result.metrics["buy_hold_final_equity_cny"] == pytest.approx(expected_buy_hold)
+    assert result.metrics["buy_hold_total_cost_cny"] == pytest.approx(entry_cost + exit_cost)
     assert result.metrics["buy_hold_final_equity_cny"] != pytest.approx(
         marked.metrics["buy_hold_final_equity_cny"]
     )
@@ -262,12 +316,8 @@ def test_ledger_equity_cost_and_benchmark_reconciliation():
         result.cost_breakdown["total_cost_cny"]
     )
     assert metrics["final_equity_cny"] == pytest.approx(final["equity"])
-    assert metrics["zero_cost_final_equity_cny"] == pytest.approx(
-        final["zero_cost_equity"]
-    )
-    assert metrics["buy_hold_final_equity_cny"] == pytest.approx(
-        final["buy_hold_equity"]
-    )
+    assert metrics["zero_cost_final_equity_cny"] == pytest.approx(final["zero_cost_equity"])
+    assert metrics["buy_hold_final_equity_cny"] == pytest.approx(final["buy_hold_equity"])
     assert result.reconciliation == {
         "daily_equity": True,
         "event_cash": True,
@@ -299,9 +349,7 @@ def test_insufficient_cash_records_no_event_and_stays_flat():
     buy_day = result.daily.loc[result.daily["decision"] == "BUY"].iloc[0]
     assert buy_day["reason"] == "INSUFFICIENT_CASH"
     assert buy_day["position_after"] == 0
-    assert not (
-        result.events["Date"] == pd.Timestamp("2026-01-07")
-    ).any()
+    assert not (result.events["Date"] == pd.Timestamp("2026-01-07")).any()
 
 
 def test_missing_explicit_signal_column_and_empty_evaluation_fail_closed():
@@ -315,3 +363,122 @@ def test_missing_explicit_signal_column_and_empty_evaluation_fail_closed():
     canonical["template"]["parameters"]["evaluation_end"] = None
     with pytest.raises(ReplayError, match="evaluation interval"):
         replay_strategy(_frame(), validate_strategy_config(canonical))
+
+
+def test_bocom_known_event_settlement_matches_checksum_bound_integer_fen_oracle():
+    frame, config, schedule, implementations, parameters = _bocom_accounting_case()
+    price_only = replay_strategy(
+        frame,
+        config,
+        implementations=implementations,
+        implementation_parameters=parameters,
+    )
+
+    result = replay_strategy(
+        frame,
+        config,
+        implementations=implementations,
+        implementation_parameters=parameters,
+        corporate_action_evidence=bocom_evidence(),
+        settlement_schedule=schedule,
+    )
+
+    pd.testing.assert_series_equal(
+        result.daily["decision"], price_only.daily["decision"], check_names=False
+    )
+    assert result.metrics["accounting_status"] == "KNOWN_EVENT_CORRECTED_PARTIAL"
+    assert "AFTER_TAX_TOTAL_RETURN_VERIFIED" not in str(result.metrics)
+    assert result.metrics["final_equity_cny"] == 87377.93
+    assert result.metrics["buy_hold_final_equity_cny"] == 87632.78
+    assert result.metrics["gross_dividends_cny"] == 2125.68
+    assert result.metrics["dividend_tax_cny"] == 212.57
+    assert result.metrics["accounting_close_date"] == "2026-07-02"
+    assert all(result.reconciliation.values())
+
+    event_types = set(result.account_events["event_type"])
+    assert {
+        "ACQUISITION_SETTLEMENT",
+        "DISPOSAL_SETTLEMENT",
+        "DIVIDEND_ENTITLEMENT",
+        "DIVIDEND_PAYMENT",
+        "TAX_LIABILITY",
+        "TAX_COLLECTION",
+        "TRADE_COST",
+        "ACCOUNT_MARK",
+    }.issubset(event_types)
+    assert set(result.account_events["account"]) == {
+        "strategy",
+        "zero_cost",
+        "buy_and_hold",
+    }
+    strategy_entitlement = result.account_events.loc[
+        (result.account_events["account"] == "strategy")
+        & (result.account_events["event_type"] == "DIVIDEND_ENTITLEMENT")
+    ].iloc[0]
+    assert strategy_entitlement["Date"] == pd.Timestamp("2025-12-24")
+    assert strategy_entitlement["quantity"] == 13600
+    assert result.account_events.loc[
+        result.account_events["event_type"] == "TAX_LIABILITY", "Date"
+    ].min() == pd.Timestamp("2026-01-23")
+    assert result.account_events.loc[
+        result.account_events["event_type"] == "TAX_COLLECTION", "Date"
+    ].min() == pd.Timestamp("2026-01-26")
+
+
+def test_action_accounting_fails_closed_without_exact_settlement_mapping():
+    frame, config, _, implementations, parameters = _bocom_accounting_case()
+
+    with pytest.raises(ReplayError, match="requires both"):
+        replay_strategy(
+            frame,
+            config,
+            implementations=implementations,
+            implementation_parameters=parameters,
+            corporate_action_evidence=bocom_evidence(),
+        )
+
+    incomplete = SettlementSchedule(
+        {"2025-08-15": "2025-08-18"},
+        {},
+    )
+    with pytest.raises(ReplayError, match="unknown for 2025-11-06"):
+        replay_strategy(
+            frame,
+            config,
+            implementations=implementations,
+            implementation_parameters=parameters,
+            corporate_action_evidence=bocom_evidence(),
+            settlement_schedule=incomplete,
+        )
+
+
+def test_tax_collection_after_settlement_keeps_insufficient_amount_outstanding():
+    frame, config, schedule, _, parameters = _bocom_accounting_case()
+    action_by_position = {2: "BUY", 6: "SELL", 8: "BUY"}
+    trade_to_settlement = dict(schedule.trade_to_settlement)
+    trade_to_settlement["2026-01-26"] = "2026-01-26"
+    schedule = SettlementSchedule(
+        trade_to_settlement,
+        schedule.settlement_to_collection,
+    )
+
+    def reinvest_before_collection(inputs, _parameters):
+        action = action_by_position.get(len(inputs["statistics"]) - 1, "HOLD")
+        return [{"action": action, "reason": f"FIXED_{action}"}]
+
+    result = replay_strategy(
+        frame,
+        config,
+        implementations={"decision": reinvest_before_collection},
+        implementation_parameters=parameters,
+        corporate_action_evidence=bocom_evidence(),
+        settlement_schedule=schedule,
+    )
+
+    outstanding = result.account_events.loc[
+        (result.account_events["account"] == "strategy")
+        & (result.account_events["event_type"] == "TAX_COLLECTION_OUTSTANDING")
+    ]
+    assert len(outstanding) == 1
+    assert outstanding.iloc[0]["cash_delta_fen"] == 0
+    assert outstanding.iloc[0]["outstanding_tax_fen"] == 21257
