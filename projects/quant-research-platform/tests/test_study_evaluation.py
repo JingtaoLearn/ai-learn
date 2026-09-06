@@ -718,6 +718,8 @@ def test_o1_qualification_slice_has_no_prohibited_effect_surface(tmp_path: Path)
         "study-runs",
         "attempt-audit",
         "accounting-outcomes",
+        "snapshot-lineage",
+        ".locks",
     }
     assert not {
         "latest",
