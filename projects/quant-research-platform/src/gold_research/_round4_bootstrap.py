@@ -396,11 +396,17 @@ def _secure_environment_read(
 
 def _installed_inventory(
     site_roots: tuple[Path, ...],
-) -> tuple[dict[str, _InstalledDistribution], dict[str, tuple[dict[str, object], ...]], dict[str, object]]:
+) -> tuple[
+    dict[str, _InstalledDistribution],
+    dict[str, tuple[dict[str, object], ...]],
+    dict[str, object],
+    dict[str, tuple[int, int, int, int, int]],
+]:
     environment_roots = _environment_roots(site_roots)
     installed: dict[str, _InstalledDistribution] = {}
     claimant_rows: dict[str, list[dict[str, object]]] = {}
     metadata_root_members: list[str] = []
+    metadata_stats: dict[str, tuple[int, int, int, int, int]] = {}
     for site_root in site_roots:
         environment_root = _environment_root_for(site_root, environment_roots)
         _assert_no_symlink(site_root, "DEPENDENCY_IDENTITY_INVALID")
@@ -430,8 +436,19 @@ def _installed_inventory(
                 )
             metadata_member = metadata_dir.relative_to(environment_root).joinpath("METADATA").as_posix()
             record_member = metadata_dir.relative_to(environment_root).joinpath("RECORD").as_posix()
-            metadata_bytes, _ = _secure_environment_read(environment_root, metadata_member)
-            record_bytes, _ = _secure_environment_read(environment_root, record_member)
+            metadata_bytes, metadata_identity = _secure_environment_read(
+                environment_root, metadata_member
+            )
+            record_bytes, record_identity = _secure_environment_read(environment_root, record_member)
+            for member, identity in (
+                (metadata_member, metadata_identity),
+                (record_member, record_identity),
+            ):
+                if member in metadata_stats:
+                    raise BootstrapError(
+                        "DEPENDENCY_IDENTITY_INVALID", f"duplicate metadata member: {member}"
+                    )
+                metadata_stats[member] = identity
             distribution = importlib.metadata.PathDistribution(metadata_dir)
             raw_name = distribution.metadata.get("Name")
             raw_version = distribution.metadata.get("Version")
@@ -517,7 +534,7 @@ def _installed_inventory(
         "distributions_sha256": _hash_bytes(_canonical_json(inventory_rows)),
         "claimants_sha256": _hash_bytes(_canonical_json(claimant_payload)),
     }
-    return installed, canonical_claimants, seal
+    return installed, canonical_claimants, seal, metadata_stats
 
 
 def _record_digest(encoded_digest: str, member: str) -> str:
@@ -537,9 +554,14 @@ def _record_digest(encoded_digest: str, member: str) -> str:
 
 def _verify_record(
     installed: _InstalledDistribution,
-) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+) -> tuple[
+    dict[str, object],
+    dict[str, dict[str, object]],
+    dict[str, tuple[int, int, int, int, int]],
+]:
     members: list[dict[str, object]] = []
     allowed: dict[str, dict[str, object]] = {}
+    member_stats: dict[str, tuple[int, int, int, int, int]] = {}
     for claim in installed.claims:
         name = str(claim["record_member"])
         encoded_digest = str(claim["record_hash"])
@@ -556,7 +578,7 @@ def _verify_record(
         if not encoded_size.isdigit() or int(encoded_size) > 9_007_199_254_740_991:
             raise BootstrapError("DEPENDENCY_IDENTITY_INVALID", f"unsupported RECORD identity: {name}")
         environment_member = str(claim["environment_member"])
-        data, _ = _secure_environment_read(installed.environment_root, environment_member)
+        data, identity = _secure_environment_read(installed.environment_root, environment_member)
         observed = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
         if observed != digest or len(data) != int(encoded_size):
             raise BootstrapError("DEPENDENCY_IDENTITY_INVALID", f"RECORD mismatch: {name}")
@@ -581,6 +603,7 @@ def _verify_record(
                 "DEPENDENCY_IDENTITY_INVALID", f"duplicate resolved RECORD owner: {name}"
             )
         allowed[key] = record
+        member_stats[environment_member] = identity
     direct_url = installed.distribution.read_text("direct_url.json")
     if direct_url:
         try:
@@ -598,7 +621,7 @@ def _verify_record(
     return {
         "member_count": len(canonical_members),
         "record_payload_sha256": _hash_bytes(_canonical_json(canonical_members)),
-    }, allowed
+    }, allowed, member_stats
 
 
 def _metadata_requirements(metadata: Message) -> list[str]:
@@ -756,7 +779,7 @@ def _dependency_environment(
     site_roots: tuple[Path, ...],
 ) -> dict[str, object]:
     distributions = _distribution_map(site_roots)
-    installed, installed_claimants, inventory_seal = _installed_inventory(site_roots)
+    installed, installed_claimants, inventory_seal, metadata_stats = _installed_inventory(site_roots)
     root_contract, pending = _canonical_requirement_contract(
         *_root_fields(provenance, source_root, distributions)
     )
@@ -768,6 +791,7 @@ def _dependency_environment(
         environment = default_environment()
         closure: dict[str, dict[str, object]] = {}
         allowed_files: dict[str, dict[str, object]] = {}
+        payload_stats: dict[str, tuple[int, int, int, int, int]] = {}
         queue = list(pending)
         while queue:
             requirement = queue.pop(0)
@@ -799,7 +823,7 @@ def _dependency_environment(
                 child = Requirement(raw)
                 if child.marker is None or child.marker.evaluate({**environment, "extra": ""}):
                     requires.append(child)
-            record_identity, member_files = _verify_record(installed_distribution)
+            record_identity, member_files, member_stats = _verify_record(installed_distribution)
             for path, incoming in member_files.items():
                 existing = allowed_files.get(path)
                 if existing is None:
@@ -814,6 +838,14 @@ def _dependency_environment(
                         "DEPENDENCY_IDENTITY_INVALID", f"divergent RECORD ownership: {path}"
                     )
                 existing["owners"].extend(incoming["owners"])
+            for member, identity in member_stats.items():
+                existing_identity = payload_stats.get(member)
+                if existing_identity is not None and existing_identity != identity:
+                    raise BootstrapError(
+                        "DEPENDENCY_IDENTITY_INVALID",
+                        f"divergent RECORD stat identity: {member}",
+                    )
+                payload_stats[member] = identity
             closure[normalized] = {
                 "name": normalized,
                 "version": installed_distribution.version,
@@ -868,6 +900,10 @@ def _dependency_environment(
             ),
         },
         "allowed_files": allowed_files,
+        "dependency_filesystem_state": {
+            "metadata": metadata_stats,
+            "payloads": payload_stats,
+        },
     }
 
 

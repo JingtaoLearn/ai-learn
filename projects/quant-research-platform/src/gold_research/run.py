@@ -914,6 +914,13 @@ def seal_execution_identity(context: Mapping[str, object]) -> dict[str, object]:
             "DEPENDENCY_CHANGED_DURING_RUN",
             "dependency environment differs from the bootstrap capture",
         )
+    if fresh.get("dependency_filesystem_state") != context.get(
+        "dependency_filesystem_state"
+    ):
+        raise ProvenanceError(
+            "DEPENDENCY_CHANGED_DURING_RUN",
+            "dependency filesystem state differs from the bootstrap capture",
+        )
     if (
         fresh["runtime_identity"] != context["runtime_identity"]
         or fresh["process_identity"] != context["process_identity"]

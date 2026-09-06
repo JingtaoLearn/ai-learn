@@ -5,6 +5,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import io
+import json
 import os
 import shutil
 import socket
@@ -730,6 +731,65 @@ def test_exact_worker_rejects_executed_a_but_coherently_attested_b_with_zero_pub
     finally:
         payload_path.write_bytes(original_payload)
         record_path.write_bytes(original_record)
+
+
+@pytest.mark.parametrize("drift", ["payload-stat", "record-stat"])
+def test_exact_worker_rejects_post_seal_dependency_stat_drift_with_zero_publication(
+    tmp_path, drift
+):
+    distribution = importlib.metadata.distribution("packaging")
+    assert isinstance(distribution, importlib.metadata.PathDistribution)
+    packaging_spec = importlib.util.find_spec("packaging")
+    assert packaging_spec is not None and packaging_spec.origin is not None
+    payload_path = Path(packaging_spec.origin).resolve()
+    record_path = Path(str(distribution._path)) / "RECORD"
+    target = payload_path if drift == "payload-stat" else record_path
+    original = target.read_bytes()
+    original_mode = target.stat().st_mode
+    replacement = target.with_name(target.name + ".provenance-replacement")
+    seal = "    execution_identity = seal_execution_identity(_provenance_context)\n"
+    injection = (
+        seal
+        + "    import os as _provenance_os\n"
+        + f"    _provenance_replacement = Path({str(replacement)!r})\n"
+        + f"    _provenance_replacement.write_bytes(base64.b64decode({base64.b64encode(original)!r}))\n"
+        + f"    _provenance_os.replace(_provenance_replacement, Path({str(target)!r}))\n"
+    )
+    try:
+        _, provenance = _release_fixture(tmp_path, anchor=seal, injection=injection)
+        _assert_exact_worker_failure(tmp_path, provenance, "DEPENDENCY_CHANGED_DURING_RUN")
+    finally:
+        replacement.unlink(missing_ok=True)
+        target.write_bytes(original)
+        target.chmod(original_mode)
+
+
+def test_exact_worker_executes_authority_b_and_ignores_stale_a_bytecode(tmp_path):
+    release, _ = _release_fixture(tmp_path)
+    init_path = release / "src" / "gold_research" / "__init__.py"
+    init_path.write_bytes(init_path.read_bytes() + b"\nAUTHORITY_MARKER = 'B'\n")
+    cache = init_path.parent / "__pycache__"
+    cache.mkdir()
+    (cache / "__init__.cpython-312.pyc").write_bytes(b"stale authority A bytecode")
+    files, _, _ = _enumerate_release_files(release)
+    expected_source = _canonical_source_identity(files)
+    provenance = {
+        "mode": "release",
+        "source_root": str(release),
+        "expected_source_sha256": str(expected_source["sha256"]),
+    }
+    output_root = tmp_path / "published"
+
+    result = run_round4_research(
+        _exact_worker_data(),
+        output_root,
+        analysis_date="2025-08-08",
+        source_provenance=provenance,
+    )
+
+    manifest = json.loads((output_root / result["run_id"] / "run_manifest.json").read_text())
+    assert manifest["source_identity"] == expected_source
+    assert len(list(output_root.iterdir())) == 1
 
 
 @pytest.mark.parametrize(
