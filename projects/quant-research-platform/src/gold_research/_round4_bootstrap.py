@@ -919,6 +919,7 @@ class _ResourceTracker:
         self.allowed_files = dict(allowed_files)
         self.site_roots = site_roots
         self.private_root = private_root
+        self.control_roots: tuple[Path, ...] = ()
         self.opened: dict[str, dict[str, object]] = {}
         self.sealed_paths: frozenset[str] | None = None
         self.suspend_depth = 0
@@ -944,6 +945,11 @@ class _ResourceTracker:
             )
             and (path := Path(path_string)).suffix.lower() in _FONT_SUFFIXES
         )
+
+    def authorize_output_root(self, value: object) -> None:
+        if not isinstance(value, Path) or not value.is_absolute():
+            raise BootstrapError("EXECUTION_RESOURCE_UNBOUND", "worker output root is invalid")
+        self.control_roots = (value.resolve(strict=False),)
 
     @contextlib.contextmanager
     def suspended(self):
@@ -995,6 +1001,8 @@ class _ResourceTracker:
                 self.opened[key] = dict(record)
             return
         if path == self.private_root or self.private_root in path.parents:
+            return
+        if _inside(path, self.control_roots):
             return
         if path == self.process_maps:
             return
@@ -1325,6 +1333,7 @@ def main() -> int:
     sys.addaudithook(tracker)
     sys._gold_round4_provenance_context = capture
     request = pickle.loads(sys.stdin.buffer.read())
+    tracker.authorize_output_root(request.get("output_root"))
     _install_matplotlib_policy(capture, tracker)
     from gold_research.round4 import _run_round4_worker
 

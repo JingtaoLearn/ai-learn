@@ -535,7 +535,13 @@ def test_resource_tracker_rejects_external_and_post_seal_resources(tmp_path):
         },
     }
     tracker = bootstrap._ResourceTracker(allowed, (tmp_path,), private_root)
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    staged_output = output_root / "staged.json"
+    staged_output.write_text("private output")
+    tracker.authorize_output_root(output_root)
     tracker("open", (str(first), "rb", 0))
+    tracker("open", (str(staged_output), "rb", 0))
     with pytest.raises(bootstrap.BootstrapError, match="EXECUTION_RESOURCE_UNBOUND"):
         tracker("open", (str(external_generic), "rb", 0))
     tracker.seal()
