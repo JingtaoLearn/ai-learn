@@ -158,7 +158,10 @@ def test_initialize_is_idempotent_and_preserves_existing_rows(tmp_path) -> None:
     assert store.get_request(value.request_id) == before
     connection = store.connect()
     try:
-        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+        assert [
+            tuple(row)
+            for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        ] == [(1,)]
     finally:
         connection.close()
 
@@ -221,7 +224,10 @@ def test_initialize_accepts_sqlite_normalized_migration_authority(tmp_path) -> N
     store.initialize()
 
     with store.connect() as connection:
-        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+        assert [
+            tuple(row)
+            for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        ] == [(1,)]
 
 
 @pytest.mark.parametrize(

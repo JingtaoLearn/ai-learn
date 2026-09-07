@@ -164,7 +164,7 @@ class ProductionResultStore:
             raise ProductionResultError("result_id must be lowercase SHA-256")
         target = self.results_root / result_id
         if target.is_symlink() or not target.is_dir() or stat.S_IMODE(target.stat().st_mode) & 0o222:
-            raise ProductionResultError("immutable result directory is unavailable")
+            raise ProductionResultError("unsafe immutable result directory is unavailable")
         members = {path.name for path in target.iterdir()}
         if members != RESULT_FILES:
             raise ProductionResultError("immutable result member set is invalid")
