@@ -397,8 +397,12 @@ def test_revision6_rejects_all_35_directed_negative_classes(
                         / "artifacts"
                         / published["artifact_id"]
                     )
-                    artifact.parent.chmod(0o700)
-                    os.rename(artifact, case_root / "missing-artifact")
+                    artifact.chmod(0o700)
+                    os.rename(
+                        artifact / "report-manifest.json",
+                        case_root / "missing-report-manifest.json",
+                    )
+                    artifact.chmod(0o555)
                     def verify(case_root=case_root, attempt_id=attempt_id):
                         read_latest_report(case_root, attempt_id)
                 else:
@@ -644,9 +648,13 @@ def test_report_paths_reject_traversal_cross_attempt_and_stale_pointer(tmp_path:
     with pytest.raises(AttemptReportError):
         read_report_artifact(tmp_path, "b" * 64, artifact_id)
     artifact_root = tmp_path / "attempt-reports" / attempt_id / "artifacts" / artifact_id
-    artifact_root.parent.chmod(0o700)
-    os.rename(artifact_root, tmp_path / "stale-artifact")
-    with pytest.raises(AttemptReportError, match="missing"):
+    artifact_root.chmod(0o700)
+    os.rename(
+        artifact_root / "report-manifest.json",
+        tmp_path / "stale-report-manifest.json",
+    )
+    artifact_root.chmod(0o555)
+    with pytest.raises(AttemptReportError, match="unexpected topology"):
         read_latest_report(tmp_path, attempt_id)
 
 
