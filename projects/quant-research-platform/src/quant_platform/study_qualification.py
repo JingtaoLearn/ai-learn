@@ -3956,7 +3956,12 @@ def numerical_runtime() -> dict[str, Any]:
     )
 
     maps_path = Path("/proc/self/maps")
-    maps_before = maps_path.read_bytes()
+    for _ in range(16):
+        maps_before = maps_path.read_bytes()
+        if maps_before == maps_path.read_bytes():
+            break
+    else:
+        raise QualificationError("loaded native object map changed during capture")
     groups: dict[tuple[int, int, int, str], dict[str, Any]] = {}
     for raw_line in maps_before.splitlines():
         parts = raw_line.decode("utf-8", errors="strict").split(maxsplit=5)
@@ -4003,8 +4008,6 @@ def numerical_runtime() -> dict[str, Any]:
                 ),
             }
         )
-    if maps_before != maps_path.read_bytes():
-        raise QualificationError("loaded native object map changed during capture")
     loaded = {
         "schema_version": 1,
         "digest": "0" * 64,
@@ -4013,18 +4016,20 @@ def numerical_runtime() -> dict[str, Any]:
     }
     loaded["digest"] = projection_digest("loaded_native_objects", loaded)
 
-    cpuinfo = Path("/proc/cpuinfo").read_bytes()
-    auxv = Path("/proc/self/auxv").read_bytes()
+    cpuinfo_path = Path("/proc/cpuinfo")
+    auxv_path = Path("/proc/self/auxv")
+    for _ in range(16):
+        cpuinfo = cpuinfo_path.read_bytes()
+        auxv = auxv_path.read_bytes()
+        if cpuinfo == cpuinfo_path.read_bytes() and auxv == auxv_path.read_bytes():
+            break
+    else:
+        raise QualificationError("CPU feature inputs changed during capture")
     names: set[str] = set()
     for raw_line in cpuinfo.splitlines():
         key, separator, raw_value = raw_line.partition(b":")
         if separator and key.strip() in {b"flags", b"Features"}:
             names.update(raw_value.decode("utf-8", errors="strict").split())
-    if (
-        cpuinfo != Path("/proc/cpuinfo").read_bytes()
-        or auxv != Path("/proc/self/auxv").read_bytes()
-    ):
-        raise QualificationError("CPU feature inputs changed during capture")
     cpu = {
         "schema_version": 1,
         "digest": "0" * 64,
