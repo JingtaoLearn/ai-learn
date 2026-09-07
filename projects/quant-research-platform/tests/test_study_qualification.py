@@ -43,7 +43,10 @@ def _sha(value: str) -> str:
 
 def test_reviewed_schema_is_embedded_byte_for_byte_and_structurally_valid():
     assert hashlib.sha256(QUALIFICATION_SCHEMA_BYTES).hexdigest() == (
-        MATCHED_EXPOSURE_SCHEMA_SHA256
+        "e5e5ed780698bfd3443e75ecda8aeeddc3c7bead2020e6f11a86bd8783c04f25"
+    )
+    assert MATCHED_EXPOSURE_SCHEMA_SHA256 == (
+        "e5e5ed780698bfd3443e75ecda8aeeddc3c7bead2020e6f11a86bd8783c04f25"
     )
     assert json.loads(QUALIFICATION_SCHEMA_BYTES) == QUALIFICATION_SCHEMA
     assert QUALIFICATION_SCHEMA["x-strict-authority-validator"]["required_invariants"] == [
@@ -53,6 +56,41 @@ def test_reviewed_schema_is_embedded_byte_for_byte_and_structurally_valid():
     ]
     assert len(QUALIFICATION_SCHEMA["x-strict-authority-validator"]["required_invariants"]) == 12
     Draft202012Validator.check_schema(QUALIFICATION_SCHEMA)
+
+
+def test_reviewed_schema_type_authority_is_explicit_and_permissions_fail_closed():
+    authority = QUALIFICATION_SCHEMA["x-canonical-type-authority"]
+    assert authority["version"] == "QUALIFICATION_SCHEMA_TYPE_AUTHORITY@1"
+    assert authority["failure"] == "REFUSE_ISSUANCE"
+    assert authority["forbidden_type_inference"] == [
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "runtime Python value",
+        "implementation behavior",
+    ]
+
+    permissions = QUALIFICATION_SCHEMA["$defs"]["executable_segment"]["properties"][
+        "permissions"
+    ]
+    assert permissions == {"type": "string", "pattern": "^r-x[p-s]$"}
+    valid: dict[str, object] = {
+        "start_address_hex": "0000000000001000",
+        "end_address_hex": "0000000000002000",
+        "file_offset_hex": "0000000000000000",
+        "permissions": "r-xp",
+    }
+    validate_schema(valid, "#/$defs/executable_segment")
+    for value in (7, 1.5, True, {}, [], None):
+        candidate = dict(valid)
+        candidate["permissions"] = value
+        with pytest.raises(QualificationError, match="wrong type"):
+            validate_schema(candidate, "#/$defs/executable_segment")
 
 
 def test_qualification_canonical_json_normative_fixture():

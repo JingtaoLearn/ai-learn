@@ -1110,13 +1110,122 @@ QUALIFICATION_SCHEMA_BYTES = b"".join(
 )
 
 
+def _apply_reviewed_type_authority_revision(payload: bytes) -> bytes:
+    """Rebind the accepted schema bytes to the reviewed additive type authority."""
+
+    prior_sha256 = "d7cb6997bf590dd9cafc904213f46af3ad1c8388604a75dbd8bb9a39e31e0324"
+    if hashlib.sha256(payload).hexdigest() != prior_sha256:
+        raise RuntimeError("unexpected prior qualification schema identity")
+
+    patches = (
+        (
+            b'"reason_codes": {"minItems": 1, "contains": {"const": '
+            b'"INTAKE_IDENTITY_MISSING"}}',
+            b'"reason_codes": {"type": "array", "minItems": 1, "contains": '
+            b'{"const": "INTAKE_IDENTITY_MISSING"}}',
+            1,
+        ),
+        (
+            b'"reason_codes": {"maxItems": 0}',
+            b'"reason_codes": {"type": "array", "maxItems": 0}',
+            3,
+        ),
+        (
+            b'"reason_codes": {"minItems": 1, "contains": {"enum": '
+            b'["TRUSTED_CLAIM_EVIDENCE_MISSING", "TRUSTED_CLAIM_INELIGIBLE", '
+            b'"HISTORICALLY_EXPOSED", "ADMISSION_IDENTITY_INVALID"]}}',
+            b'"reason_codes": {"type": "array", "minItems": 1, "contains": {"enum": '
+            b'["TRUSTED_CLAIM_EVIDENCE_MISSING", "TRUSTED_CLAIM_INELIGIBLE", '
+            b'"HISTORICALLY_EXPOSED", "ADMISSION_IDENTITY_INVALID"]}}',
+            1,
+        ),
+        (
+            b'"scored_sessions": {"minItems": 2}',
+            b'"scored_sessions": {"type": "array", "minItems": 2}',
+            1,
+        ),
+        (
+            b'"reason_codes": {"minItems": 1}',
+            b'"reason_codes": {"type": "array", "minItems": 1}',
+            1,
+        ),
+        (
+            b'"permissions": {"pattern": "^r-x[p-s]$"}',
+            b'"permissions": {"type": "string", "pattern": "^r-x[p-s]$"}',
+            1,
+        ),
+        (
+            b'"opening_exposures": {"maxItems": 0}',
+            b'"opening_exposures": {"type": "array", "maxItems": 0}',
+            2,
+        ),
+        (
+            b'"opening_exposures": {"minItems": 1}',
+            b'"opening_exposures": {"type": "array", "minItems": 1}',
+            1,
+        ),
+        (
+            b'"qualification_ids": {"maxItems": 0}',
+            b'"qualification_ids": {"type": "array", "maxItems": 0}',
+            1,
+        ),
+        (
+            b'"missing_fields": {"minItems": 1}',
+            b'"missing_fields": {"type": "array", "minItems": 1}',
+            1,
+        ),
+        (
+            b'"invalid_or_mismatched_fields": {"minItems": 1}',
+            b'"invalid_or_mismatched_fields": {"type": "array", "minItems": 1}',
+            1,
+        ),
+        (
+            b'  "x-hashed-object-projections": {',
+            b'  "x-canonical-type-authority": {\n'
+            b'    "version": "QUALIFICATION_SCHEMA_TYPE_AUTHORITY@1",\n'
+            b'    "resolution_order": ["type", "$ref", "allOf/oneOf/anyOf branch", '
+            b'"const", "enum", "object shape", "array shape"],\n'
+            b'    "rule": "After local $ref and applicable allOf/oneOf/anyOf/if-then-else '
+            b'resolution, every canonicalized value must resolve to exactly one reviewed '
+            b'JSON type for that admitted instance. An explicit type is authoritative. A '
+            b'primitive const supplies exactly its JSON type; an enum supplies the unique '
+            b'JSON type matched by the admitted value; properties/required supply object; '
+            b'items/prefixItems supply array. integer and number are overlapping and may not '
+            b'both match. No other keyword or runtime value supplies type.",\n'
+            b'    "forbidden_type_inference": ["pattern", "format", "minimum", "maximum", '
+            b'"exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "runtime '
+            b'Python value", "implementation behavior"],\n'
+            b'    "audit_fixture": "CANONICAL-TYPE-REGISTRY-AUDIT-01",\n'
+            b'    "audit_script": "audit_canonical_types.py",\n'
+            b'    "audit_scope": "All twelve x-hashed-object-projections objects plus the '
+            b'complete QUALIFICATION-HASHED-PROJECTIONS-02 outer fixture",\n'
+            b'    "failure": "REFUSE_ISSUANCE"\n'
+            b'  },\n'
+            b'  "x-hashed-object-projections": {',
+            1,
+        ),
+    )
+    for before, after, expected_count in patches:
+        if payload.count(before) != expected_count:
+            raise RuntimeError("qualification schema type-authority rebind is not exact")
+        payload = payload.replace(before, after)
+
+    revised_sha256 = "e5e5ed780698bfd3443e75ecda8aeeddc3c7bead2020e6f11a86bd8783c04f25"
+    if hashlib.sha256(payload).hexdigest() != revised_sha256:
+        raise RuntimeError("reviewed qualification schema identity mismatch")
+    return payload
+
+
+QUALIFICATION_SCHEMA_BYTES = _apply_reviewed_type_authority_revision(QUALIFICATION_SCHEMA_BYTES)
+
+
 QUALIFICATION_AUTHORITY = "quant-platform/matched-exposure-qualification@1"
 POST_SELECTION_AUTHORITY = "quant-platform/post-selection-evaluation@1"
 QUALIFICATION_POLICY_ID = "robust_walk_forward"
 QUALIFICATION_POLICY_VERSION = "2.0.0"
 QUALIFICATION_CANONICAL_JSON_VERSION = "QUALIFICATION_CANONICAL_JSON@1"
 QUALIFICATION_BINARY64_VERSION = "QUALIFICATION_BINARY64@1"
-MATCHED_EXPOSURE_SCHEMA_SHA256 = "d7cb6997bf590dd9cafc904213f46af3ad1c8388604a75dbd8bb9a39e31e0324"
+MATCHED_EXPOSURE_SCHEMA_SHA256 = "e5e5ed780698bfd3443e75ecda8aeeddc3c7bead2020e6f11a86bd8783c04f25"
 
 QUALIFICATION_SCHEMA = json.loads(QUALIFICATION_SCHEMA_BYTES)
 
