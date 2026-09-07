@@ -124,6 +124,120 @@ def _reseal_attachment(value: dict) -> None:
     )
 
 
+def _install_cross_attempt_artifact(
+    state_root: Path,
+    path_attempt_id: str,
+) -> dict:
+    document = copy.deepcopy(
+        _fixture()["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    fields = _document_fields(document)
+    document_attempt_id = (
+        "b" * 64 if path_attempt_id != "b" * 64 else "c" * 64
+    )
+    for field_id in ("attempt_id", "experiment_id", "bundle_id", "core_result_digest"):
+        fields[field_id]["raw"] = document_attempt_id
+        fields[field_id]["display"] = document_attempt_id
+    attachment = _valid_total_return_attachment()
+    for binding in ("attempt_id", "experiment_id", "bundle_id", "result_digest"):
+        attachment[binding] = document_attempt_id
+    _reseal_attachment(attachment)
+    _embed_attachment(document, "total_return_attachment", attachment)
+    _reseal_document(document)
+    validate_report_document(document)
+    document_bytes = canonical_json_bytes(document) + b"\n"
+    report_html = render_report_document(document)
+    manifest = attempt_report_module._build_report_manifest(
+        path_attempt_id,
+        path_attempt_id,
+        fields["operator_content_digest"]["raw"],
+        document_bytes,
+        report_html,
+        document["document_id"],
+    )
+    artifact_root = (
+        state_root
+        / "attempt-reports"
+        / path_attempt_id
+        / "artifacts"
+        / manifest["report_artifact_id"]
+    )
+    artifact_root.mkdir(parents=True)
+    for name, payload in {
+        "report-document.json": document_bytes,
+        "report-manifest.json": canonical_json_bytes(manifest) + b"\n",
+        "report.html": report_html,
+    }.items():
+        path = artifact_root / name
+        path.write_bytes(payload)
+        path.chmod(0o444)
+    artifact_root.chmod(0o555)
+    pointer_core = {
+        "schema_id": attempt_report_module.LATEST_POINTER_SCHEMA_ID,
+        "schema_version": 1,
+        "attempt_id": path_attempt_id,
+        "report_artifact_id": manifest["report_artifact_id"],
+        "report_manifest_sha256": hashlib.sha256(
+            canonical_json_bytes(manifest) + b"\n"
+        ).hexdigest(),
+        "report_document_sha256": manifest["report_document_sha256"],
+        "operator_content_digest": manifest["operator_content_digest"],
+        "sequence": 1,
+        "previous_pointer_id": None,
+    }
+    pointer = pointer_core | {
+        "pointer_id": _identity(DOMAIN_POINTER, pointer_core)
+    }
+    latest = artifact_root.parents[1] / "latest.json"
+    latest.unlink(missing_ok=True)
+    latest.write_bytes(canonical_json_bytes(pointer) + b"\n")
+    latest.chmod(0o444)
+    return manifest
+
+
+def _complete_authority_document(total_key: str) -> tuple[dict, dict[str, dict]]:
+    fixture = _fixture()
+    registry = {
+        attachment["attachment_id"]: copy.deepcopy(attachment)
+        for attachment in fixture["attachments"].values()
+    }
+    document = copy.deepcopy(fixture["report_documents"][total_key])
+    matched = registry[
+        fixture["attachments"]["MATCHED_EXPOSURE_TERMINAL"]["attachment_id"]
+    ]
+    study = registry[
+        fixture["attachments"]["STUDY_TERMINAL_NO_QUALIFIED"]["attachment_id"]
+    ]
+    _embed_attachment(document, "matched_exposure_attachment", matched)
+    _embed_attachment(document, "study_terminal_attachment", study)
+    fields = _document_fields(document)
+    fields["matched_exposure_status"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=matched["terminal_record"]["state"],
+        display=matched["terminal_record"]["state"],
+    )
+    fields["ranking_status"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=matched["terminal_record"]["ranking_status"],
+        display=matched["terminal_record"]["ranking_status"],
+    )
+    _reseal_document(document)
+    validate_report_document(document, attachment_registry=registry)
+    return document, registry
+
+
+def _authority_snapshot(registry: dict[str, dict]) -> dict[str, tuple[bytes, str]]:
+    return {
+        attachment_id: (
+            payload := canonical_json_bytes(attachment),
+            hashlib.sha256(payload).hexdigest(),
+        )
+        for attachment_id, attachment in registry.items()
+    }
+
+
 def _forge_qualification_graph(value: dict, attachment_key: str, record_index: int) -> None:
     attachment = value["attachments"][attachment_key]
     study = value["attachments"]["STUDY_TERMINAL_NO_QUALIFIED"]
@@ -510,7 +624,6 @@ def test_second_stage_publishes_only_three_files_and_preserves_all_source_semant
             for path in Path(state_root).rglob("*")
             if path.is_file() and "attempt-reports" not in path.parts
         }
-        authority_before = canonical_json_bytes(_fixture()["attachments"])
         published = publish(
             state_root,
             run_dir,
@@ -534,7 +647,6 @@ def test_second_stage_publishes_only_three_files_and_preserves_all_source_semant
         assert source_after == source_before
         assert audit_file.read_bytes() == audit_before
         assert state_after == state_before
-        assert canonical_json_bytes(_fixture()["attachments"]) == authority_before
         observed["source"] = source_before
         return published
 
@@ -580,6 +692,67 @@ def test_second_stage_publishes_only_three_files_and_preserves_all_source_semant
         "cost_breakdown.json",
         "report.html",
     }.issubset(source)
+
+
+@pytest.mark.parametrize(
+    "total_key",
+    ["TOTAL_RETURN_FULL", "TOTAL_RETURN_READ_TIME"],
+)
+def test_authority_bytes_and_digests_are_invariant_across_publication_reload_and_invocation(
+    tmp_path: Path,
+    total_key: str,
+):
+    document, registry = _complete_authority_document(total_key)
+    before = _authority_snapshot(registry)
+    document_before = canonical_json_bytes(document)
+    service, _ = _service(tmp_path / "catalog")
+    detail = service.catalog.operator_detail(REPORT_OPERATOR_ID, "1.0.0")
+    bundle_path = service.catalog.state_root / detail["bundle_path"]
+    slot, invoke = load_published_operator(bundle_path)
+    assert slot == "report"
+    report_html = invoke(copy.deepcopy(document), {}).encode("utf-8")
+    assert canonical_json_bytes(document) == document_before
+    assert report_html == render_report_document(
+        document,
+        attachment_registry=registry,
+    )
+    fields = _document_fields(document)
+    state_root = tmp_path / "publication"
+    published = publish_report_artifact(
+        state_root,
+        {
+            "attempt_id": fields["attempt_id"]["raw"],
+            "bundle_id": fields["bundle_id"]["raw"],
+        },
+        document,
+        report_html,
+        attachment_registry=registry,
+    )
+    reloaded = read_report_artifact(
+        state_root,
+        fields["attempt_id"]["raw"],
+        published["artifact_id"],
+        attachment_registry=registry,
+    )
+    latest = read_latest_report(
+        state_root,
+        fields["attempt_id"]["raw"],
+        attachment_registry=registry,
+    )
+    reloaded_before = canonical_json_bytes(reloaded["document"])
+    assert invoke(reloaded["document"], {}).encode("utf-8") == reloaded["html"]
+    assert canonical_json_bytes(reloaded["document"]) == reloaded_before
+    assert latest["document"] == reloaded["document"]
+    assert _authority_snapshot(registry) == before
+    assert canonical_json_bytes(document) == document_before
+    reloaded_fields = _document_fields(reloaded["document"])
+    for field_id in (
+        "total_return_attachment",
+        "matched_exposure_attachment",
+        "study_terminal_attachment",
+    ):
+        attachment = reloaded_fields[field_id]["raw"]
+        assert canonical_json_bytes(attachment) == before[attachment["attachment_id"]][0]
 
 
 def test_latest_pointer_rejects_writable_symlink_and_hardlink(tmp_path: Path):
@@ -655,6 +828,21 @@ def test_report_paths_reject_traversal_cross_attempt_and_stale_pointer(tmp_path:
     )
     artifact_root.chmod(0o555)
     with pytest.raises(AttemptReportError, match="unexpected topology"):
+        read_latest_report(tmp_path, attempt_id)
+
+
+def test_report_artifact_and_latest_reject_resealed_cross_attempt_document(
+    tmp_path: Path,
+):
+    attempt_id = "a" * 64
+    manifest = _install_cross_attempt_artifact(tmp_path, attempt_id)
+    with pytest.raises(AttemptReportError, match="artifact bindings"):
+        read_report_artifact(
+            tmp_path,
+            attempt_id,
+            manifest["report_artifact_id"],
+        )
+    with pytest.raises(AttemptReportError, match="artifact bindings"):
         read_latest_report(tmp_path, attempt_id)
 
 

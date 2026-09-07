@@ -6,6 +6,7 @@ from pathlib import Path
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
+from test_attempt_report import _install_cross_attempt_artifact
 from test_experiment_service import _task
 from test_web_api import authenticate, bocom_action_view, make_app, snapshot
 
@@ -773,6 +774,31 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert 'class="record-table"' in history.text
     assert 'data-copy-value="' + created["experiment_id"] + '"' in history.text
     assert created["experiment_id"][:12] + "…" in history.text
+
+
+def test_exact_report_route_rejects_resealed_cross_attempt_document(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="cross-attempt-report"
+    )
+    attempt = app.state.experiments.claim_next_attempt()
+    assert attempt["experiment_id"] == created["experiment_id"]
+    manifest = _install_cross_attempt_artifact(
+        app.state.catalog.state_root,
+        attempt["attempt_id"],
+    )
+
+    response = client.get(
+        (
+            f"/reports/{attempt['attempt_id']}/artifacts/"
+            f"{manifest['report_artifact_id']}/content"
+        ),
+        headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
+    )
+
+    assert response.status_code == 404
+    assert response.text == "Report not found."
 
 
 def test_report_wrapper_fails_closed_when_no_canonical_artifact_exists(

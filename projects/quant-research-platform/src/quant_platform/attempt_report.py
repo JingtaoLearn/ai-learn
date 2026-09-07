@@ -1119,6 +1119,17 @@ def _validate_attachment_bindings(
             raise AttemptReportError(f"authority attachment {key} binding mismatch")
 
 
+def _resolved_attachment_registry(
+    registry: Mapping[str, Mapping[str, Any]] | None,
+    *attachments: Mapping[str, Any] | None,
+) -> dict[str, Mapping[str, Any]]:
+    resolved: dict[str, Mapping[str, Any]] = dict(registry or {})
+    for attachment in attachments:
+        if attachment is not None and isinstance(attachment.get("attachment_id"), str):
+            resolved[attachment["attachment_id"]] = attachment
+    return resolved
+
+
 def build_report_document(
     descriptor: Mapping[str, Any],
     payloads: Mapping[str, bytes],
@@ -1130,10 +1141,12 @@ def build_report_document(
     study_terminal_attachment: Mapping[str, Any] | None = None,
     attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    registry = dict(attachment_registry or {})
-    for item in (total_return_attachment, matched_exposure_attachment, study_terminal_attachment):
-        if item is not None and isinstance(item.get("attachment_id"), str):
-            registry[item["attachment_id"]] = item
+    registry = _resolved_attachment_registry(
+        attachment_registry,
+        total_return_attachment,
+        matched_exposure_attachment,
+        study_terminal_attachment,
+    )
     total = _bound_attachment(
         total_return_attachment,
         descriptor,
@@ -1488,10 +1501,18 @@ def _native_render(document: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
-def render_report_document(value: Mapping[str, Any], parameters: Mapping[str, Any] | None = None) -> bytes:
+def render_report_document(
+    value: Mapping[str, Any],
+    parameters: Mapping[str, Any] | None = None,
+    *,
+    attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
+) -> bytes:
     if dict(parameters or {}) != {}:
         raise AttemptReportError("canonical report parameters must be empty")
-    document = validate_report_document(value)
+    document = validate_report_document(
+        value,
+        attachment_registry=attachment_registry,
+    )
     before = canonical_json_bytes(document)
     first = _native_render(copy.deepcopy(document)).encode("utf-8")
     second = _native_render(copy.deepcopy(document)).encode("utf-8")
@@ -1700,13 +1721,19 @@ def read_report_artifact(
     state_root: Path | str,
     attempt_id: str,
     report_artifact_id: str,
+    *,
+    attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     _require_sha256(attempt_id, "attempt_id")
     _require_sha256(report_artifact_id, "report_artifact_id")
     root = Path(state_root) / "attempt-reports" / attempt_id / "artifacts" / report_artifact_id
     payloads = _read_sealed_directory(root, REPORT_ARTIFACT_FILES, maximum=MAX_REPORT_BYTES)
     manifest = validate_report_manifest(_strict_json(payloads["report-manifest.json"], "report manifest"))
-    document = validate_report_document(_strict_json(payloads["report-document.json"], "ReportDocument"))
+    document = validate_report_document(
+        _strict_json(payloads["report-document.json"], "ReportDocument"),
+        attachment_registry=attachment_registry,
+    )
+    document_fields = _field_map(document)
     expected = [
         {"path": "report-document.json", "size": len(payloads["report-document.json"]), "sha256": _sha256(payloads["report-document.json"])},
         {"path": "report.html", "size": len(payloads["report.html"]), "sha256": _sha256(payloads["report.html"])},
@@ -1715,7 +1742,11 @@ def read_report_artifact(
         payloads["report-manifest.json"] != _canonical_file(manifest)
         or manifest["attempt_id"] != attempt_id
         or manifest["report_artifact_id"] != report_artifact_id
+        or document_fields["attempt_id"]["raw"] != manifest["attempt_id"]
+        or document_fields["bundle_id"]["raw"] != manifest["bundle_id"]
         or manifest["document_id"] != document["document_id"]
+        or document_fields["operator_content_digest"]["raw"]
+        != manifest["operator_content_digest"]
         or manifest["files"] != expected
         or manifest["report_document_sha256"] != expected[0]["sha256"]
         or manifest["report_html_sha256"] != expected[1]["sha256"]
@@ -1764,14 +1795,24 @@ def validate_latest_pointer_transition(
         raise AttemptReportError("latest pointer publication transition is invalid")
 
 
-def read_latest_report(state_root: Path | str, attempt_id: str) -> dict[str, Any]:
+def read_latest_report(
+    state_root: Path | str,
+    attempt_id: str,
+    *,
+    attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     _require_sha256(attempt_id, "attempt_id")
     path = Path(state_root) / "attempt-reports" / attempt_id / "latest.json"
     payload = _read_regular(path)
     pointer = _validate_pointer_record(_strict_json(payload, "latest report pointer"))
     if payload != _canonical_file(pointer) or pointer["attempt_id"] != attempt_id:
         raise AttemptReportError("latest report pointer bytes or Attempt binding are invalid")
-    artifact = read_report_artifact(state_root, attempt_id, pointer["report_artifact_id"])
+    artifact = read_report_artifact(
+        state_root,
+        attempt_id,
+        pointer["report_artifact_id"],
+        attachment_registry=attachment_registry,
+    )
     manifest_bytes = _canonical_file(artifact["manifest"])
     manifest = artifact["manifest"]
     if (
@@ -1806,14 +1847,21 @@ def publish_report_artifact(
     report_html: bytes,
     *,
     fault: str | None = None,
+    attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    checked_document = validate_report_document(document)
+    checked_document = validate_report_document(
+        document,
+        attachment_registry=attachment_registry,
+    )
     attempt_id = checked_document["sections"][0]["fields"][0]["raw"]
     fields = _field_map(checked_document)
     if descriptor["attempt_id"] != attempt_id or fields["bundle_id"]["raw"] != descriptor["bundle_id"]:
         raise AttemptReportError("report publication identities do not join")
     document_bytes = _canonical_file(checked_document)
-    if report_html != render_report_document(checked_document):
+    if report_html != render_report_document(
+        checked_document,
+        attachment_registry=attachment_registry,
+    ):
         raise AttemptReportError("report HTML does not match the closed document")
     manifest = _build_report_manifest(
         attempt_id,
@@ -1842,14 +1890,23 @@ def publish_report_artifact(
         finally:
             if staging.exists():
                 _remove_staging(staging)
-    artifact = read_report_artifact(state_root, attempt_id, artifact_id)
+    artifact = read_report_artifact(
+        state_root,
+        attempt_id,
+        artifact_id,
+        attachment_registry=attachment_registry,
+    )
     if fault == "before_pointer":
         raise AttemptReportError("injected failure before latest-pointer replacement")
     with _attempt_lock(attempt_root):
         latest = attempt_root / "latest.json"
         prior = None
         if latest.exists():
-            prior = read_latest_report(state_root, attempt_id)["pointer"]
+            prior = read_latest_report(
+                state_root,
+                attempt_id,
+                attachment_registry=attachment_registry,
+            )["pointer"]
         core = {
             "schema_id": LATEST_POINTER_SCHEMA_ID,
             "schema_version": 1,
@@ -1881,7 +1938,11 @@ def publish_report_artifact(
         finally:
             if temporary.exists():
                 temporary.unlink()
-        current = read_latest_report(state_root, attempt_id)
+        current = read_latest_report(
+            state_root,
+            attempt_id,
+            attachment_registry=attachment_registry,
+        )
         if current["pointer"]["pointer_id"] != pointer["pointer_id"]:
             raise AttemptReportError("latest pointer read-back did not match publication")
     return {"artifact_id": artifact_id, "pointer_id": pointer["pointer_id"], "sequence": pointer["sequence"]}
@@ -1898,6 +1959,12 @@ def publish_attempt_report(
     study_terminal_attachment: Mapping[str, Any] | None = None,
     attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    registry = _resolved_attachment_registry(
+        attachment_registry,
+        total_return_attachment,
+        matched_exposure_attachment,
+        study_terminal_attachment,
+    )
     descriptor, payloads, audit = construct_bundle_descriptor(run_dir, audit_path)
     document = build_report_document(
         descriptor,
@@ -1907,8 +1974,18 @@ def publish_attempt_report(
         total_return_attachment=total_return_attachment,
         matched_exposure_attachment=matched_exposure_attachment,
         study_terminal_attachment=study_terminal_attachment,
-        attachment_registry=attachment_registry,
+        attachment_registry=registry,
     )
-    report_html = render_report_document(document, operator.get("effective_parameters", {}))
-    result = publish_report_artifact(state_root, descriptor, document, report_html)
+    report_html = render_report_document(
+        document,
+        operator.get("effective_parameters", {}),
+        attachment_registry=registry,
+    )
+    result = publish_report_artifact(
+        state_root,
+        descriptor,
+        document,
+        report_html,
+        attachment_registry=registry,
+    )
     return {**result, "bundle_id": descriptor["bundle_id"], "document_id": document["document_id"]}
