@@ -1408,6 +1408,18 @@ def test_submit_persists_the_frozen_projection_and_initial_event_for_detail(
             },
         }
     ]
+    classification = detail["historical_classification"]
+    assert classification["primary_state"] == "MISSING_AUTHORITY"
+    assert classification["dimensions"] == {
+        "integrity": "MISSING_AUTHORITY",
+        "accounting": "UNKNOWN",
+        "policy": "MISSING_POLICY",
+        "holdout_exposure": "UNKNOWN",
+        "matched_control": "MISSING",
+        "deployment_qualification": "UNKNOWN_NOT_DEPLOYMENT_QUALIFIED",
+    }
+    assert classification["source_identities"]["study_id_sha256"] != detail["study_id"]
+    assert "SYNTH.SS" not in str(classification)
 
 
 def test_legacy_experiments_make_preledger_holdout_freshness_unknown(tmp_path: Path):
@@ -2082,6 +2094,143 @@ def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
         first["study_id"],
     ]
     assert all(item["phase"] == "FROZEN" for item in listed)
+    assert all("historical_classification" in item for item in listed)
+
+
+def test_study_list_and_detail_classification_are_read_only_and_source_equivalent(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    submitted = studies.submit(
+        _spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="historical-study-read",
+    )
+    database = studies.catalog.database_path
+    with studies.catalog.connect() as connection:
+        before_rows = list(connection.iterdump())
+    before_stat = (database.stat().st_size, database.stat().st_mtime_ns)
+
+    detail = studies.detail(submitted["study_id"])
+    listed = studies.list()[0]
+
+    assert detail["historical_classification"] == listed["historical_classification"]
+    assert detail["historical_classification"]["schema_version"] == 2
+    assert not any(detail["historical_classification"]["effects"].values())
+    with studies.catalog.connect() as connection:
+        after_rows = list(connection.iterdump())
+    assert after_rows == before_rows
+    assert (database.stat().st_size, database.stat().st_mtime_ns) == before_stat
+
+
+@pytest.mark.parametrize("degradation", ["missing", "writable", "digest-invalid"])
+def test_metric_document_and_study_preserve_degraded_attempt_classification(
+    tmp_path: Path,
+    degradation: str,
+):
+    studies, experiments = _study_service(tmp_path)
+    instrument = "601328.SS"
+    studies.datasets.register(
+        DatasetCatalogItem(
+            dataset_id=instrument,
+            name="Synthetic A-share daily bars",
+            instrument=instrument,
+            provider="synthetic",
+            market="XSHG",
+            currency="CNY",
+            adjustment="mixed",
+            calendar="XSHG",
+            default_start=WARMUP_SESSION,
+        )
+    )
+    publish_snapshot(
+        _bars(),
+        studies.catalog.state_root,
+        {
+            "instrument": instrument,
+            "provider": "synthetic",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "mixed",
+        },
+    )
+    spec = _minimal_orchestration_spec()
+    spec["dataset"]["dataset_id"] = instrument
+    spec["template"]["parameters"]["instrument_display_name"] = (
+        "Synthetic A-share daily bars"
+    )
+    preview = studies.preview(spec)
+    submitted = studies.submit(
+        spec,
+        expected_preview_digest=preview["preview_digest"],
+        action_id=f"historical-parent-{degradation}",
+    )
+    coordinator = ParameterStudy(
+        studies.catalog,
+        datasets=studies.datasets,
+        experiments=experiments,
+        release_locator="/srv/quant/releases/historical-parent",
+        effect_executor=_real_attempt_executor(
+            studies,
+            experiments,
+            studies.catalog.state_root / "experiment-runs",
+        ),
+    )
+    for _ in range(20):
+        coordinator.advance(submitted["study_id"])
+        detail = coordinator.detail(submitted["study_id"])
+        binding = next(
+            (item for item in detail["bindings"] if item["metric_document"] is not None),
+            None,
+        )
+        if binding is not None:
+            break
+    else:
+        pytest.fail("Study did not persist a verified Metric Document")
+
+    attempt_id = binding["attempt_id"]
+    initial_attempt = experiments.attempt_detail(attempt_id)
+    assert initial_attempt["historical_classification"]["primary_state"] != (
+        "TAMPERED_OR_WRITABLE"
+    )
+    assert binding["historical_classification"]["primary_state"] != "TAMPERED_OR_WRITABLE"
+    result_path = Path(initial_attempt["result_path"])
+    if degradation == "missing":
+        result_path.rename(result_path.with_name(f"{result_path.name}-missing"))
+    elif degradation == "writable":
+        result_path.chmod(0o755)
+    else:
+        artifact = result_path / "metrics.json"
+        artifact.chmod(0o644)
+        artifact.write_bytes(artifact.read_bytes() + b"\n")
+        artifact.chmod(0o444)
+
+    database = studies.catalog.database_path
+    with studies.catalog.connect() as connection:
+        before_rows = list(connection.iterdump())
+    before_stat = (database.stat().st_size, database.stat().st_mtime_ns)
+
+    degraded_attempt = experiments.attempt_detail(attempt_id)
+    degraded_detail = coordinator.detail(submitted["study_id"])
+    degraded_binding = next(
+        item for item in degraded_detail["bindings"] if item["binding_id"] == binding["binding_id"]
+    )
+
+    for classification in (
+        degraded_attempt["historical_classification"],
+        degraded_binding["historical_classification"],
+        degraded_binding["metric_document"]["historical_classification"],
+        degraded_detail["historical_classification"],
+    ):
+        assert classification["primary_state"] == "TAMPERED_OR_WRITABLE"
+        assert "EVIDENCE_TAMPERED_OR_WRITABLE" in classification["reason_codes"]
+        assert not any(classification["effects"].values())
+
+    with studies.catalog.connect() as connection:
+        after_rows = list(connection.iterdump())
+    assert after_rows == before_rows
+    assert (database.stat().st_size, database.stat().st_mtime_ns) == before_stat
 
 
 def test_executor_cannot_fabricate_all_ineligible_conclusion(tmp_path: Path):

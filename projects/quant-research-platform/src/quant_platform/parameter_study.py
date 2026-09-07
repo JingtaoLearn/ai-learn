@@ -17,6 +17,13 @@ from . import study_suggesters
 from .catalog import Catalog, CatalogMigration
 from .dataset_service import DatasetResolutionError, DatasetService
 from .experiment_service import ExperimentService
+from .historical_evidence import (
+    PRIMARY_STATES,
+    build_output as build_historical_classification,
+    canonical_sha256,
+    identifier_sha256,
+    is_a_share_document,
+)
 from .schemas import (
     MAX_WEB_SAFE_INTEGER,
     SchemaValidationError,
@@ -34,12 +41,21 @@ from .study_evaluation import (
     MetricDocumentFactory,
     RobustWalkForwardPolicy,
 )
-from .study_qualification import no_qualified_candidate
+from .study_qualification import (
+    no_qualified_candidate,
+    qualification_id as development_qualification_id,
+    validate_schema as validate_development_qualification_schema,
+)
 from .study_suggesters import (
     Exhausted,
     GridParameterSuggester,
     SeededRandomParameterSuggester,
     Suggestion,
+)
+from .total_return_claims import (
+    TotalReturnQualificationError,
+    _validate_record as validate_total_return_record,
+    read_time_classification as legacy_total_return_classification,
 )
 
 
@@ -6623,6 +6639,9 @@ class ParameterStudy:
                 (study_id,),
             ).fetchall()
             lease = self._latest_lease(connection, study_id)
+            catalog_schema_version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
         finally:
             connection.rollback()
             connection.close()
@@ -6831,6 +6850,7 @@ class ParameterStudy:
             if item["evidence_type"] == "EVIDENCE_CONTESTED"
         }
         binding_views = []
+        attempt_classifications = {}
         for binding in bindings:
             attempt = self.experiments.attempt_detail(binding["attempt_id"])
             fold_window = _strict_json_object(
@@ -6883,6 +6903,9 @@ class ParameterStudy:
                 or (binding["state"] == "SUBMITTED" and stored_metric is not None)
             ):
                 raise RuntimeError("Study binding state disagrees with canonical evidence")
+            attempt_classifications[binding["binding_id"]] = attempt.get(
+                "historical_classification"
+            )
             binding_views.append(
                 {
                     "binding_id": binding["binding_id"],
@@ -6913,6 +6936,132 @@ class ParameterStudy:
                     "metric_document": stored_metric,
                 }
             )
+        binding_projection_sha256 = canonical_sha256(binding_views)
+        binding_classifications = []
+        for binding in binding_views:
+            if not is_a_share_document(binding["task"]):
+                continue
+            metric_document = binding["metric_document"]
+            metric_document_sha256 = (
+                metric_document.get("document_digest")
+                if isinstance(metric_document, dict)
+                else None
+            )
+            source_identities = {
+                "binding_id_sha256": identifier_sha256(binding["binding_id"]),
+                "study_id_sha256": identifier_sha256(study_id),
+                "experiment_id_sha256": identifier_sha256(binding["experiment_id"]),
+                "attempt_id_sha256": identifier_sha256(binding["attempt_id"]),
+                "metric_document_sha256": metric_document_sha256,
+                "catalog_schema_version": catalog_schema_version,
+            }
+            dimensions = {
+                "integrity": "MISSING_AUTHORITY",
+                "accounting": "UNKNOWN",
+                "policy": "MISSING_POLICY",
+                "holdout_exposure": "UNKNOWN",
+                "matched_control": "MISSING",
+            }
+            if metric_document is not None:
+                qualification = metric_document.get("total_return_qualification")
+                expected_digest = canonical_sha256(
+                    {
+                        key: value
+                        for key, value in metric_document.items()
+                        if key != "document_digest"
+                    }
+                )
+                if metric_document_sha256 != expected_digest:
+                    dimensions.update(
+                        integrity="CONTRADICTORY_AUTHORITY",
+                        accounting="AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                    )
+                elif not isinstance(qualification, dict):
+                    dimensions.update(integrity="MISSING_AUTHORITY", accounting="UNKNOWN")
+                else:
+                    claim_state = qualification.get("claim_state")
+                    ranking = qualification.get("ranking")
+                    exposure = (
+                        ranking.get("historical_exposure")
+                        if isinstance(ranking, dict)
+                        else None
+                    )
+                    if exposure in {"PRISTINE", "EXPOSED", "UNKNOWN"}:
+                        dimensions["holdout_exposure"] = exposure
+                    if claim_state in {
+                        "PRICE_RETURN_ONLY",
+                        "KNOWN_EVENT_CORRECTED_PARTIAL",
+                    } and qualification.get("trusted_qualification_absent") is True:
+                        try:
+                            expected_legacy = legacy_total_return_classification(
+                                source_issuer=qualification["source_issuer"],
+                                source_total_return_claim=qualification[
+                                    "source_total_return_claim"
+                                ],
+                                coverage_state=qualification["coverage_state"],
+                                attempted_after_tax=(
+                                    claim_state == "KNOWN_EVENT_CORRECTED_PARTIAL"
+                                ),
+                            )
+                        except (TotalReturnQualificationError, KeyError, TypeError):
+                            expected_legacy = None
+                        if qualification == expected_legacy:
+                            dimensions["integrity"] = "VERIFIED_IMMUTABLE"
+                            dimensions["accounting"] = claim_state
+                            dimensions["policy"] = (
+                                "NOT_APPLICABLE_PRICE_ONLY"
+                                if claim_state == "PRICE_RETURN_ONLY"
+                                else "LEGACY_POLICY"
+                            )
+                        else:
+                            dimensions.update(
+                                integrity="CONTRADICTORY_AUTHORITY",
+                                accounting="AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                                policy="CONTRADICTORY_POLICY",
+                            )
+                    else:
+                        try:
+                            validate_total_return_record(qualification, None)
+                        except (TotalReturnQualificationError, KeyError, TypeError, ValueError):
+                            dimensions.update(
+                                integrity="CONTRADICTORY_AUTHORITY",
+                                accounting="AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                                policy="CONTRADICTORY_POLICY",
+                            )
+                        else:
+                            dimensions["integrity"] = "VERIFIED_IMMUTABLE"
+                            dimensions["accounting"] = claim_state
+                            dimensions["policy"] = (
+                                "CURRENT_BOUND"
+                                if claim_state == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+                                else "MISSING_POLICY"
+                            )
+            classification = build_historical_classification(
+                entity_type="METRIC_DOCUMENT",
+                source_identities=source_identities,
+                **dimensions,
+            )
+            attempt_classification = attempt_classifications[binding["binding_id"]]
+            if (
+                isinstance(attempt_classification, dict)
+                and attempt_classification.get("primary_state") in PRIMARY_STATES
+                and PRIMARY_STATES.index(attempt_classification["primary_state"])
+                < PRIMARY_STATES.index(classification["primary_state"])
+            ):
+                source_dimensions = attempt_classification["dimensions"]
+                classification = build_historical_classification(
+                    entity_type="METRIC_DOCUMENT",
+                    source_identities=source_identities,
+                    integrity=source_dimensions["integrity"],
+                    accounting=source_dimensions["accounting"],
+                    policy=source_dimensions["policy"],
+                    holdout_exposure=classification["dimensions"]["holdout_exposure"],
+                    matched_control=classification["dimensions"]["matched_control"],
+                )
+            binding["historical_classification"] = classification
+            if metric_document is not None:
+                metric_document["historical_classification"] = classification
+            binding_classifications.append(classification)
         ranked_candidate_digests = {ranking["candidate_digest"] for ranking in rankings}
         final_fold_count = len(frozen_plan["validation"]["final_search_round"]["inner_folds"])
         final_bindings = {
@@ -7080,6 +7229,74 @@ class ParameterStudy:
             "outer_evidence": public_outer_evidence,
             "evidence": evidence_items,
         }
+        if is_a_share_document(frozen_plan):
+            source_identities = {
+                "study_id_sha256": identifier_sha256(study_id),
+                "frozen_plan_sha256": canonical_sha256(frozen_plan),
+                "event_projection_sha256": canonical_sha256(result["events"]),
+                "evidence_projection_sha256": canonical_sha256(result["evidence"]),
+                "binding_projection_sha256": binding_projection_sha256,
+                "holdout_projection_sha256": canonical_sha256(
+                    {
+                        "history_complete": bool(holdout_history["pre_ledger_history_complete"]),
+                        "claim": result["holdout_claim"],
+                        "ledger": result["holdout_ledger"],
+                    }
+                ),
+                "catalog_schema_version": catalog_schema_version,
+            }
+            if binding_classifications:
+                restrictive = min(
+                    binding_classifications,
+                    key=lambda item: PRIMARY_STATES.index(item["primary_state"]),
+                )
+                dimensions = {
+                    key: restrictive["dimensions"][key]
+                    for key in ("integrity", "accounting", "policy")
+                }
+            else:
+                dimensions = {
+                    "integrity": "MISSING_AUTHORITY",
+                    "accounting": "UNKNOWN",
+                    "policy": "MISSING_POLICY",
+                }
+            if canonical_sha256(frozen_plan) != study_id:
+                dimensions.update(
+                    integrity="CONTRADICTORY_AUTHORITY",
+                    accounting="AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                )
+            if prior_exposure is not None:
+                holdout_exposure = "EXPOSED"
+            elif holdout_history["pre_ledger_history_complete"]:
+                holdout_exposure = "PRISTINE"
+            else:
+                holdout_exposure = "UNKNOWN"
+            matched_control = "MISSING"
+            if qualification_records:
+                try:
+                    for record in qualification_records:
+                        validate_development_qualification_schema(record)
+                        if development_qualification_id(record) != record["qualification_id"]:
+                            raise ValueError("development qualification identity mismatch")
+                except (KeyError, TypeError, ValueError):
+                    matched_control = "CONTRADICTORY"
+                else:
+                    matched_control = (
+                        "SUFFICIENT"
+                        if any(
+                            record["state"] == "QUALIFIED"
+                            and record["ranking_eligible"] is True
+                            for record in qualification_records
+                        )
+                        else "INSUFFICIENT"
+                    )
+            result["historical_classification"] = build_historical_classification(
+                entity_type="STUDY",
+                source_identities=source_identities,
+                **dimensions,
+                holdout_exposure=holdout_exposure,
+                matched_control=matched_control,
+            )
         if len(canonical_json_bytes(result)) > MAX_STUDY_DETAIL_BYTES:
             raise RuntimeError("Parameter Study detail exceeds bounded size")
         return result
