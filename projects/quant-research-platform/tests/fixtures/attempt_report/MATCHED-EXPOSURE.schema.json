@@ -1,0 +1,1157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/JingtaoLearn/ai-learn/schemas/matched-exposure-development-qualification-v1.json",
+  "title": "Matched-Exposure Development Qualification v1",
+  "description": "Stage-specific structural schema and closed type-descriptor registry for PRE_RANKING DEVELOPMENT_QUALIFICATION records, authoritative control outputs, separately sealed family records, complete numerical-runtime/nested conformance objects, and exact arithmetic fixtures. Pre-evaluation and terminal intake/admission-failure records prohibit future evidence; evaluated records require the full bundle. Cross-record equality, chronology, recomputation, digest, bootstrap/Holm, numerical-runtime, authority, family-record, and transition invariants are enforced by the separately reviewed strict authority validator enumerated in x-strict-authority-validator; JSON Schema validation alone never grants qualification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_kind",
+    "phase",
+    "qualification_id",
+    "intake_id",
+    "issuer",
+    "implementation_source_sha256",
+    "numerical_runtime",
+    "study_id",
+    "study_plan_digest",
+    "selection_run_id",
+    "candidate_digest",
+    "state",
+    "historical_exposure",
+    "trusted_claim_admission",
+    "reason_codes",
+    "ranking_eligible",
+    "ranking_status",
+    "transition"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_kind": {"const": "DEVELOPMENT_QUALIFICATION"},
+    "phase": {"const": "PRE_RANKING"},
+    "qualification_id": {"$ref": "#/$defs/sha256"},
+    "intake_id": {"$ref": "#/$defs/sha256"},
+    "issuer": {"const": "quant-platform/matched-exposure-qualification@1"},
+    "implementation_source_sha256": {"$ref": "#/$defs/sha256"},
+    "numerical_runtime": {"$ref": "#/$defs/numerical_runtime"},
+    "study_id": {"$ref": "#/$defs/nullable_sha256"},
+    "study_plan_digest": {"$ref": "#/$defs/nullable_sha256"},
+    "selection_run_id": {"$ref": "#/$defs/nullable_sha256"},
+    "candidate_digest": {"$ref": "#/$defs/nullable_sha256"},
+    "scored_session_set_digest": {"$ref": "#/$defs/sha256"},
+    "state": {"enum": ["INTAKE_REJECTED", "UNADMITTED", "ADMITTED", "ADMISSION_REJECTED", "QUALIFICATION_EVALUATED", "QUALIFIED", "REJECTED"]},
+    "historical_exposure": {"enum": ["PRISTINE", "EXPOSED", "UNKNOWN"]},
+    "trusted_claim_admission": {"$ref": "#/$defs/trusted_claim_admission"},
+    "admission_rejection": {"$ref": "#/$defs/admission_rejection"},
+    "policy": {"$ref": "#/$defs/policy"},
+    "controls": {"$ref": "#/$defs/controls"},
+    "folds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/development_fold"}},
+    "scored_sessions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/scored_session"}},
+    "aggregate": {"$ref": "#/$defs/aggregate"},
+    "episodes": {"$ref": "#/$defs/episodes"},
+    "continuous_state": {"$ref": "#/$defs/continuous_state"},
+    "cost_stress": {"$ref": "#/$defs/cost_stress"},
+    "multiplicity": {"$ref": "#/$defs/multiplicity"},
+    "candidate_multiplicity": {"$ref": "#/$defs/multiplicity_entry"},
+    "timing_placebo": {"$ref": "#/$defs/timing_placebo"},
+    "gates": {"$ref": "#/$defs/gates"},
+    "reason_codes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/reason_code"}},
+    "ranking_eligible": {"type": "boolean"},
+    "ranking_status": {"enum": ["NOT_RANKED", "READY_FOR_RANKING"]},
+    "transition": {"$ref": "#/$defs/transition"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "INTAKE_REJECTED"}}, "required": ["state"]},
+      "then": {
+        "allOf": [{"$ref": "#/$defs/no_evaluation_bundle"}],
+        "required": ["admission_rejection"],
+        "anyOf": [
+          {"properties": {"study_id": {"type": "null"}}},
+          {"properties": {"candidate_digest": {"type": "null"}}}
+        ],
+        "properties": {
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_not_evaluated"},
+          "reason_codes": {"type": "array", "minItems": 1, "contains": {"const": "INTAKE_IDENTITY_MISSING"}},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_intake_rejected"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "UNADMITTED"}}, "required": ["state"]},
+      "then": {
+        "allOf": [{"$ref": "#/$defs/no_evaluation_bundle"}],
+        "not": {"required": ["admission_rejection"]},
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_not_evaluated"},
+          "reason_codes": {"type": "array", "maxItems": 0},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_unadmitted"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "ADMITTED"}}, "required": ["state"]},
+      "then": {
+        "allOf": [{"$ref": "#/$defs/no_evaluation_bundle"}],
+        "not": {"required": ["admission_rejection"]},
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "study_plan_digest": {"$ref": "#/$defs/sha256"},
+          "selection_run_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "historical_exposure": {"const": "PRISTINE"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_admitted"},
+          "reason_codes": {"type": "array", "maxItems": 0},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_admitted"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "ADMISSION_REJECTED"}}, "required": ["state"]},
+      "then": {
+        "allOf": [{"$ref": "#/$defs/no_evaluation_bundle"}],
+        "required": ["admission_rejection"],
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_rejected"},
+          "reason_codes": {"type": "array", "minItems": 1, "contains": {"enum": ["TRUSTED_CLAIM_EVIDENCE_MISSING", "TRUSTED_CLAIM_INELIGIBLE", "HISTORICALLY_EXPOSED", "ADMISSION_IDENTITY_INVALID"]}},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_admission_rejected"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "QUALIFICATION_EVALUATED"}}, "required": ["state"]},
+      "then": {
+        "required": ["scored_session_set_digest", "policy", "controls", "folds", "scored_sessions", "aggregate", "episodes", "continuous_state", "cost_stress", "multiplicity", "candidate_multiplicity", "timing_placebo", "gates"],
+        "not": {"required": ["admission_rejection"]},
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "study_plan_digest": {"$ref": "#/$defs/sha256"},
+          "selection_run_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "historical_exposure": {"const": "PRISTINE"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_admitted"},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_evaluated"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "QUALIFIED"}}, "required": ["state"]},
+      "then": {
+        "required": ["scored_session_set_digest", "policy", "controls", "folds", "scored_sessions", "aggregate", "episodes", "continuous_state", "cost_stress", "multiplicity", "candidate_multiplicity", "timing_placebo", "gates"],
+        "not": {"required": ["admission_rejection"]},
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "study_plan_digest": {"$ref": "#/$defs/sha256"},
+          "selection_run_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "scored_sessions": {"type": "array", "minItems": 2},
+          "historical_exposure": {"const": "PRISTINE"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_admitted"},
+          "gates": {"$ref": "#/$defs/all_pass_gates"},
+          "candidate_multiplicity": {"$ref": "#/$defs/established_entry"},
+          "reason_codes": {"type": "array", "maxItems": 0},
+          "ranking_eligible": {"const": true},
+          "ranking_status": {"const": "READY_FOR_RANKING"},
+          "transition": {"$ref": "#/$defs/transition_to_qualified"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "REJECTED"}}, "required": ["state"]},
+      "then": {
+        "required": ["scored_session_set_digest", "policy", "controls", "folds", "scored_sessions", "aggregate", "episodes", "continuous_state", "cost_stress", "multiplicity", "candidate_multiplicity", "timing_placebo", "gates"],
+        "not": {"required": ["admission_rejection"]},
+        "properties": {
+          "study_id": {"$ref": "#/$defs/sha256"},
+          "study_plan_digest": {"$ref": "#/$defs/sha256"},
+          "selection_run_id": {"$ref": "#/$defs/sha256"},
+          "candidate_digest": {"$ref": "#/$defs/sha256"},
+          "historical_exposure": {"const": "PRISTINE"},
+          "trusted_claim_admission": {"$ref": "#/$defs/trusted_admitted"},
+          "reason_codes": {"type": "array", "minItems": 1},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"},
+          "transition": {"$ref": "#/$defs/transition_to_rejected"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"historical_exposure": {"enum": ["EXPOSED", "UNKNOWN"]}}, "required": ["historical_exposure"]},
+      "then": {
+        "properties": {
+          "state": {"enum": ["INTAKE_REJECTED", "UNADMITTED", "ADMISSION_REJECTED"]},
+          "ranking_eligible": {"const": false},
+          "ranking_status": {"const": "NOT_RANKED"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullable_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "nonempty_sha256_array": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+    "finite_number": {"type": "number"},
+    "return_number": {"type": "number", "exclusiveMinimum": -1},
+    "positive_number": {"type": "number", "exclusiveMinimum": 0},
+    "nonnegative_number": {"type": "number", "minimum": 0},
+    "probability": {"type": "number", "minimum": 0, "maximum": 1},
+    "date": {"type": "string", "format": "date"},
+    "numerical_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_version", "manifest_sha256", "python_implementation", "python_version", "python_cache_tag", "python_executable_sha256", "math_implementation", "math_object_sha256", "loaded_native_objects", "cpu_features", "dynamic_loader_environment", "platform_triple", "machine", "byteorder", "float_radix", "float_mant_dig", "float_rounds", "fenv_rounding", "log1p_conformance", "canonical_json_conformance", "binary64_arithmetic_conformance"],
+      "properties": {
+        "manifest_version": {"const": 1},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "python_implementation": {"type": "string", "minLength": 1},
+        "python_version": {"type": "string", "minLength": 1},
+        "python_cache_tag": {"type": "string", "minLength": 1},
+        "python_executable_sha256": {"$ref": "#/$defs/sha256"},
+        "math_implementation": {"enum": ["BUILTIN", "EXTENSION"]},
+        "math_object_sha256": {"$ref": "#/$defs/sha256"},
+        "loaded_native_objects": {"$ref": "#/$defs/loaded_native_objects"},
+        "cpu_features": {"$ref": "#/$defs/cpu_features"},
+        "dynamic_loader_environment": {"$ref": "#/$defs/dynamic_loader_environment"},
+        "platform_triple": {"type": "string", "minLength": 1},
+        "machine": {"type": "string", "minLength": 1},
+        "byteorder": {"enum": ["little", "big"]},
+        "float_radix": {"const": 2},
+        "float_mant_dig": {"const": 53},
+        "float_rounds": {"const": 1},
+        "fenv_rounding": {"const": "FE_TONEAREST"},
+        "log1p_conformance": {"$ref": "#/$defs/log1p_conformance"},
+        "canonical_json_conformance": {"$ref": "#/$defs/canonical_json_conformance"},
+        "binary64_arithmetic_conformance": {"$ref": "#/$defs/binary64_arithmetic_conformance"}
+      }
+    },
+    "f64_bits": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "hex_u64": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "nullable_string": {"type": ["string", "null"]},
+    "executable_segment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start_address_hex", "end_address_hex", "file_offset_hex", "permissions"],
+      "properties": {
+        "start_address_hex": {"$ref": "#/$defs/hex_u64"},
+        "end_address_hex": {"$ref": "#/$defs/hex_u64"},
+        "file_offset_hex": {"$ref": "#/$defs/hex_u64"},
+        "permissions": {"type": "string", "pattern": "^r-x[p-s]$"}
+      }
+    },
+    "loaded_native_object": {
+      "type": "object", "additionalProperties": false,
+      "required": ["device_major", "device_minor", "inode", "resolved_path", "mapping_paths", "elf_build_id", "file_sha256", "executable_segments"],
+      "properties": {
+        "device_major": {"type": "integer", "minimum": 0},
+        "device_minor": {"type": "integer", "minimum": 0},
+        "inode": {"type": "integer", "minimum": 1},
+        "resolved_path": {"type": "string", "pattern": "^/"},
+        "mapping_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^/"}},
+        "elf_build_id": {"type": ["string", "null"], "pattern": "^[0-9a-f]+$"},
+        "file_sha256": {"$ref": "#/$defs/sha256"},
+        "executable_segments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/executable_segment"}}
+      }
+    },
+    "loaded_native_objects": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "proc_maps_path", "entries"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "proc_maps_path": {"const": "/proc/self/maps"},
+        "entries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/loaded_native_object"}}
+      }
+    },
+    "cpu_features": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "machine", "cpuinfo_path", "cpuinfo_size", "cpuinfo_sha256", "auxv_path", "auxv_size", "auxv_sha256", "feature_names"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "machine": {"type": "string", "minLength": 1},
+        "cpuinfo_path": {"const": "/proc/cpuinfo"},
+        "cpuinfo_size": {"type": "integer", "minimum": 1},
+        "cpuinfo_sha256": {"$ref": "#/$defs/sha256"},
+        "auxv_path": {"const": "/proc/self/auxv"},
+        "auxv_size": {"type": "integer", "minimum": 1},
+        "auxv_sha256": {"$ref": "#/$defs/sha256"},
+        "feature_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "dynamic_loader_environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "variables"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "variables": {
+          "type": "object", "additionalProperties": false,
+          "required": ["GLIBC_TUNABLES", "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_PRELOAD"],
+          "properties": {
+            "GLIBC_TUNABLES": {"$ref": "#/$defs/nullable_string"},
+            "LD_HWCAP_MASK": {"$ref": "#/$defs/nullable_string"},
+            "LD_LIBRARY_PATH": {"$ref": "#/$defs/nullable_string"},
+            "LD_PRELOAD": {"$ref": "#/$defs/nullable_string"}
+          }
+        }
+      }
+    },
+    "log1p_case": {
+      "type": "object", "additionalProperties": false,
+      "required": ["case_id", "input_bits", "expected_output_bits", "observed_output_bits", "passed"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "input_bits": {"$ref": "#/$defs/f64_bits"},
+        "expected_output_bits": {"$ref": "#/$defs/f64_bits"},
+        "observed_output_bits": {"$ref": "#/$defs/f64_bits"},
+        "passed": {"const": true}
+      }
+    },
+    "log1p_conformance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "fixture_id", "cases"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "fixture_id": {"const": "LOG1P-RUNTIME-CONFORMANCE-01"},
+        "cases": {
+          "type": "array", "minItems": 7, "maxItems": 7, "items": false,
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "p001"}, "input_bits": {"const": "3f847ae147ae147b"}, "expected_output_bits": {"const": "3f8460d6ccca3677"}, "observed_output_bits": {"const": "3f8460d6ccca3677"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "n001"}, "input_bits": {"const": "bf847ae147ae147b"}, "expected_output_bits": {"const": "bf8495453e6fd4b7"}, "observed_output_bits": {"const": "bf8495453e6fd4b7"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "p2m53"}, "input_bits": {"const": "3ca0000000000000"}, "expected_output_bits": {"const": "3ca0000000000000"}, "observed_output_bits": {"const": "3ca0000000000000"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "n2m53"}, "input_bits": {"const": "bca0000000000000"}, "expected_output_bits": {"const": "bca0000000000000"}, "observed_output_bits": {"const": "bca0000000000000"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "p2m27"}, "input_bits": {"const": "3e40000000000000"}, "expected_output_bits": {"const": "3e3ffffffe000000"}, "observed_output_bits": {"const": "3e3ffffffe000000"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "n2m27"}, "input_bits": {"const": "be40000000000000"}, "expected_output_bits": {"const": "be40000001000000"}, "observed_output_bits": {"const": "be40000001000000"}}}]},
+            {"allOf": [{"$ref": "#/$defs/log1p_case"}, {"properties": {"case_id": {"const": "p05"}, "input_bits": {"const": "3fdfffffffffffff"}, "expected_output_bits": {"const": "3fd9f323ecbf984b"}, "observed_output_bits": {"const": "3fd9f323ecbf984b"}}}]}
+          ]
+        }
+      }
+    },
+    "canonical_json_conformance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "fixture_id", "expected_byte_length", "observed_byte_length", "expected_output_sha256", "observed_output_sha256", "passed"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "fixture_id": {"const": "QUALIFICATION-CANONICAL-JSON-01"},
+        "expected_byte_length": {"const": 376},
+        "observed_byte_length": {"const": 376},
+        "expected_output_sha256": {"const": "b20b069d5aff1df1f4727aa7ab7b4bec725230a0e6f4afa3279ba5ceda554730"},
+        "observed_output_sha256": {"const": "b20b069d5aff1df1f4727aa7ab7b4bec725230a0e6f4afa3279ba5ceda554730"},
+        "passed": {"const": true}
+      }
+    },
+    "arithmetic_fixture_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixture_id", "input_sha256", "input_byte_length", "output_sha256", "output_byte_length", "passed"],
+      "properties": {
+        "fixture_id": {"enum": ["QUALIFICATION-BINARY64-ARITHMETIC-01", "QUALIFICATION-BINARY64-COMPONENT-STRESS-01"]},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "input_byte_length": {"type": "integer", "minimum": 1},
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "output_byte_length": {"type": "integer", "minimum": 1},
+        "passed": {"const": true}
+      }
+    },
+    "binary64_arithmetic_conformance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "digest", "fixtures"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "fixtures": {
+          "type": "array", "minItems": 2, "maxItems": 2, "items": false,
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/arithmetic_fixture_result"}, {"properties": {"fixture_id": {"const": "QUALIFICATION-BINARY64-ARITHMETIC-01"}, "input_sha256": {"const": "34fda3676016c9d7d056d1c9c6ab7c0c1ed47a08f83f6d103f8bc2dc880f1d84"}, "input_byte_length": {"const": 715}, "output_sha256": {"const": "b4fba1d01a321c5197d61b9adb4f35f3e5f3eda23fe40721e621377afc65c828"}, "output_byte_length": {"const": 337}}}]},
+            {"allOf": [{"$ref": "#/$defs/arithmetic_fixture_result"}, {"properties": {"fixture_id": {"const": "QUALIFICATION-BINARY64-COMPONENT-STRESS-01"}, "input_sha256": {"const": "7e73c296f0e38e9af244d097139515e769f1861b7c4ea68fa6df5dc18d7e8e88"}, "input_byte_length": {"const": 3514}, "output_sha256": {"const": "597747cf86b79b459058272dd3a3bd90ab9e0b53282ba7fe85d3d26de6affd5e"}, "output_byte_length": {"const": 7209}}}]}
+          ]
+        }
+      }
+    },
+    "binary64_basic_input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixture_id", "cash", "exposures", "buy_and_hold_daily_returns", "cash_daily_returns", "candidate_factors", "fold_session_count"],
+      "properties": {
+        "fixture_id": {"const": "QUALIFICATION-BINARY64-ARITHMETIC-01"},
+        "cash": {
+          "type": "object", "additionalProperties": false, "required": ["annual_yield", "day_gaps"],
+          "properties": {
+            "annual_yield": {"type": "number", "exclusiveMinimum": -1},
+            "day_gaps": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}}
+          }
+        },
+        "exposures": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/probability"}},
+        "buy_and_hold_daily_returns": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/return_number"}},
+        "cash_daily_returns": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/return_number"}},
+        "candidate_factors": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/positive_number"}},
+        "fold_session_count": {"const": 2}
+      }
+    },
+    "binary64_basic_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cash_aggregate", "exposure_mean", "matched_aggregate", "candidate_aggregate", "fold_return", "economic_edge", "matched_excess"],
+      "properties": {
+        "cash_aggregate": {"$ref": "#/$defs/return_number"}, "exposure_mean": {"$ref": "#/$defs/probability"},
+        "matched_aggregate": {"$ref": "#/$defs/return_number"}, "candidate_aggregate": {"$ref": "#/$defs/return_number"},
+        "fold_return": {"$ref": "#/$defs/return_number"}, "economic_edge": {"$ref": "#/$defs/finite_number"},
+        "matched_excess": {"$ref": "#/$defs/finite_number"}
+      }
+    },
+    "cost_component_number_map": {
+      "type": "object", "additionalProperties": false,
+      "required": ["commission", "transfer_fee", "stamp_tax", "slippage", "settlement_cost"],
+      "properties": {
+        "commission": {"$ref": "#/$defs/nonnegative_number"},
+        "transfer_fee": {"$ref": "#/$defs/nonnegative_number"},
+        "stamp_tax": {"$ref": "#/$defs/nonnegative_number"},
+        "slippage": {"$ref": "#/$defs/nonnegative_number"},
+        "settlement_cost": {"$ref": "#/$defs/nonnegative_number"}
+      }
+    },
+    "cost_component_boolean_map": {
+      "type": "object", "additionalProperties": false,
+      "required": ["commission", "transfer_fee", "stamp_tax", "slippage", "settlement_cost"],
+      "properties": {
+        "commission": {"type": "boolean"}, "transfer_fee": {"type": "boolean"},
+        "stamp_tax": {"type": "boolean"}, "slippage": {"type": "boolean"},
+        "settlement_cost": {"type": "boolean"}
+      }
+    },
+    "cost_component_bits_map": {
+      "type": "object", "additionalProperties": false,
+      "required": ["commission", "transfer_fee", "stamp_tax", "slippage", "settlement_cost"],
+      "properties": {
+        "commission": {"$ref": "#/$defs/f64_bits"}, "transfer_fee": {"$ref": "#/$defs/f64_bits"},
+        "stamp_tax": {"$ref": "#/$defs/f64_bits"}, "slippage": {"$ref": "#/$defs/f64_bits"},
+        "settlement_cost": {"$ref": "#/$defs/f64_bits"}
+      }
+    },
+    "component_stress_event_input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_id", "trade_date", "settlement_date", "side", "quantity", "raw_price", "mark_price", "base_components", "applicability"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "trade_date": {"$ref": "#/$defs/date"}, "settlement_date": {"$ref": "#/$defs/date"},
+        "side": {"enum": ["BUY", "SELL"]}, "quantity": {"type": "integer", "minimum": 1},
+        "raw_price": {"$ref": "#/$defs/positive_number"}, "mark_price": {"$ref": "#/$defs/positive_number"},
+        "base_components": {"$ref": "#/$defs/cost_component_number_map"},
+        "applicability": {"$ref": "#/$defs/cost_component_boolean_map"}
+      }
+    },
+    "component_stress_account_input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["account_id", "events"],
+      "properties": {
+        "account_id": {"enum": ["candidate", "buy_and_hold"]},
+        "events": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/component_stress_event_input"}}
+      }
+    },
+    "component_stress_input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixture_id", "component_order", "multipliers", "initial_capital", "cash_daily_returns", "accounts"],
+      "properties": {
+        "fixture_id": {"const": "QUALIFICATION-BINARY64-COMPONENT-STRESS-01"},
+        "component_order": {"type": "array", "minItems": 5, "maxItems": 5, "prefixItems": [{"const": "commission"}, {"const": "transfer_fee"}, {"const": "stamp_tax"}, {"const": "slippage"}, {"const": "settlement_cost"}], "items": false},
+        "multipliers": {"$ref": "#/$defs/cost_component_number_map"},
+        "initial_capital": {"$ref": "#/$defs/positive_number"},
+        "cash_daily_returns": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/return_number"}},
+        "accounts": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/component_stress_account_input"}}
+      }
+    },
+    "compound_bits_step": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factor_bits", "accumulator_bits"],
+      "properties": {"factor_bits": {"$ref": "#/$defs/f64_bits"}, "accumulator_bits": {"$ref": "#/$defs/f64_bits"}}
+    },
+    "component_stress_event_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_id", "opening_market_value_bits", "opening_equity_bits", "opening_exposure_bits", "notional_bits", "component_product_bits", "stressed_total_cost_bits", "cash_before_bits", "cash_after_notional_bits", "cash_after_cost_bits", "holdings_before", "holdings_after", "market_value_bits", "equity_bits", "previous_equity_bits", "equity_ratio_bits", "daily_return_bits"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "opening_market_value_bits": {"$ref": "#/$defs/f64_bits"}, "opening_equity_bits": {"$ref": "#/$defs/f64_bits"},
+        "opening_exposure_bits": {"$ref": "#/$defs/f64_bits"}, "notional_bits": {"$ref": "#/$defs/f64_bits"},
+        "component_product_bits": {"$ref": "#/$defs/cost_component_bits_map"},
+        "stressed_total_cost_bits": {"$ref": "#/$defs/f64_bits"}, "cash_before_bits": {"$ref": "#/$defs/f64_bits"},
+        "cash_after_notional_bits": {"$ref": "#/$defs/f64_bits"}, "cash_after_cost_bits": {"$ref": "#/$defs/f64_bits"},
+        "holdings_before": {"type": "integer", "minimum": 0}, "holdings_after": {"type": "integer", "minimum": 0},
+        "market_value_bits": {"$ref": "#/$defs/f64_bits"}, "equity_bits": {"$ref": "#/$defs/f64_bits"},
+        "previous_equity_bits": {"$ref": "#/$defs/f64_bits"}, "equity_ratio_bits": {"$ref": "#/$defs/f64_bits"},
+        "daily_return_bits": {"$ref": "#/$defs/f64_bits"}
+      }
+    },
+    "component_stress_account_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["account_id", "events", "daily_return_bits", "opening_exposure_bits", "compound_steps", "aggregate_return_bits", "final_cash_bits", "final_holdings"],
+      "properties": {
+        "account_id": {"enum": ["candidate", "buy_and_hold"]},
+        "events": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/component_stress_event_output"}},
+        "daily_return_bits": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/f64_bits"}},
+        "opening_exposure_bits": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/f64_bits"}},
+        "compound_steps": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/compound_bits_step"}},
+        "aggregate_return_bits": {"$ref": "#/$defs/f64_bits"}, "final_cash_bits": {"$ref": "#/$defs/f64_bits"},
+        "final_holdings": {"type": "integer", "minimum": 0}
+      }
+    },
+    "ge_boundary_bits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["next_down_bits", "next_down_pass", "equal_bits", "equal_pass", "next_up_bits", "next_up_pass"],
+      "properties": {
+        "next_down_bits": {"$ref": "#/$defs/f64_bits"}, "next_down_pass": {"const": true},
+        "equal_bits": {"$ref": "#/$defs/f64_bits"}, "equal_pass": {"const": true},
+        "next_up_bits": {"$ref": "#/$defs/f64_bits"}, "next_up_pass": {"const": false}
+      }
+    },
+    "matched_bits_step": {
+      "type": "object", "additionalProperties": false,
+      "required": ["left_bits", "complement_bits", "right_bits", "matched_return_bits"],
+      "properties": {
+        "left_bits": {"$ref": "#/$defs/f64_bits"}, "complement_bits": {"$ref": "#/$defs/f64_bits"},
+        "right_bits": {"$ref": "#/$defs/f64_bits"}, "matched_return_bits": {"$ref": "#/$defs/f64_bits"}
+      }
+    },
+    "component_stress_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixture_id", "candidate", "buy_and_hold", "cash_daily_return_bits", "cash_aggregate_return_bits", "exposure_fsum_bits", "average_exposure_bits", "matched_steps", "matched_compound_steps", "matched_aggregate_return_bits", "candidate_aggregate_return_bits", "buy_and_hold_aggregate_return_bits", "economic_edge_bits", "active_excess_bits", "economic_edge_boundaries", "active_excess_boundaries"],
+      "properties": {
+        "fixture_id": {"const": "QUALIFICATION-BINARY64-COMPONENT-STRESS-01"},
+        "candidate": {"$ref": "#/$defs/component_stress_account_output"},
+        "buy_and_hold": {"$ref": "#/$defs/component_stress_account_output"},
+        "cash_daily_return_bits": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/f64_bits"}},
+        "cash_aggregate_return_bits": {"$ref": "#/$defs/f64_bits"}, "exposure_fsum_bits": {"$ref": "#/$defs/f64_bits"},
+        "average_exposure_bits": {"$ref": "#/$defs/f64_bits"},
+        "matched_steps": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/matched_bits_step"}},
+        "matched_compound_steps": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/compound_bits_step"}},
+        "matched_aggregate_return_bits": {"$ref": "#/$defs/f64_bits"}, "candidate_aggregate_return_bits": {"$ref": "#/$defs/f64_bits"},
+        "buy_and_hold_aggregate_return_bits": {"$ref": "#/$defs/f64_bits"}, "economic_edge_bits": {"$ref": "#/$defs/f64_bits"},
+        "active_excess_bits": {"$ref": "#/$defs/f64_bits"},
+        "economic_edge_boundaries": {"$ref": "#/$defs/ge_boundary_bits"}, "active_excess_boundaries": {"$ref": "#/$defs/ge_boundary_bits"}
+      }
+    },
+    "authoritative_control_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "control_id", "version", "source_digest", "dataset_id", "view_id", "instrument_id", "selection_run_id", "fold_id", "scoring_start", "scoring_end", "initial_capital", "total_return_qualification_id", "cost_policy_digest", "session_ids", "valuation_dates", "daily_returns", "aggregate_return", "annual_effective_yield", "account_artifact_sha256", "average_exposure", "opening_exposures", "cash_output_digest", "buy_and_hold_output_digest", "output_digest"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "control_id": {"enum": ["quant-platform/cash-control", "quant-platform/buy-and-hold-total-return", "quant-platform/matched-average-exposure-control"]},
+        "version": {"const": "1"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_id": {"$ref": "#/$defs/sha256"},
+        "view_id": {"$ref": "#/$defs/sha256"},
+        "instrument_id": {"type": "string", "minLength": 1},
+        "selection_run_id": {"$ref": "#/$defs/sha256"},
+        "fold_id": {"$ref": "#/$defs/sha256"},
+        "scoring_start": {"$ref": "#/$defs/date"},
+        "scoring_end": {"$ref": "#/$defs/date"},
+        "initial_capital": {"$ref": "#/$defs/positive_number"},
+        "total_return_qualification_id": {"$ref": "#/$defs/sha256"},
+        "cost_policy_digest": {"$ref": "#/$defs/sha256"},
+        "session_ids": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "valuation_dates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/date"}},
+        "daily_returns": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/return_number"}},
+        "aggregate_return": {"$ref": "#/$defs/return_number"},
+        "annual_effective_yield": {"type": ["number", "null"], "exclusiveMinimum": -1},
+        "account_artifact_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "average_exposure": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "opening_exposures": {"type": "array", "items": {"$ref": "#/$defs/probability"}},
+        "cash_output_digest": {"$ref": "#/$defs/nullable_sha256"},
+        "buy_and_hold_output_digest": {"$ref": "#/$defs/nullable_sha256"},
+        "output_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {"if": {"properties": {"control_id": {"const": "quant-platform/cash-control"}}}, "then": {"properties": {"annual_effective_yield": {"type": "number", "exclusiveMinimum": -1}, "account_artifact_sha256": {"type": "null"}, "average_exposure": {"type": "null"}, "opening_exposures": {"type": "array", "maxItems": 0}, "cash_output_digest": {"type": "null"}, "buy_and_hold_output_digest": {"type": "null"}}}},
+        {"if": {"properties": {"control_id": {"const": "quant-platform/buy-and-hold-total-return"}}}, "then": {"properties": {"annual_effective_yield": {"type": "null"}, "account_artifact_sha256": {"$ref": "#/$defs/sha256"}, "average_exposure": {"type": "null"}, "opening_exposures": {"type": "array", "maxItems": 0}, "cash_output_digest": {"type": "null"}, "buy_and_hold_output_digest": {"type": "null"}}}},
+        {"if": {"properties": {"control_id": {"const": "quant-platform/matched-average-exposure-control"}}}, "then": {"properties": {"annual_effective_yield": {"type": "null"}, "account_artifact_sha256": {"type": "null"}, "average_exposure": {"$ref": "#/$defs/probability"}, "opening_exposures": {"type": "array", "minItems": 1}, "cash_output_digest": {"$ref": "#/$defs/sha256"}, "buy_and_hold_output_digest": {"$ref": "#/$defs/sha256"}}}}
+      ]
+    },
+    "family_search": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suggester_id", "suggester_version", "source_digest", "seed", "candidate_budget", "evaluation_budget", "stop_reason", "search_exhausted"],
+      "properties": {
+        "suggester_id": {"type": "string", "minLength": 1},
+        "suggester_version": {"type": "string", "minLength": 1},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "candidate_budget": {"type": "integer", "minimum": 1},
+        "evaluation_budget": {"type": "integer", "minimum": 1},
+        "stop_reason": {"enum": ["SEARCH_EXHAUSTED", "BUDGET_EXHAUSTED", "PREDECLARED_STOP"]},
+        "search_exhausted": {"type": "boolean"}
+      }
+    },
+    "family_population_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_digest", "prefamily_qualification_id", "prefamily_state", "scored_session_set_digest"],
+      "properties": {
+        "candidate_digest": {"$ref": "#/$defs/sha256"},
+        "prefamily_qualification_id": {"$ref": "#/$defs/sha256"},
+        "prefamily_state": {"enum": ["ADMITTED", "ADMISSION_REJECTED"]},
+        "scored_session_set_digest": {"$ref": "#/$defs/nullable_sha256"}
+      },
+      "allOf": [
+        {"if": {"properties": {"prefamily_state": {"const": "ADMITTED"}}, "required": ["prefamily_state"]}, "then": {"properties": {"scored_session_set_digest": {"$ref": "#/$defs/sha256"}}}},
+        {"if": {"properties": {"prefamily_state": {"const": "ADMISSION_REJECTED"}}, "required": ["prefamily_state"]}, "then": {"properties": {"scored_session_set_digest": {"type": "null"}}}}
+      ]
+    },
+    "family_record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "authority", "version", "family_digest", "study_id", "study_plan_digest", "selection_run_id", "search", "policy", "stress_scenario_set_digest", "timing_placebo_plan_digest", "inspected_candidate_digests", "covered_candidate_digests", "candidate_population_entries", "multiplicity_entries", "implementation_source_sha256", "numerical_runtime_manifest_sha256"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "authority": {"const": "quant-platform/matched-exposure-family"},
+        "version": {"const": "1"},
+        "family_digest": {"$ref": "#/$defs/sha256"},
+        "study_id": {"$ref": "#/$defs/sha256"},
+        "study_plan_digest": {"$ref": "#/$defs/sha256"},
+        "selection_run_id": {"$ref": "#/$defs/sha256"},
+        "search": {"$ref": "#/$defs/family_search"},
+        "policy": {"$ref": "#/$defs/policy"},
+        "stress_scenario_set_digest": {"$ref": "#/$defs/sha256"},
+        "timing_placebo_plan_digest": {"$ref": "#/$defs/nullable_sha256"},
+        "inspected_candidate_digests": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "covered_candidate_digests": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "candidate_population_entries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/family_population_entry"}},
+        "multiplicity_entries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/multiplicity_entry"}},
+        "implementation_source_sha256": {"$ref": "#/$defs/sha256"},
+        "numerical_runtime_manifest_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "trusted_claim_admission": {
+      "oneOf": [
+        {"$ref": "#/$defs/trusted_not_evaluated"},
+        {"$ref": "#/$defs/trusted_admitted"},
+        {"$ref": "#/$defs/trusted_rejected"}
+      ]
+    },
+    "trusted_admission_shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "authority", "claim_state", "qualification_ids", "all_folds_pristine", "eligible", "evidence_sha256"],
+      "properties": {
+        "status": {"enum": ["NOT_EVALUATED", "ADMITTED", "REJECTED"]},
+        "authority": {"type": ["string", "null"]},
+        "claim_state": {"type": ["string", "null"]},
+        "qualification_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/sha256"}},
+        "all_folds_pristine": {"type": ["boolean", "null"]},
+        "eligible": {"type": ["boolean", "null"]},
+        "evidence_sha256": {"$ref": "#/$defs/nullable_sha256"}
+      }
+    },
+    "trusted_not_evaluated": {
+      "allOf": [
+        {"$ref": "#/$defs/trusted_admission_shape"},
+        {"properties": {"status": {"const": "NOT_EVALUATED"}, "authority": {"type": "null"}, "claim_state": {"type": "null"}, "qualification_ids": {"type": "array", "maxItems": 0}, "all_folds_pristine": {"type": "null"}, "eligible": {"type": "null"}, "evidence_sha256": {"type": "null"}}}
+      ]
+    },
+    "trusted_admitted": {
+      "allOf": [
+        {"$ref": "#/$defs/trusted_admission_shape"},
+        {"properties": {"status": {"const": "ADMITTED"}, "authority": {"const": "quant-platform/total-return-qualification@1"}, "claim_state": {"const": "AFTER_TAX_TOTAL_RETURN_VERIFIED"}, "qualification_ids": {"$ref": "#/$defs/nonempty_sha256_array"}, "all_folds_pristine": {"const": true}, "eligible": {"const": true}, "evidence_sha256": {"$ref": "#/$defs/sha256"}}}
+      ]
+    },
+    "trusted_rejected": {
+      "allOf": [
+        {"$ref": "#/$defs/trusted_admission_shape"},
+        {"properties": {"status": {"const": "REJECTED"}, "evidence_sha256": {"$ref": "#/$defs/nullable_sha256"}}}
+      ]
+    },
+    "rejection_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "rejection_evidence_sha256", "rejection_kind", "intake_id", "raw_intake_sha256", "study_id", "candidate_digest", "study_plan_digest", "selection_run_id", "trusted_claim_evidence_sha256", "historical_exposure", "missing_fields", "invalid_or_mismatched_fields", "reason_codes"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "rejection_evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "rejection_kind": {"enum": ["INTAKE_REJECTED", "ADMISSION_REJECTED"]},
+        "intake_id": {"$ref": "#/$defs/sha256"},
+        "raw_intake_sha256": {"$ref": "#/$defs/sha256"},
+        "study_id": {"$ref": "#/$defs/nullable_sha256"},
+        "candidate_digest": {"$ref": "#/$defs/nullable_sha256"},
+        "study_plan_digest": {"$ref": "#/$defs/nullable_sha256"},
+        "selection_run_id": {"$ref": "#/$defs/nullable_sha256"},
+        "trusted_claim_evidence_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "historical_exposure": {"enum": ["PRISTINE", "EXPOSED", "UNKNOWN"]},
+        "missing_fields": {"type": "array", "uniqueItems": true, "items": {"enum": ["study_id", "candidate_digest", "study_plan_digest", "selection_run_id", "trusted_claim_evidence"]}},
+        "invalid_or_mismatched_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/reason_code"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"rejection_kind": {"const": "INTAKE_REJECTED"}}, "required": ["rejection_kind"]}, "then": {"anyOf": [{"properties": {"study_id": {"type": "null"}}}, {"properties": {"candidate_digest": {"type": "null"}}}]}},
+        {"if": {"properties": {"rejection_kind": {"const": "ADMISSION_REJECTED"}}, "required": ["rejection_kind"]}, "then": {"properties": {"study_id": {"$ref": "#/$defs/sha256"}, "candidate_digest": {"$ref": "#/$defs/sha256"}}}}
+      ]
+    },
+    "admission_rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_intake_sha256", "rejection_evidence_sha256", "rejection_evidence", "missing_fields", "invalid_or_mismatched_fields"],
+      "properties": {
+        "raw_intake_sha256": {"$ref": "#/$defs/sha256"},
+        "rejection_evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "rejection_evidence": {"$ref": "#/$defs/rejection_evidence"},
+        "missing_fields": {"type": "array", "uniqueItems": true, "items": {"enum": ["study_id", "candidate_digest", "study_plan_digest", "selection_run_id", "trusted_claim_evidence"]}},
+        "invalid_or_mismatched_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "anyOf": [
+        {"properties": {"missing_fields": {"type": "array", "minItems": 1}}},
+        {"properties": {"invalid_or_mismatched_fields": {"type": "array", "minItems": 1}}}
+      ]
+    },
+    "no_evaluation_bundle": {
+      "not": {"anyOf": [
+        {"required": ["scored_session_set_digest"]}, {"required": ["policy"]}, {"required": ["controls"]},
+        {"required": ["folds"]}, {"required": ["scored_sessions"]}, {"required": ["aggregate"]},
+        {"required": ["episodes"]}, {"required": ["continuous_state"]}, {"required": ["cost_stress"]},
+        {"required": ["multiplicity"]}, {"required": ["candidate_multiplicity"]}, {"required": ["timing_placebo"]},
+        {"required": ["gates"]}
+      ]}
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id", "version", "source_digest", "frozen_before_first_result",
+        "minimum_economic_edge", "minimum_matched_excess", "minimum_fold_matched_excess",
+        "minimum_passing_fold_fraction", "maximum_allowed_fold_shortfall",
+        "minimum_stressed_economic_edge", "minimum_stressed_matched_excess",
+        "minimum_natural_exits", "minimum_effective_sample_size", "family_wise_alpha",
+        "bootstrap_seed", "bootstrap_resamples", "stationary_block_mean_length"
+      ],
+      "properties": {
+        "policy_id": {"const": "robust_walk_forward"},
+        "version": {"const": "2.0.0"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_before_first_result": {"const": true},
+        "minimum_economic_edge": {"$ref": "#/$defs/finite_number"},
+        "minimum_matched_excess": {"$ref": "#/$defs/finite_number"},
+        "minimum_fold_matched_excess": {"$ref": "#/$defs/finite_number"},
+        "minimum_passing_fold_fraction": {"$ref": "#/$defs/probability"},
+        "maximum_allowed_fold_shortfall": {"$ref": "#/$defs/finite_number"},
+        "minimum_stressed_economic_edge": {"$ref": "#/$defs/finite_number"},
+        "minimum_stressed_matched_excess": {"$ref": "#/$defs/finite_number"},
+        "minimum_natural_exits": {"type": "integer", "minimum": 1},
+        "minimum_effective_sample_size": {"$ref": "#/$defs/positive_number"},
+        "family_wise_alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "bootstrap_seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "bootstrap_resamples": {"type": "integer", "minimum": 1000},
+        "stationary_block_mean_length": {"type": "number", "minimum": 1}
+      }
+    },
+    "control_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control_id", "version", "source_digest", "dataset_id", "view_id", "instrument_id",
+        "selection_run_id", "fold_id", "scoring_start", "scoring_end", "initial_capital",
+        "total_return_qualification_id", "cost_policy_digest", "output_digest"
+      ],
+      "properties": {
+        "control_id": {"enum": ["quant-platform/cash-control", "quant-platform/buy-and-hold-total-return", "quant-platform/matched-average-exposure-control"]},
+        "version": {"const": "1"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_id": {"$ref": "#/$defs/sha256"},
+        "view_id": {"$ref": "#/$defs/sha256"},
+        "instrument_id": {"type": "string", "minLength": 1},
+        "selection_run_id": {"$ref": "#/$defs/sha256"},
+        "fold_id": {"$ref": "#/$defs/sha256"},
+        "scoring_start": {"$ref": "#/$defs/date"},
+        "scoring_end": {"$ref": "#/$defs/date"},
+        "initial_capital": {"$ref": "#/$defs/positive_number"},
+        "total_return_qualification_id": {"$ref": "#/$defs/sha256"},
+        "cost_policy_digest": {"$ref": "#/$defs/sha256"},
+        "output_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "control_array": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/control_identity"}},
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cash", "buy_and_hold", "matched_average_exposure"],
+      "properties": {
+        "cash": {"$ref": "#/$defs/control_array"},
+        "buy_and_hold": {"$ref": "#/$defs/control_array"},
+        "matched_average_exposure": {"$ref": "#/$defs/control_array"}
+      }
+    },
+    "development_fold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fold_id", "selection_run_id", "role", "scoring_start", "scoring_end", "metric_document_digest", "session_ids", "account_policy", "forced_flat_effect"],
+      "properties": {
+        "fold_id": {"$ref": "#/$defs/sha256"},
+        "selection_run_id": {"$ref": "#/$defs/sha256"},
+        "role": {"const": "INNER_SCORE"},
+        "scoring_start": {"$ref": "#/$defs/date"},
+        "scoring_end": {"$ref": "#/$defs/date"},
+        "metric_document_digest": {"$ref": "#/$defs/sha256"},
+        "session_ids": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "account_policy": {"const": "FORCE_FLAT_WITH_COST"},
+        "forced_flat_effect": {"$ref": "#/$defs/forced_flat_effect"}
+      }
+    },
+    "forced_flat_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pre_liquidation_open", "forced_exit_count", "cost", "return_delta", "excluded_from_natural_exits"],
+      "properties": {
+        "pre_liquidation_open": {"type": "boolean"},
+        "forced_exit_count": {"type": "integer", "minimum": 0},
+        "cost": {"$ref": "#/$defs/nonnegative_number"},
+        "return_delta": {"$ref": "#/$defs/finite_number"},
+        "excluded_from_natural_exits": {"const": true}
+      }
+    },
+    "scored_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "valuation_date", "fold_id", "candidate_costed_return", "cash_return", "buy_and_hold_total_return", "matched_control_return", "opening_gross_exposure"],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/sha256"},
+        "valuation_date": {"$ref": "#/$defs/date"},
+        "fold_id": {"$ref": "#/$defs/sha256"},
+        "candidate_costed_return": {"$ref": "#/$defs/return_number"},
+        "cash_return": {"$ref": "#/$defs/return_number"},
+        "buy_and_hold_total_return": {"$ref": "#/$defs/return_number"},
+        "matched_control_return": {"$ref": "#/$defs/return_number"},
+        "opening_gross_exposure": {"$ref": "#/$defs/probability"}
+      }
+    },
+    "scored_session_set": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/scored_session"}
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_costed_return", "cash_return", "buy_and_hold_total_return", "matched_control_return", "economic_edge", "active_excess", "passing_fold_fraction", "worst_fold_active_excess"],
+      "properties": {
+        "candidate_costed_return": {"$ref": "#/$defs/return_number"},
+        "cash_return": {"$ref": "#/$defs/return_number"},
+        "buy_and_hold_total_return": {"$ref": "#/$defs/return_number"},
+        "matched_control_return": {"$ref": "#/$defs/return_number"},
+        "economic_edge": {"$ref": "#/$defs/finite_number"},
+        "active_excess": {"$ref": "#/$defs/finite_number"},
+        "passing_fold_fraction": {"$ref": "#/$defs/probability"},
+        "worst_fold_active_excess": {"$ref": "#/$defs/finite_number"}
+      }
+    },
+    "episodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["natural_exit_count", "forced_exit_count", "open_episode_count", "dependence_cluster_sizes", "effective_sample_size", "artifact_sha256"],
+      "properties": {
+        "natural_exit_count": {"type": "integer", "minimum": 0},
+        "forced_exit_count": {"type": "integer", "minimum": 0},
+        "open_episode_count": {"type": "integer", "minimum": 0},
+        "dependence_cluster_sizes": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "effective_sample_size": {"$ref": "#/$defs/nonnegative_number"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "continuous_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "version", "status", "development_start", "development_end", "boundary_count", "state_reset_count", "artifact_sha256"],
+      "properties": {
+        "authority": {"const": "quant-platform/continuous-state-diagnostic"},
+        "version": {"const": "1"},
+        "status": {"enum": ["VERIFIED", "MISSING", "INVALID"]},
+        "development_start": {"$ref": "#/$defs/date"},
+        "development_end": {"$ref": "#/$defs/date"},
+        "boundary_count": {"type": "integer", "minimum": 0},
+        "state_reset_count": {"type": "integer", "minimum": 0},
+        "artifact_sha256": {"$ref": "#/$defs/nullable_sha256"}
+      }
+    },
+    "stress_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_id", "candidate_return", "cash_return", "matched_return", "economic_edge", "active_excess", "artifact_sha256", "passed"],
+      "properties": {
+        "scenario_id": {"type": "string", "minLength": 1},
+        "candidate_return": {"$ref": "#/$defs/return_number"},
+        "cash_return": {"$ref": "#/$defs/return_number"},
+        "matched_return": {"$ref": "#/$defs/return_number"},
+        "economic_edge": {"$ref": "#/$defs/finite_number"},
+        "active_excess": {"$ref": "#/$defs/finite_number"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "passed": {"type": "boolean"}
+      }
+    },
+    "cost_stress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_set_digest", "results"],
+      "properties": {
+        "scenario_set_digest": {"$ref": "#/$defs/sha256"},
+        "results": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stress_result"}}
+      }
+    },
+    "multiplicity_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_digest", "raw_p_value", "adjusted_p_value", "test_status", "not_testable_reason", "artifact_sha256"],
+      "properties": {
+        "candidate_digest": {"$ref": "#/$defs/sha256"},
+        "raw_p_value": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "adjusted_p_value": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "test_status": {"enum": ["ESTABLISHED", "NOT_ESTABLISHED", "NOT_TESTABLE"]},
+        "not_testable_reason": {"type": ["string", "null"], "minLength": 1},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"test_status": {"const": "NOT_TESTABLE"}}, "required": ["test_status"]},
+          "then": {"properties": {"raw_p_value": {"type": "null"}, "adjusted_p_value": {"type": "null"}, "not_testable_reason": {"type": "string", "minLength": 1}}},
+          "else": {"properties": {"raw_p_value": {"$ref": "#/$defs/probability"}, "adjusted_p_value": {"$ref": "#/$defs/probability"}, "not_testable_reason": {"type": "null"}}}
+        }
+      ]
+    },
+    "established_entry": {
+      "allOf": [
+        {"$ref": "#/$defs/multiplicity_entry"},
+        {"properties": {"test_status": {"const": "ESTABLISHED"}, "raw_p_value": {"$ref": "#/$defs/probability"}, "adjusted_p_value": {"$ref": "#/$defs/probability"}, "not_testable_reason": {"type": "null"}}}
+      ]
+    },
+    "multiplicity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "version", "implementation_source_sha256", "numerical_runtime_manifest_sha256", "family_digest", "inspected_candidate_digests", "covered_candidate_digests", "family_closed", "alpha", "entries"],
+      "properties": {
+        "method": {"const": "HOLM_STATIONARY_BLOCK_BOOTSTRAP"},
+        "version": {"const": "1"},
+        "implementation_source_sha256": {"$ref": "#/$defs/sha256"},
+        "numerical_runtime_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "family_digest": {"$ref": "#/$defs/sha256"},
+        "inspected_candidate_digests": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "covered_candidate_digests": {"$ref": "#/$defs/nonempty_sha256_array"},
+        "family_closed": {"const": true},
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "entries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/multiplicity_entry"}}
+      }
+    },
+    "placebo_generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_id", "version", "source_digest", "seed", "resamples", "circular_block_length", "statistic", "tail"],
+      "properties": {
+        "generator_id": {"const": "quant-platform/timing-placebo"},
+        "version": {"const": "1"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "seed": {"type": "integer", "minimum": 0},
+        "resamples": {"type": "integer", "minimum": 1000},
+        "circular_block_length": {"type": "integer", "minimum": 1},
+        "statistic": {"const": "MATCHED_EXPOSURE_EXCESS"},
+        "tail": {"const": "GREATER"}
+      }
+    },
+    "timing_placebo": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "generator", "artifact_sha256", "p_value"],
+          "properties": {"status": {"const": "NOT_REQUESTED"}, "generator": {"type": "null"}, "artifact_sha256": {"type": "null"}, "p_value": {"type": "null"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "generator", "artifact_sha256", "p_value"],
+          "properties": {"status": {"const": "PREDECLARED"}, "generator": {"$ref": "#/$defs/placebo_generator"}, "artifact_sha256": {"$ref": "#/$defs/sha256"}, "p_value": {"$ref": "#/$defs/probability"}}
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason_code", "evidence_sha256"],
+      "properties": {
+        "status": {"enum": ["NOT_EVALUATED", "PASS", "FAIL"]},
+        "reason_code": {"anyOf": [{"$ref": "#/$defs/reason_code"}, {"type": "null"}]},
+        "evidence_sha256": {"$ref": "#/$defs/nullable_sha256"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "PASS"}}, "required": ["status"]}, "then": {"properties": {"reason_code": {"type": "null"}, "evidence_sha256": {"$ref": "#/$defs/sha256"}}}},
+        {"if": {"properties": {"status": {"const": "FAIL"}}, "required": ["status"]}, "then": {"properties": {"reason_code": {"$ref": "#/$defs/reason_code"}, "evidence_sha256": {"$ref": "#/$defs/sha256"}}}},
+        {"if": {"properties": {"status": {"const": "NOT_EVALUATED"}}, "required": ["status"]}, "then": {"properties": {"reason_code": {"type": "null"}, "evidence_sha256": {"type": "null"}}}}
+      ]
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trusted_and_controls", "costed_economic_edge", "matched_exposure_excess", "fold_consistency", "cost_stress_robustness", "natural_episode_evidence", "effective_sample_size", "continuous_state_diagnostic", "multiplicity_coverage", "significance"],
+      "properties": {
+        "trusted_and_controls": {"$ref": "#/$defs/gate"},
+        "costed_economic_edge": {"$ref": "#/$defs/gate"},
+        "matched_exposure_excess": {"$ref": "#/$defs/gate"},
+        "fold_consistency": {"$ref": "#/$defs/gate"},
+        "cost_stress_robustness": {"$ref": "#/$defs/gate"},
+        "natural_episode_evidence": {"$ref": "#/$defs/gate"},
+        "effective_sample_size": {"$ref": "#/$defs/gate"},
+        "continuous_state_diagnostic": {"$ref": "#/$defs/gate"},
+        "multiplicity_coverage": {"$ref": "#/$defs/gate"},
+        "significance": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "pass_gate": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"status": {"const": "PASS"}, "reason_code": {"type": "null"}, "evidence_sha256": {"$ref": "#/$defs/sha256"}}}]},
+    "all_pass_gates": {
+      "allOf": [
+        {"$ref": "#/$defs/gates"},
+        {"properties": {
+          "trusted_and_controls": {"$ref": "#/$defs/pass_gate"},
+          "costed_economic_edge": {"$ref": "#/$defs/pass_gate"},
+          "matched_exposure_excess": {"$ref": "#/$defs/pass_gate"},
+          "fold_consistency": {"$ref": "#/$defs/pass_gate"},
+          "cost_stress_robustness": {"$ref": "#/$defs/pass_gate"},
+          "natural_episode_evidence": {"$ref": "#/$defs/pass_gate"},
+          "effective_sample_size": {"$ref": "#/$defs/pass_gate"},
+          "continuous_state_diagnostic": {"$ref": "#/$defs/pass_gate"},
+          "multiplicity_coverage": {"$ref": "#/$defs/pass_gate"},
+          "significance": {"$ref": "#/$defs/pass_gate"}
+        }}
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prior_qualification_id", "from_state", "to_state"],
+      "properties": {
+        "prior_qualification_id": {"$ref": "#/$defs/nullable_sha256"},
+        "from_state": {"anyOf": [{"enum": ["UNADMITTED", "ADMITTED", "QUALIFICATION_EVALUATED"]}, {"type": "null"}]},
+        "to_state": {"enum": ["INTAKE_REJECTED", "UNADMITTED", "ADMITTED", "ADMISSION_REJECTED", "QUALIFICATION_EVALUATED", "QUALIFIED", "REJECTED"]}
+      }
+    },
+    "transition_to_intake_rejected": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"type": "null"}, "from_state": {"type": "null"}, "to_state": {"const": "INTAKE_REJECTED"}}}]},
+    "transition_to_unadmitted": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"type": "null"}, "from_state": {"type": "null"}, "to_state": {"const": "UNADMITTED"}}}]},
+    "transition_to_admitted": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"$ref": "#/$defs/sha256"}, "from_state": {"const": "UNADMITTED"}, "to_state": {"const": "ADMITTED"}}}]},
+    "transition_to_admission_rejected": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"$ref": "#/$defs/sha256"}, "from_state": {"const": "UNADMITTED"}, "to_state": {"const": "ADMISSION_REJECTED"}}}]},
+    "transition_to_evaluated": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"$ref": "#/$defs/sha256"}, "from_state": {"const": "ADMITTED"}, "to_state": {"const": "QUALIFICATION_EVALUATED"}}}]},
+    "transition_to_qualified": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"$ref": "#/$defs/sha256"}, "from_state": {"const": "QUALIFICATION_EVALUATED"}, "to_state": {"const": "QUALIFIED"}}}]},
+    "transition_to_rejected": {"allOf": [{"$ref": "#/$defs/transition"}, {"properties": {"prior_qualification_id": {"$ref": "#/$defs/sha256"}, "from_state": {"const": "QUALIFICATION_EVALUATED"}, "to_state": {"const": "REJECTED"}}}]},
+    "reason_code": {
+      "enum": [
+        "TRUSTED_CLAIM_INELIGIBLE", "CONTROL_IDENTITY_MISSING_OR_MISMATCHED", "FOLD_CONTROL_COVERAGE_INCOMPLETE",
+        "DEVELOPMENT_POPULATION_INVALID", "DUPLICATE_OR_OVERLAPPING_SESSION", "COSTED_ECONOMIC_EDGE_FAILED",
+        "MATCHED_EXPOSURE_EXCESS_FAILED", "FOLD_CONSISTENCY_FAILED", "COST_STRESS_COVERAGE_INCOMPLETE",
+        "COST_STRESS_ROBUSTNESS_FAILED", "NATURAL_EXIT_EVIDENCE_INSUFFICIENT", "EFFECTIVE_SAMPLE_SIZE_INSUFFICIENT",
+        "CONTINUOUS_STATE_DIAGNOSTIC_MISSING_OR_INVALID", "MULTIPLICITY_FAMILY_INCOMPLETE", "SIGNIFICANCE_NOT_ESTABLISHED",
+        "SIGNIFICANCE_NOT_TESTABLE", "TIMING_PLACEBO_MISSING_OR_INVALID", "HISTORICALLY_EXPOSED",
+        "STALE_SCHEMA_OR_AUTHORITY", "DIGEST_MISMATCH", "ADMISSION_IDENTITY_INVALID", "INTAKE_IDENTITY_MISSING",
+        "TRUSTED_CLAIM_EVIDENCE_MISSING", "NUMERICAL_RUNTIME_MISMATCH"
+      ]
+    }
+  },
+  "x-canonical-type-authority": {
+    "version": "QUALIFICATION_SCHEMA_TYPE_AUTHORITY@1",
+    "resolution_order": ["type", "$ref", "allOf/oneOf/anyOf branch", "const", "enum", "object shape", "array shape"],
+    "rule": "After local $ref and applicable allOf/oneOf/anyOf/if-then-else resolution, every canonicalized value must resolve to exactly one reviewed JSON type for that admitted instance. An explicit type is authoritative. A primitive const supplies exactly its JSON type; an enum supplies the unique JSON type matched by the admitted value; properties/required supply object; items/prefixItems supply array. integer and number are overlapping and may not both match. No other keyword or runtime value supplies type.",
+    "forbidden_type_inference": ["pattern", "format", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "runtime Python value", "implementation behavior"],
+    "audit_fixture": "CANONICAL-TYPE-REGISTRY-AUDIT-01",
+    "audit_script": "audit_canonical_types.py",
+    "audit_scope": "All twelve x-hashed-object-projections objects plus the complete QUALIFICATION-HASHED-PROJECTIONS-02 outer fixture",
+    "failure": "REFUSE_ISSUANCE"
+  },
+  "x-hashed-object-projections": {
+    "canonicalizer": "QUALIFICATION_CANONICAL_JSON@1",
+    "unknown_or_omitted_required_field": "REFUSE_ISSUANCE",
+    "array_ordering": "As specified in CONTRACT section 3.3.1; never object-key sorting or implementation iteration order",
+    "objects": [
+      {"name": "qualification_record", "schema_ref": "#", "digest_field": "qualification_id", "domain": "quant-platform/matched-exposure-qualification-record/v1"},
+      {"name": "scored_session_set", "schema_ref": "#/$defs/scored_session_set", "digest_field": null, "domain": "quant-platform/development-session-set/v1"},
+      {"name": "rejection_evidence", "schema_ref": "#/$defs/rejection_evidence", "digest_field": "rejection_evidence_sha256", "domain": "quant-platform/qualification-rejection-evidence/v1"},
+      {"name": "authoritative_control_output", "schema_ref": "#/$defs/authoritative_control_output", "digest_field": "output_digest", "domain": "<control_id>@<version>/output"},
+      {"name": "family_record", "schema_ref": "#/$defs/family_record", "digest_field": "family_digest", "domain": "quant-platform/matched-exposure-family/v1"},
+      {"name": "numerical_runtime", "schema_ref": "#/$defs/numerical_runtime", "digest_field": "manifest_sha256", "domain": "quant-platform/qualification-numerical-runtime/v1"},
+      {"name": "loaded_native_objects", "schema_ref": "#/$defs/loaded_native_objects", "digest_field": "digest", "domain": "quant-platform/qualification-loaded-native-objects/v1"},
+      {"name": "cpu_features", "schema_ref": "#/$defs/cpu_features", "digest_field": "digest", "domain": "quant-platform/qualification-cpu-features/v1"},
+      {"name": "dynamic_loader_environment", "schema_ref": "#/$defs/dynamic_loader_environment", "digest_field": "digest", "domain": "quant-platform/qualification-dynamic-loader-environment/v1"},
+      {"name": "log1p_conformance", "schema_ref": "#/$defs/log1p_conformance", "digest_field": "digest", "domain": "quant-platform/qualification-log1p-conformance/v1"},
+      {"name": "canonical_json_conformance", "schema_ref": "#/$defs/canonical_json_conformance", "digest_field": "digest", "domain": "quant-platform/qualification-canonical-json-conformance/v1"},
+      {"name": "binary64_arithmetic_conformance", "schema_ref": "#/$defs/binary64_arithmetic_conformance", "digest_field": "digest", "domain": "quant-platform/qualification-binary64-arithmetic-conformance/v1"}
+    ],
+    "normative_fixture": {
+      "fixture_id": "QUALIFICATION-HASHED-PROJECTIONS-02",
+      "aliases": {"A": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "B": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "C": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "D": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "E": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "F": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+      "canonical_byte_length": 18991,
+      "canonical_sha256": "654aa2c2b4c7326ebca38d02da9c0bb032d9773664ed2a5d54838a5aa06e4186",
+      "expected_digests": {
+        "authoritative_control_output": "1fe39a367336a9b64855d91b01a629417d61217e629228d73a687f1600073a0d",
+        "scored_session_set": "bd02d8556c408ffaca5d28992261fd70338d08e389759e8a2bfd1b15db6b266e",
+        "intake_rejection_evidence": "71a2227ea89c9391d7e02863d0b2a5f96156e02ad9f6c7305cf40156cc440f06",
+        "admission_rejection_evidence": "09f6ac168341d9f91d51ccfc96530760724eccad1474d7df72a7a83998e13f05",
+        "family_record": "9819a89f2fc92ba2fcfa904865de54f22b8d27b2d50653fc89a5a8db3fb4a2c0",
+        "loaded_native_objects": "d3fe672b7804988d20f5ee183bc9392afd22b4613462acee0b287bada348809f",
+        "cpu_features": "540b4688a14d5ae83fdfc0196c9acbd9e8f8c05b9a46f30a722dd4b29f3f6c67",
+        "dynamic_loader_environment": "412e102671d737a5604788ff4377c487a29a7bc2b661ed88d9971b6311f7965f",
+        "log1p_conformance": "0f2f806d9e82f5b5d98c6dc7dbfb0213f75ddc9e74ae6f006638f503ab1e49d4",
+        "canonical_json_conformance": "e31471d9e138bfb70ea0fa4fa08180be10db0ac5a5ebde9514db1586f7aa5247",
+        "binary64_arithmetic_conformance": "9e0de7074ed3f277cc077b06f5fdd84f1ca0dd22c4896b043b96a1638d8461dc",
+        "numerical_runtime": "cea0096efa08c3e6f7c35fa3943c2502603eb0799d9a9bb6c209561ca05ac00a"
+      },
+      "field_values": "The complete, type-directed values are frozen in CONTRACT section 3.3.2; aliases expand before validation and hashing and are not serialized."
+    }
+  },
+  "x-forward-issuance-fixture": {
+    "fixture_id": "QUALIFICATION-FORWARD-ISSUANCE-01",
+    "construction": "Resolve the complete schema-valid synthetic records exactly as specified in CONTRACT section 3.3.3, then hash each step once in ascending order. Each candidate has a distinct content-derived UNADMITTED predecessor; no step may contain an identity from a later step; multiplicity and gates are recomputed; evaluated evidence is immutable into the terminal record.",
+    "projected_byte_lengths": {
+      "candidate_a_UNADMITTED": 6854,
+      "candidate_b_UNADMITTED": 6788,
+      "candidate_a_ADMITTED": 7151,
+      "candidate_b_ADMISSION_REJECTED": 8523,
+      "candidate_a_scored_session_set": 997,
+      "family": 3922,
+      "candidate_a_QUALIFICATION_EVALUATED": 19094,
+      "candidate_a_REJECTED": 19079
+    },
+    "steps": [
+      {"order": 1, "object": "candidate_a_UNADMITTED", "identity": "9fa0a98540847ecf90042349c23189c6080c6588b1fadea2a9b9e6af0aa6a592", "depends_on": []},
+      {"order": 2, "object": "candidate_b_UNADMITTED", "identity": "255114bf4049587e6338b767007cda62ebbf4217f8da30c977e456cf72fe95a2", "depends_on": []},
+      {"order": 3, "object": "candidate_a_ADMITTED", "identity": "e5f467ef670c322e3c5bf214d8a55b636df0f689521fd3c2897a647378673e60", "depends_on": ["9fa0a98540847ecf90042349c23189c6080c6588b1fadea2a9b9e6af0aa6a592"]},
+      {"order": 4, "object": "candidate_b_ADMISSION_REJECTED", "identity": "74dc859f4f6a41c2c6ed7cc7971cb657e9c5605fed6b1768afa77636e36caf34", "depends_on": ["255114bf4049587e6338b767007cda62ebbf4217f8da30c977e456cf72fe95a2"]},
+      {"order": 5, "object": "candidate_a_scored_session_set", "identity": "19e36e4791b4c61d0ad29d31b3c95646105c358a30c08237d869109dc9ab3486", "depends_on": ["e5f467ef670c322e3c5bf214d8a55b636df0f689521fd3c2897a647378673e60"]},
+      {"order": 6, "object": "family", "identity": "ccc85f341fbd97f3a10c510328049eb22de698c126aa57a1d48ec9651be495f5", "depends_on": ["e5f467ef670c322e3c5bf214d8a55b636df0f689521fd3c2897a647378673e60", "74dc859f4f6a41c2c6ed7cc7971cb657e9c5605fed6b1768afa77636e36caf34", "19e36e4791b4c61d0ad29d31b3c95646105c358a30c08237d869109dc9ab3486"]},
+      {"order": 7, "object": "candidate_a_QUALIFICATION_EVALUATED", "identity": "ca3ca055a9f1800de328f52a1f821201b63de226d3e377af24d1705361749935", "depends_on": ["e5f467ef670c322e3c5bf214d8a55b636df0f689521fd3c2897a647378673e60", "ccc85f341fbd97f3a10c510328049eb22de698c126aa57a1d48ec9651be495f5"]},
+      {"order": 8, "object": "candidate_a_REJECTED", "identity": "afe9d1627eab12c1acca05ff5125c0bcadeb7df4529791f6f5f677ffe4766a78", "depends_on": ["ca3ca055a9f1800de328f52a1f821201b63de226d3e377af24d1705361749935", "ccc85f341fbd97f3a10c510328049eb22de698c126aa57a1d48ec9651be495f5"]}
+    ],
+    "canonical_step_summary_byte_length": 2406,
+    "canonical_step_summary_sha256": "50916e424511332d648f6b94ad075e8822c346c237a31f0609e3e6d773d2fde5",
+    "required_negative_cases": ["missing_predecessor", "shared_predecessor_across_candidates", "placeholder_predecessor", "predecessor_candidate_study_or_intake_mismatch", "family_references_QUALIFICATION_EVALUATED_id", "family_references_terminal_REJECTED_id", "ADMITTED_population_entry_has_null_session_set", "ADMISSION_REJECTED_population_entry_has_nonnull_session_set", "single_scored_session_object_substituted_for_array", "session_array_reordered", "duplicate_session_id", "duplicate_valuation_date", "evaluated_to_terminal_gate_reason_or_evidence_mutation"]
+  },
+  "x-normative-arithmetic-fixtures": {
+    "QUALIFICATION-BINARY64-ARITHMETIC-01": {"input_schema_ref": "#/$defs/binary64_basic_input", "output_schema_ref": "#/$defs/binary64_basic_output", "input_byte_length": 715, "input_sha256": "34fda3676016c9d7d056d1c9c6ab7c0c1ed47a08f83f6d103f8bc2dc880f1d84", "output_byte_length": 337, "output_sha256": "b4fba1d01a321c5197d61b9adb4f35f3e5f3eda23fe40721e621377afc65c828"},
+    "QUALIFICATION-BINARY64-COMPONENT-STRESS-01": {"input_schema_ref": "#/$defs/component_stress_input", "output_schema_ref": "#/$defs/component_stress_output", "input_byte_length": 3514, "input_sha256": "7e73c296f0e38e9af244d097139515e769f1861b7c4ea68fa6df5dc18d7e8e88", "output_byte_length": 7209, "output_sha256": "597747cf86b79b459058272dd3a3bd90ab9e0b53282ba7fe85d3d26de6affd5e"}
+  },
+  "x-strict-authority-validator": {
+    "runtime_path": "projects/quant-research-platform/src/quant_platform/study_qualification.py",
+    "test_path": "projects/quant-research-platform/tests/test_study_qualification.py",
+    "sole_issuer": true,
+    "json_schema_is_structural_only": true,
+    "required_invariants": [
+      "QAV-01 every identity uses CONTRACT sections 3.3-3.3.2 QUALIFICATION_CANONICAL_JSON@1 and x-hashed-object-projections with the exact root/$defs type descriptor, digest domain, sole destination-field omission, explicit nulls and business array order; the canonical and hashed-projection byte/SHA fixtures and every nested digest recompute, while alternate field/domain/order/path/subdigest encodings refuse issuance",
+      "QAV-02 state equals transition.to_state; the prior sealed record has exactly transition.from_state and prior_qualification_id; only null->INTAKE_REJECTED, null->UNADMITTED->ADMITTED->QUALIFICATION_EVALUATED->QUALIFIED|REJECTED, or UNADMITTED->ADMISSION_REJECTED is legal; pre-evaluation and rejection records contain no future-stage evidence; intake_id, plain raw-intake digest, complete $defs/rejection_evidence projection, nullable missing identities/evidence, and rejection-evidence digest recompute without placeholders",
+      "QAV-03 only PRE_RANKING DEVELOPMENT_QUALIFICATION with INNER_SCORE folds from one study_plan_digest and one selection_run_id can become ranking eligible",
+      "QAV-04 fold windows are sorted and pairwise non-overlapping; session_id and valuation_date are globally unique; scored_sessions are strictly ordered and each belongs to exactly one fold/window",
+      "QAV-05 every fold has exactly one cash, buy-and-hold and matched control with equal Dataset/View/instrument/run/fold/window/capital/claim/cost identities; each complete $defs/authoritative_control_output validates and its kind-conditional explicit nulls, session-order arrays and output digest recompute",
+      "QAV-06 scored_session_set_digest validates against the complete ordered-array $defs/scored_session_set and every cash/pow, exposure/mean, matched affine, left-fold geometric aggregate/fold, edge, fold-fraction, effective-sample-size and component-level stress value recomputes under CONTRACT section 3.4 QUALIFICATION_BINARY64@1; both schema-bound input/output objects, every five-component MUL/FSUM/account intermediate, settlement/applicability fact and nextDown/equal/nextUp fixture match, while single-object, duplicate/reordered-session, aggregate/reordered/omitted/direct-subtraction/reassociated/FMA variants refuse issuance",
+      "QAV-07 the complete separately sealed $defs/family_record validates and contains full search/policy/stress/placebo/source/runtime/population evidence; inspected, covered, population and multiplicity candidate sets are identical strictly sorted sets with exactly one entry per inspected candidate; every population entry references only a prior ADMITTED or terminal ADMISSION_REJECTED qualification ID plus its role-valid nullable scored-session-set digest; the forward issuance fixture recomputes from distinct content-derived UNADMITTED predecessors without a placeholder, shared predecessor, identity mismatch, missing ancestry or backward terminal-record reference",
+      "QAV-08 candidate_multiplicity equals the one family entry whose digest equals candidate_digest; one-session admitted candidates emit NOT_TESTABLE/TOO_FEW_SESSIONS without bootstrap execution; raw p-values, all other NOT_TESTABLE states, deterministic Holm order and adjusted p-values recompute under CONTRACT section 5.6",
+      "QAV-09 gate states and reason_codes recompute from authoritative evidence; zero natural episodes serialize dependence_cluster_sizes=[] and effective_sample_size=0 without division; caller booleans never grant PASS",
+      "QAV-10 QUALIFIED requires every gate PASS and its own multiplicity entry ESTABLISHED with adjusted_p_value <= alpha; REJECTED requires at least one recomputed FAIL; every evidence, gate and reason field in a QUALIFIED or REJECTED record equals its immediately prior QUALIFICATION_EVALUATED record, so the terminal transition may change only qualification_id, state, ranking_eligible, ranking_status and transition as state semantics require",
+      "QAV-11 implementation_source_sha256 equals the installed reviewed study_qualification.py bytes and equals multiplicity.implementation_source_sha256; numerical_runtime is the complete schema-valid nested object, every loaded-object/CPU/auxv/loader/log1p/canonical/arithmetic subdigest recomputes under its exact domain, manifest_sha256 equals multiplicity.numerical_runtime_manifest_sha256, and the live process reproduces both arithmetic fixtures before issuance",
+      "QAV-12 OUTER_AUDIT and TERMINAL_HOLDOUT inputs are rejected by this schema/issuer and may only enter quant-platform/post-selection-evaluation@1"
+    ]
+  }
+}

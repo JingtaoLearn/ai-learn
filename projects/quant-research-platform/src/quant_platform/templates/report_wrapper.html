@@ -3,12 +3,16 @@
 {% block page %}report-wrapper{% endblock %}
 {% block content %}
 <section class="page-heading split">
-  <div><p class="eyebrow">VERIFIED OPAQUE SANDBOX</p><h1>Experiment report</h1><p><a href="/experiments/{{ attempt.experiment_id }}">Experiment {{ attempt.experiment_id[:12] }}…</a> · Attempt <span class="mono">{{ attempt_id }}</span></p></div>
+  <div><p class="eyebrow">CANONICAL ATTEMPT REPORT</p><h1>Experiment report</h1><p><a href="/experiments/{{ attempt.experiment_id }}">Experiment {{ attempt.experiment_id[:12] }}…</a> · Attempt <span class="mono">{{ attempt_id }}</span></p></div>
   <a class="button quiet" href="/experiments/{{ attempt.experiment_id }}">Back to experiment</a>
 </section>
 <section class="report-toolbar" aria-label="Report state and actions">
-  <div><strong>{{ report_label }}</strong><span>Checksum-verified content · scripts isolated without same-origin, network, forms, or parent navigation.</span></div>
-  <button class="quiet" type="button" data-fullscreen-report>Full screen</button>
+  <div><strong>{{ integrity_label }}</strong><span>Qualification: {{ qualification_label }} · Integrity is not qualification or deployment authority.</span></div>
+  {% if report_artifact_id %}<button class="quiet" type="button" data-fullscreen-report>Full screen</button>{% endif %}
 </section>
-<iframe sandbox="allow-scripts" title="Sandboxed experiment report" src="/reports/{{ attempt_id }}/content" data-testid="report-frame"></iframe>
+{% if report_artifact_id %}
+<iframe sandbox="allow-scripts" title="Sandboxed canonical Attempt report" src="/reports/{{ attempt_id }}/artifacts/{{ report_artifact_id }}/content" data-testid="report-frame"></iframe>
+{% else %}
+<section role="status"><h2>Canonical report unavailable</h2><p>No valid immutable latest pointer exists for this Attempt. Legacy bundled report bytes are not served.</p></section>
+{% endif %}
 {% endblock %}

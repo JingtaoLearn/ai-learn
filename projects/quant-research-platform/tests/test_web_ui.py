@@ -6,6 +6,7 @@ from pathlib import Path
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
+from test_attempt_report import _install_cross_attempt_artifact
 from test_experiment_service import _task
 from test_web_api import authenticate, bocom_action_view, make_app, snapshot
 
@@ -700,8 +701,14 @@ def test_dataset_detail_ui_is_authenticated_truthful_and_linked_from_preview(
 def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     app, client = make_app(tmp_path)
     authenticate(app, client)
+    task = _task(snapshot(app))
+    task["operators"]["report"] = {
+        "operator_id": "canonical_attempt_report",
+        "version": "1.0.0",
+        "parameters": {},
+    }
     created = app.state.experiments.submit(
-        _task(snapshot(app)), action_id="create"
+        task, action_id="create"
     )
     attempt = app.state.experiments.claim_next_attempt()
     result = ResolvedAttemptExecutor(
@@ -718,8 +725,11 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     history = client.get("/history")
     detail = client.get(f"/experiments/{created['experiment_id']}")
     wrapper = client.get(f"/reports/{attempt['attempt_id']}")
+    frame_match = re.search(r'<iframe[^>]+src="([^"]+)"', wrapper.text)
+    assert frame_match is not None
+    frame_path = frame_match.group(1)
     report = client.get(
-        f"/reports/{attempt['attempt_id']}/content",
+        frame_path,
         headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
     )
 
@@ -730,7 +740,8 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert 'data-page="report-wrapper"' in wrapper.text
     assert f'href="/experiments/{created["experiment_id"]}"' in wrapper.text
     assert attempt["attempt_id"] in wrapper.text
-    assert "Verified canonical report" in wrapper.text
+    assert "Report artifact integrity verified" in wrapper.text
+    assert "Qualification: Not evaluated" in wrapper.text
     assert 'data-fullscreen-report' in wrapper.text
     assert report.status_code == 200
     report_csp = report.headers["content-security-policy"]
@@ -765,7 +776,32 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
     assert created["experiment_id"][:12] + "…" in history.text
 
 
-def test_report_wrapper_labels_canonical_and_divergent_attempts_honestly(
+def test_exact_report_route_rejects_resealed_cross_attempt_document(tmp_path: Path):
+    app, client = make_app(tmp_path)
+    authenticate(app, client)
+    created = app.state.experiments.submit(
+        _task(snapshot(app)), action_id="cross-attempt-report"
+    )
+    attempt = app.state.experiments.claim_next_attempt()
+    assert attempt["experiment_id"] == created["experiment_id"]
+    manifest = _install_cross_attempt_artifact(
+        app.state.catalog.state_root,
+        attempt["attempt_id"],
+    )
+
+    response = client.get(
+        (
+            f"/reports/{attempt['attempt_id']}/artifacts/"
+            f"{manifest['report_artifact_id']}/content"
+        ),
+        headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
+    )
+
+    assert response.status_code == 404
+    assert response.text == "Report not found."
+
+
+def test_report_wrapper_fails_closed_when_no_canonical_artifact_exists(
     tmp_path: Path,
 ):
     app, client = make_app(tmp_path)
@@ -790,9 +826,10 @@ def test_report_wrapper_labels_canonical_and_divergent_attempts_honestly(
     canonical_wrapper = client.get(f"/reports/{canonical['attempt_id']}")
     divergent_wrapper = client.get(f"/reports/{divergent['attempt_id']}")
 
-    assert "Verified canonical report" in canonical_wrapper.text
-    assert "Verified divergent rerun report" in divergent_wrapper.text
-    assert "Verified canonical report" not in divergent_wrapper.text
+    assert "Canonical report unavailable" in canonical_wrapper.text
+    assert "Legacy bundled report bytes are not served" in canonical_wrapper.text
+    assert "Canonical report unavailable" in divergent_wrapper.text
+    assert "data-fullscreen-report" not in divergent_wrapper.text
 
 
 def test_history_filters_status_search_and_drift_functionally(tmp_path: Path):

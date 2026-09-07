@@ -680,7 +680,7 @@ try {
       sandbox: document.querySelector("[data-testid=report-frame]")?.getAttribute("sandbox"),
     })`);
     if (
-      report.canonical !== "Verified canonical report" ||
+      report.canonical !== "Report artifact integrity verified" ||
       !report.fullscreen ||
       report.sandbox !== "allow-scripts"
     ) {

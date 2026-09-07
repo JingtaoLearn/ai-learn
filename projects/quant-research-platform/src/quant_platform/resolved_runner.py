@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from .attempt_report import REPORT_OPERATOR_ID, publish_attempt_report
 from .catalog import Catalog
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService
@@ -213,7 +214,7 @@ class ResolvedAttemptExecutor:
 
     def _publish_audit(
         self, attempt: dict[str, Any], run: dict[str, Any], result_digest: str
-    ) -> None:
+    ) -> Path:
         root = self.catalog.state_root / "attempt-audit"
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = root / f"{attempt['attempt_id']}.json"
@@ -245,7 +246,7 @@ class ResolvedAttemptExecutor:
                 raise ResolvedExecutionError(
                     f"immutable attempt audit conflicts: {attempt['attempt_id']}"
                 )
-            return
+            return target
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{attempt['attempt_id']}.", dir=root
         )
@@ -260,6 +261,23 @@ class ResolvedAttemptExecutor:
         finally:
             if temporary.exists():
                 temporary.unlink()
+        return target
+
+    def _publish_canonical_report(
+        self,
+        attempt: dict[str, Any],
+        run_path: Path,
+        audit_path: Path,
+    ) -> dict[str, Any] | None:
+        report = attempt["resolved"]["operators"]["report"]
+        if report["operator_id"] != REPORT_OPERATOR_ID:
+            return None
+        return publish_attempt_report(
+            self.catalog.state_root,
+            run_path,
+            audit_path,
+            report,
+        )
 
     def __call__(self, attempt: dict[str, Any]) -> dict[str, str]:
         resolved = attempt["resolved"]
@@ -269,8 +287,11 @@ class ResolvedAttemptExecutor:
             slot
             for slot, operator in resolved["operators"].items()
             if (
-                operator["operator_id"] != BUILTIN_OPERATORS[slot]
-                or operator["resolved_version"] != "1.0.0"
+                not (slot == "report" and operator["operator_id"] == REPORT_OPERATOR_ID)
+                and (
+                    operator["operator_id"] != BUILTIN_OPERATORS[slot]
+                    or operator["resolved_version"] != "1.0.0"
+                )
             )
         }
         if custom_slots:
@@ -297,11 +318,19 @@ class ResolvedAttemptExecutor:
             config_path.unlink(missing_ok=True)
         run_path = Path(run["path"])
         result_digest = _result_digest(run_path)
-        self._publish_audit(attempt, run, result_digest)
+        audit_path = self._publish_audit(attempt, run, result_digest)
+        report = self._publish_canonical_report(attempt, run_path, audit_path)
         return {
             "result_path": str(run_path),
             "result_digest": result_digest,
-            "logs": f"Resolved strategy run status: {run['status']}",
+            "logs": (
+                f"Resolved strategy run status: {run['status']}"
+                if report is None
+                else (
+                    f"Resolved strategy run status: {run['status']}; "
+                    f"canonical report {report['artifact_id']}"
+                )
+            ),
         }
 
     def _run_composed(
@@ -489,9 +518,17 @@ class ResolvedAttemptExecutor:
             )
         result_digest = _result_digest(run_path)
         run = result | {"path": str(run_path)}
-        self._publish_audit(attempt, run, result_digest)
+        audit_path = self._publish_audit(attempt, run, result_digest)
+        report = self._publish_canonical_report(attempt, run_path, audit_path)
         return {
             "result_path": str(run_path),
             "result_digest": result_digest,
-            "logs": f"Resolved custom composition status: {result['status']}",
+            "logs": (
+                f"Resolved custom composition status: {result['status']}"
+                if report is None
+                else (
+                    f"Resolved custom composition status: {result['status']}; "
+                    f"canonical report {report['artifact_id']}"
+                )
+            ),
         }

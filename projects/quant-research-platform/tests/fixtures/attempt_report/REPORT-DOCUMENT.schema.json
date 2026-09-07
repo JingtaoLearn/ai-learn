@@ -1,0 +1,3816 @@
+{
+  "$id": "quant-platform/report-document/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "document_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "quant-platform/report-document/v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "sections": {
+      "items": false,
+      "maxItems": 11,
+      "minItems": 11,
+      "prefixItems": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 5,
+              "minItems": 5,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "attempt_id"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/attempt_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "experiment_id"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/experiment_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "run_id"
+                    },
+                    "raw": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/run_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "dataset_snapshot_id"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/dataset/snapshot_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "purpose"
+                    },
+                    "raw": {
+                      "const": "PRESENTATION_ONLY"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "contract"
+                        },
+                        "pointer": {
+                          "const": "/purpose"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "identity_and_purpose"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 5,
+              "minItems": 5,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "bundle_integrity"
+                    },
+                    "raw": {
+                      "const": "VERIFIED"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle-descriptor"
+                        },
+                        "pointer": {
+                          "const": "/verification/status"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "total_return_status"
+                        },
+                        "raw": {
+                          "enum": [
+                            "PRICE_RETURN_ONLY",
+                            "KNOWN_EVENT_CORRECTED_PARTIAL",
+                            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                            "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+                          ]
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/record/claim_state"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "total_return_status"
+                        },
+                        "raw": {
+                          "enum": [
+                            "PRICE_RETURN_ONLY",
+                            "KNOWN_EVENT_CORRECTED_PARTIAL",
+                            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+                          ]
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/projection/claim_state"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "total_return_status"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "matched_exposure_status"
+                        },
+                        "raw": {
+                          "enum": [
+                            "QUALIFIED",
+                            "REJECTED"
+                          ]
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/terminal_record/state"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "matched_exposure_status"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/terminal_record/state"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "ranking_status"
+                        },
+                        "raw": {
+                          "enum": [
+                            "READY_FOR_RANKING",
+                            "NOT_RANKED"
+                          ]
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/terminal_record/ranking_status"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "ranking_status"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/terminal_record/ranking_status"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "TOKEN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "promotion_ready"
+                        },
+                        "raw": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/record/ranking/eligible_for_promotion"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "BOOLEAN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "promotion_ready"
+                        },
+                        "raw": {
+                          "const": false
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/projection/ranking/eligible_for_promotion"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "BOOLEAN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "promotion_ready"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "BOOLEAN"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "evidence_status"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 8,
+              "minItems": 8,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "period_start"
+                    },
+                    "raw": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/period_start"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "DATE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "period_end"
+                    },
+                    "raw": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/period_end"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "DATE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "initial_capital_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/initial_capital_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "final_equity_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/final_equity_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "net_profit_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/net_profit_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "current_position"
+                    },
+                    "raw": {
+                      "enum": [
+                        "LONG",
+                        "FLAT"
+                      ]
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/current_position"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "closed_trades"
+                    },
+                    "raw": {
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/closed_trades"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "COUNT"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "open_trades"
+                    },
+                    "raw": {
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/open_trades"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "COUNT"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "account_summary"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "template_parameters"
+                    },
+                    "raw": {
+                      "type": "object"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/config.json"
+                        },
+                        "pointer": {
+                          "const": "/template/parameters"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "QR-CJSON-1"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "operators"
+                    },
+                    "raw": {
+                      "type": "object"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/operators"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "QR-CJSON-1"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "runtime"
+                    },
+                    "raw": {
+                      "type": "object"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/run_manifest.json"
+                        },
+                        "pointer": {
+                          "const": "/runtime"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "QR-CJSON-1"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "configuration"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 1,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "price_equity_rows"
+                    },
+                    "raw": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "close": {
+                            "type": "number"
+                          },
+                          "date": {
+                            "type": "string"
+                          },
+                          "equity": {
+                            "type": "number"
+                          },
+                          "price": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "date",
+                          "price",
+                          "close",
+                          "equity"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/daily_replay.csv"
+                        },
+                        "pointer": {
+                          "const": "/rows/*/{Date,price,close,equity}"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TABLE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "price_equity_path"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "events"
+                    },
+                    "raw": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "Date": {
+                            "type": "string"
+                          },
+                          "cash_after_cny": {
+                            "type": "number"
+                          },
+                          "cash_before_cny": {
+                            "type": "number"
+                          },
+                          "commission_cny": {
+                            "type": "number"
+                          },
+                          "holdings_after": {
+                            "type": "integer"
+                          },
+                          "holdings_before": {
+                            "type": "integer"
+                          },
+                          "notional_cny": {
+                            "type": "number"
+                          },
+                          "price": {
+                            "type": "number"
+                          },
+                          "quantity": {
+                            "type": "integer"
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "side": {
+                            "enum": [
+                              "BUY",
+                              "SELL"
+                            ]
+                          },
+                          "slippage_cny": {
+                            "type": "number"
+                          },
+                          "stamp_tax_cny": {
+                            "type": "number"
+                          },
+                          "total_cost_cny": {
+                            "type": "number"
+                          },
+                          "transfer_fee_cny": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "Date",
+                          "side",
+                          "price",
+                          "quantity",
+                          "notional_cny",
+                          "commission_cny",
+                          "transfer_fee_cny",
+                          "stamp_tax_cny",
+                          "slippage_cny",
+                          "total_cost_cny",
+                          "cash_before_cny",
+                          "cash_after_cny",
+                          "holdings_before",
+                          "holdings_after",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/events.csv"
+                        },
+                        "pointer": {
+                          "const": "/rows"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TABLE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "trades"
+                    },
+                    "raw": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "entry_cost_cny": {
+                            "type": "number"
+                          },
+                          "entry_date": {
+                            "type": "string"
+                          },
+                          "entry_price": {
+                            "type": "number"
+                          },
+                          "exit_cost_cny": {
+                            "type": "number"
+                          },
+                          "exit_date": {
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "exit_price": {
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "gross_pnl_cny": {
+                            "type": "number"
+                          },
+                          "net_pnl_cny": {
+                            "type": "number"
+                          },
+                          "quantity": {
+                            "type": "integer"
+                          },
+                          "return": {
+                            "type": "number"
+                          },
+                          "status": {
+                            "enum": [
+                              "OPEN",
+                              "CLOSED"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "entry_date",
+                          "entry_price",
+                          "quantity",
+                          "entry_cost_cny",
+                          "exit_date",
+                          "exit_price",
+                          "exit_cost_cny",
+                          "status",
+                          "gross_pnl_cny",
+                          "net_pnl_cny",
+                          "return"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/trades.csv"
+                        },
+                        "pointer": {
+                          "const": "/rows"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TABLE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "holdings"
+                    },
+                    "raw": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "date": {
+                            "type": "string"
+                          },
+                          "holdings": {
+                            "type": "integer"
+                          },
+                          "position_after": {
+                            "enum": [
+                              0,
+                              1
+                            ]
+                          }
+                        },
+                        "required": [
+                          "date",
+                          "holdings",
+                          "position_after"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/daily_replay.csv"
+                        },
+                        "pointer": {
+                          "const": "/rows/*/{Date,holdings,position_after}"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TABLE"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "events_trades_holdings"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 8,
+              "minItems": 8,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "commission_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/cost_breakdown.json"
+                        },
+                        "pointer": {
+                          "const": "/commission_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "transfer_fee_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/cost_breakdown.json"
+                        },
+                        "pointer": {
+                          "const": "/transfer_fee_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "stamp_tax_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/cost_breakdown.json"
+                        },
+                        "pointer": {
+                          "const": "/stamp_tax_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "slippage_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/cost_breakdown.json"
+                        },
+                        "pointer": {
+                          "const": "/slippage_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "total_cost_cny"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/cost_breakdown.json"
+                        },
+                        "pointer": {
+                          "const": "/total_cost_cny"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "CNY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "gross_dividends_cny"
+                        },
+                        "raw": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/gross_dividends_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "gross_dividends_cny"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/gross_dividends_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "dividend_tax_cny"
+                        },
+                        "raw": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/dividend_tax_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "dividend_tax_cny"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/dividend_tax_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "outstanding_tax_cny"
+                        },
+                        "raw": {
+                          "type": "number"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/outstanding_tax_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "outstanding_tax_cny"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "bundle/metrics.json"
+                            },
+                            "pointer": {
+                              "const": "/outstanding_tax_cny"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "CNY"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "costs_and_accounting"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "net_return"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/net_return"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "FRACTION"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "max_drawdown"
+                    },
+                    "raw": {
+                      "type": "number"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle/metrics.json"
+                        },
+                        "pointer": {
+                          "const": "/max_drawdown"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "FRACTION"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "total_return_attachment"
+                        },
+                        "raw": {
+                          "oneOf": [
+                            {
+                              "$ref": "AUTHORITY-ATTACHMENTS.schema.json#/$defs/total_return_full"
+                            },
+                            {
+                              "$ref": "AUTHORITY-ATTACHMENTS.schema.json#/$defs/total_return_read_time"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "total_return_attachment"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "total-return-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "total_return_claim"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "matched_exposure_attachment"
+                        },
+                        "raw": {
+                          "$ref": "AUTHORITY-ATTACHMENTS.schema.json#/$defs/matched_exposure_terminal"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "matched_exposure_attachment"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "matched-exposure-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "const": "AVAILABLE"
+                        },
+                        "display": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "field_id": {
+                          "const": "study_terminal_attachment"
+                        },
+                        "raw": {
+                          "$ref": "AUTHORITY-ATTACHMENTS.schema.json#/$defs/study_terminal_no_qualified"
+                        },
+                        "reason": {
+                          "type": "null"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "study-terminal-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "availability": {
+                          "enum": [
+                            "UNAVAILABLE",
+                            "NOT_EVALUATED",
+                            "NOT_QUALIFIED"
+                          ]
+                        },
+                        "display": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "field_id": {
+                          "const": "study_terminal_attachment"
+                        },
+                        "raw": {
+                          "type": "null"
+                        },
+                        "reason": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "source_ref": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifact": {
+                              "const": "study-terminal-attachment"
+                            },
+                            "pointer": {
+                              "const": "/"
+                            }
+                          },
+                          "required": [
+                            "artifact",
+                            "pointer"
+                          ],
+                          "type": "object"
+                        },
+                        "unit": {
+                          "const": "QR-CJSON-1"
+                        }
+                      },
+                      "required": [
+                        "field_id",
+                        "source_ref",
+                        "availability",
+                        "reason",
+                        "raw",
+                        "display",
+                        "unit"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "matched_exposure_qualification"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "integrity_not_qualification"
+                    },
+                    "raw": {
+                      "const": "INTEGRITY_IS_NOT_QUALIFICATION"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "contract"
+                        },
+                        "pointer": {
+                          "const": "/limitations/0"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "qualification_not_deployment"
+                    },
+                    "raw": {
+                      "const": "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "contract"
+                        },
+                        "pointer": {
+                          "const": "/limitations/1"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "no_recomputation"
+                    },
+                    "raw": {
+                      "const": "PRESENTATION_ONLY_NO_RECOMPUTATION"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "contract"
+                        },
+                        "pointer": {
+                          "const": "/limitations/2"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "TOKEN"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "limitations"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": false,
+              "maxItems": 6,
+              "minItems": 6,
+              "prefixItems": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "bundle_id"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "bundle-descriptor"
+                        },
+                        "pointer": {
+                          "const": "/bundle_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "core_result_digest"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "attempt-audit"
+                        },
+                        "pointer": {
+                          "const": "/result_digest"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "operator_id"
+                    },
+                    "raw": {
+                      "const": "canonical_attempt_report"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "operator-manifest"
+                        },
+                        "pointer": {
+                          "const": "/operator_id"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "operator_version"
+                    },
+                    "raw": {
+                      "const": "1.0.0"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "operator-manifest"
+                        },
+                        "pointer": {
+                          "const": "/semantic_version"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "SEMVER"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "operator_source_sha256"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "operator-manifest"
+                        },
+                        "pointer": {
+                          "const": "/source/sha256"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "availability": {
+                      "const": "AVAILABLE"
+                    },
+                    "display": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "field_id": {
+                      "const": "operator_content_digest"
+                    },
+                    "raw": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "null"
+                    },
+                    "source_ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "const": "operator-manifest"
+                        },
+                        "pointer": {
+                          "const": "/content_digest"
+                        }
+                      },
+                      "required": [
+                        "artifact",
+                        "pointer"
+                      ],
+                      "type": "object"
+                    },
+                    "unit": {
+                      "const": "IDENTITY"
+                    }
+                  },
+                  "required": [
+                    "field_id",
+                    "source_ref",
+                    "availability",
+                    "reason",
+                    "raw",
+                    "display",
+                    "unit"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "section_id": {
+              "const": "provenance"
+            }
+          },
+          "required": [
+            "section_id",
+            "fields"
+          ],
+          "type": "object"
+        }
+      ],
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "schema_id",
+    "document_id",
+    "sections"
+  ],
+  "type": "object"
+}

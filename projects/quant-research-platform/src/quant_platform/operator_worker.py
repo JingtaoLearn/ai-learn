@@ -7,21 +7,32 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from .attempt_report import (
+    render_report_document,
+    validate_report_document,
+    verify_report_operator_bundle,
+)
 from .schemas import canonical_json_bytes, validate_parameters
 from .submissions import EXECUTION_ENVELOPE
 
 
 ALLOWED_BUILTINS = {
     "abs": abs,
+    "chr": chr,
+    "dict": dict,
     "float": float,
     "int": int,
     "len": len,
+    "list": list,
     "max": max,
     "min": min,
     "range": range,
+    "str": str,
     "sum": sum,
+    "type": type,
+    "ValueError": ValueError,
 }
 FORBIDDEN_CALLS = {"compile", "eval", "exec", "globals", "locals", "open", "__import__"}
 SLOTS = {"fit", "smoothing", "statistic", "decision", "sizing", "cost", "report"}
@@ -261,9 +272,15 @@ def load_published_operator(
     *,
     expected_content_digest: str | None = None,
     expected_evidence_digest: str | None = None,
-) -> tuple[str, Callable[[dict[str, Any], dict[str, Any]], Any]]:
+) -> tuple[str, Callable[..., Any]]:
     bundle = Path(bundle_dir)
     manifest = _load_json(bundle / "manifest.json")
+    if manifest.get("api_version") == 2:
+        return _load_published_report_operator(
+            bundle,
+            expected_content_digest=expected_content_digest,
+            expected_evidence_digest=expected_evidence_digest,
+        )
     tests = _load_json(bundle / "tests.json")
     evidence = _load_json(bundle / "evidence.json")
     source = (bundle / "operator.py").read_text(encoding="utf-8")
@@ -336,11 +353,85 @@ def load_published_operator(
     return slot, invoke
 
 
+def _load_published_report_operator(
+    bundle: Path,
+    *,
+    expected_content_digest: str | None,
+    expected_evidence_digest: str | None,
+) -> tuple[str, Callable[..., Any]]:
+    identity = verify_report_operator_bundle(
+        bundle,
+        expected_content_digest=expected_content_digest,
+    )
+    evidence = _load_json(bundle / "evidence.json")
+    evidence_digest = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+    if (
+        expected_evidence_digest is not None
+        and evidence_digest != expected_evidence_digest
+    ):
+        raise ValueError("published operator does not match the resolved evidence digest")
+    source = (bundle / "operator.py").read_text(encoding="utf-8")
+    code = _validate_source(source)
+    namespace: dict[str, Any] = {"__builtins__": ALLOWED_BUILTINS}
+    exec(code, namespace)
+    if (
+        namespace.get("OPERATOR_API_VERSION") != 2
+        or namespace.get("SLOT") != "report"
+        or not callable(namespace.get("apply"))
+    ):
+        raise ValueError("published report operator runtime contract mismatch")
+    apply = namespace["apply"]
+
+    def invoke(
+        payload: dict[str, Any],
+        parameters: dict[str, Any],
+        *,
+        attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> str:
+        isolated_payload = validate_report_document(
+            copy.deepcopy(payload),
+            attachment_registry=attachment_registry,
+        )
+        before = canonical_json_bytes(isolated_payload)
+        validated_parameters = validate_parameters(
+            identity["parameter_schema"],
+            parameters,
+        )
+        first = apply(isolated_payload, validated_parameters)
+        second = apply(copy.deepcopy(payload), dict(validated_parameters))
+        if not isinstance(first, str) or not first or len(first.encode("utf-8")) > 1_000_000:
+            raise ValueError("report output must be bounded non-empty HTML")
+        if first != second:
+            raise ValueError("report operator is not deterministic")
+        if canonical_json_bytes(isolated_payload) != before:
+            raise ValueError("report operator mutated its input payload")
+        native = render_report_document(
+            payload,
+            validated_parameters,
+            attachment_registry=attachment_registry,
+        ).decode("utf-8")
+        if first != native:
+            raise ValueError("report operator source diverges from canonical renderer")
+        return first
+
+    return "report", invoke
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        if len(arguments) == 3 and arguments[0] == "render-report":
+            slot, invoke = load_published_operator(arguments[1])
+            if slot != "report":
+                raise ValueError("render-report requires a report operator")
+            document = _load_json(Path(arguments[2]))
+            sys.stdout.write(invoke(document, {}))
+            return 0
         if len(arguments) != 2 or arguments[0] != "validate":
-            raise ValueError("usage: operator_worker validate CANDIDATE_DIR")
+            raise ValueError(
+                "usage: operator_worker validate CANDIDATE_DIR | "
+                "render-report BUNDLE_DIR REPORT_DOCUMENT"
+            )
         result = validate_candidate(arguments[1])
         print(
             json.dumps(

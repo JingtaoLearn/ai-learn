@@ -15,6 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from .attempt_report import (
+    REPORT_BUNDLE_FILES,
+    canonical_report_operator_bundle,
+    verify_report_operator_bundle,
+)
 from .catalog import Catalog
 from .isolation import build_operator_validation_command
 from .runner import RunnerTerminationError, _terminate_container, reconcile_container
@@ -62,6 +67,57 @@ MAX_SOURCE_BYTES = 64 * 1024
 MAX_DOCUMENTATION_BYTES = 128 * 1024
 MAX_FIXTURES = 50
 Validator = Callable[[Path], dict[str, Any]]
+
+
+def write_canonical_report_bundle(catalog: Catalog) -> tuple[str, dict[str, Any]]:
+    """Materialize and verify the immutable API-v2 built-in report bundle."""
+
+    bundle = canonical_report_operator_bundle()
+    relative = Path("operators/canonical_attempt_report/1.0.0")
+    target = catalog.state_root / relative
+    if target.exists():
+        identity = verify_report_operator_bundle(
+            target,
+            expected_content_digest=bundle["content_digest"],
+        )
+        return relative.as_posix(), identity
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".1.0.0-report-", dir=target.parent))
+    try:
+        for name, payload in bundle["content"].items():
+            (staging / name).write_bytes(payload)
+        (staging / "manifest.json").write_bytes(
+            canonical_json_bytes(bundle["manifest"]) + b"\n"
+        )
+        (staging / "evidence.json").write_bytes(
+            canonical_json_bytes(bundle["evidence"]) + b"\n"
+        )
+        if {path.name for path in staging.iterdir()} != REPORT_BUNDLE_FILES:
+            raise OperatorSubmissionError("canonical report bundle topology is invalid")
+        for path in staging.iterdir():
+            metadata = os.stat(path, follow_symlinks=False)
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise OperatorSubmissionError(
+                    f"canonical report bundle contains unsafe file: {path.name}"
+                )
+            path.chmod(0o444)
+        staging.chmod(0o555)
+        os.rename(staging, target)
+    finally:
+        if staging.exists():
+            staging.chmod(0o700)
+            for path in staging.iterdir():
+                path.chmod(0o600)
+            shutil.rmtree(staging)
+    identity = verify_report_operator_bundle(
+        target,
+        expected_content_digest=bundle["content_digest"],
+    )
+    return relative.as_posix(), identity
 
 
 def _require_text(value: Any, path: str, maximum: int) -> str:

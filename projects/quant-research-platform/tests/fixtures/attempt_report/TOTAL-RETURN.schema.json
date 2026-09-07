@@ -1,0 +1,696 @@
+{
+  "$defs": {
+    "full_trusted_record": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {
+          "additionalProperties": false,
+          "properties": {
+            "account_events_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "account_trades_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "accounting_outcome_checked_as_of": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "accounting_outcome_use_role": {
+              "enum": [
+                null,
+                "ACCOUNTING_OUTCOME"
+              ]
+            },
+            "accounts": {
+              "additionalProperties": false,
+              "properties": {
+                "buy_and_hold": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "events_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "final_state_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "trades_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "events_sha256",
+                    "trades_sha256",
+                    "final_state_sha256"
+                  ],
+                  "type": "object"
+                },
+                "strategy": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "events_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "final_state_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "trades_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "events_sha256",
+                    "trades_sha256",
+                    "final_state_sha256"
+                  ],
+                  "type": "object"
+                },
+                "zero_cost": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "events_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "final_state_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "trades_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "events_sha256",
+                    "trades_sha256",
+                    "final_state_sha256"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "strategy",
+                "zero_cost",
+                "buy_and_hold"
+              ],
+              "type": "object"
+            },
+            "causal_feature_cutoff": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "control_parity_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "corporate_action_evidence_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "event_revision_ids": {
+              "items": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "execution_view_snapshot_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "parent_corporate_action_evidence_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "parent_snapshot_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "raw_artifact_sha256s": {
+              "items": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "result_digest": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "rounding_policy_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "rounding_policy_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "run_manifest_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "scoring_mask_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "settlement_policy_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "settlement_policy_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tax_policy_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tax_policy_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "view_corporate_action_evidence_sha256": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "corporate_action_evidence_sha256",
+            "raw_artifact_sha256s",
+            "event_revision_ids",
+            "tax_policy_id",
+            "tax_policy_sha256",
+            "settlement_policy_id",
+            "settlement_policy_sha256",
+            "rounding_policy_id",
+            "rounding_policy_sha256",
+            "parent_snapshot_id",
+            "execution_view_snapshot_id",
+            "parent_corporate_action_evidence_sha256",
+            "view_corporate_action_evidence_sha256",
+            "scoring_mask_sha256",
+            "causal_feature_cutoff",
+            "accounting_outcome_checked_as_of",
+            "accounting_outcome_use_role",
+            "result_digest",
+            "run_manifest_sha256",
+            "account_events_sha256",
+            "account_trades_sha256",
+            "accounts",
+            "control_parity_sha256"
+          ],
+          "type": "object"
+        },
+        "checks": {
+          "additionalProperties": false,
+          "properties": {
+            "causal_separation": {
+              "type": "boolean"
+            },
+            "controls_and_metrics": {
+              "type": "boolean"
+            },
+            "coverage_complete": {
+              "type": "boolean"
+            },
+            "dataset_binding": {
+              "type": "boolean"
+            },
+            "event_set_complete": {
+              "type": "boolean"
+            },
+            "exact_fen_quantity": {
+              "type": "boolean"
+            },
+            "immutable_bundle": {
+              "type": "boolean"
+            },
+            "issuer_authorized": {
+              "type": "boolean"
+            },
+            "ledgers_complete": {
+              "type": "boolean"
+            },
+            "policy_applicable": {
+              "type": "boolean"
+            },
+            "settled": {
+              "type": "boolean"
+            },
+            "strategy_control_parity": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "immutable_bundle",
+            "dataset_binding",
+            "coverage_complete",
+            "event_set_complete",
+            "policy_applicable",
+            "strategy_control_parity",
+            "ledgers_complete",
+            "exact_fen_quantity",
+            "settled",
+            "causal_separation",
+            "controls_and_metrics",
+            "issuer_authorized"
+          ],
+          "type": "object"
+        },
+        "claim_state": {
+          "enum": [
+            "PRICE_RETURN_ONLY",
+            "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+            "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+          ]
+        },
+        "complete_contract_id": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage_basis": {
+          "enum": [
+            "NONE",
+            "COMPLETE_ENUMERATION_CONTRACT",
+            "APPROVED_EQUIVALENT_CONTRACT"
+          ]
+        },
+        "coverage_id": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage_state": {
+          "enum": [
+            "UNKNOWN_MISSING",
+            "VERIFIED_EVENTS",
+            "VERIFIED_NO_ACTION",
+            "VERIFIED_COMPLETE_INTERVAL"
+          ]
+        },
+        "equivalent_contract_approval_id": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issuer": {
+          "const": "quant-platform/total-return-qualification@1"
+        },
+        "qualification_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "ranking": {
+          "additionalProperties": false,
+          "properties": {
+            "eligible_for_promotion": {
+              "type": "boolean"
+            },
+            "eligible_for_ranking": {
+              "type": "boolean"
+            },
+            "historical_exposure": {
+              "enum": [
+                "PRISTINE",
+                "EXPOSED",
+                "UNKNOWN"
+              ]
+            },
+            "reason_codes": {
+              "items": {
+                "enum": [
+                  "PRICE_ONLY",
+                  "KNOWN_EVENT_PARTIAL",
+                  "UNKNOWN_OR_MISSING_COVERAGE",
+                  "CONFLICTED_OR_QUARANTINED_EVENT",
+                  "UNSUPPORTED_SCOPE_OR_ACTION",
+                  "COMPLETE_CONTRACT_MISSING",
+                  "POLICY_INAPPLICABLE_OR_MISSING",
+                  "SETTLEMENT_INCOMPLETE",
+                  "TAX_UNSETTLED",
+                  "RECONCILIATION_FAILED",
+                  "CONTROL_LEDGER_MISSING",
+                  "CONTROL_PARITY_FAILED",
+                  "DIGEST_MISMATCH",
+                  "CAUSAL_LEAKAGE",
+                  "STALE_SCHEMA",
+                  "HISTORICALLY_EXPOSED",
+                  "HISTORICAL_EXPOSURE_UNKNOWN",
+                  "OTHER_STUDY_GATE_FAILED"
+                ]
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "eligible_for_ranking",
+            "eligible_for_promotion",
+            "historical_exposure",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "source_issuer": {
+          "enum": [
+            "CORPORATE_ACTION_COLLECTOR",
+            "STRATEGY_REPLAY",
+            "STRATEGY_RUNNER",
+            "HISTORICAL_RECORD"
+          ]
+        },
+        "source_total_return_claim": {
+          "enum": [
+            "FORBIDDEN",
+            "PRICE_RETURN_ONLY",
+            "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+          ]
+        },
+        "transition": {
+          "additionalProperties": false,
+          "properties": {
+            "from_state": {
+              "enum": [
+                null,
+                "PRICE_RETURN_ONLY",
+                "KNOWN_EVENT_CORRECTED_PARTIAL",
+                "AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+              ]
+            },
+            "prior_qualification_id": {
+              "oneOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "same_corporate_action_evidence": {
+              "type": "boolean"
+            },
+            "to_state": {
+              "enum": [
+                "PRICE_RETURN_ONLY",
+                "KNOWN_EVENT_CORRECTED_PARTIAL",
+                "AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                "AFTER_TAX_TOTAL_RETURN_VERIFIED"
+              ]
+            }
+          },
+          "required": [
+            "prior_qualification_id",
+            "from_state",
+            "to_state",
+            "same_corporate_action_evidence"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "qualification_id",
+        "issuer",
+        "source_issuer",
+        "source_total_return_claim",
+        "claim_state",
+        "coverage_state",
+        "coverage_basis",
+        "coverage_id",
+        "complete_contract_id",
+        "equivalent_contract_approval_id",
+        "bindings",
+        "checks",
+        "ranking",
+        "transition"
+      ],
+      "type": "object"
+    },
+    "read_time_projection": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_state": {
+          "enum": [
+            "PRICE_RETURN_ONLY",
+            "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+          ]
+        },
+        "coverage_state": {
+          "enum": [
+            "UNKNOWN_MISSING",
+            "VERIFIED_EVENTS",
+            "VERIFIED_NO_ACTION",
+            "VERIFIED_COMPLETE_INTERVAL"
+          ]
+        },
+        "issuer": {
+          "type": "null"
+        },
+        "qualification_id": {
+          "type": "null"
+        },
+        "ranking": {
+          "additionalProperties": false,
+          "properties": {
+            "eligible_for_promotion": {
+              "const": false
+            },
+            "eligible_for_ranking": {
+              "const": false
+            },
+            "historical_exposure": {
+              "const": "UNKNOWN"
+            },
+            "reason_codes": {
+              "items": false,
+              "maxItems": 1,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "enum": [
+                    "PRICE_ONLY",
+                    "KNOWN_EVENT_PARTIAL",
+                    "UNKNOWN_OR_MISSING_COVERAGE"
+                  ]
+                }
+              ],
+              "type": "array"
+            }
+          },
+          "required": [
+            "eligible_for_ranking",
+            "eligible_for_promotion",
+            "historical_exposure",
+            "reason_codes"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "source_issuer": {
+          "enum": [
+            "CORPORATE_ACTION_COLLECTOR",
+            "STRATEGY_REPLAY",
+            "STRATEGY_RUNNER",
+            "HISTORICAL_RECORD"
+          ]
+        },
+        "source_total_return_claim": {
+          "enum": [
+            "PRICE_RETURN_ONLY",
+            "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+          ]
+        },
+        "trusted_qualification_absent": {
+          "const": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "qualification_id",
+        "issuer",
+        "source_issuer",
+        "source_total_return_claim",
+        "claim_state",
+        "coverage_state",
+        "ranking",
+        "trusted_qualification_absent"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "quant-platform/total-return-report-attachments/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

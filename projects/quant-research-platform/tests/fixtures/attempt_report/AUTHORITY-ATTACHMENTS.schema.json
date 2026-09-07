@@ -1,0 +1,1807 @@
+{
+  "$defs": {
+    "matched_exposure_admission_rejected": {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "MATCHED-EXPOSURE.schema.json"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "candidate_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-event.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "terminal-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "MATCHED_EXPOSURE_ADMISSION_REJECTED"
+        },
+        "study_event": {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "CANDIDATE_EVALUATED"
+            },
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "candidate_digest": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "qualification_id": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "ADMISSION_REJECTED",
+                    "REJECTED"
+                  ]
+                }
+              },
+              "required": [
+                "candidate_digest",
+                "qualification_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "payload_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "study_id": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "study_id",
+            "sequence",
+            "event_type",
+            "payload",
+            "payload_sha256"
+          ],
+          "type": "object"
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "terminal_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "study_id",
+        "candidate_digest",
+        "ancestry",
+        "terminal_record",
+        "study_event",
+        "files"
+      ],
+      "type": "object"
+    },
+    "matched_exposure_terminal": {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "MATCHED-EXPOSURE.schema.json"
+          },
+          "maxItems": 8,
+          "minItems": 3,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "candidate_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "family_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json#/$defs/family_record"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 5,
+          "minItems": 5,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "family-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-event.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "terminal-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "MATCHED_EXPOSURE_TERMINAL"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "study_event": {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "CANDIDATE_EVALUATED"
+            },
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "candidate_digest": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "qualification_id": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "ADMISSION_REJECTED",
+                    "REJECTED"
+                  ]
+                }
+              },
+              "required": [
+                "candidate_digest",
+                "qualification_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "payload_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "study_id": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "study_id",
+            "sequence",
+            "event_type",
+            "payload",
+            "payload_sha256"
+          ],
+          "type": "object"
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "terminal_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "study_id",
+        "candidate_digest",
+        "metric_document_digest",
+        "terminal_record",
+        "ancestry",
+        "family_record",
+        "study_event",
+        "files"
+      ],
+      "type": "object"
+    },
+    "study_terminal_no_qualified": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "projection.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "qualification-attachment-ids.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-events.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "STUDY_TERMINAL_NO_QUALIFIED"
+        },
+        "projection": {
+          "$ref": "#/$defs/study_terminal_payload"
+        },
+        "qualification_attachment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "study_events": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "event_type": {
+                "const": "CANDIDATE_EVALUATED"
+              },
+              "payload": {
+                "additionalProperties": false,
+                "properties": {
+                  "candidate_digest": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "qualification_id": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "ADMISSION_REJECTED",
+                      "REJECTED"
+                    ]
+                  }
+                },
+                "required": [
+                  "candidate_digest",
+                  "qualification_id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "payload_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "sequence": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "study_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "study_id",
+              "sequence",
+              "event_type",
+              "payload",
+              "payload_sha256"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "study_id",
+        "qualification_attachment_ids",
+        "study_events",
+        "projection",
+        "files"
+      ],
+      "type": "object"
+    },
+    "study_terminal_payload": {
+      "additionalProperties": false,
+      "properties": {
+        "champion": {
+          "type": "null"
+        },
+        "champion_evidence": {
+          "type": "null"
+        },
+        "claim": {
+          "const": "REJECTED_NO_EDGE"
+        },
+        "decision": {
+          "const": "REJECTED_NO_EDGE"
+        },
+        "holdout": {
+          "additionalProperties": false,
+          "properties": {
+            "access": {
+              "const": "NOT_GRANTED"
+            },
+            "outcome": {
+              "const": "NOT_RUN"
+            }
+          },
+          "required": [
+            "access",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "qualification_outcome": {
+          "const": "NO_QUALIFIED_CANDIDATE"
+        },
+        "ranking": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "candidate_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "qualification_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "ranking_status": {
+                "const": "NOT_RANKED"
+              },
+              "state": {
+                "enum": [
+                  "ADMISSION_REJECTED",
+                  "REJECTED"
+                ]
+              }
+            },
+            "required": [
+              "candidate_digest",
+              "qualification_id",
+              "state",
+              "ranking_status"
+            ],
+            "type": "object"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "rationale": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "selection_outcome": {
+          "const": "NO_QUALIFIED_CANDIDATE"
+        },
+        "statistical_significance": {
+          "const": "NOT_ESTABLISHED"
+        }
+      },
+      "required": [
+        "qualification_outcome",
+        "decision",
+        "selection_outcome",
+        "champion",
+        "champion_evidence",
+        "holdout",
+        "ranking",
+        "claim",
+        "rationale",
+        "statistical_significance"
+      ],
+      "type": "object"
+    },
+    "total_return_full": {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "TOTAL-RETURN.schema.json#/$defs/full_trusted_record"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "TOTAL_RETURN_FULL"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "record": {
+          "$ref": "TOTAL-RETURN.schema.json#/$defs/full_trusted_record"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "metric_document_digest",
+        "files",
+        "record",
+        "ancestry"
+      ],
+      "type": "object"
+    },
+    "total_return_read_time": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "projection.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "TOTAL_RETURN_READ_TIME"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "projection": {
+          "$ref": "TOTAL-RETURN.schema.json#/$defs/read_time_projection"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "metric_document_digest",
+        "files",
+        "projection"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "quant-platform/report-authority-attachment/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "TOTAL-RETURN.schema.json#/$defs/full_trusted_record"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "TOTAL_RETURN_FULL"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "record": {
+          "$ref": "TOTAL-RETURN.schema.json#/$defs/full_trusted_record"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "metric_document_digest",
+        "files",
+        "record",
+        "ancestry"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "projection.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "TOTAL_RETURN_READ_TIME"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "projection": {
+          "$ref": "TOTAL-RETURN.schema.json#/$defs/read_time_projection"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "metric_document_digest",
+        "files",
+        "projection"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "MATCHED-EXPOSURE.schema.json"
+          },
+          "maxItems": 8,
+          "minItems": 3,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "bundle_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "candidate_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "experiment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "family_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json#/$defs/family_record"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 5,
+          "minItems": 5,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "binding.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "family-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-event.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "terminal-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "MATCHED_EXPOSURE_TERMINAL"
+        },
+        "metric_document_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "result_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "study_event": {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "CANDIDATE_EVALUATED"
+            },
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "candidate_digest": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "qualification_id": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "ADMISSION_REJECTED",
+                    "REJECTED"
+                  ]
+                }
+              },
+              "required": [
+                "candidate_digest",
+                "qualification_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "payload_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "study_id": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "study_id",
+            "sequence",
+            "event_type",
+            "payload",
+            "payload_sha256"
+          ],
+          "type": "object"
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "terminal_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "attempt_id",
+        "experiment_id",
+        "bundle_id",
+        "result_digest",
+        "study_id",
+        "candidate_digest",
+        "metric_document_digest",
+        "terminal_record",
+        "ancestry",
+        "family_record",
+        "study_event",
+        "files"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "projection.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "qualification-attachment-ids.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-events.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "STUDY_TERMINAL_NO_QUALIFIED"
+        },
+        "projection": {
+          "additionalProperties": false,
+          "properties": {
+            "champion": {
+              "type": "null"
+            },
+            "champion_evidence": {
+              "type": "null"
+            },
+            "claim": {
+              "const": "REJECTED_NO_EDGE"
+            },
+            "decision": {
+              "const": "REJECTED_NO_EDGE"
+            },
+            "holdout": {
+              "additionalProperties": false,
+              "properties": {
+                "access": {
+                  "const": "NOT_GRANTED"
+                },
+                "outcome": {
+                  "const": "NOT_RUN"
+                }
+              },
+              "required": [
+                "access",
+                "outcome"
+              ],
+              "type": "object"
+            },
+            "qualification_outcome": {
+              "const": "NO_QUALIFIED_CANDIDATE"
+            },
+            "ranking": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "candidate_digest": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "qualification_id": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "ranking_status": {
+                    "const": "NOT_RANKED"
+                  },
+                  "state": {
+                    "enum": [
+                      "ADMISSION_REJECTED",
+                      "REJECTED"
+                    ]
+                  }
+                },
+                "required": [
+                  "candidate_digest",
+                  "qualification_id",
+                  "state",
+                  "ranking_status"
+                ],
+                "type": "object"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "rationale": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "selection_outcome": {
+              "const": "NO_QUALIFIED_CANDIDATE"
+            },
+            "statistical_significance": {
+              "const": "NOT_ESTABLISHED"
+            }
+          },
+          "required": [
+            "qualification_outcome",
+            "decision",
+            "selection_outcome",
+            "champion",
+            "champion_evidence",
+            "holdout",
+            "ranking",
+            "claim",
+            "rationale",
+            "statistical_significance"
+          ],
+          "type": "object"
+        },
+        "qualification_attachment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "study_events": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "event_type": {
+                "const": "CANDIDATE_EVALUATED"
+              },
+              "payload": {
+                "additionalProperties": false,
+                "properties": {
+                  "candidate_digest": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "qualification_id": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "ADMISSION_REJECTED",
+                      "REJECTED"
+                    ]
+                  }
+                },
+                "required": [
+                  "candidate_digest",
+                  "qualification_id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "payload_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "sequence": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "study_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "study_id",
+              "sequence",
+              "event_type",
+              "payload",
+              "payload_sha256"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "study_id",
+        "qualification_attachment_ids",
+        "study_events",
+        "projection",
+        "files"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "ancestry": {
+          "items": {
+            "$ref": "MATCHED-EXPOSURE.schema.json"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
+        "attachment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "candidate_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "files": {
+          "items": false,
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "ancestry.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "study-event.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "const": "terminal-record.json"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "size",
+                "sha256"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "kind": {
+          "const": "MATCHED_EXPOSURE_ADMISSION_REJECTED"
+        },
+        "study_event": {
+          "additionalProperties": false,
+          "properties": {
+            "event_type": {
+              "const": "CANDIDATE_EVALUATED"
+            },
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "candidate_digest": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "qualification_id": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "ADMISSION_REJECTED",
+                    "REJECTED"
+                  ]
+                }
+              },
+              "required": [
+                "candidate_digest",
+                "qualification_id",
+                "state"
+              ],
+              "type": "object"
+            },
+            "payload_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "study_id": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "study_id",
+            "sequence",
+            "event_type",
+            "payload",
+            "payload_sha256"
+          ],
+          "type": "object"
+        },
+        "study_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "terminal_record": {
+          "$ref": "MATCHED-EXPOSURE.schema.json"
+        }
+      },
+      "required": [
+        "kind",
+        "attachment_id",
+        "study_id",
+        "candidate_digest",
+        "ancestry",
+        "terminal_record",
+        "study_event",
+        "files"
+      ],
+      "type": "object"
+    }
+  ]
+}
