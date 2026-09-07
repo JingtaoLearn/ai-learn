@@ -202,15 +202,39 @@ def _complete_authority_document(total_key: str) -> tuple[dict, dict[str, dict]]
         for attachment in fixture["attachments"].values()
     }
     document = copy.deepcopy(fixture["report_documents"][total_key])
+    total = registry[fixture["attachments"][total_key]["attachment_id"]]
     matched = registry[
         fixture["attachments"]["MATCHED_EXPOSURE_TERMINAL"]["attachment_id"]
     ]
     study = registry[
         fixture["attachments"]["STUDY_TERMINAL_NO_QUALIFIED"]["attachment_id"]
     ]
+    _embed_attachment(document, "total_return_attachment", total)
     _embed_attachment(document, "matched_exposure_attachment", matched)
     _embed_attachment(document, "study_terminal_attachment", study)
     fields = _document_fields(document)
+    source_name = "record" if total_key == "TOTAL_RETURN_FULL" else "projection"
+    source = total[source_name]
+    fields["total_return_status"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=source["claim_state"],
+        display=source["claim_state"],
+        source_ref={
+            "artifact": "total-return-attachment",
+            "pointer": f"/{source_name}/claim_state",
+        },
+    )
+    fields["promotion_ready"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=source["ranking"]["eligible_for_promotion"],
+        display=str(source["ranking"]["eligible_for_promotion"]).lower(),
+        source_ref={
+            "artifact": "total-return-attachment",
+            "pointer": f"/{source_name}/ranking/eligible_for_promotion",
+        },
+    )
     fields["matched_exposure_status"].update(
         availability="AVAILABLE",
         reason=None,
