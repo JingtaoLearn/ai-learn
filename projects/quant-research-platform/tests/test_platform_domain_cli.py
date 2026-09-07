@@ -56,7 +56,7 @@ def test_domain_cli_lists_seeded_catalog_and_template_as_json(tmp_path: Path, ca
 
     assert status == 0
     assert operators["ok"] is True
-    assert len(operators["operators"]) == 7
+    assert len(operators["operators"]) == 8
     assert template["template"]["slots"][0] == "fit"
 
 

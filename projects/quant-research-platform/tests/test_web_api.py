@@ -551,7 +551,7 @@ def test_json_catalog_submit_duplicate_rerun_and_history_flow(tmp_path: Path):
         "x-csrf-token": issued.csrf_token,
     }
 
-    assert len(client.get("/api/operators").json()["operators"]) == 7
+    assert len(client.get("/api/operators").json()["operators"]) == 8
     resolved = client.post("/api/tasks/resolve", json={"task": task}, headers=headers)
     created = client.post(
         "/api/experiments",
