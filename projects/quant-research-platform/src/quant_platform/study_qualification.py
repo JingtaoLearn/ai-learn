@@ -1538,10 +1538,41 @@ def _condition_matches(value: Any, schema: Mapping[str, Any], root: Mapping[str,
     return True
 
 
+def _merge_schema(
+    base: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Compose applicable schema branches without discarding parent type descriptors."""
+
+    merged = deepcopy(dict(base))
+    for key, item in overlay.items():
+        if key == "required":
+            merged[key] = list(dict.fromkeys([*merged.get(key, []), *item]))
+        elif key in merged and isinstance(merged[key], Mapping) and isinstance(item, Mapping):
+            merged[key] = _merge_schema(merged[key], item)
+        elif key == "type" and key in merged and merged[key] != item:
+            raise QualificationError("applicable schema branches have conflicting types")
+        else:
+            merged.setdefault(key, deepcopy(item))
+    return merged
+
+
 def _choose_schema(
     value: Any, schema: Mapping[str, Any], root: Mapping[str, Any]
 ) -> Mapping[str, Any]:
     current = _resolve(schema, root)
+    if "if" in current:
+        branch = (
+            current.get("then")
+            if _condition_matches(value, current["if"], root)
+            else current.get("else")
+        )
+        current = {
+            key: deepcopy(item)
+            for key, item in current.items()
+            if key not in {"if", "then", "else"}
+        }
+        if isinstance(branch, Mapping):
+            current = _merge_schema(current, _choose_schema(value, branch, root))
     for keyword in ("oneOf", "anyOf"):
         if keyword in current:
             matches = [
@@ -1551,22 +1582,18 @@ def _choose_schema(
                 raise QualificationError("schema union is ambiguous")
             if not matches:
                 raise QualificationError("value does not match schema union")
-            return _choose_schema(value, matches[0], root)
+            current = {
+                key: deepcopy(item) for key, item in current.items() if key != keyword
+            }
+            for branch in matches:
+                current = _merge_schema(current, _choose_schema(value, branch, root))
     if "allOf" in current:
         merged: dict[str, Any] = {
             key: deepcopy(item) for key, item in current.items() if key != "allOf"
         }
         for branch in current["allOf"]:
             resolved = _choose_schema(value, branch, root)
-            if "properties" in resolved:
-                merged.setdefault("properties", {}).update(resolved["properties"])
-            if "required" in resolved:
-                merged["required"] = list(
-                    dict.fromkeys([*merged.get("required", []), *resolved["required"]])
-                )
-            for key, item in resolved.items():
-                if key not in {"properties", "required"}:
-                    merged.setdefault(key, item)
+            merged = _merge_schema(merged, resolved)
         current = merged
     return current
 
