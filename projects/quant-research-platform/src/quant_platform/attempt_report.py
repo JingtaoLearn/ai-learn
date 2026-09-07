@@ -1099,15 +1099,24 @@ def _bound_attachment(
     attachment = validate_authority_attachment(value, registry=registry)
     if attachment["kind"] not in expected_kinds:
         raise AttemptReportError("authority attachment kind does not match report field")
-    for key, expected in (
-        ("attempt_id", audit["attempt_id"]),
-        ("experiment_id", audit["experiment_id"]),
-        ("bundle_id", descriptor["bundle_id"]),
-        ("result_digest", audit["result_digest"]),
-    ):
-        if key in attachment and attachment[key] != expected:
-            raise AttemptReportError(f"authority attachment {key} binding mismatch")
+    _validate_attachment_bindings(
+        attachment,
+        {
+            "attempt_id": audit["attempt_id"],
+            "experiment_id": audit["experiment_id"],
+            "bundle_id": descriptor["bundle_id"],
+            "result_digest": audit["result_digest"],
+        },
+    )
     return attachment
+
+
+def _validate_attachment_bindings(
+    attachment: Mapping[str, Any], expected: Mapping[str, Any]
+) -> None:
+    for key, expected_value in expected.items():
+        if key in attachment and attachment[key] != expected_value:
+            raise AttemptReportError(f"authority attachment {key} binding mismatch")
 
 
 def build_report_document(
@@ -1378,28 +1387,52 @@ def validate_report_document(
         raise AttemptReportError("ReportDocument authority labels are invalid")
     if fields["operator_id"]["raw"] != REPORT_OPERATOR_ID or fields["operator_version"]["raw"] != REPORT_OPERATOR_VERSION:
         raise AttemptReportError("ReportDocument operator identity is invalid")
-    for field_id, kind in (
-        ("total_return_attachment", {"TOTAL_RETURN_FULL", "TOTAL_RETURN_READ_TIME"}),
-        ("matched_exposure_attachment", {"MATCHED_EXPOSURE_TERMINAL"}),
-    ):
-        field = fields[field_id]
-        if field["availability"] == "AVAILABLE":
-            attachment = validate_authority_attachment(field["raw"])
-            if attachment["kind"] not in kind:
-                raise AttemptReportError(f"ReportDocument attachment kind is invalid: {field_id}")
     registry = dict(attachment_registry or {})
-    for supplied in (
-        total_return_attachment,
-        matched_exposure_attachment,
-        study_terminal_attachment,
-    ):
-        if supplied is not None:
-            registry[supplied["attachment_id"]] = supplied
-    total = total_return_attachment
-    if total is None and fields["total_return_attachment"]["availability"] == "AVAILABLE":
-        total = fields["total_return_attachment"]["raw"]
+    attachment_specs = (
+        (
+            "total_return_attachment",
+            total_return_attachment,
+            {"TOTAL_RETURN_FULL", "TOTAL_RETURN_READ_TIME"},
+        ),
+        (
+            "matched_exposure_attachment",
+            matched_exposure_attachment,
+            {"MATCHED_EXPOSURE_TERMINAL"},
+        ),
+        (
+            "study_terminal_attachment",
+            study_terminal_attachment,
+            {"STUDY_TERMINAL_NO_QUALIFIED"},
+        ),
+    )
+    for field_id, supplied, _ in attachment_specs:
+        embedded = fields[field_id]["raw"] if fields[field_id]["availability"] == "AVAILABLE" else None
+        for attachment in (embedded, supplied):
+            if isinstance(attachment, Mapping) and isinstance(attachment.get("attachment_id"), str):
+                registry[attachment["attachment_id"]] = attachment
+    expected_bindings = {
+        "attempt_id": fields["attempt_id"]["raw"],
+        "experiment_id": fields["experiment_id"]["raw"],
+        "bundle_id": fields["bundle_id"]["raw"],
+        "result_digest": fields["core_result_digest"]["raw"],
+    }
+    resolved_attachments: dict[str, dict[str, Any]] = {}
+    for field_id, supplied, expected_kinds in attachment_specs:
+        embedded = fields[field_id]["raw"] if fields[field_id]["availability"] == "AVAILABLE" else None
+        if supplied is not None and embedded is not None and canonical_json_bytes(dict(supplied)) != canonical_json_bytes(dict(embedded)):
+            raise AttemptReportError(
+                f"ReportDocument supplied attachment differs from embedded attachment: {field_id}"
+            )
+        selected = supplied if supplied is not None else embedded
+        if selected is None:
+            continue
+        attachment = validate_authority_attachment(selected, registry=registry)
+        if attachment["kind"] not in expected_kinds:
+            raise AttemptReportError(f"ReportDocument attachment kind is invalid: {field_id}")
+        _validate_attachment_bindings(attachment, expected_bindings)
+        resolved_attachments[field_id] = attachment
+    total = resolved_attachments.get("total_return_attachment")
     if total is not None:
-        total = validate_authority_attachment(total, registry=registry)
         source_name = "record" if total["kind"] == "TOTAL_RETURN_FULL" else "projection"
         if (
             fields["total_return_status"]["raw"] != total[source_name]["claim_state"]
@@ -1407,22 +1440,22 @@ def validate_report_document(
             != total[source_name]["ranking"]["eligible_for_promotion"]
         ):
             raise AttemptReportError("ReportDocument total-return source mismatch")
-    matched = matched_exposure_attachment
-    if matched is None and fields["matched_exposure_attachment"]["availability"] == "AVAILABLE":
-        matched = fields["matched_exposure_attachment"]["raw"]
+    matched = resolved_attachments.get("matched_exposure_attachment")
     if matched is not None:
-        matched = validate_authority_attachment(matched, registry=registry)
         terminal = matched["terminal_record"]
         if (
             fields["matched_exposure_status"]["raw"] != terminal["state"]
             or fields["ranking_status"]["raw"] != terminal["ranking_status"]
         ):
             raise AttemptReportError("ReportDocument matched-exposure source mismatch")
-    study = study_terminal_attachment
-    if study is None and fields["study_terminal_attachment"]["availability"] == "AVAILABLE":
-        study = fields["study_terminal_attachment"]["raw"]
-    if study is not None:
-        validate_authority_attachment(study, registry=registry)
+    study = resolved_attachments.get("study_terminal_attachment")
+    if total is not None and matched is not None and total["metric_document_digest"] != matched["metric_document_digest"]:
+        raise AttemptReportError("ReportDocument authority MetricDocument binding mismatch")
+    if study is not None and matched is not None and (
+        study["study_id"] != matched["study_id"]
+        or matched["attachment_id"] not in study["qualification_attachment_ids"]
+    ):
+        raise AttemptReportError("ReportDocument Study/candidate attachment binding mismatch")
     core = {key: item for key, item in document.items() if key != "document_id"}
     if document["document_id"] != _identity(DOMAIN_DOCUMENT, core):
         raise AttemptReportError("ReportDocument identity is invalid")

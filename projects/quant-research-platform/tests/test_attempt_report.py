@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+import quant_platform.attempt_report as attempt_report_module
+import quant_platform.resolved_runner as resolved_runner_module
 from quant_platform.attempt_report import (
     AttemptReportError,
     DOMAIN_ATTACHMENT,
@@ -18,6 +20,8 @@ from quant_platform.attempt_report import (
     _identity,
     _validate_pointer_record,
     canonical_report_operator_bundle,
+    publish_report_artifact,
+    read_report_artifact,
     read_latest_report,
     render_report_document,
     validate_authority_attachment,
@@ -40,6 +44,55 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "attempt_report"
 
 def _fixture() -> dict:
     return json.loads((FIXTURE_ROOT / "conformance-v2.json").read_text(encoding="utf-8"))
+
+
+def _document_fields(document: dict) -> dict[str, dict]:
+    return {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+
+
+def _reseal_document(document: dict) -> None:
+    document["document_id"] = _identity(
+        attempt_report_module.DOMAIN_DOCUMENT,
+        {key: value for key, value in document.items() if key != "document_id"},
+    )
+
+
+def _embed_attachment(document: dict, field_id: str, attachment: dict) -> None:
+    field = _document_fields(document)[field_id]
+    field.update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=copy.deepcopy(attachment),
+        display="Verified sealed attachment",
+    )
+    _reseal_document(document)
+
+
+def _publish_fixture_report(
+    state_root: Path,
+    *,
+    document: dict | None = None,
+    fault: str | None = None,
+) -> dict:
+    report_document = copy.deepcopy(
+        document or _fixture()["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    fields = _document_fields(report_document)
+    descriptor = {
+        "attempt_id": fields["attempt_id"]["raw"],
+        "bundle_id": fields["bundle_id"]["raw"],
+    }
+    return publish_report_artifact(
+        state_root,
+        descriptor,
+        report_document,
+        render_report_document(report_document),
+        fault=fault,
+    )
 
 
 def _reseal_attachment(value: dict) -> None:
@@ -158,7 +211,88 @@ def test_revision6_positive_authority_and_document_fixtures_validate():
     _validate_pointer_record(fixture["latest_pointer"]["record"])
 
 
-def test_revision6_rejects_all_35_directed_negative_classes():
+@pytest.mark.parametrize(
+    "binding",
+    ["attempt_id", "experiment_id", "bundle_id", "result_digest"],
+)
+def test_report_document_rejects_self_consistent_cross_bound_attachment(binding: str):
+    fixture = _fixture()
+    document = copy.deepcopy(fixture["report_documents"]["TOTAL_RETURN_READ_TIME"])
+    attachment = copy.deepcopy(fixture["attachments"]["TOTAL_RETURN_READ_TIME"])
+    attachment[binding] = "b" * 64
+    _reseal_attachment(attachment)
+    _embed_attachment(document, "total_return_attachment", attachment)
+
+    with pytest.raises(AttemptReportError, match=rf"{binding} binding mismatch"):
+        validate_report_document(document)
+
+
+def test_report_document_rejects_cross_metric_document_and_study_candidate_joins():
+    fixture = _fixture()
+    document = copy.deepcopy(fixture["report_documents"]["TOTAL_RETURN_READ_TIME"])
+    total = copy.deepcopy(fixture["attachments"]["TOTAL_RETURN_READ_TIME"])
+    matched = copy.deepcopy(fixture["attachments"]["MATCHED_EXPOSURE_TERMINAL"])
+    study = copy.deepcopy(fixture["attachments"]["STUDY_TERMINAL_NO_QUALIFIED"])
+    registry = {
+        attachment["attachment_id"]: attachment
+        for attachment in fixture["attachments"].values()
+    }
+    _embed_attachment(document, "total_return_attachment", total)
+    _embed_attachment(document, "matched_exposure_attachment", matched)
+    fields = _document_fields(document)
+    fields["matched_exposure_status"]["raw"] = matched["terminal_record"]["state"]
+    fields["matched_exposure_status"]["display"] = matched["terminal_record"]["state"]
+    fields["matched_exposure_status"]["availability"] = "AVAILABLE"
+    fields["matched_exposure_status"]["reason"] = None
+    fields["ranking_status"]["raw"] = matched["terminal_record"]["ranking_status"]
+    fields["ranking_status"]["display"] = matched["terminal_record"]["ranking_status"]
+    fields["ranking_status"]["availability"] = "AVAILABLE"
+    fields["ranking_status"]["reason"] = None
+    _reseal_document(document)
+
+    cross_metric = copy.deepcopy(total)
+    cross_metric["metric_document_digest"] = "b" * 64
+    _reseal_attachment(cross_metric)
+    _embed_attachment(document, "total_return_attachment", cross_metric)
+    with pytest.raises(AttemptReportError, match="MetricDocument binding mismatch"):
+        validate_report_document(document)
+
+    cross_candidate = copy.deepcopy(matched)
+    cross_candidate["metric_document_digest"] = "c" * 64
+    _reseal_attachment(cross_candidate)
+    cross_study = copy.deepcopy(study)
+    cross_study["qualification_attachment_ids"] = [
+        cross_candidate["attachment_id"]
+        if item == matched["attachment_id"]
+        else item
+        for item in cross_study["qualification_attachment_ids"]
+    ]
+    _reseal_attachment(cross_study)
+    registry[cross_candidate["attachment_id"]] = cross_candidate
+    registry[cross_study["attachment_id"]] = cross_study
+    document = copy.deepcopy(fixture["report_documents"]["TOTAL_RETURN_READ_TIME"])
+    _embed_attachment(document, "matched_exposure_attachment", matched)
+    fields = _document_fields(document)
+    fields["matched_exposure_status"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=matched["terminal_record"]["state"],
+        display=matched["terminal_record"]["state"],
+    )
+    fields["ranking_status"].update(
+        availability="AVAILABLE",
+        reason=None,
+        raw=matched["terminal_record"]["ranking_status"],
+        display=matched["terminal_record"]["ranking_status"],
+    )
+    _embed_attachment(document, "study_terminal_attachment", cross_study)
+    with pytest.raises(AttemptReportError, match="Study/candidate attachment binding mismatch"):
+        validate_report_document(document, attachment_registry=registry)
+
+
+def test_revision6_rejects_all_35_directed_negative_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     fixture = _fixture()
     cases = json.loads((FIXTURE_ROOT / "CONFORMANCE.json").read_text(encoding="utf-8"))
     revision5 = json.loads((FIXTURE_ROOT / "revision-5.json").read_text(encoding="utf-8"))
@@ -233,10 +367,51 @@ def test_revision6_rejects_all_35_directed_negative_classes():
                 def verify(value=value):
                     _validate_pointer_record(value)
             else:
-                # Mode, absence, binding, and race mutations are exercised by the
-                # filesystem tests below; count them here as routed contract cases.
-                rejected.append(identifier)
-                continue
+                case_root = tmp_path / identifier
+                published = _publish_fixture_report(case_root)
+                attempt_id = "a" * 64
+                latest = case_root / "attempt-reports" / attempt_id / "latest.json"
+                if identifier == "N19":
+                    latest.chmod(0o644)
+                    def verify(case_root=case_root, attempt_id=attempt_id):
+                        read_latest_report(case_root, attempt_id)
+                elif identifier == "N21":
+                    artifact = (
+                        case_root
+                        / "attempt-reports"
+                        / attempt_id
+                        / "artifacts"
+                        / published["artifact_id"]
+                    )
+                    os.rename(artifact, case_root / "missing-artifact")
+                    def verify(case_root=case_root, attempt_id=attempt_id):
+                        read_latest_report(case_root, attempt_id)
+                else:
+                    payload = latest.read_bytes()
+                    original_stat = attempt_report_module.os.stat
+                    observations = 0
+
+                    def race_stat(path, *args, **kwargs):
+                        nonlocal observations
+                        result = original_stat(path, *args, **kwargs)
+                        if Path(path) == latest:
+                            observations += 1
+                            if observations == 2:
+                                replacement = latest.with_suffix(".race")
+                                replacement.write_bytes(payload)
+                                replacement.chmod(0o444)
+                                os.replace(replacement, latest)
+                                return original_stat(path, *args, **kwargs)
+                        return result
+
+                    def verify(case_root=case_root, attempt_id=attempt_id):
+                        with monkeypatch.context() as scoped:
+                            scoped.setattr(
+                                attempt_report_module.os,
+                                "stat",
+                                race_stat,
+                            )
+                            read_latest_report(case_root, attempt_id)
         with pytest.raises((AttemptReportError, ValueError, KeyError, TypeError)):
             verify()
         rejected.append(identifier)
@@ -278,7 +453,9 @@ def test_canonical_operator_v2_bundle_and_resolved_identity_are_independent(tmp_
     assert report["defaults"] == report["effective_parameters"] == {}
 
 
-def test_second_stage_publishes_only_three_files_and_preserves_core_digest(tmp_path: Path):
+def test_second_stage_publishes_only_three_files_and_preserves_all_source_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     service, snapshot_id = _service(tmp_path)
     task = _task(snapshot_id)
     task["operators"]["report"] = {
@@ -293,6 +470,59 @@ def test_second_stage_publishes_only_three_files_and_preserves_core_digest(tmp_p
         output_root=tmp_path / "runs",
         project_root=PROJECT_ROOT,
         identity_provider=lambda project_root, runner_image: service.execution_identity,
+    )
+    observed: dict[str, object] = {}
+    publish = resolved_runner_module.publish_attempt_report
+
+    def capture_semantic_invariance(state_root, run_dir, audit_path, operator, **kwargs):
+        run_root = Path(run_dir)
+        audit_file = Path(audit_path)
+        source_before = {
+            path.relative_to(run_root).as_posix(): (
+                path.read_bytes(),
+                stat.S_IMODE(path.stat().st_mode),
+                path.stat().st_nlink,
+            )
+            for path in run_root.iterdir()
+        }
+        audit_before = audit_file.read_bytes()
+        state_before = {
+            path.relative_to(state_root).as_posix(): path.read_bytes()
+            for path in Path(state_root).rglob("*")
+            if path.is_file() and "attempt-reports" not in path.parts
+        }
+        authority_before = canonical_json_bytes(_fixture()["attachments"])
+        published = publish(
+            state_root,
+            run_dir,
+            audit_path,
+            operator,
+            **kwargs,
+        )
+        source_after = {
+            path.relative_to(run_root).as_posix(): (
+                path.read_bytes(),
+                stat.S_IMODE(path.stat().st_mode),
+                path.stat().st_nlink,
+            )
+            for path in run_root.iterdir()
+        }
+        state_after = {
+            path.relative_to(state_root).as_posix(): path.read_bytes()
+            for path in Path(state_root).rglob("*")
+            if path.is_file() and "attempt-reports" not in path.parts
+        }
+        assert source_after == source_before
+        assert audit_file.read_bytes() == audit_before
+        assert state_after == state_before
+        assert canonical_json_bytes(_fixture()["attachments"]) == authority_before
+        observed["source"] = source_before
+        return published
+
+    monkeypatch.setattr(
+        resolved_runner_module,
+        "publish_attempt_report",
+        capture_semantic_invariance,
     )
     result = executor(attempt)
     latest = read_latest_report(service.catalog.state_root, attempt["attempt_id"])
@@ -319,34 +549,167 @@ def test_second_stage_publishes_only_three_files_and_preserves_core_digest(tmp_p
     assert b"Presentation only" in latest["html"]
     assert b"http://" not in latest["html"].lower()
     assert render_report_document(copy.deepcopy(latest["document"])) == latest["html"]
+    source = observed["source"]
+    assert isinstance(source, dict)
+    assert {
+        "config.json",
+        "run_manifest.json",
+        "daily_replay.csv",
+        "events.csv",
+        "trades.csv",
+        "metrics.json",
+        "cost_breakdown.json",
+        "report.html",
+    }.issubset(source)
 
 
-def test_latest_pointer_rejects_writable_symlink_and_cross_attempt(tmp_path: Path):
-    service, snapshot_id = _service(tmp_path)
-    task = _task(snapshot_id)
-    task["operators"]["report"] = {
-        "operator_id": REPORT_OPERATOR_ID,
-        "version": "1.0.0",
-        "parameters": {},
-    }
-    created = service.submit(task, action_id="pointer-topology")
-    attempt = service.attempt_detail(created["attempt_id"])
-    ResolvedAttemptExecutor(
-        service.catalog,
-        output_root=tmp_path / "runs",
-        project_root=PROJECT_ROOT,
-        identity_provider=lambda project_root, runner_image: service.execution_identity,
-    )(attempt)
-    latest_path = service.catalog.state_root / "attempt-reports" / attempt["attempt_id"] / "latest.json"
+def test_latest_pointer_rejects_writable_symlink_and_hardlink(tmp_path: Path):
+    result = _publish_fixture_report(tmp_path)
+    attempt_id = "a" * 64
+    latest_path = tmp_path / "attempt-reports" / attempt_id / "latest.json"
     latest_path.chmod(0o644)
     with pytest.raises(AttemptReportError, match="0444"):
-        read_latest_report(service.catalog.state_root, attempt["attempt_id"])
+        read_latest_report(tmp_path, attempt_id)
     latest_path.chmod(0o444)
     displaced = latest_path.with_suffix(".saved")
     os.rename(latest_path, displaced)
     latest_path.symlink_to(displaced.name)
     with pytest.raises(AttemptReportError, match="unsafe"):
-        read_latest_report(service.catalog.state_root, attempt["attempt_id"])
+        read_latest_report(tmp_path, attempt_id)
+    latest_path.unlink()
+    os.rename(displaced, latest_path)
+    outside = tmp_path / "pointer-hardlink.json"
+    os.link(latest_path, outside)
+    with pytest.raises(AttemptReportError, match="unsafe"):
+        read_latest_report(tmp_path, attempt_id)
+    assert result["sequence"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["directory-mode", "file-mode", "extra", "missing", "symlink", "hardlink"],
+)
+def test_report_artifact_rejects_unsafe_topology(tmp_path: Path, mutation: str):
+    published = _publish_fixture_report(tmp_path)
+    attempt_id = "a" * 64
+    artifact_id = published["artifact_id"]
+    root = tmp_path / "attempt-reports" / attempt_id / "artifacts" / artifact_id
+    document = root / "report-document.json"
+    if mutation == "directory-mode":
+        root.chmod(0o755)
+    elif mutation == "file-mode":
+        document.chmod(0o644)
+    elif mutation == "extra":
+        root.chmod(0o755)
+        (root / "extra").write_bytes(b"extra")
+        (root / "extra").chmod(0o444)
+        root.chmod(0o555)
+    elif mutation == "missing":
+        root.chmod(0o755)
+        os.rename(document, tmp_path / "missing-document.json")
+        root.chmod(0o555)
+    elif mutation == "symlink":
+        root.chmod(0o755)
+        os.rename(document, tmp_path / "real-document.json")
+        document.symlink_to(tmp_path / "real-document.json")
+        root.chmod(0o555)
+    else:
+        os.link(document, tmp_path / "document-hardlink.json")
+
+    with pytest.raises(AttemptReportError):
+        read_report_artifact(tmp_path, attempt_id, artifact_id)
+
+
+def test_report_paths_reject_traversal_cross_attempt_and_stale_pointer(tmp_path: Path):
+    published = _publish_fixture_report(tmp_path)
+    attempt_id = "a" * 64
+    artifact_id = published["artifact_id"]
+    with pytest.raises(AttemptReportError, match="SHA-256"):
+        read_report_artifact(tmp_path, "../" + attempt_id, artifact_id)
+    with pytest.raises(AttemptReportError):
+        read_report_artifact(tmp_path, "b" * 64, artifact_id)
+    artifact_root = tmp_path / "attempt-reports" / attempt_id / "artifacts" / artifact_id
+    os.rename(artifact_root, tmp_path / "stale-artifact")
+    with pytest.raises(AttemptReportError, match="missing"):
+        read_latest_report(tmp_path, attempt_id)
+
+
+def test_latest_pointer_reader_detects_inode_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _publish_fixture_report(tmp_path)
+    attempt_id = "a" * 64
+    latest = tmp_path / "attempt-reports" / attempt_id / "latest.json"
+    payload = latest.read_bytes()
+    original_stat = attempt_report_module.os.stat
+    observations = 0
+
+    def race_stat(path, *args, **kwargs):
+        nonlocal observations
+        result = original_stat(path, *args, **kwargs)
+        if Path(path) == latest:
+            observations += 1
+            if observations == 2:
+                replacement = latest.with_suffix(".race")
+                replacement.write_bytes(payload)
+                replacement.chmod(0o444)
+                os.replace(replacement, latest)
+                return original_stat(path, *args, **kwargs)
+        return result
+
+    monkeypatch.setattr(attempt_report_module.os, "stat", race_stat)
+    with pytest.raises(AttemptReportError, match="changed while reading"):
+        read_latest_report(tmp_path, attempt_id)
+
+
+@pytest.mark.parametrize("fault", ["before_pointer", "during_pointer"])
+def test_pointer_faults_preserve_prior_pointer_and_sealed_artifacts(
+    tmp_path: Path, fault: str
+):
+    first = _publish_fixture_report(tmp_path)
+    attempt_id = "a" * 64
+    latest = tmp_path / "attempt-reports" / attempt_id / "latest.json"
+    prior_bytes = latest.read_bytes()
+    prior_artifacts = {
+        path.name
+        for path in (tmp_path / "attempt-reports" / attempt_id / "artifacts").iterdir()
+    }
+    replacement = copy.deepcopy(
+        _fixture()["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    _document_fields(replacement)["purpose"]["display"] = "Presentation only revision"
+    _reseal_document(replacement)
+
+    with pytest.raises(AttemptReportError, match="injected failure"):
+        _publish_fixture_report(tmp_path, document=replacement, fault=fault)
+
+    assert latest.read_bytes() == prior_bytes
+    current = read_latest_report(tmp_path, attempt_id)
+    assert current["pointer"]["pointer_id"] == first["pointer_id"]
+    assert prior_artifacts.issubset(
+        {
+            path.name
+            for path in (
+                tmp_path / "attempt-reports" / attempt_id / "artifacts"
+            ).iterdir()
+        }
+    )
+
+
+def test_pointer_first_and_replacement_publication_transition(tmp_path: Path):
+    first = _publish_fixture_report(tmp_path)
+    replacement = copy.deepcopy(
+        _fixture()["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    _document_fields(replacement)["purpose"]["display"] = "Presentation only revision"
+    _reseal_document(replacement)
+    second = _publish_fixture_report(tmp_path, document=replacement)
+    current = read_latest_report(tmp_path, "a" * 64)["pointer"]
+
+    assert first["sequence"] == 1
+    assert second["sequence"] == 2
+    assert current["previous_pointer_id"] == first["pointer_id"]
+    assert current["pointer_id"] == second["pointer_id"]
 
 
 def test_operator_bundle_factory_is_stable():
