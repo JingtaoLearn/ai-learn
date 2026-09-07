@@ -6850,6 +6850,7 @@ class ParameterStudy:
             if item["evidence_type"] == "EVIDENCE_CONTESTED"
         }
         binding_views = []
+        attempt_classifications = {}
         for binding in bindings:
             attempt = self.experiments.attempt_detail(binding["attempt_id"])
             fold_window = _strict_json_object(
@@ -6902,6 +6903,9 @@ class ParameterStudy:
                 or (binding["state"] == "SUBMITTED" and stored_metric is not None)
             ):
                 raise RuntimeError("Study binding state disagrees with canonical evidence")
+            attempt_classifications[binding["binding_id"]] = attempt.get(
+                "historical_classification"
+            )
             binding_views.append(
                 {
                     "binding_id": binding["binding_id"],
@@ -7037,6 +7041,23 @@ class ParameterStudy:
                 source_identities=source_identities,
                 **dimensions,
             )
+            attempt_classification = attempt_classifications[binding["binding_id"]]
+            if (
+                isinstance(attempt_classification, dict)
+                and attempt_classification.get("primary_state") in PRIMARY_STATES
+                and PRIMARY_STATES.index(attempt_classification["primary_state"])
+                < PRIMARY_STATES.index(classification["primary_state"])
+            ):
+                source_dimensions = attempt_classification["dimensions"]
+                classification = build_historical_classification(
+                    entity_type="METRIC_DOCUMENT",
+                    source_identities=source_identities,
+                    integrity=source_dimensions["integrity"],
+                    accounting=source_dimensions["accounting"],
+                    policy=source_dimensions["policy"],
+                    holdout_exposure=classification["dimensions"]["holdout_exposure"],
+                    matched_control=classification["dimensions"]["matched_control"],
+                )
             binding["historical_classification"] = classification
             if metric_document is not None:
                 metric_document["historical_classification"] = classification
