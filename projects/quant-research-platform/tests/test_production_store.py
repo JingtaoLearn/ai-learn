@@ -199,3 +199,62 @@ def test_initialize_rejects_damaged_version_one_schema(tmp_path) -> None:
 
     with pytest.raises(ProductionStoreError, match="partial"):
         store.initialize()
+
+
+def test_initialize_accepts_sqlite_normalized_migration_authority(tmp_path) -> None:
+    store = ProductionStore(tmp_path / "normalized")
+    store.state_root.mkdir()
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        stored_sql = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE name = 'schema_migrations'"
+        ).fetchone()[0]
+    assert "IF NOT EXISTS" not in stored_sql
+
+    store.initialize()
+
+    with store.connect() as connection:
+        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+
+
+@pytest.mark.parametrize(
+    "authority_sql",
+    [
+        "CREATE TABLE schema_migrations(applied_at TEXT NOT NULL, version INTEGER PRIMARY KEY)",
+        "CREATE TABLE schema_migrations(migration_version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+        "CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        "CREATE TABLE schema_migrations(version INTEGER NOT NULL, applied_at TEXT NOT NULL)",
+        "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)",
+        "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, note TEXT)",
+        "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL UNIQUE)",
+        "CREATE VIEW schema_migrations AS SELECT 1 AS version, 'now' AS applied_at",
+    ],
+)
+def test_initialize_rejects_malformed_migration_authority(tmp_path, authority_sql) -> None:
+    store = ProductionStore(tmp_path / "malformed")
+    store.state_root.mkdir()
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(authority_sql)
+
+    with pytest.raises(ProductionStoreError, match="partial"):
+        store.initialize()
+
+
+def test_initialize_rejects_extra_object_alongside_valid_migration_authority(tmp_path) -> None:
+    store = ProductionStore(tmp_path / "ambiguous")
+    store.state_root.mkdir()
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        connection.execute("CREATE TABLE unexpected_authority(value TEXT)")
+
+    with pytest.raises(ProductionStoreError, match="partial"):
+        store.initialize()

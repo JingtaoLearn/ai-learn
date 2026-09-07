@@ -84,6 +84,18 @@ EXPECTED_SCHEMA_V1 = {
     "immutable_terminal_update": SCHEMA_V1[2],
     "immutable_terminal_delete": SCHEMA_V1[3],
 }
+MIGRATION_AUTHORITY_COLUMNS = (
+    (0, "version", "INTEGER", 0, None, 1, 0),
+    (1, "applied_at", "TEXT", 1, None, 0, 0),
+)
+MIGRATION_AUTHORITY_TABLE = (
+    "main",
+    "schema_migrations",
+    "table",
+    len(MIGRATION_AUTHORITY_COLUMNS),
+    0,
+    0,
+)
 
 
 def utc_now() -> datetime:
@@ -124,6 +136,29 @@ def _require_exact_schema(objects: dict[str, str], expected: dict[str, str]) -> 
     if set(objects) != set(expected) or any(
         _normalized_sql(objects[name]) != _normalized_sql(statement)
         for name, statement in expected.items()
+    ):
+        raise ProductionStoreError("production ledger schema is partial or unsupported")
+
+
+def _require_migration_authority(connection: sqlite3.Connection) -> None:
+    object_identity = [
+        tuple(item)
+        for item in connection.execute(
+            "SELECT type, name, tbl_name FROM sqlite_schema WHERE name = 'schema_migrations'"
+        )
+    ]
+    columns = [tuple(item) for item in connection.execute("PRAGMA table_xinfo('schema_migrations')")]
+    indexes = [tuple(item) for item in connection.execute("PRAGMA index_list('schema_migrations')")]
+    foreign_keys = [
+        tuple(item) for item in connection.execute("PRAGMA foreign_key_list('schema_migrations')")
+    ]
+    table = [tuple(item) for item in connection.execute("PRAGMA table_list('schema_migrations')")]
+    if (
+        object_identity != [("table", "schema_migrations", "schema_migrations")]
+        or columns != list(MIGRATION_AUTHORITY_COLUMNS)
+        or indexes
+        or foreign_keys
+        or table != [MIGRATION_AUTHORITY_TABLE]
     ):
         raise ProductionStoreError("production ledger schema is partial or unsupported")
 
@@ -171,16 +206,12 @@ class ProductionStore:
     def initialize(self) -> None:
         with self.transaction(immediate=True) as connection:
             objects = _schema_objects(connection)
-            authority = {"schema_migrations": MIGRATION_AUTHORITY_SQL}
             if "schema_migrations" not in objects:
                 if objects:
                     raise ProductionStoreError("production ledger schema is partial or unsupported")
                 connection.execute(MIGRATION_AUTHORITY_SQL)
                 objects = _schema_objects(connection)
-            _require_exact_schema(
-                {name: statement for name, statement in objects.items() if name == "schema_migrations"},
-                authority,
-            )
+            _require_migration_authority(connection)
             existing = connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
@@ -195,7 +226,18 @@ class ProductionStore:
                 )
             elif [item["version"] for item in existing] != [1]:
                 raise ProductionStoreError("unsupported production ledger schema")
-            _require_exact_schema(_schema_objects(connection), EXPECTED_SCHEMA_V1)
+            _require_migration_authority(connection)
+            expected_application_schema = {
+                name: statement
+                for name, statement in EXPECTED_SCHEMA_V1.items()
+                if name != "schema_migrations"
+            }
+            application_schema = {
+                name: statement
+                for name, statement in _schema_objects(connection).items()
+                if name != "schema_migrations"
+            }
+            _require_exact_schema(application_schema, expected_application_schema)
 
     def admit(
         self,
