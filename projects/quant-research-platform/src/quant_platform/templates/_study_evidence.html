@@ -17,6 +17,24 @@
 </section>
 {% endif %}
 
+{% if study.get("qualification_records") %}
+<section class="panel qualification-evidence" aria-labelledby="qualification-evidence-heading" data-testid="qualification-evidence">
+  <div class="section-heading"><div><p class="eyebrow">SEALED PRE-RANKING EVIDENCE</p><h2 id="qualification-evidence-heading">Matched-exposure qualification</h2></div><span class="status" data-status="{{ study.qualification_outcome }}">{{ study.qualification_decision }}</span></div>
+  <p><strong>POLICY_CONSTRAINTS_PASSED</strong> means only legacy operational constraints passed. <strong>DEPLOYMENT_QUALIFIED</strong> means every accepted trust and qualification gate passed; it does not authorize deployment, signals, or trading. <strong>RETROSPECTIVE_DIAGNOSIS_ONLY</strong> evidence cannot become pristine or threshold-setting evidence.</p>
+  {% for qualification in study.qualification_records %}
+  <article class="qualification-record" data-state="{{ qualification.state }}">
+    <h3>{{ qualification.state }} · {{ qualification.ranking_status }}</h3>
+    <dl class="technical"><dt>Authority</dt><dd>{{ qualification.issuer }}</dd><dt>Qualification ID</dt><dd class="mono">{{ qualification.qualification_id }}</dd><dt>Candidate</dt><dd class="mono">{{ qualification.candidate_digest }}</dd><dt>Reasons</dt><dd>{{ qualification.reason_codes|join(", ") }}</dd></dl>
+    {% if qualification.get("aggregate") %}<details><summary>Sealed control and edge evidence</summary><pre>{{ qualification.aggregate|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("gates") %}<details><summary>Qualification gates</summary><pre>{{ qualification.gates|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("episodes") %}<details><summary>Natural, forced, boundary-open, and dependence evidence</summary><pre>{{ qualification.episodes|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("multiplicity") %}<details><summary>Closed family and significance evidence</summary><pre>{{ qualification.multiplicity|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("continuous_state") %}<details><summary>Forced-flat disclosure and continuous-state diagnostic</summary><pre>{{ qualification.continuous_state|canonical_json }}</pre></details>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
 <section class="evidence-panel holdout-evidence" aria-labelledby="holdout-evidence-heading">
   <p class="eyebrow">SEPARATELY GOVERNED STATE</p><h2 id="holdout-evidence-heading">Terminal holdout plan and state</h2>
   <div class="holdout-dimensions"><div><span>Access</span><strong>{{ study.holdout.access }}</strong></div><div><span>Outcome</span><strong>{{ study.holdout.outcome }}</strong></div><div><span>Freshness</span><strong>{{ study.holdout.freshness }}</strong></div></div>

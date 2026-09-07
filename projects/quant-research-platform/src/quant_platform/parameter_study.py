@@ -6990,10 +6990,16 @@ class ParameterStudy:
         public_selection_outcome = study["selection_outcome"]
         qualification_outcome = None
         qualification_decision = None
+        qualification_records = [
+            deepcopy(item["evaluation"]["qualification"])
+            for item in final_evaluations
+            if isinstance(item.get("evaluation", {}).get("qualification"), dict)
+        ]
         if no_qualified_evidence is not None:
             public_selection_outcome = "NO_QUALIFIED_CANDIDATE"
             qualification_outcome = "NO_QUALIFIED_CANDIDATE"
             qualification_decision = "REJECTED_NO_EDGE"
+            qualification_records = deepcopy(no_qualified_evidence.get("qualification_records", []))
             holdout_access = "NOT_GRANTED"
             decision_summary = {
                 "claim": "REJECTED_NO_EDGE",
@@ -7016,6 +7022,7 @@ class ParameterStudy:
             "selection_outcome": public_selection_outcome,
             "qualification_outcome": qualification_outcome,
             "qualification_decision": qualification_decision,
+            "qualification_records": qualification_records,
             "holdout": {
                 "access": holdout_access,
                 "outcome": study["holdout_outcome"],

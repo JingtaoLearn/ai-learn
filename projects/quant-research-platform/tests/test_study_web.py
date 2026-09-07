@@ -418,6 +418,17 @@ def test_no_edge_study_uses_exact_qualification_wording_and_no_champion(
         selection_outcome="NO_QUALIFIED_CANDIDATE",
         qualification_outcome="NO_QUALIFIED_CANDIDATE",
         qualification_decision="REJECTED_NO_EDGE",
+        qualification_records=[
+            {
+                "issuer": "quant-platform/matched-exposure-qualification@1",
+                "qualification_id": "b" * 64,
+                "candidate_digest": "c" * 64,
+                "state": "REJECTED",
+                "ranking_status": "NOT_RANKED",
+                "reason_codes": ["MATCHED_EXPOSURE_EXCESS_FAILED"],
+                "aggregate": {"active_excess": -0.01},
+            }
+        ],
         rankings=[],
         champion_evidence=None,
         holdout={
@@ -445,6 +456,10 @@ def test_no_edge_study_uses_exact_qualification_wording_and_no_champion(
     assert "Qualification decision" in response.text
     assert "NO_QUALIFIED_CANDIDATE" in response.text
     assert "REJECTED_NO_EDGE" in response.text
+    assert "POLICY_CONSTRAINTS_PASSED" in response.text
+    assert "DEPLOYMENT_QUALIFIED" in response.text
+    assert "RETROSPECTIVE_DIAGNOSIS_ONLY" in response.text
+    assert "MATCHED_EXPOSURE_EXCESS_FAILED" in response.text
     assert "NOT_GRANTED · NOT_RUN" in response.text
     assert "Best observed parameters" not in response.text
     assert "Champion parameters" not in response.text

@@ -1320,7 +1320,7 @@ def _type_matches(value: Any, expected: str) -> bool:
     if expected == "string":
         return type(value) is str and not isinstance(value, (_JsonInteger, _JsonNumber))
     if expected == "object":
-        return type(value) is dict
+        return isinstance(value, dict)
     if expected == "array":
         return type(value) is list
     if expected == "integer":
@@ -1496,7 +1496,7 @@ def _validate(value: Any, schema: Mapping[str, Any], root: Mapping[str, Any], pa
         raise QualificationError(f"{path} has the wrong type")
 
     kind = _schema_type(schema, value)
-    if kind == "object" and type(value) is dict:
+    if kind == "object" and isinstance(value, dict):
         properties = schema.get("properties", {})
         required = schema.get("required", [])
         missing = [key for key in required if key not in value]
@@ -1561,12 +1561,15 @@ def _validate(value: Any, schema: Mapping[str, Any], root: Mapping[str, Any], pa
             raise QualificationError(f"{path} is empty")
 
 
-def validate_schema(value: Any, schema_ref: str = "#") -> None:
-    schema = (
-        QUALIFICATION_SCHEMA
-        if schema_ref == "#"
-        else _resolve({"$ref": schema_ref}, QUALIFICATION_SCHEMA)
-    )
+def validate_schema(value: Any, schema_ref: str | Mapping[str, Any] = "#") -> None:
+    if isinstance(schema_ref, str):
+        schema = (
+            QUALIFICATION_SCHEMA
+            if schema_ref == "#"
+            else _resolve({"$ref": schema_ref}, QUALIFICATION_SCHEMA)
+        )
+    else:
+        schema = schema_ref
     _validate(value, schema, QUALIFICATION_SCHEMA, "$")
 
 
@@ -1682,6 +1685,416 @@ def canonical_json_fixture_bytes() -> bytes:
         "control": '\x00"\\\n',
     }
     return canonical_json_bytes(value, schema, root=schema)
+
+
+def forward_issuance_summary_bytes() -> bytes:
+    fixture = QUALIFICATION_SCHEMA["x-forward-issuance-fixture"]
+    value = {
+        "fixture_id": fixture["fixture_id"],
+        "steps": deepcopy(fixture["steps"]),
+    }
+    sha = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["fixture_id", "steps"],
+        "properties": {
+            "fixture_id": {"type": "string"},
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["order", "object", "identity", "depends_on"],
+                    "properties": {
+                        "order": {"type": "integer"},
+                        "object": {"type": "string"},
+                        "identity": sha,
+                        "depends_on": {"type": "array", "items": sha},
+                    },
+                },
+            },
+        },
+    }
+    payload = canonical_json_bytes(value, schema, root=schema)
+    if (
+        len(payload) != fixture["canonical_step_summary_byte_length"]
+        or hashlib.sha256(payload).hexdigest() != fixture["canonical_step_summary_sha256"]
+    ):
+        raise QualificationError("forward issuance summary conformance failed")
+    seen: set[str] = set()
+    for expected_order, step in enumerate(value["steps"], start=1):
+        if step["order"] != expected_order or any(
+            dependency not in seen for dependency in step["depends_on"]
+        ):
+            raise QualificationError("forward issuance ancestry is not strictly backward")
+        seen.add(step["identity"])
+    return payload
+
+
+def hashed_projection_fixture() -> dict[str, Any]:
+    """Build and verify every object in QUALIFICATION-HASHED-PROJECTIONS-02."""
+
+    aliases = {key: key.lower() * 64 for key in ("A", "B", "C", "D", "E", "F")}
+    aliases.update({key: key * 64 for key in ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")})
+    a, b, c, d, e, f = (aliases[key] for key in "ABCDEF")
+    control = {
+        "schema_version": 1,
+        "control_id": "quant-platform/cash-control",
+        "version": "1",
+        "source_digest": a,
+        "dataset_id": b,
+        "view_id": c,
+        "instrument_id": "SYNTHETIC",
+        "selection_run_id": d,
+        "fold_id": e,
+        "scoring_start": "2026-01-05",
+        "scoring_end": "2026-01-06",
+        "initial_capital": 10000.0,
+        "total_return_qualification_id": f,
+        "cost_policy_digest": a,
+        "session_ids": [b, c],
+        "valuation_dates": ["2026-01-05", "2026-01-06"],
+        "daily_returns": [0.0, 0.0],
+        "aggregate_return": 0.0,
+        "annual_effective_yield": 0.0,
+        "account_artifact_sha256": None,
+        "average_exposure": None,
+        "opening_exposures": [],
+        "cash_output_digest": None,
+        "buy_and_hold_output_digest": None,
+        "output_digest": "1fe39a367336a9b64855d91b01a629417d61217e629228d73a687f1600073a0d",
+    }
+    sessions = [
+        {
+            "session_id": b,
+            "valuation_date": "2026-01-05",
+            "fold_id": e,
+            "candidate_costed_return": 0.01,
+            "cash_return": 0.0,
+            "buy_and_hold_total_return": 0.008,
+            "matched_control_return": 0.004,
+            "opening_gross_exposure": 0.5,
+        },
+        {
+            "session_id": c,
+            "valuation_date": "2026-01-06",
+            "fold_id": e,
+            "candidate_costed_return": 0.02,
+            "cash_return": 0.0,
+            "buy_and_hold_total_return": 0.01,
+            "matched_control_return": 0.005,
+            "opening_gross_exposure": 0.5,
+        },
+    ]
+    intake_raw = b'{"candidate_digest":null,"study_id":"' + a.encode() + b'"}'
+    intake_plain, intake_id = intake_identity(intake_raw)
+    intake_rejection = {
+        "schema_version": 1,
+        "rejection_evidence_sha256": "71a2227ea89c9391d7e02863d0b2a5f96156e02ad9f6c7305cf40156cc440f06",
+        "rejection_kind": "INTAKE_REJECTED",
+        "intake_id": intake_id,
+        "raw_intake_sha256": intake_plain,
+        "study_id": a,
+        "candidate_digest": None,
+        "study_plan_digest": None,
+        "selection_run_id": None,
+        "trusted_claim_evidence_sha256": None,
+        "historical_exposure": "UNKNOWN",
+        "missing_fields": ["candidate_digest"],
+        "invalid_or_mismatched_fields": [],
+        "reason_codes": ["INTAKE_IDENTITY_MISSING"],
+    }
+    admission_raw = (
+        b'{"candidate_digest":"'
+        + b.encode()
+        + b'","selection_run_id":null,"study_id":"'
+        + a.encode()
+        + b'"}'
+    )
+    admission_plain, admission_id = intake_identity(admission_raw)
+    admission_rejection = {
+        "schema_version": 1,
+        "rejection_evidence_sha256": "09f6ac168341d9f91d51ccfc96530760724eccad1474d7df72a7a83998e13f05",
+        "rejection_kind": "ADMISSION_REJECTED",
+        "intake_id": admission_id,
+        "raw_intake_sha256": admission_plain,
+        "study_id": a,
+        "candidate_digest": b,
+        "study_plan_digest": c,
+        "selection_run_id": None,
+        "trusted_claim_evidence_sha256": d,
+        "historical_exposure": "PRISTINE",
+        "missing_fields": ["selection_run_id"],
+        "invalid_or_mismatched_fields": [],
+        "reason_codes": ["ADMISSION_IDENTITY_INVALID"],
+    }
+    loaded = {
+        "schema_version": 1,
+        "digest": "d3fe672b7804988d20f5ee183bc9392afd22b4613462acee0b287bada348809f",
+        "proc_maps_path": "/proc/self/maps",
+        "entries": [
+            {
+                "device_major": 8,
+                "device_minor": 1,
+                "inode": 42,
+                "resolved_path": "/usr/lib/libm.so.6",
+                "mapping_paths": ["/usr/lib/libm.so.6"],
+                "elf_build_id": "0123456789abcdef",
+                "file_sha256": a,
+                "executable_segments": [
+                    {
+                        "start_address_hex": "0000000000001000",
+                        "end_address_hex": "0000000000002000",
+                        "file_offset_hex": "0000000000000000",
+                        "permissions": "r-xp",
+                    }
+                ],
+            }
+        ],
+    }
+    cpu = {
+        "schema_version": 1,
+        "digest": "540b4688a14d5ae83fdfc0196c9acbd9e8f8c05b9a46f30a722dd4b29f3f6c67",
+        "machine": "x86_64",
+        "cpuinfo_path": "/proc/cpuinfo",
+        "cpuinfo_size": 12,
+        "cpuinfo_sha256": b,
+        "auxv_path": "/proc/self/auxv",
+        "auxv_size": 16,
+        "auxv_sha256": c,
+        "feature_names": ["sse2"],
+    }
+    loader = {
+        "schema_version": 1,
+        "digest": "412e102671d737a5604788ff4377c487a29a7bc2b661ed88d9971b6311f7965f",
+        "variables": {
+            "GLIBC_TUNABLES": None,
+            "LD_HWCAP_MASK": None,
+            "LD_LIBRARY_PATH": None,
+            "LD_PRELOAD": None,
+        },
+    }
+    cases = [
+        ("p001", "3f847ae147ae147b", "3f8460d6ccca3677"),
+        ("n001", "bf847ae147ae147b", "bf8495453e6fd4b7"),
+        ("p2m53", "3ca0000000000000", "3ca0000000000000"),
+        ("n2m53", "bca0000000000000", "bca0000000000000"),
+        ("p2m27", "3e40000000000000", "3e3ffffffe000000"),
+        ("n2m27", "be40000000000000", "be40000001000000"),
+        ("p05", "3fdfffffffffffff", "3fd9f323ecbf984b"),
+    ]
+    log1p = {
+        "schema_version": 1,
+        "digest": "0f2f806d9e82f5b5d98c6dc7dbfb0213f75ddc9e74ae6f006638f503ab1e49d4",
+        "fixture_id": "LOG1P-RUNTIME-CONFORMANCE-01",
+        "cases": [
+            {
+                "case_id": case,
+                "input_bits": input_bits,
+                "expected_output_bits": output_bits,
+                "observed_output_bits": output_bits,
+                "passed": True,
+            }
+            for case, input_bits, output_bits in cases
+        ],
+    }
+    canonical = {
+        "schema_version": 1,
+        "digest": "e31471d9e138bfb70ea0fa4fa08180be10db0ac5a5ebde9514db1586f7aa5247",
+        "fixture_id": "QUALIFICATION-CANONICAL-JSON-01",
+        "expected_byte_length": 376,
+        "observed_byte_length": 376,
+        "expected_output_sha256": "b20b069d5aff1df1f4727aa7ab7b4bec725230a0e6f4afa3279ba5ceda554730",
+        "observed_output_sha256": "b20b069d5aff1df1f4727aa7ab7b4bec725230a0e6f4afa3279ba5ceda554730",
+        "passed": True,
+    }
+    arithmetic = {
+        "schema_version": 1,
+        "digest": "9e0de7074ed3f277cc077b06f5fdd84f1ca0dd22c4896b043b96a1638d8461dc",
+        "fixtures": [
+            {
+                "fixture_id": "QUALIFICATION-BINARY64-ARITHMETIC-01",
+                "input_sha256": "34fda3676016c9d7d056d1c9c6ab7c0c1ed47a08f83f6d103f8bc2dc880f1d84",
+                "input_byte_length": 715,
+                "output_sha256": "b4fba1d01a321c5197d61b9adb4f35f3e5f3eda23fe40721e621377afc65c828",
+                "output_byte_length": 337,
+                "passed": True,
+            },
+            {
+                "fixture_id": "QUALIFICATION-BINARY64-COMPONENT-STRESS-01",
+                "input_sha256": "7e73c296f0e38e9af244d097139515e769f1861b7c4ea68fa6df5dc18d7e8e88",
+                "input_byte_length": 3514,
+                "output_sha256": "597747cf86b79b459058272dd3a3bd90ab9e0b53282ba7fe85d3d26de6affd5e",
+                "output_byte_length": 7209,
+                "passed": True,
+            },
+        ],
+    }
+    runtime = {
+        "manifest_version": 1,
+        "manifest_sha256": "cea0096efa08c3e6f7c35fa3943c2502603eb0799d9a9bb6c209561ca05ac00a",
+        "python_implementation": "CPython",
+        "python_version": "3.12.0",
+        "python_cache_tag": "cpython-312",
+        "python_executable_sha256": a,
+        "math_implementation": "EXTENSION",
+        "math_object_sha256": b,
+        "loaded_native_objects": loaded,
+        "cpu_features": cpu,
+        "dynamic_loader_environment": loader,
+        "platform_triple": "x86_64-linux-gnu",
+        "machine": "x86_64",
+        "byteorder": "little",
+        "float_radix": 2,
+        "float_mant_dig": 53,
+        "float_rounds": 1,
+        "fenv_rounding": "FE_TONEAREST",
+        "log1p_conformance": log1p,
+        "canonical_json_conformance": canonical,
+        "binary64_arithmetic_conformance": arithmetic,
+    }
+    policy = {
+        "policy_id": "robust_walk_forward",
+        "version": "2.0.0",
+        "source_digest": e,
+        "frozen_before_first_result": True,
+        "minimum_economic_edge": 0.0,
+        "minimum_matched_excess": 0.0,
+        "minimum_fold_matched_excess": 0.0,
+        "minimum_passing_fold_fraction": 0.5,
+        "maximum_allowed_fold_shortfall": -0.1,
+        "minimum_stressed_economic_edge": 0.0,
+        "minimum_stressed_matched_excess": 0.0,
+        "minimum_natural_exits": 2,
+        "minimum_effective_sample_size": 2.0,
+        "family_wise_alpha": 0.05,
+        "bootstrap_seed": 7,
+        "bootstrap_resamples": 1000,
+        "stationary_block_mean_length": 2.0,
+    }
+    family = {
+        "schema_version": 1,
+        "authority": "quant-platform/matched-exposure-family",
+        "version": "1",
+        "family_digest": "9819a89f2fc92ba2fcfa904865de54f22b8d27b2d50653fc89a5a8db3fb4a2c0",
+        "study_id": a,
+        "study_plan_digest": b,
+        "selection_run_id": c,
+        "search": {
+            "suggester_id": "synthetic-grid",
+            "suggester_version": "1",
+            "source_digest": d,
+            "seed": 7,
+            "candidate_budget": 2,
+            "evaluation_budget": 2,
+            "stop_reason": "BUDGET_EXHAUSTED",
+            "search_exhausted": True,
+        },
+        "policy": policy,
+        "stress_scenario_set_digest": f,
+        "timing_placebo_plan_digest": None,
+        "inspected_candidate_digests": [a, b],
+        "covered_candidate_digests": [a, b],
+        "candidate_population_entries": [
+            {
+                "candidate_digest": a,
+                "prefamily_qualification_id": c,
+                "prefamily_state": "ADMITTED",
+                "scored_session_set_digest": "bd02d8556c408ffaca5d28992261fd70338d08e389759e8a2bfd1b15db6b266e",
+            },
+            {
+                "candidate_digest": b,
+                "prefamily_qualification_id": d,
+                "prefamily_state": "ADMISSION_REJECTED",
+                "scored_session_set_digest": None,
+            },
+        ],
+        "multiplicity_entries": [
+            {
+                "candidate_digest": a,
+                "raw_p_value": 0.01,
+                "adjusted_p_value": 0.02,
+                "test_status": "ESTABLISHED",
+                "not_testable_reason": None,
+                "artifact_sha256": e,
+            },
+            {
+                "candidate_digest": b,
+                "raw_p_value": None,
+                "adjusted_p_value": None,
+                "test_status": "NOT_TESTABLE",
+                "not_testable_reason": "INCOMPLETE_PAIRED_SESSIONS",
+                "artifact_sha256": f,
+            },
+        ],
+        "implementation_source_sha256": e,
+        "numerical_runtime_manifest_sha256": f,
+    }
+    outer = {
+        "fixture_id": "QUALIFICATION-HASHED-PROJECTIONS-02",
+        "control_output": control,
+        "scored_session_set": sessions,
+        "intake_rejection_evidence": intake_rejection,
+        "admission_rejection_evidence": admission_rejection,
+        "family_record": family,
+        "loaded_native_objects": loaded,
+        "cpu_features": cpu,
+        "dynamic_loader_environment": loader,
+        "log1p_conformance": log1p,
+        "canonical_json_conformance": canonical,
+        "binary64_arithmetic_conformance": arithmetic,
+        "numerical_runtime": runtime,
+    }
+    expected = QUALIFICATION_SCHEMA["x-hashed-object-projections"]["normative_fixture"]
+    observed = {
+        "authoritative_control_output": projection_digest("authoritative_control_output", control),
+        "scored_session_set": projection_digest("scored_session_set", sessions),
+        "intake_rejection_evidence": projection_digest("rejection_evidence", intake_rejection),
+        "admission_rejection_evidence": projection_digest(
+            "rejection_evidence", admission_rejection
+        ),
+        "family_record": projection_digest("family_record", family),
+        "loaded_native_objects": projection_digest("loaded_native_objects", loaded),
+        "cpu_features": projection_digest("cpu_features", cpu),
+        "dynamic_loader_environment": projection_digest("dynamic_loader_environment", loader),
+        "log1p_conformance": projection_digest("log1p_conformance", log1p),
+        "canonical_json_conformance": projection_digest("canonical_json_conformance", canonical),
+        "binary64_arithmetic_conformance": projection_digest(
+            "binary64_arithmetic_conformance", arithmetic
+        ),
+        "numerical_runtime": projection_digest("numerical_runtime", runtime),
+    }
+    if observed != expected["expected_digests"]:
+        raise QualificationError("hashed projection digest conformance failed")
+    outer_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "$defs": QUALIFICATION_SCHEMA["$defs"],
+        "required": list(outer),
+        "properties": {
+            "fixture_id": {"type": "string"},
+            "control_output": {"$ref": "#/$defs/authoritative_control_output"},
+            "scored_session_set": {"$ref": "#/$defs/scored_session_set"},
+            "intake_rejection_evidence": {"$ref": "#/$defs/rejection_evidence"},
+            "admission_rejection_evidence": {"$ref": "#/$defs/rejection_evidence"},
+            "family_record": {"$ref": "#/$defs/family_record"},
+            "loaded_native_objects": {"$ref": "#/$defs/loaded_native_objects"},
+            "cpu_features": {"$ref": "#/$defs/cpu_features"},
+            "dynamic_loader_environment": {"$ref": "#/$defs/dynamic_loader_environment"},
+            "log1p_conformance": {"$ref": "#/$defs/log1p_conformance"},
+            "canonical_json_conformance": {"$ref": "#/$defs/canonical_json_conformance"},
+            "binary64_arithmetic_conformance": {"$ref": "#/$defs/binary64_arithmetic_conformance"},
+            "numerical_runtime": {"$ref": "#/$defs/numerical_runtime"},
+        },
+    }
+    payload = canonical_json_bytes(outer, outer_schema)
+    if (
+        len(payload) != expected["canonical_byte_length"]
+        or hashlib.sha256(payload).hexdigest() != expected["canonical_sha256"]
+    ):
+        raise QualificationError("hashed projection outer conformance failed")
+    return outer
 
 
 def _finite_f64(value: Any, label: str, *, return_value: bool = False) -> float:
@@ -2272,6 +2685,40 @@ def projection_digest(name: str, value: Mapping[str, Any] | Sequence[Any]) -> st
     return hashlib.sha256(_utf8(domain) + b"\0" + payload).hexdigest()
 
 
+def seal_control_output(output_without_digest: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and content-address one complete authoritative control output."""
+
+    if "output_digest" in output_without_digest:
+        raise QualificationError("issuer computes control output_digest")
+    output = deepcopy(dict(output_without_digest))
+    output["output_digest"] = "0" * 64
+    lengths = {
+        len(output.get("session_ids", [])),
+        len(output.get("valuation_dates", [])),
+        len(output.get("daily_returns", [])),
+    }
+    if len(lengths) != 1 or 0 in lengths:
+        raise QualificationError("control session coverage is incomplete")
+    if output.get("control_id") == "quant-platform/matched-average-exposure-control":
+        lengths.add(len(output.get("opening_exposures", [])))
+        if len(lengths) != 1:
+            raise QualificationError("matched control exposure coverage is incomplete")
+    output["output_digest"] = projection_digest("authoritative_control_output", output)
+    validate_schema(output, "#/$defs/authoritative_control_output")
+    return output
+
+
+def scored_session_set_digest(sessions: Sequence[Mapping[str, Any]]) -> str:
+    ordered = sorted(sessions, key=lambda item: (item["valuation_date"], item["session_id"]))
+    if list(sessions) != ordered:
+        raise QualificationError("scored sessions are not in canonical order")
+    if len({item["session_id"] for item in sessions}) != len(sessions) or len(
+        {item["valuation_date"] for item in sessions}
+    ) != len(sessions):
+        raise QualificationError("duplicate session identity or valuation date")
+    return projection_digest("scored_session_set", list(sessions))
+
+
 def intake_identity(raw_intake: bytes) -> tuple[str, str]:
     if not isinstance(raw_intake, bytes):
         raise QualificationError("raw intake must be bytes")
@@ -2559,6 +3006,315 @@ def admit_candidate(
             reason_codes=reasons,
         )
     return issue_qualification(record, prior)
+
+
+def _family_capability():
+    issued: dict[int, tuple[weakref.ReferenceType, bytes]] = {}
+
+    class SealedFamily(dict[str, Any]):
+        __slots__ = ("__weakref__",)
+
+    def issue(value: Mapping[str, Any]) -> SealedFamily:
+        family = SealedFamily(deepcopy(dict(value)))
+        identifier = id(family)
+
+        def discard(reference: weakref.ReferenceType) -> None:
+            current = issued.get(identifier)
+            if current is not None and current[0] is reference:
+                issued.pop(identifier, None)
+
+        reference = weakref.ref(family, discard)
+        issued[identifier] = (
+            reference,
+            canonical_json_bytes(family, "#/$defs/family_record"),
+        )
+        return family
+
+    def pristine(value: Any) -> bool:
+        current = issued.get(id(value))
+        if current is None or current[0]() is not value:
+            return False
+        try:
+            return current[1] == canonical_json_bytes(value, "#/$defs/family_record")
+        except QualificationError:
+            return False
+
+    return SealedFamily, issue, pristine
+
+
+SealedFamily, _issue_family_capability, is_pristine_family = _family_capability()
+
+
+def seal_family(
+    *,
+    prefamily_records: Sequence[Mapping[str, Any]],
+    scored_session_sets: Mapping[str, Sequence[Mapping[str, Any]]],
+    search: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    stress_scenario_set_digest: str,
+    timing_placebo_plan_digest: str | None,
+) -> SealedFamily:
+    """Close the inspected family after every pre-family record exists."""
+
+    if not prefamily_records:
+        raise QualificationError("family cannot be empty")
+    if any(
+        not is_pristine_qualification(record)
+        or record.get("state") not in {"ADMITTED", "ADMISSION_REJECTED"}
+        for record in prefamily_records
+    ):
+        raise QualificationError("family requires pristine pre-family records")
+    records = sorted(prefamily_records, key=lambda item: item["candidate_digest"])
+    digests = [record["candidate_digest"] for record in records]
+    if len(set(digests)) != len(digests):
+        raise QualificationError("family candidate identities are not unique")
+    common = {
+        (record["study_id"], record["study_plan_digest"], record["selection_run_id"])
+        for record in records
+    }
+    if len(common) != 1:
+        raise QualificationError("family candidates do not share one frozen selection run")
+    study_id, plan_digest, selection_run_id = common.pop()
+    if None in {study_id, plan_digest, selection_run_id}:
+        raise QualificationError("family identity is incomplete")
+    validate_schema(dict(search), "#/$defs/family_search")
+    validate_schema(dict(policy), "#/$defs/policy")
+    raw_results: dict[str, float | None] = {}
+    artifacts: dict[str, str] = {}
+    not_testable: dict[str, str | None] = {}
+    session_digests: dict[str, str | None] = {}
+    for record in records:
+        candidate = record["candidate_digest"]
+        if record["state"] == "ADMISSION_REJECTED":
+            if candidate in scored_session_sets:
+                raise QualificationError("admission-rejected candidate has scored sessions")
+            raw_results[candidate] = None
+            not_testable[candidate] = "INCOMPLETE_PAIRED_SESSIONS"
+            session_digests[candidate] = None
+            artifacts[candidate] = hashlib.sha256(
+                b"INCOMPLETE_PAIRED_SESSIONS\0" + bytes.fromhex(candidate)
+            ).hexdigest()
+            continue
+        sessions = list(scored_session_sets.get(candidate, []))
+        validate_schema(sessions, "#/$defs/scored_session_set")
+        session_digests[candidate] = projection_digest("scored_session_set", sessions)
+        if len(sessions) < 2:
+            raw_results[candidate] = None
+            not_testable[candidate] = "TOO_FEW_SESSIONS"
+            artifacts[candidate] = hashlib.sha256(
+                b"TOO_FEW_SESSIONS\0" + bytes.fromhex(candidate)
+            ).hexdigest()
+            continue
+        by_fold: dict[str, tuple[list[float], list[float]]] = {}
+        for session in sessions:
+            candidate_values, matched_values = by_fold.setdefault(session["fold_id"], ([], []))
+            candidate_values.append(session["candidate_costed_return"])
+            matched_values.append(session["matched_control_return"])
+        _seed_digest, seed = bootstrap_seed(policy["bootstrap_seed"], candidate)
+        try:
+            bootstrap = stationary_block_bootstrap(
+                [values[0] for values in by_fold.values()],
+                [values[1] for values in by_fold.values()],
+                initial_state=seed,
+                resamples=policy["bootstrap_resamples"],
+                mean_length=policy["stationary_block_mean_length"],
+            )
+        except QualificationError as exc:
+            raw_results[candidate] = None
+            not_testable[candidate] = str(exc)
+            artifacts[candidate] = hashlib.sha256(
+                _utf8(str(exc)) + b"\0" + bytes.fromhex(candidate)
+            ).hexdigest()
+        else:
+            raw_results[candidate] = bootstrap.raw_p_value
+            not_testable[candidate] = None
+            trace_bytes = json.dumps(bootstrap.traces, separators=(",", ":")).encode("utf-8")
+            artifacts[candidate] = hashlib.sha256(trace_bytes).hexdigest()
+    adjusted = holm_adjust(raw_results)
+    entries = []
+    alpha = policy["family_wise_alpha"]
+    for candidate in digests:
+        raw = raw_results[candidate]
+        adjusted_value = adjusted[candidate]
+        status = (
+            "NOT_TESTABLE"
+            if raw is None
+            else "ESTABLISHED"
+            if adjusted_value <= alpha
+            else "NOT_ESTABLISHED"
+        )
+        entries.append(
+            {
+                "candidate_digest": candidate,
+                "raw_p_value": raw,
+                "adjusted_p_value": adjusted_value,
+                "test_status": status,
+                "not_testable_reason": not_testable[candidate],
+                "artifact_sha256": artifacts[candidate],
+            }
+        )
+    runtime = numerical_runtime()
+    family = {
+        "schema_version": 1,
+        "authority": "quant-platform/matched-exposure-family",
+        "version": "1",
+        "family_digest": "0" * 64,
+        "study_id": study_id,
+        "study_plan_digest": plan_digest,
+        "selection_run_id": selection_run_id,
+        "search": deepcopy(dict(search)),
+        "policy": deepcopy(dict(policy)),
+        "stress_scenario_set_digest": stress_scenario_set_digest,
+        "timing_placebo_plan_digest": timing_placebo_plan_digest,
+        "inspected_candidate_digests": digests,
+        "covered_candidate_digests": list(digests),
+        "candidate_population_entries": [
+            {
+                "candidate_digest": record["candidate_digest"],
+                "prefamily_qualification_id": record["qualification_id"],
+                "prefamily_state": record["state"],
+                "scored_session_set_digest": session_digests[record["candidate_digest"]],
+            }
+            for record in records
+        ],
+        "multiplicity_entries": entries,
+        "implementation_source_sha256": _source_sha256(),
+        "numerical_runtime_manifest_sha256": runtime["manifest_sha256"],
+    }
+    family["family_digest"] = projection_digest("family_record", family)
+    validate_schema(family, "#/$defs/family_record")
+    return _issue_family_capability(family)
+
+
+def evaluate_candidate(
+    admitted: Mapping[str, Any],
+    family: Mapping[str, Any],
+    *,
+    controls: Mapping[str, Any],
+    folds: Sequence[Mapping[str, Any]],
+    scored_sessions: Sequence[Mapping[str, Any]],
+    episodes: Mapping[str, Any],
+    continuous_state: Mapping[str, Any],
+    cost_stress: Mapping[str, Any],
+    timing_placebo: Mapping[str, Any],
+) -> tuple[SealedQualification, SealedQualification]:
+    """Evaluate an admitted candidate, then seal an immutable terminal record."""
+
+    if not is_pristine_qualification(admitted) or admitted.get("state") != "ADMITTED":
+        raise QualificationError("evaluation requires pristine ADMITTED evidence")
+    if not is_pristine_family(family):
+        raise QualificationError("evaluation requires a pristine closed family")
+    if (
+        family["study_id"] != admitted["study_id"]
+        or family["study_plan_digest"] != admitted["study_plan_digest"]
+        or family["selection_run_id"] != admitted["selection_run_id"]
+    ):
+        raise QualificationError("family identity does not match admitted candidate")
+    candidate = admitted["candidate_digest"]
+    population = [
+        item
+        for item in family["candidate_population_entries"]
+        if item["candidate_digest"] == candidate
+    ]
+    entries = [
+        item for item in family["multiplicity_entries"] if item["candidate_digest"] == candidate
+    ]
+    if len(population) != 1 or len(entries) != 1:
+        raise QualificationError("candidate is not covered exactly once by family")
+    if (
+        population[0]["prefamily_state"] != "ADMITTED"
+        or population[0]["prefamily_qualification_id"] != admitted["qualification_id"]
+    ):
+        raise QualificationError("family references the wrong pre-family record")
+    session_digest = projection_digest("scored_session_set", list(scored_sessions))
+    if population[0]["scored_session_set_digest"] != session_digest:
+        raise QualificationError("family scored-session identity mismatch")
+    validate_schema(dict(controls), "#/$defs/controls")
+    validate_schema(
+        list(folds), {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/development_fold"}}
+    )
+    validate_schema(dict(episodes), "#/$defs/episodes")
+    validate_schema(dict(continuous_state), "#/$defs/continuous_state")
+    validate_schema(dict(cost_stress), "#/$defs/cost_stress")
+    validate_schema(dict(timing_placebo), "#/$defs/timing_placebo")
+    candidate_entry = deepcopy(entries[0])
+    gate_result = evaluate_gates(
+        policy=family["policy"],
+        sessions=scored_sessions,
+        folds=folds,
+        episodes=episodes,
+        continuous_state=continuous_state,
+        stress_results=cost_stress["results"],
+        multiplicity_entry=candidate_entry,
+        trusted_controls=True,
+        family_complete=(
+            family["inspected_candidate_digests"]
+            == family["covered_candidate_digests"]
+            == [item["candidate_digest"] for item in family["candidate_population_entries"]]
+            == [item["candidate_digest"] for item in family["multiplicity_entries"]]
+        ),
+    )
+    multiplicity = {
+        "method": "HOLM_STATIONARY_BLOCK_BOOTSTRAP",
+        "version": "1",
+        "implementation_source_sha256": family["implementation_source_sha256"],
+        "numerical_runtime_manifest_sha256": family["numerical_runtime_manifest_sha256"],
+        "family_digest": family["family_digest"],
+        "inspected_candidate_digests": deepcopy(family["inspected_candidate_digests"]),
+        "covered_candidate_digests": deepcopy(family["covered_candidate_digests"]),
+        "family_closed": True,
+        "alpha": family["policy"]["family_wise_alpha"],
+        "entries": deepcopy(family["multiplicity_entries"]),
+    }
+    evaluated = {
+        key: deepcopy(value) for key, value in admitted.items() if key != "qualification_id"
+    }
+    evaluated.update(
+        {
+            "scored_session_set_digest": session_digest,
+            "state": "QUALIFICATION_EVALUATED",
+            "policy": deepcopy(family["policy"]),
+            "controls": deepcopy(dict(controls)),
+            "folds": deepcopy(list(folds)),
+            "scored_sessions": deepcopy(list(scored_sessions)),
+            "aggregate": gate_result["aggregate"],
+            "episodes": deepcopy(dict(episodes)),
+            "continuous_state": deepcopy(dict(continuous_state)),
+            "cost_stress": deepcopy(dict(cost_stress)),
+            "multiplicity": multiplicity,
+            "candidate_multiplicity": candidate_entry,
+            "timing_placebo": deepcopy(dict(timing_placebo)),
+            "gates": gate_result["gates"],
+            "reason_codes": gate_result["reason_codes"],
+            "ranking_eligible": False,
+            "ranking_status": "NOT_RANKED",
+            "transition": {
+                "prior_qualification_id": admitted["qualification_id"],
+                "from_state": "ADMITTED",
+                "to_state": "QUALIFICATION_EVALUATED",
+            },
+        }
+    )
+    evaluated_record = issue_qualification(evaluated, admitted)
+    terminal = {
+        key: deepcopy(value) for key, value in evaluated_record.items() if key != "qualification_id"
+    }
+    terminal_state = gate_result["state"]
+    terminal.update(
+        {
+            "state": terminal_state,
+            "ranking_eligible": terminal_state == "QUALIFIED",
+            "ranking_status": (
+                "READY_FOR_RANKING" if terminal_state == "QUALIFIED" else "NOT_RANKED"
+            ),
+            "transition": {
+                "prior_qualification_id": evaluated_record["qualification_id"],
+                "from_state": "QUALIFICATION_EVALUATED",
+                "to_state": terminal_state,
+            },
+        }
+    )
+    return evaluated_record, issue_qualification(terminal, evaluated_record)
 
 
 def _transition_fields_equal(current: Mapping[str, Any], prior: Mapping[str, Any]) -> bool:
@@ -2959,6 +3715,8 @@ def numerical_runtime() -> dict[str, Any]:
         or canonical_sha != "b20b069d5aff1df1f4727aa7ab7b4bec725230a0e6f4afa3279ba5ceda554730"
     ):
         raise QualificationError("canonical JSON runtime conformance failed")
+    forward_issuance_summary_bytes()
+    hashed_projection_fixture()
     basic_input, basic_output = basic_arithmetic_fixture()
     stress_input, stress_output = component_stress_fixture()
     arithmetic_observed = (

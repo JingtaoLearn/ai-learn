@@ -3,6 +3,7 @@ import hashlib
 import json
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from quant_platform.study_qualification import (
     MATCHED_EXPOSURE_SCHEMA_SHA256,
@@ -10,6 +11,7 @@ from quant_platform.study_qualification import (
     QUALIFICATION_SCHEMA,
     QUALIFICATION_SCHEMA_BYTES,
     QualificationError,
+    admit_candidate,
     basic_arithmetic_fixture,
     bootstrap_seed,
     canonical_json_bytes,
@@ -18,6 +20,8 @@ from quant_platform.study_qualification import (
     component_stress_fixture,
     effective_sample_size,
     evaluate_gates,
+    forward_issuance_summary_bytes,
+    hashed_projection_fixture,
     holm_adjust,
     issue_intake,
     issue_post_selection,
@@ -25,6 +29,8 @@ from quant_platform.study_qualification import (
     no_qualified_candidate,
     numerical_runtime,
     rank_qualified,
+    retrospective_classification,
+    seal_family,
     stationary_block_bootstrap,
     strict_json_loads,
     validate_schema,
@@ -46,6 +52,7 @@ def test_reviewed_schema_is_embedded_byte_for_byte_and_structurally_valid():
         if item.startswith("QAV-")
     ]
     assert len(QUALIFICATION_SCHEMA["x-strict-authority-validator"]["required_invariants"]) == 12
+    Draft202012Validator.check_schema(QUALIFICATION_SCHEMA)
 
 
 def test_qualification_canonical_json_normative_fixture():
@@ -56,6 +63,27 @@ def test_qualification_canonical_json_normative_fixture():
     )
     assert b'["f64","8000000000000000"]' in payload
     assert b'["f64","0000000000000000"]' in payload
+
+
+def test_forward_issuance_summary_is_ancestry_complete_and_exact():
+    payload = forward_issuance_summary_bytes()
+    assert len(payload) == 2406
+    assert hashlib.sha256(payload).hexdigest() == (
+        "50916e424511332d648f6b94ad075e8822c346c237a31f0609e3e6d773d2fde5"
+    )
+
+
+def test_all_twelve_hashed_projection_domains_and_outer_fixture_are_exact():
+    fixture = hashed_projection_fixture()
+    assert fixture["control_output"]["output_digest"] == (
+        "1fe39a367336a9b64855d91b01a629417d61217e629228d73a687f1600073a0d"
+    )
+    assert fixture["family_record"]["family_digest"] == (
+        "9819a89f2fc92ba2fcfa904865de54f22b8d27b2d50653fc89a5a8db3fb4a2c0"
+    )
+    assert fixture["numerical_runtime"]["manifest_sha256"] == (
+        "cea0096efa08c3e6f7c35fa3943c2502603eb0799d9a9bb6c209561ca05ac00a"
+    )
 
 
 def test_schema_directed_numbers_ignore_equivalent_lexemes_and_reject_bool():
@@ -419,6 +447,15 @@ def test_ranker_rejects_plain_or_rejected_candidate_before_score_comparison():
         rank_qualified([forged])
 
 
+def test_exposed_and_historical_v1_evidence_are_read_only_classifications():
+    assert retrospective_classification("EXPOSED", version="2.0.0") == (
+        "RETROSPECTIVE_DIAGNOSIS_ONLY"
+    )
+    assert retrospective_classification("PRISTINE", version="1.0.0") == (
+        "LEGACY_NO_MATCHED_EXPOSURE_QUALIFICATION"
+    )
+
+
 def test_post_selection_authority_is_role_isolated_and_ranking_ineligible():
     common = {
         "record_kind": "OUTER_AUDIT_EVALUATION",
@@ -481,3 +518,73 @@ def test_each_identified_candidate_gets_a_distinct_unadmitted_predecessor():
     assert first["state"] == second["state"] == "UNADMITTED"
     assert first["qualification_id"] != second["qualification_id"]
     assert first["intake_id"] != second["intake_id"]
+
+
+def test_one_session_family_closes_not_testable_without_bootstrap():
+    raw = json.dumps(
+        {
+            "study_id": "a" * 64,
+            "candidate_digest": "b" * 64,
+            "study_plan_digest": "c" * 64,
+            "selection_run_id": "d" * 64,
+            "historical_exposure": "PRISTINE",
+        },
+        separators=(",", ":"),
+    ).encode()
+    initial = issue_intake(raw)
+    admitted = admit_candidate(
+        initial,
+        raw_intake_sha256=hashlib.sha256(raw).hexdigest(),
+        study_plan_digest="c" * 64,
+        selection_run_id="d" * 64,
+        trusted_claim={
+            "issuer": "quant-platform/total-return-qualification@1",
+            "claim_state": "AFTER_TAX_TOTAL_RETURN_VERIFIED",
+            "qualification_id": "e" * 64,
+            "ranking": {
+                "eligible_for_ranking": True,
+                "historical_exposure": "PRISTINE",
+            },
+        },
+    )
+    session = {
+        "session_id": "f" * 64,
+        "valuation_date": "2026-01-05",
+        "fold_id": "1" * 64,
+        "candidate_costed_return": 0.01,
+        "cash_return": 0.0,
+        "buy_and_hold_total_return": 0.01,
+        "matched_control_return": 0.005,
+        "opening_gross_exposure": 0.5,
+    }
+    family = seal_family(
+        prefamily_records=[admitted],
+        scored_session_sets={"b" * 64: [session]},
+        search={
+            "suggester_id": "synthetic-grid",
+            "suggester_version": "1",
+            "source_digest": "2" * 64,
+            "seed": 7,
+            "candidate_budget": 1,
+            "evaluation_budget": 1,
+            "stop_reason": "SEARCH_EXHAUSTED",
+            "search_exhausted": True,
+        },
+        policy=_policy(),
+        stress_scenario_set_digest="3" * 64,
+        timing_placebo_plan_digest=None,
+    )
+    assert (
+        family["candidate_population_entries"][0]["prefamily_qualification_id"]
+        == (admitted["qualification_id"])
+    )
+    assert family["multiplicity_entries"] == [
+        {
+            "candidate_digest": "b" * 64,
+            "raw_p_value": None,
+            "adjusted_p_value": None,
+            "test_status": "NOT_TESTABLE",
+            "not_testable_reason": "TOO_FEW_SESSIONS",
+            "artifact_sha256": family["multiplicity_entries"][0]["artifact_sha256"],
+        }
+    ]
