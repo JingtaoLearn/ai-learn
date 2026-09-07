@@ -1,0 +1,15 @@
+{
+  "schema": "quantresearch-provider-proxy-policy/v1",
+  "methods": ["CONNECT"],
+  "allowed_destinations": [
+    {"host": "query1.finance.yahoo.com", "port": 443},
+    {"host": "vip.stock.finance.sina.com.cn", "port": 443}
+  ],
+  "deny_ip_literals": true,
+  "deny_wildcards": true,
+  "deny_suffix_matches": true,
+  "deny_redirects": true,
+  "deny_special_addresses": true,
+  "deny_private_ranges": true,
+  "deny_flearn": true
+}

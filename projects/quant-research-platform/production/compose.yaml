@@ -1,0 +1,129 @@
+name: quantresearch-production
+services:
+  production-api:
+    image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+    pull_policy: never
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    cpus: 1.50
+    mem_limit: 2048m
+    memswap_limit: 2048m
+    restart: on-failure:5
+    stop_grace_period: 120s
+    environment:
+      HTTPS_PROXY: http://provider-egress-proxy:3128
+      NO_PROXY: 127.0.0.1,localhost,report-edge
+      QR_PRODUCTION_STATE_ROOT: /var/lib/quantresearch/state
+      QR_PRODUCTION_RELEASE_MANIFEST: /etc/quantresearch/authorities/release.json
+      QR_PRODUCTION_AUTHORITIES_ROOT: /etc/quantresearch/authorities
+      QR_VERIFIED_CLIENT_IDENTITY: ${QR_VERIFIED_CLIENT_IDENTITY:?set reviewed certificate subject}
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /run/quantresearch:size=16m,mode=0700,uid=10001,gid=10001
+    volumes:
+      - type: bind
+        source: /var/lib/quantresearch-production/state
+        target: /var/lib/quantresearch/state
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/quantresearch-production/publication
+        target: /var/lib/quantresearch/publication
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/authorities
+        target: /etc/quantresearch/authorities
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/provider
+        target: /run/secrets/provider
+        read_only: true
+        bind: {create_host_path: false}
+    expose: ["8090"]
+    networks: [api_internal, provider_proxy_internal]
+    depends_on:
+      provider-egress-proxy: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: {driver: local, options: {max-size: 20m, max-file: "5"}}
+
+  report-edge:
+    image: ${REPORT_EDGE_IMAGE:?set reviewed digest-only nginx image}
+    pull_policy: never
+    user: "10101:10101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 0.25
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: unless-stopped
+    stop_grace_period: 30s
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0750,uid=10101,gid=10101
+      - /var/run:size=8m,mode=0750,uid=10101,gid=10101
+    volumes:
+      - type: bind
+        source: /var/lib/quantresearch-production/publication/current
+        target: /srv/reports
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/nginx
+        target: /etc/nginx
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/tls
+        target: /run/secrets/tls
+        read_only: true
+        bind: {create_host_path: false}
+    ports: ["80:8080", "443:8443", "127.0.0.1:8443:9443"]
+    networks: [api_internal]
+    healthcheck:
+      test: [CMD, nginx, -t]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: {driver: local, options: {max-size: 10m, max-file: "5"}}
+
+  provider-egress-proxy:
+    image: ${PROVIDER_PROXY_IMAGE:?set reviewed digest-only provider proxy image}
+    pull_policy: never
+    user: "10201:10201"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 0.25
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: on-failure:5
+    stop_grace_period: 30s
+    tmpfs: [/tmp:size=16m,mode=1770,uid=10201,gid=10201]
+    volumes:
+      - type: bind
+        source: /etc/quantresearch-production/egress-proxy
+        target: /etc/quantresearch-egress-proxy
+        read_only: true
+        bind: {create_host_path: false}
+    expose: ["3128"]
+    networks: [provider_proxy_internal, provider_egress]
+    healthcheck:
+      test: [CMD, python, -c, "import json; assert json.load(open('/etc/quantresearch-egress-proxy/config.json'))['methods']==['CONNECT']"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: {driver: local, options: {max-size: 10m, max-file: "5"}}
+
+networks:
+  api_internal: {driver: bridge, internal: true, attachable: false}
+  provider_proxy_internal: {driver: bridge, internal: true, attachable: false}
+  provider_egress: {driver: bridge, internal: false, attachable: false}

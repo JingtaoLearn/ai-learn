@@ -1,0 +1,39 @@
+{
+  "asset": {
+    "currency": "CNY",
+    "name": "SGE Au99.99",
+    "unit": "gram"
+  },
+  "execution": {
+    "automatic_ordering": false,
+    "fill_timing": "next valid Au99.99 session open",
+    "position_set": [
+      0,
+      1
+    ],
+    "roundtrip_spread_cny_per_g": 5.0,
+    "signal_information": "completed Au99.99 closes only"
+  },
+  "model_id": "gold-au9999-ols55-ema1-b0175-s0275-v1",
+  "parameters": {
+    "anchor_date": "2021-05-10",
+    "buy_threshold_pct_per_day": 0.175,
+    "ema_span": 1,
+    "sell_threshold_pct_per_day": -0.275,
+    "window_sessions": 55
+  },
+  "promoted_at": "2026-08-31T11:17:55.180565+00:00",
+  "promotion_authority": "Jingtao explicit approval in Feishu",
+  "promotion_policy": {
+    "experiments_may_modify_this_manifest": false,
+    "future_parameter_studies_auto_promote": false,
+    "required_to_replace": "new immutable manifest plus explicit Jingtao approval plus cron guard digest update"
+  },
+  "research_run_id": "912079650d8d037f",
+  "schema_version": 1,
+  "source": {
+    "market_data": "Sina Au99.99 history cross-checked against SGE sampled opens",
+    "report_url": "https://share.ai.jingtao.fun/f642b386-74c0-4e9f-92e6-563e7c6a5d69.html?v=4"
+  },
+  "stage": "PRODUCTION_FROZEN"
+}

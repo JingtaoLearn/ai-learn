@@ -1,0 +1,20 @@
+FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN groupadd --gid 10001 quantresearch \
+    && useradd --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin quantresearch
+
+COPY requirements.lock /opt/project/requirements.lock
+RUN pip install --upgrade pip==25.2 \
+    && pip install --no-cache-dir --require-hashes -r /opt/project/requirements.lock
+COPY pyproject.toml README.md /opt/project/
+COPY src /opt/project/src
+RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/project
+
+USER 10001:10001
+WORKDIR /var/lib/quantresearch
+EXPOSE 8090
+ENTRYPOINT ["python", "-m", "quant_platform.production_web"]

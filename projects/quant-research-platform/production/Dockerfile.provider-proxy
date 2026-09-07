@@ -1,0 +1,117 @@
+FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+
+RUN groupadd --gid 10201 proxy \
+    && useradd --no-create-home --uid 10201 --gid 10201 --shell /usr/sbin/nologin proxy
+COPY production/provider-proxy-policy.json /etc/quantresearch-egress-proxy/config.json
+RUN <<'PY'
+from pathlib import Path
+Path('/usr/local/bin/quantresearch-egress-proxy').write_text(r'''#!/usr/bin/env python3
+import argparse
+import ipaddress
+import json
+import select
+import socket
+import socketserver
+
+MAX_HEADER = 8192
+
+
+def policy(path):
+    value = json.loads(open(path, encoding="utf-8").read())
+    hosts = {(item["host"], item["port"]) for item in value["allowed_destinations"]}
+    if len(hosts) != 2 or value["methods"] != ["CONNECT"]:
+        raise RuntimeError("proxy policy identity is invalid")
+    return hosts
+
+
+def resolve_global(host, port):
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise OSError("destination has no address")
+    accepted = []
+    for family, kind, proto, _, address in addresses:
+        ip = ipaddress.ip_address(address[0])
+        if not ip.is_global:
+            raise OSError("destination resolved to a special address")
+        accepted.append((family, kind, proto, address))
+    return accepted
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(10)
+        data = b""
+        while b"\r\n\r\n" not in data and len(data) <= MAX_HEADER:
+            chunk = self.request.recv(1024)
+            if not chunk:
+                return
+            data += chunk
+        try:
+            first = data.split(b"\r\n", 1)[0].decode("ascii")
+            method, authority, version = first.split(" ")
+            host, port_text = authority.rsplit(":", 1)
+            port = int(port_text)
+            try:
+                ipaddress.ip_address(host.strip("[]"))
+            except ValueError:
+                pass
+            else:
+                raise PermissionError("IP literals are denied")
+        except PermissionError:
+            self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+            return
+        except Exception:
+            self.request.sendall(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+            return
+        if method != "CONNECT" or version != "HTTP/1.1" or (host, port) not in self.server.allowed:
+            self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+            return
+        try:
+            choices = resolve_global(host, port)
+            family, kind, proto, address = choices[0]
+            upstream = socket.socket(family, kind, proto)
+            upstream.settimeout(10)
+            upstream.connect(address)
+        except OSError:
+            self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+            return
+        with upstream:
+            self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            sockets = [self.request, upstream]
+            while True:
+                readable, _, _ = select.select(sockets, [], [], 30)
+                if not readable:
+                    return
+                for source in readable:
+                    payload = source.recv(65536)
+                    if not payload:
+                        return
+                    (upstream if source is self.request else self.request).sendall(payload)
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--listen", default="0.0.0.0:3128")
+    args = parser.parse_args()
+    host, port = args.listen.rsplit(":", 1)
+    with Server((host, int(port)), Handler) as server:
+        server.allowed = policy(args.config)
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+''', encoding='utf-8')
+PY
+RUN chmod 0555 /usr/local/bin/quantresearch-egress-proxy \
+    && chown -R 10201:10201 /etc/quantresearch-egress-proxy
+
+USER 10201:10201
+EXPOSE 3128
+ENTRYPOINT ["/usr/local/bin/quantresearch-egress-proxy", "--config", "/etc/quantresearch-egress-proxy/config.json"]

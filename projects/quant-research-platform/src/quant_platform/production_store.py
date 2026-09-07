@@ -1,0 +1,364 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import stat
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Callable, Iterator
+
+from .production_contract import ProductionRequest, canonical_json_bytes, production_run_id
+
+
+class ProductionStoreError(RuntimeError):
+    """Base class for durable production-ledger failures."""
+
+
+class IdempotencyConflict(ProductionStoreError):
+    pass
+
+
+class ScheduledFireConflict(ProductionStoreError):
+    pass
+
+
+class StateConflict(ProductionStoreError):
+    pass
+
+
+TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED"})
+ACTIVE_STATES = frozenset({"ACCEPTED", "ACQUIRING", "COMPUTING", "PUBLISHING"})
+SCHEMA_V1 = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+CREATE TABLE production_requests (
+    request_id TEXT PRIMARY KEY,
+    request_digest TEXT NOT NULL,
+    request_body_json TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    production_manifest_sha256 TEXT NOT NULL,
+    production_release_id TEXT NOT NULL,
+    production_run_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK(status IN ('ACCEPTED','ACQUIRING','COMPUTING','PUBLISHING','SUCCEEDED','FAILED')),
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    experiment_id TEXT,
+    attempt_id TEXT,
+    result_id TEXT,
+    result_manifest_json TEXT,
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(job_id, scheduled_for),
+    CHECK((status = 'SUCCEEDED') = (result_id IS NOT NULL)),
+    CHECK((status = 'SUCCEEDED') = (result_manifest_json IS NOT NULL)),
+    CHECK((status = 'FAILED') = (failure_reason IS NOT NULL))
+);
+CREATE INDEX production_claimable ON production_requests(status, lease_expires_at, created_at);
+CREATE TRIGGER immutable_terminal_update
+BEFORE UPDATE ON production_requests
+WHEN OLD.status IN ('SUCCEEDED','FAILED')
+BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END;
+CREATE TRIGGER immutable_terminal_delete
+BEFORE DELETE ON production_requests
+WHEN OLD.status IN ('SUCCEEDED','FAILED')
+BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END;
+"""
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def utc_text(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ProductionStoreError("ledger timestamp must be timezone-aware")
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _row(value: sqlite3.Row | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    result = dict(value)
+    for field in ("request_body_json", "result_manifest_json"):
+        if result.get(field) is not None:
+            result[field.removesuffix("_json")] = json.loads(result.pop(field))
+    return result
+
+
+class ProductionStore:
+    """One-writer SQLite ledger independent from the research catalog."""
+
+    def __init__(self, state_root: Path | str):
+        self.state_root = Path(state_root).absolute()
+        self.database_path = self.state_root / "production.sqlite3"
+
+    def _prepare_root(self) -> None:
+        self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = os.stat(self.state_root, follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ProductionStoreError("production state root is unsafe")
+        if self.database_path.exists() and (
+            self.database_path.is_symlink() or not self.database_path.is_file()
+        ):
+            raise ProductionStoreError("production ledger path is unsafe")
+
+    def connect(self) -> sqlite3.Connection:
+        self._prepare_root()
+        connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
+        return connection
+
+    @contextmanager
+    def transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def initialize(self) -> None:
+        with self.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            if not existing:
+                connection.executescript(SCHEMA_V1)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
+                    (utc_text(utc_now()),),
+                )
+            elif [item["version"] for item in existing] != [1]:
+                raise ProductionStoreError("unsupported production ledger schema")
+
+    def admit(
+        self,
+        request: ProductionRequest,
+        production_release_id: str,
+        *,
+        validate_new: Callable[[sqlite3.Connection], None],
+        now: datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        timestamp = utc_text(now or utc_now())
+        with self.transaction(immediate=True) as connection:
+            existing = connection.execute(
+                "SELECT * FROM production_requests WHERE request_id = ?", (request.request_id,)
+            ).fetchone()
+            if existing is not None:
+                if existing["request_digest"] != request.request_digest:
+                    raise IdempotencyConflict("IDEMPOTENCY_CONFLICT")
+                return _row(existing) or {}, False
+            fire = connection.execute(
+                "SELECT request_id FROM production_requests WHERE job_id = ? AND scheduled_for = ?",
+                (request.job_id, request.scheduled_for),
+            ).fetchone()
+            if fire is not None:
+                raise ScheduledFireConflict("SCHEDULED_FIRE_CONFLICT")
+            validate_new(connection)
+            run_id = production_run_id(request.request_id, production_release_id)
+            connection.execute(
+                """
+                INSERT INTO production_requests(
+                    request_id, request_digest, request_body_json, job_id, scheduled_for,
+                    production_manifest_sha256, production_release_id, production_run_id,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?)
+                """,
+                (
+                    request.request_id,
+                    request.request_digest,
+                    request.canonical_body.decode("utf-8"),
+                    request.job_id,
+                    request.scheduled_for,
+                    request.production_manifest_sha256,
+                    production_release_id,
+                    run_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            created = connection.execute(
+                "SELECT * FROM production_requests WHERE request_id = ?", (request.request_id,)
+            ).fetchone()
+            return _row(created) or {}, True
+
+    def active_count(self, connection: sqlite3.Connection | None = None) -> int:
+        owned = connection is None
+        connection = connection or self.connect()
+        try:
+            placeholders = ",".join("?" for _ in ACTIVE_STATES)
+            row = connection.execute(
+                f"SELECT COUNT(*) AS count FROM production_requests WHERE status IN ({placeholders})",
+                tuple(sorted(ACTIVE_STATES)),
+            ).fetchone()
+            return int(row["count"])
+        finally:
+            if owned:
+                connection.close()
+
+    def get_run(self, production_run_id_value: str) -> dict[str, Any] | None:
+        connection = self.connect()
+        try:
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE production_run_id = ?",
+                    (production_run_id_value,),
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+    def get_request(self, request_id: str) -> dict[str, Any] | None:
+        connection = self.connect()
+        try:
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE request_id = ?", (request_id,)
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+    def claim(self, owner: str, *, lease_seconds: int = 120, now: datetime | None = None) -> dict[str, Any] | None:
+        if not owner or lease_seconds < 1:
+            raise ProductionStoreError("claim identity or lease is invalid")
+        clock = now or utc_now()
+        current = utc_text(clock)
+        expiry = utc_text(clock + timedelta(seconds=lease_seconds))
+        with self.transaction(immediate=True) as connection:
+            placeholders = ",".join("?" for _ in ACTIVE_STATES)
+            selected = connection.execute(
+                f"""
+                SELECT * FROM production_requests
+                WHERE status IN ({placeholders})
+                  AND (lease_owner IS NULL OR lease_expires_at <= ?)
+                ORDER BY created_at, request_id LIMIT 1
+                """,
+                (*tuple(sorted(ACTIVE_STATES)), current),
+            ).fetchone()
+            if selected is None:
+                return None
+            connection.execute(
+                """
+                UPDATE production_requests
+                SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (owner, expiry, current, selected["request_id"]),
+            )
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE request_id = ?",
+                    (selected["request_id"],),
+                ).fetchone()
+            )
+
+    def transition(
+        self,
+        request_id: str,
+        owner: str,
+        expected: str,
+        target: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if expected not in ACTIVE_STATES or target not in ACTIVE_STATES:
+            raise StateConflict("transition state is invalid")
+        timestamp = utc_text(now or utc_now())
+        with self.transaction(immediate=True) as connection:
+            changed = connection.execute(
+                """
+                UPDATE production_requests SET status = ?, updated_at = ?
+                WHERE request_id = ? AND status = ? AND lease_owner = ?
+                """,
+                (target, timestamp, request_id, expected, owner),
+            ).rowcount
+            if changed != 1:
+                raise StateConflict("production row state or lease changed")
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE request_id = ?", (request_id,)
+                ).fetchone()
+            ) or {}
+
+    def finish_success(
+        self,
+        request_id: str,
+        owner: str,
+        *,
+        experiment_id: str,
+        attempt_id: str,
+        result_id: str,
+        result_manifest: dict[str, Any],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        timestamp = utc_text(now or utc_now())
+        with self.transaction(immediate=True) as connection:
+            changed = connection.execute(
+                """
+                UPDATE production_requests SET
+                    status = 'SUCCEEDED', experiment_id = ?, attempt_id = ?, result_id = ?,
+                    result_manifest_json = ?, lease_owner = NULL, lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE request_id = ? AND status = 'PUBLISHING' AND lease_owner = ?
+                """,
+                (
+                    experiment_id,
+                    attempt_id,
+                    result_id,
+                    canonical_json_bytes(result_manifest).decode("utf-8"),
+                    timestamp,
+                    request_id,
+                    owner,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise StateConflict("terminal success lost its state or lease")
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE request_id = ?", (request_id,)
+                ).fetchone()
+            ) or {}
+
+    def finish_failure(
+        self,
+        request_id: str,
+        owner: str,
+        reason: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if not reason or len(reason.encode("utf-8")) > 4096:
+            raise ProductionStoreError("failure reason is invalid")
+        timestamp = utc_text(now or utc_now())
+        with self.transaction(immediate=True) as connection:
+            placeholders = ",".join("?" for _ in ACTIVE_STATES)
+            changed = connection.execute(
+                f"""
+                UPDATE production_requests SET status = 'FAILED', failure_reason = ?,
+                    lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE request_id = ? AND lease_owner = ? AND status IN ({placeholders})
+                """,
+                (reason, timestamp, request_id, owner, *tuple(sorted(ACTIVE_STATES))),
+            ).rowcount
+            if changed != 1:
+                raise StateConflict("terminal failure lost its state or lease")
+            return _row(
+                connection.execute(
+                    "SELECT * FROM production_requests WHERE request_id = ?", (request_id,)
+                ).fetchone()
+            ) or {}
