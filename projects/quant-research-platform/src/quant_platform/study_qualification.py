@@ -1545,12 +1545,17 @@ def _merge_schema(
 
     merged = deepcopy(dict(base))
     for key, item in overlay.items():
-        if key == "required":
+        if key == "type" and key in merged:
+            base_types = {merged[key]} if isinstance(merged[key], str) else set(merged[key])
+            overlay_types = {item} if isinstance(item, str) else set(item)
+            compatible = base_types & overlay_types
+            if not compatible:
+                raise QualificationError("applicable schema branches have conflicting types")
+            merged[key] = next(iter(compatible)) if len(compatible) == 1 else merged[key]
+        elif key == "required":
             merged[key] = list(dict.fromkeys([*merged.get(key, []), *item]))
         elif key in merged and isinstance(merged[key], Mapping) and isinstance(item, Mapping):
             merged[key] = _merge_schema(merged[key], item)
-        elif key == "type" and key in merged and merged[key] != item:
-            raise QualificationError("applicable schema branches have conflicting types")
         else:
             merged.setdefault(key, deepcopy(item))
     return merged
