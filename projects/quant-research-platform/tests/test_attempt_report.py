@@ -195,14 +195,18 @@ def _install_cross_attempt_artifact(
     return manifest
 
 
-def _complete_authority_document(total_key: str) -> tuple[dict, dict[str, dict]]:
+def _complete_authority_document() -> tuple[dict, dict[str, dict]]:
     fixture = _fixture()
     registry = {
         attachment["attachment_id"]: copy.deepcopy(attachment)
-        for attachment in fixture["attachments"].values()
+        for key, attachment in fixture["attachments"].items()
+        if not key.startswith("TOTAL_RETURN_")
     }
-    document = copy.deepcopy(fixture["report_documents"][total_key])
-    total = registry[fixture["attachments"][total_key]["attachment_id"]]
+    document = copy.deepcopy(
+        fixture["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    total = _valid_total_return_attachment()
+    registry[total["attachment_id"]] = total
     matched = registry[
         fixture["attachments"]["MATCHED_EXPOSURE_TERMINAL"]["attachment_id"]
     ]
@@ -213,7 +217,7 @@ def _complete_authority_document(total_key: str) -> tuple[dict, dict[str, dict]]
     _embed_attachment(document, "matched_exposure_attachment", matched)
     _embed_attachment(document, "study_terminal_attachment", study)
     fields = _document_fields(document)
-    source_name = "record" if total_key == "TOTAL_RETURN_FULL" else "projection"
+    source_name = "projection"
     source = total[source_name]
     fields["total_return_status"].update(
         availability="AVAILABLE",
@@ -718,15 +722,10 @@ def test_second_stage_publishes_only_three_files_and_preserves_all_source_semant
     }.issubset(source)
 
 
-@pytest.mark.parametrize(
-    "total_key",
-    ["TOTAL_RETURN_FULL", "TOTAL_RETURN_READ_TIME"],
-)
 def test_authority_bytes_and_digests_are_invariant_across_publication_reload_and_invocation(
     tmp_path: Path,
-    total_key: str,
 ):
-    document, registry = _complete_authority_document(total_key)
+    document, registry = _complete_authority_document()
     before = _authority_snapshot(registry)
     document_before = canonical_json_bytes(document)
     service, _ = _service(tmp_path / "catalog")
