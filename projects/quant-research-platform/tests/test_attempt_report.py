@@ -710,7 +710,11 @@ def test_authority_bytes_and_digests_are_invariant_across_publication_reload_and
     bundle_path = service.catalog.state_root / detail["bundle_path"]
     slot, invoke = load_published_operator(bundle_path)
     assert slot == "report"
-    report_html = invoke(copy.deepcopy(document), {}).encode("utf-8")
+    report_html = invoke(
+        copy.deepcopy(document),
+        {},
+        attachment_registry=registry,
+    ).encode("utf-8")
     assert canonical_json_bytes(document) == document_before
     assert report_html == render_report_document(
         document,
@@ -740,7 +744,14 @@ def test_authority_bytes_and_digests_are_invariant_across_publication_reload_and
         attachment_registry=registry,
     )
     reloaded_before = canonical_json_bytes(reloaded["document"])
-    assert invoke(reloaded["document"], {}).encode("utf-8") == reloaded["html"]
+    assert (
+        invoke(
+            reloaded["document"],
+            {},
+            attachment_registry=registry,
+        ).encode("utf-8")
+        == reloaded["html"]
+    )
     assert canonical_json_bytes(reloaded["document"]) == reloaded_before
     assert latest["document"] == reloaded["document"]
     assert _authority_snapshot(registry) == before

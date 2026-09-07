@@ -7,7 +7,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .attempt_report import (
     render_report_document,
@@ -272,7 +272,7 @@ def load_published_operator(
     *,
     expected_content_digest: str | None = None,
     expected_evidence_digest: str | None = None,
-) -> tuple[str, Callable[[dict[str, Any], dict[str, Any]], Any]]:
+) -> tuple[str, Callable[..., Any]]:
     bundle = Path(bundle_dir)
     manifest = _load_json(bundle / "manifest.json")
     if manifest.get("api_version") == 2:
@@ -358,7 +358,7 @@ def _load_published_report_operator(
     *,
     expected_content_digest: str | None,
     expected_evidence_digest: str | None,
-) -> tuple[str, Callable[[dict[str, Any], dict[str, Any]], Any]]:
+) -> tuple[str, Callable[..., Any]]:
     identity = verify_report_operator_bundle(
         bundle,
         expected_content_digest=expected_content_digest,
@@ -382,8 +382,16 @@ def _load_published_report_operator(
         raise ValueError("published report operator runtime contract mismatch")
     apply = namespace["apply"]
 
-    def invoke(payload: dict[str, Any], parameters: dict[str, Any]) -> str:
-        isolated_payload = validate_report_document(copy.deepcopy(payload))
+    def invoke(
+        payload: dict[str, Any],
+        parameters: dict[str, Any],
+        *,
+        attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> str:
+        isolated_payload = validate_report_document(
+            copy.deepcopy(payload),
+            attachment_registry=attachment_registry,
+        )
         before = canonical_json_bytes(isolated_payload)
         validated_parameters = validate_parameters(
             identity["parameter_schema"],
@@ -397,7 +405,11 @@ def _load_published_report_operator(
             raise ValueError("report operator is not deterministic")
         if canonical_json_bytes(isolated_payload) != before:
             raise ValueError("report operator mutated its input payload")
-        native = render_report_document(payload, validated_parameters).decode("utf-8")
+        native = render_report_document(
+            payload,
+            validated_parameters,
+            attachment_registry=attachment_registry,
+        ).decode("utf-8")
         if first != native:
             raise ValueError("report operator source diverges from canonical renderer")
         return first
