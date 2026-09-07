@@ -75,9 +75,7 @@ def test_reviewed_schema_type_authority_is_explicit_and_permissions_fail_closed(
         "implementation behavior",
     ]
 
-    permissions = QUALIFICATION_SCHEMA["$defs"]["executable_segment"]["properties"][
-        "permissions"
-    ]
+    permissions = QUALIFICATION_SCHEMA["$defs"]["executable_segment"]["properties"]["permissions"]
     assert permissions == {"type": "string", "pattern": "^r-x[p-s]$"}
     valid: dict[str, object] = {
         "start_address_hex": "0000000000001000",

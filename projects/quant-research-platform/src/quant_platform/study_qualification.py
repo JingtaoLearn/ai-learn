@@ -1119,8 +1119,7 @@ def _apply_reviewed_type_authority_revision(payload: bytes) -> bytes:
 
     patches = (
         (
-            b'"reason_codes": {"minItems": 1, "contains": {"const": '
-            b'"INTAKE_IDENTITY_MISSING"}}',
+            b'"reason_codes": {"minItems": 1, "contains": {"const": "INTAKE_IDENTITY_MISSING"}}',
             b'"reason_codes": {"type": "array", "minItems": 1, "contains": '
             b'{"const": "INTAKE_IDENTITY_MISSING"}}',
             1,
@@ -1186,11 +1185,11 @@ def _apply_reviewed_type_authority_revision(payload: bytes) -> bytes:
             b'    "resolution_order": ["type", "$ref", "allOf/oneOf/anyOf branch", '
             b'"const", "enum", "object shape", "array shape"],\n'
             b'    "rule": "After local $ref and applicable allOf/oneOf/anyOf/if-then-else '
-            b'resolution, every canonicalized value must resolve to exactly one reviewed '
-            b'JSON type for that admitted instance. An explicit type is authoritative. A '
-            b'primitive const supplies exactly its JSON type; an enum supplies the unique '
-            b'JSON type matched by the admitted value; properties/required supply object; '
-            b'items/prefixItems supply array. integer and number are overlapping and may not '
+            b"resolution, every canonicalized value must resolve to exactly one reviewed "
+            b"JSON type for that admitted instance. An explicit type is authoritative. A "
+            b"primitive const supplies exactly its JSON type; an enum supplies the unique "
+            b"JSON type matched by the admitted value; properties/required supply object; "
+            b"items/prefixItems supply array. integer and number are overlapping and may not "
             b'both match. No other keyword or runtime value supplies type.",\n'
             b'    "forbidden_type_inference": ["pattern", "format", "minimum", "maximum", '
             b'"exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "runtime '
@@ -1200,7 +1199,7 @@ def _apply_reviewed_type_authority_revision(payload: bytes) -> bytes:
             b'    "audit_scope": "All twelve x-hashed-object-projections objects plus the '
             b'complete QUALIFICATION-HASHED-PROJECTIONS-02 outer fixture",\n'
             b'    "failure": "REFUSE_ISSUANCE"\n'
-            b'  },\n'
+            b"  },\n"
             b'  "x-hashed-object-projections": {',
             1,
         ),
@@ -1538,9 +1537,7 @@ def _condition_matches(value: Any, schema: Mapping[str, Any], root: Mapping[str,
     return True
 
 
-def _merge_schema(
-    base: Mapping[str, Any], overlay: Mapping[str, Any]
-) -> dict[str, Any]:
+def _merge_schema(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     """Compose applicable schema branches without discarding parent type descriptors."""
 
     merged = deepcopy(dict(base))
@@ -1587,9 +1584,7 @@ def _choose_schema(
                 raise QualificationError("schema union is ambiguous")
             if not matches:
                 raise QualificationError("value does not match schema union")
-            current = {
-                key: deepcopy(item) for key, item in current.items() if key != keyword
-            }
+            current = {key: deepcopy(item) for key, item in current.items() if key != keyword}
             for branch in matches:
                 current = _merge_schema(current, _choose_schema(value, branch, root))
     if "allOf" in current:
