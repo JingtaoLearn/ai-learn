@@ -34,6 +34,7 @@ from .study_evaluation import (
     MetricDocumentFactory,
     RobustWalkForwardPolicy,
 )
+from .study_qualification import no_qualified_candidate
 from .study_suggesters import (
     Exhausted,
     GridParameterSuggester,
@@ -652,9 +653,7 @@ def _fold_window(
     account_policy: str,
 ) -> dict[str, Any]:
     training_end = scoring_start - purge_sessions - 1
-    contract_sessions = (
-        sessions if sessions[0] == allowed_start else [allowed_start, *sessions]
-    )
+    contract_sessions = sessions if sessions[0] == allowed_start else [allowed_start, *sessions]
     return normalize_fold_window(
         {
             "allowed_start": allowed_start,
@@ -682,9 +681,7 @@ def _inner_folds(
 ) -> list[dict[str, Any]]:
     first_scoring = len(sessions) - count * scoring_sessions
     if first_scoring - purge_sessions < minimum_training_sessions:
-        raise StudyValidationError(
-            "validation range cannot contain the requested inner folds"
-        )
+        raise StudyValidationError("validation range cannot contain the requested inner folds")
     return [
         _fold_window(
             sessions,
@@ -732,13 +729,9 @@ def _validation_plan(
         raise StudyValidationError(
             "study.validation.outer_account_policy must be FORCE_FLAT_WITH_COST"
         )
-    holdout_sessions = _integer(
-        holdout["sessions"], "study.holdout.sessions", minimum=1
-    )
+    holdout_sessions = _integer(holdout["sessions"], "study.holdout.sessions", minimum=1)
     if holdout["pass_rule"] != "POLICY_CONSTRAINTS":
-        raise StudyValidationError(
-            "study.holdout.pass_rule must be POLICY_CONSTRAINTS"
-        )
+        raise StudyValidationError("study.holdout.pass_rule must be POLICY_CONSTRAINTS")
     development_count = len(sessions) - holdout_sessions
     first_outer_scoring = development_count - outer_folds * scoring_sessions
     if first_outer_scoring - purge_sessions < minimum_training_sessions:
@@ -853,12 +846,8 @@ def _resolve_operator(
     slot: str,
 ) -> dict[str, Any]:
     selector = _exact(selector_value, OPERATOR_FIELDS, f"study.operators.{slot}")
-    operator_id = _string(
-        selector["operator_id"], f"study.operators.{slot}.operator_id"
-    )
-    requested_version = _string(
-        selector["version"], f"study.operators.{slot}.version"
-    )
+    operator_id = _string(selector["operator_id"], f"study.operators.{slot}.operator_id")
+    requested_version = _string(selector["version"], f"study.operators.{slot}.version")
     latest = None
     if requested_version == "latest":
         latest = connection.execute(
@@ -892,9 +881,7 @@ def _resolve_operator(
     ).fetchone()
     if operator is None or operator["slot"] != slot:
         actual = "unknown" if operator is None else operator["slot"]
-        raise StudyValidationError(
-            f"operator {operator_id} belongs to slot {actual}, not {slot}"
-        )
+        raise StudyValidationError(f"operator {operator_id} belongs to slot {actual}, not {slot}")
     schema = json.loads(selected["parameter_schema_json"])
     defaults = json.loads(selected["defaults_json"])
     parameters = _parameters(
@@ -931,13 +918,9 @@ def _search(
         raise StudyValidationError(
             "study.search.suggester must be GRID, SEEDED_RANDOM, or OPTUNA_TPE"
         )
-    suggester_version = _string(
-        search["suggester_version"], "study.search.suggester_version"
-    )
+    suggester_version = _string(search["suggester_version"], "study.search.suggester_version")
     if suggester_version != "1.0.0":
-        raise StudyValidationError(
-            "study.search.suggester_version must be 1.0.0"
-        )
+        raise StudyValidationError("study.search.suggester_version must be 1.0.0")
     seed = _integer(search["seed"], "study.search.seed")
     unique_trial_budget = _integer(
         search["unique_trial_budget"],
@@ -965,17 +948,11 @@ def _search(
         if len(parts) == 4 and parts[:2] == ["", "operators"]:
             slot, parameter = parts[2:]
             if slot == "cost":
-                raise StudyValidationError(
-                    "study.search.space cannot search cost parameters"
-                )
+                raise StudyValidationError("study.search.space cannot search cost parameters")
             if slot == "report":
-                raise StudyValidationError(
-                    "study.search.space cannot search report parameters"
-                )
+                raise StudyValidationError("study.search.space cannot search report parameters")
             try:
-                property_schema = operators[slot]["parameter_schema"]["properties"][
-                    parameter
-                ]
+                property_schema = operators[slot]["parameter_schema"]["properties"][parameter]
             except KeyError as exc:
                 raise StudyValidationError(
                     f"study.search.space path is not owned by a frozen operator: {path}"
@@ -985,21 +962,15 @@ def _search(
                 "study.search.space cannot search template protocol parameters"
             )
         else:
-            raise StudyValidationError(
-                f"study.search.space path has invalid syntax: {path}"
-            )
+            raise StudyValidationError(f"study.search.space path has invalid syntax: {path}")
         if suggester == "OPTUNA_TPE":
             if not isinstance(definition_value, dict):
-                raise StudyValidationError(
-                    f"study.search.space.{path} must be an object"
-                )
+                raise StudyValidationError(f"study.search.space.{path} must be an object")
             try:
-                normalized, cardinality = (
-                    study_suggesters.normalize_optuna_search_definition(
-                        definition_value,
-                        property_schema,
-                        path,
-                    )
+                normalized, cardinality = study_suggesters.normalize_optuna_search_definition(
+                    definition_value,
+                    property_schema,
+                    path,
                 )
             except study_suggesters.SuggesterValidationError as exc:
                 raise StudyValidationError(str(exc)) from exc
@@ -1036,15 +1007,12 @@ def _search(
             None
             if any(cardinality is None for cardinality in optuna_cardinalities)
             else prod(
-                cardinality
-                for cardinality in optuna_cardinalities
-                if cardinality is not None
+                cardinality for cardinality in optuna_cardinalities if cardinality is not None
             )
         )
     else:
         candidate_capacity = prod(
-            len(definition["values"])
-            for definition in normalized_space.values()
+            len(definition["values"]) for definition in normalized_space.values()
         )
     frozen = {
         "suggester": suggester,
@@ -1063,15 +1031,11 @@ def _search(
 def _evaluation(value: Any) -> dict[str, Any]:
     evaluation = _exact(value, EVALUATION_FIELDS, "study.evaluation")
     policy_id = _string(evaluation["policy_id"], "study.evaluation.policy_id")
-    requested_version = _string(
-        evaluation["version"], "study.evaluation.version"
-    )
+    requested_version = _string(evaluation["version"], "study.evaluation.version")
     if policy_id != "robust_walk_forward":
         raise StudyValidationError(f"unknown evaluation policy: {policy_id}")
     if requested_version not in {"latest", "1.0.0"}:
-        raise StudyValidationError(
-            f"unknown evaluation policy: {policy_id}@{requested_version}"
-        )
+        raise StudyValidationError(f"unknown evaluation policy: {policy_id}@{requested_version}")
     parameter_schema = deepcopy(EVALUATION_PARAMETER_SCHEMA)
     defaults = deepcopy(EVALUATION_DEFAULTS)
     parameters = _parameters(
@@ -1097,16 +1061,11 @@ def _lineage(value: Any) -> dict[str, Any]:
     lineage = _exact(value, LINEAGE_FIELDS, "study.lineage")
     parents = lineage["parent_study_ids"]
     if not isinstance(parents, list) or any(
-        not isinstance(parent, str) or STUDY_ID.fullmatch(parent) is None
-        for parent in parents
+        not isinstance(parent, str) or STUDY_ID.fullmatch(parent) is None for parent in parents
     ):
-        raise StudyValidationError(
-            "study.lineage.parent_study_ids must contain Study digests"
-        )
+        raise StudyValidationError("study.lineage.parent_study_ids must contain Study digests")
     if len(set(parents)) != len(parents):
-        raise StudyValidationError(
-            "study.lineage.parent_study_ids must be unique"
-        )
+        raise StudyValidationError("study.lineage.parent_study_ids must be unique")
     prior_count = _integer(
         lineage["prior_unique_candidate_count"],
         "study.lineage.prior_unique_candidate_count",
@@ -1137,9 +1096,7 @@ def _normalize_request_for_plan(
         "end": frozen_plan["dataset"]["requested_end"],
     }
 
-    template_selector = _exact(
-        study["template"], TEMPLATE_FIELDS, "study.template"
-    )
+    template_selector = _exact(study["template"], TEMPLATE_FIELDS, "study.template")
     normalized_template = {
         "name": _string(template_selector["name"], "study.template.name"),
         "version": _string(template_selector["version"], "study.template.version"),
@@ -1152,9 +1109,7 @@ def _normalize_request_for_plan(
     }
 
     expected_slots = set(frozen_plan["template"]["slots"])
-    operator_selectors = _exact(
-        study["operators"], expected_slots, "study.operators"
-    )
+    operator_selectors = _exact(study["operators"], expected_slots, "study.operators")
     normalized_operators: dict[str, dict[str, Any]] = {}
     for slot in frozen_plan["template"]["slots"]:
         selector = _exact(
@@ -1185,9 +1140,7 @@ def _normalize_request_for_plan(
         frozen_plan["template"],
         frozen_plan["operators"],
     )
-    validation = _exact(
-        study["validation"], VALIDATION_FIELDS, "study.validation"
-    )
+    validation = _exact(study["validation"], VALIDATION_FIELDS, "study.validation")
     normalized_validation = {
         "outer_folds": _integer(
             validation["outer_folds"],
@@ -1223,16 +1176,10 @@ def _normalize_request_for_plan(
             "study.validation.outer_account_policy must be FORCE_FLAT_WITH_COST"
         )
 
-    evaluation = _exact(
-        study["evaluation"], EVALUATION_FIELDS, "study.evaluation"
-    )
+    evaluation = _exact(study["evaluation"], EVALUATION_FIELDS, "study.evaluation")
     normalized_evaluation = {
-        "policy_id": _string(
-            evaluation["policy_id"], "study.evaluation.policy_id"
-        ),
-        "version": _string(
-            evaluation["version"], "study.evaluation.version"
-        ),
+        "policy_id": _string(evaluation["policy_id"], "study.evaluation.policy_id"),
+        "version": _string(evaluation["version"], "study.evaluation.version"),
         "parameters": _parameters(
             frozen_plan["evaluation"]["parameter_schema"],
             frozen_plan["evaluation"]["defaults"],
@@ -1242,12 +1189,8 @@ def _normalize_request_for_plan(
     }
     holdout = _exact(study["holdout"], HOLDOUT_FIELDS, "study.holdout")
     normalized_holdout = {
-        "sessions": _integer(
-            holdout["sessions"], "study.holdout.sessions", minimum=1
-        ),
-        "pass_rule": _string(
-            holdout["pass_rule"], "study.holdout.pass_rule"
-        ),
+        "sessions": _integer(holdout["sessions"], "study.holdout.sessions", minimum=1),
+        "pass_rule": _string(holdout["pass_rule"], "study.holdout.pass_rule"),
     }
     return {
         "schema_version": 1,
@@ -1291,9 +1234,7 @@ def _studied_parameters(
             continue
         slot, parameter = parts[2], parts[3]
         try:
-            result[path] = deepcopy(
-                configuration["operators"][slot]["parameters"][parameter]
-            )
+            result[path] = deepcopy(configuration["operators"][slot]["parameters"][parameter])
         except KeyError:
             continue
     return result
@@ -1353,18 +1294,13 @@ def _build_decision_summary(
                 "search_round": item.get("search_round"),
                 "candidate_digest": selected,
                 "studied_parameters": (
-                    _studied_parameters(trial["configuration"], search_space)
-                    if trial
-                    else {}
+                    _studied_parameters(trial["configuration"], search_space) if trial else {}
                 ),
             }
         )
     if not outer_selections:
         outer_stability = "NOT_AVAILABLE"
-    elif all(
-        item["candidate_digest"] == champion["candidate_digest"]
-        for item in outer_selections
-    ):
+    elif all(item["candidate_digest"] == champion["candidate_digest"] for item in outer_selections):
         outer_stability = "CONSISTENT"
     else:
         outer_stability = "DIVERGENT"
@@ -1391,9 +1327,7 @@ def _build_decision_summary(
         )
 
     return enriched, {
-        "claim": (
-            "TIE_BROKEN_BY_FROZEN_RULE" if primary_ties else "OBSERVED_BEST"
-        ),
+        "claim": ("TIE_BROKEN_BY_FROZEN_RULE" if primary_ties else "OBSERVED_BEST"),
         "champion_candidate_digest": champion["candidate_digest"],
         "champion_parameters": deepcopy(champion["studied_parameters"]),
         "validation_score": champion["validation_score"],
@@ -1402,6 +1336,25 @@ def _build_decision_summary(
         "outer_stability": outer_stability,
         "statistical_significance": "NOT_ESTABLISHED",
         "rationale": rationale,
+    }
+
+
+def _qualification_terminal_projection(
+    qualification_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Project a v2 no-edge terminal without relabelling legacy Study rows."""
+
+    if not qualification_records:
+        return None
+    terminal = no_qualified_candidate(qualification_records)
+    return {
+        **terminal,
+        "claim": "REJECTED_NO_EDGE",
+        "rationale": (
+            "No candidate passed the sealed matched-exposure qualification; "
+            "no scalar ranking, champion, or holdout exists."
+        ),
+        "statistical_significance": "NOT_ESTABLISHED",
     }
 
 
@@ -1437,9 +1390,7 @@ def _strict_json_object(value: Any, path: str) -> dict[str, Any]:
 
 
 def _utc_text(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-        "+00:00", "Z"
-    )
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _utc_datetime(value: Any, path: str) -> datetime:
@@ -1504,16 +1455,12 @@ class ParameterStudy:
         coordinator_id: str | None = None,
         lease_duration_seconds: int = 30,
         dataset_slice_factory: ExecutionDatasetSliceFactory | None = None,
-        effect_executor: (
-            Callable[[dict[str, Any], str], dict[str, Any]] | None
-        ) = None,
+        effect_executor: (Callable[[dict[str, Any], str], dict[str, Any]] | None) = None,
     ):
         if datasets.catalog is not catalog or experiments.catalog is not catalog:
             raise ValueError("ParameterStudy dependencies must share one Catalog")
         if experiments.datasets is not datasets:
-            raise ValueError(
-                "ParameterStudy and ExperimentService must share one DatasetService"
-            )
+            raise ValueError("ParameterStudy and ExperimentService must share one DatasetService")
         self.catalog = catalog
         self.datasets = datasets
         self.experiments = experiments
@@ -1525,9 +1472,7 @@ class ParameterStudy:
         self.release_locator = _string(release_locator, "release_locator")
         self.clock = clock or (lambda: datetime.now(UTC))
         self.coordinator_id = (
-            f"coordinator-{uuid.uuid4().hex}"
-            if coordinator_id is None
-            else coordinator_id
+            f"coordinator-{uuid.uuid4().hex}" if coordinator_id is None else coordinator_id
         )
         if (
             not isinstance(self.coordinator_id, str)
@@ -1565,16 +1510,12 @@ class ParameterStudy:
         coordinator_id: str | None = None,
         lease_duration_seconds: int = 30,
         dataset_slice_factory: ExecutionDatasetSliceFactory | None = None,
-        effect_executor: (
-            Callable[[dict[str, Any], str], dict[str, Any]] | None
-        ) = None,
+        effect_executor: (Callable[[dict[str, Any], str], dict[str, Any]] | None) = None,
     ) -> ParameterStudy:
         """Compose a Study service from the Experiment service's shared graph."""
 
         if experiments.datasets is None:
-            raise ValueError(
-                "ExperimentService must have a DatasetService for ParameterStudy"
-            )
+            raise ValueError("ExperimentService must have a DatasetService for ParameterStudy")
         return cls(
             catalog,
             datasets=experiments.datasets,
@@ -1594,17 +1535,11 @@ class ParameterStudy:
         return value.astimezone(UTC)
 
     def _now(self) -> str:
-        return (
-            self._clock_now()
-            .isoformat(timespec="seconds")
-            .replace("+00:00", "Z")
-        )
+        return self._clock_now().isoformat(timespec="seconds").replace("+00:00", "Z")
 
     @staticmethod
     def _database_now(connection: sqlite3.Connection) -> datetime:
-        value = connection.execute(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-        ).fetchone()[0]
+        value = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
         return _utc_datetime(value, "database clock")
 
     def _owner_nonce(self, study_id: str, fencing_token: int) -> str:
@@ -1621,9 +1556,7 @@ class ParameterStudy:
         if type(study["schema_version"]) is not int or study["schema_version"] != 1:
             raise StudyValidationError("study.schema_version must be integer 1")
         dataset_selector = _exact(study["dataset"], DATASET_FIELDS, "study.dataset")
-        dataset_id = _string(
-            dataset_selector["dataset_id"], "study.dataset.dataset_id"
-        )
+        dataset_id = _string(dataset_selector["dataset_id"], "study.dataset.dataset_id")
         start = _string(dataset_selector["start"], "study.dataset.start")
         end = _string(dataset_selector["end"], "study.dataset.end")
         try:
@@ -1638,9 +1571,7 @@ class ParameterStudy:
         if not sessions:
             raise StudyValidationError("study.dataset contains no trading sessions")
         if len(sessions) > MAX_STUDY_SESSIONS:
-            raise StudyValidationError(
-                f"study.dataset exceeds {MAX_STUDY_SESSIONS} sessions"
-            )
+            raise StudyValidationError(f"study.dataset exceeds {MAX_STUDY_SESSIONS} sessions")
 
         execution_identity = deepcopy(self.experiments.execution_identity)
         try:
@@ -1668,18 +1599,14 @@ class ParameterStudy:
                 "study.template.parameters.initial_capital_cny must be positive"
             )
         if (
-            template_parameters["evaluation_start"]
-            != resolved["dataset"]["requested_start"]
-            or template_parameters["evaluation_end"]
-            != resolved["dataset"]["requested_end"]
+            template_parameters["evaluation_start"] != resolved["dataset"]["requested_start"]
+            or template_parameters["evaluation_end"] != resolved["dataset"]["requested_end"]
         ):
             raise StudyValidationError(
                 "study.template evaluation dates must match the selected dataset range"
             )
         expected_slots = set(template["slots"])
-        operator_selectors = _exact(
-            study["operators"], expected_slots, "study.operators"
-        )
+        operator_selectors = _exact(study["operators"], expected_slots, "study.operators")
         operators: dict[str, dict[str, Any]] = {}
         for slot in template["slots"]:
             operators[slot] = _resolve_operator(
@@ -1736,9 +1663,7 @@ class ParameterStudy:
             study,
             frozen_plan,
         )
-        preview_digest = hashlib.sha256(
-            canonical_json_bytes(frozen_plan)
-        ).hexdigest()
+        preview_digest = hashlib.sha256(canonical_json_bytes(frozen_plan)).hexdigest()
         return {
             "preview_digest": preview_digest,
             "frozen_plan": frozen_plan,
@@ -1757,9 +1682,7 @@ class ParameterStudy:
         ):
             if preview["frozen_plan"]["search"]["suggester"] == "OPTUNA_TPE":
                 minimum_candidate_count = 1
-                maximum_candidate_count = preview["frozen_plan"]["search"][
-                    "unique_trial_budget"
-                ]
+                maximum_candidate_count = preview["frozen_plan"]["search"]["unique_trial_budget"]
                 candidate_count = maximum_candidate_count
             else:
                 candidate_count = len(
@@ -1812,16 +1735,12 @@ class ParameterStudy:
         for summary in self.catalog.list_operators():
             if summary["latest_version"] is None:
                 continue
-            latest = self.catalog.operator_detail(
-                summary["operator_id"], summary["latest_version"]
-            )
+            latest = self.catalog.operator_detail(summary["operator_id"], summary["latest_version"])
             operators.append(
                 latest
                 | {
                     "latest_version": summary["latest_version"],
-                    "versions": self.catalog.list_operator_versions(
-                        summary["operator_id"]
-                    ),
+                    "versions": self.catalog.list_operator_versions(summary["operator_id"]),
                 }
             )
         result = {
@@ -1938,9 +1857,7 @@ class ParameterStudy:
             not isinstance(expected_preview_digest, str)
             or STUDY_ID.fullmatch(expected_preview_digest) is None
         ):
-            raise StudyValidationError(
-                "expected_preview_digest must be a SHA-256 digest"
-            )
+            raise StudyValidationError("expected_preview_digest must be a SHA-256 digest")
         _validate_public_action_id(action_id)
 
         existing_action = self._load_action(action_id)
@@ -2055,9 +1972,7 @@ class ParameterStudy:
 
     @staticmethod
     def _lease_action_id(study_id: str, fencing_token: int) -> str:
-        return (
-            f"{INTERNAL_ACTION_PREFIX}lease:{study_id}:{fencing_token}"
-        )
+        return f"{INTERNAL_ACTION_PREFIX}lease:{study_id}:{fencing_token}"
 
     @staticmethod
     def _effect_action_id(effect_digest: str) -> str:
@@ -2065,10 +1980,7 @@ class ParameterStudy:
 
     @staticmethod
     def _dispatch_action_id(effect_digest: str, fencing_token: int) -> str:
-        return (
-            f"{INTERNAL_ACTION_PREFIX}dispatch:"
-            f"{effect_digest}:{fencing_token}"
-        )
+        return f"{INTERNAL_ACTION_PREFIX}dispatch:{effect_digest}:{fencing_token}"
 
     @staticmethod
     def _receipt_action_id(effect_digest: str) -> str:
@@ -2291,9 +2203,7 @@ class ParameterStudy:
         frozen_plan: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            round_number = frozen_plan["validation"]["outer_rounds"][0][
-                "round"
-            ]
+            round_number = frozen_plan["validation"]["outer_rounds"][0]["round"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Parameter Study frozen plan is invalid") from exc
         if type(round_number) is not int or round_number < 1:
@@ -2595,20 +2505,10 @@ class ParameterStudy:
             }
             or response["status"] != "EXECUTION_IDENTITY_DRIFT"
             or response["study_id"] != study_id
-            or not isinstance(
-                response["frozen_execution_identity_digest"], str
-            )
-            or STUDY_ID.fullmatch(
-                response["frozen_execution_identity_digest"]
-            )
-            is None
-            or not isinstance(
-                response["current_execution_identity_digest"], str
-            )
-            or STUDY_ID.fullmatch(
-                response["current_execution_identity_digest"]
-            )
-            is None
+            or not isinstance(response["frozen_execution_identity_digest"], str)
+            or STUDY_ID.fullmatch(response["frozen_execution_identity_digest"]) is None
+            or not isinstance(response["current_execution_identity_digest"], str)
+            or STUDY_ID.fullmatch(response["current_execution_identity_digest"]) is None
             or type(response["fencing_token"]) is not int
             or response["fencing_token"] < 1
             or not isinstance(response["owner"], str)
@@ -2618,12 +2518,8 @@ class ParameterStudy:
             return None
         request_digest = _digest(
             {
-                "current_execution_identity_digest": response[
-                    "current_execution_identity_digest"
-                ],
-                "frozen_execution_identity_digest": response[
-                    "frozen_execution_identity_digest"
-                ],
+                "current_execution_identity_digest": response["current_execution_identity_digest"],
+                "frozen_execution_identity_digest": response["frozen_execution_identity_digest"],
                 "study_id": study_id,
             }
         )
@@ -2721,43 +2617,29 @@ class ParameterStudy:
             or len(evidence) > MAX_STUDY_EVIDENCE
             or len(bindings) > MAX_STUDY_BINDINGS
             or len(holdout) > 16
-            or [row["sequence"] for row in events]
-            != list(range(1, len(events) + 1))
-            or [row["sequence"] for row in evidence]
-            != list(range(1, len(evidence) + 1))
-            or [row["sequence"] for row in holdout]
-            != list(range(1, len(holdout) + 1))
+            or [row["sequence"] for row in events] != list(range(1, len(events) + 1))
+            or [row["sequence"] for row in evidence] != list(range(1, len(evidence) + 1))
+            or [row["sequence"] for row in holdout] != list(range(1, len(holdout) + 1))
             or events[0]["event_type"] != "STUDY_SUBMITTED"
         ):
             raise RuntimeError("Parameter Study event or evidence ledger is invalid")
         documents = [*events, *evidence, *holdout, *suggestion_journal]
-        if any(
-            row["bytes"] > MAX_STUDY_DOCUMENT_BYTES for row in documents
-        ) or sum(row["bytes"] for row in documents) > MAX_STUDY_DETAIL_BYTES:
+        if (
+            any(row["bytes"] > MAX_STUDY_DOCUMENT_BYTES for row in documents)
+            or sum(row["bytes"] for row in documents) > MAX_STUDY_DETAIL_BYTES
+        ):
             raise RuntimeError("Parameter Study ledger exceeds bounded detail size")
         for row in documents:
-            document_json = (
-                row["event_json"]
-                if "event_json" in row.keys()
-                else row["payload_json"]
-            )
+            document_json = row["event_json"] if "event_json" in row.keys() else row["payload_json"]
             _strict_json_object(document_json, "Parameter Study ledger payload")
-        if any(
-            row["holdout_identity_digest"] != holdout_identity for row in holdout
-        ):
+        if any(row["holdout_identity_digest"] != holdout_identity for row in holdout):
             raise RuntimeError("holdout ledger identity does not match its Study")
         granted = [row for row in holdout if row["event_type"] == "GRANTED"]
         accessed = [row for row in holdout if row["event_type"] == "ACCESSED"]
         if (
             len(granted) > 1
             or len(accessed) > 1
-            or (
-                accessed
-                and (
-                    not granted
-                    or granted[0]["sequence"] >= accessed[0]["sequence"]
-                )
-            )
+            or (accessed and (not granted or granted[0]["sequence"] >= accessed[0]["sequence"]))
         ):
             raise RuntimeError("holdout ledger has an illegal event order")
 
@@ -2773,14 +2655,10 @@ class ParameterStudy:
             }
             for row in evidence
         ]
-        if (
-            frozen_plan["search"]["suggester"] != "OPTUNA_TPE"
-            and suggestion_journal
-        ):
+        if frozen_plan["search"]["suggester"] != "OPTUNA_TPE" and suggestion_journal:
             raise RuntimeError("legacy Study has an unexpected Suggestion Journal")
         allowed_rounds = {
-            search_round
-            for search_round, _, _ in self._selection_rounds(frozen_plan)
+            search_round for search_round, _, _ in self._selection_rounds(frozen_plan)
         }
         evaluation_evidence = {
             (
@@ -2794,10 +2672,8 @@ class ParameterStudy:
         for row in suggestion_journal:
             journal_by_round.setdefault(row["search_round"], []).append(row)
         for search_round, rows in journal_by_round.items():
-            if (
-                search_round not in allowed_rounds
-                or [row["sequence"] for row in rows]
-                != list(range(1, len(rows) + 1))
+            if search_round not in allowed_rounds or [row["sequence"] for row in rows] != list(
+                range(1, len(rows) + 1)
             ):
                 raise RuntimeError("Suggestion Journal round or sequence is invalid")
             proposal_count = 0
@@ -2810,33 +2686,24 @@ class ParameterStudy:
                 )
                 if (
                     event.get("event_type") != row["event_type"]
-                    or event.get("candidate_digest")
-                    != row["candidate_digest"]
+                    or event.get("candidate_digest") != row["candidate_digest"]
                 ):
-                    raise RuntimeError(
-                        "Suggestion Journal columns disagree with its event"
-                    )
+                    raise RuntimeError("Suggestion Journal columns disagree with its event")
                 if row["event_type"] in {
                     "SUGGESTION_RECORDED",
                     "DUPLICATE_SUGGESTION",
                 }:
                     if pending:
-                        raise RuntimeError(
-                            "Suggestion Journal asked before the prior tell"
-                        )
+                        raise RuntimeError("Suggestion Journal asked before the prior tell")
                     try:
                         suggestion = self._suggestion_from_event(event)
                     except (TypeError, ValueError) as exc:
-                        raise RuntimeError(
-                            "Suggestion Journal proposal is invalid"
-                        ) from exc
+                        raise RuntimeError("Suggestion Journal proposal is invalid") from exc
                     if (
                         suggestion.as_history_event() != event
                         or suggestion.proposal_sequence != proposal_count
                     ):
-                        raise RuntimeError(
-                            "Suggestion Journal proposal is not canonical"
-                        )
+                        raise RuntimeError("Suggestion Journal proposal is not canonical")
                     proposal_count += 1
                     if suggestion.creates_trial:
                         known_unique.add(suggestion.candidate_digest)
@@ -2851,16 +2718,14 @@ class ParameterStudy:
                         "candidate_digest",
                         "evaluation",
                     }
-                    or event.get("round_identity")
-                    != f"{study_id}/{search_round}"
+                    or event.get("round_identity") != f"{study_id}/{search_round}"
                     or event.get("role") != "INNER_SCORE"
                     or row["candidate_digest"] not in pending
                     or row["candidate_digest"] not in known_unique
                     or not isinstance(event.get("evaluation"), dict)
                 ):
                     raise RuntimeError(
-                        "Suggestion Journal tell is not canonical same-round "
-                        "INNER_SCORE evidence"
+                        "Suggestion Journal tell is not canonical same-round INNER_SCORE evidence"
                     )
                 candidate_bindings = [
                     binding
@@ -2871,64 +2736,35 @@ class ParameterStudy:
                 ]
                 expected_folds = next(
                     inner_folds
-                    for round_name, inner_folds, _ in self._selection_rounds(
-                        frozen_plan
-                    )
+                    for round_name, inner_folds, _ in self._selection_rounds(frozen_plan)
                     if round_name == search_round
                 )
-                if (
-                    len(candidate_bindings) != len(expected_folds)
-                    or any(
-                        binding["state"] not in {"VERIFIED", "FAILED"}
-                        for binding in candidate_bindings
-                    )
+                if len(candidate_bindings) != len(expected_folds) or any(
+                    binding["state"] not in {"VERIFIED", "FAILED"} for binding in candidate_bindings
                 ):
-                    raise RuntimeError(
-                        "Suggestion Journal tell has partial inner-fold evidence"
-                    )
+                    raise RuntimeError("Suggestion Journal tell has partial inner-fold evidence")
                 evaluation = event["evaluation"]
-                recorded = evaluation_evidence.get(
-                    (search_round, row["candidate_digest"])
-                )
+                recorded = evaluation_evidence.get((search_round, row["candidate_digest"]))
                 if evaluation == {"status": "FAILED"}:
                     if (
-                        not any(
-                            binding["state"] == "FAILED"
-                            for binding in candidate_bindings
-                        )
+                        not any(binding["state"] == "FAILED" for binding in candidate_bindings)
                         or recorded is not None
                     ):
-                        raise RuntimeError(
-                            "Suggestion Journal failure tell is invalid"
-                        )
+                        raise RuntimeError("Suggestion Journal failure tell is invalid")
                 elif (
-                    set(evaluation)
-                    != {"status", "validation_score", "evaluation_digest"}
+                    set(evaluation) != {"status", "validation_score", "evaluation_digest"}
                     or evaluation.get("status") != "COMPLETED"
-                    or any(
-                        binding["state"] != "VERIFIED"
-                        for binding in candidate_bindings
-                    )
+                    or any(binding["state"] != "VERIFIED" for binding in candidate_bindings)
                     or recorded is None
-                    or evaluation.get("validation_score")
-                    != recorded.get("validation_score")
-                    or evaluation.get("evaluation_digest")
-                    != recorded.get("evaluation_digest")
+                    or evaluation.get("validation_score") != recorded.get("validation_score")
+                    or evaluation.get("evaluation_digest") != recorded.get("evaluation_digest")
                     or recorded.get("evidence_role") != "INNER_SCORE"
                 ):
-                    raise RuntimeError(
-                        "Suggestion Journal complete tell is not canonical"
-                    )
+                    raise RuntimeError("Suggestion Journal complete tell is not canonical")
                 pending.remove(row["candidate_digest"])
-        champions = [
-            item
-            for item in evidence_items
-            if item["evidence_type"] == "CHAMPION_FROZEN"
-        ]
+        champions = [item for item in evidence_items if item["evidence_type"] == "CHAMPION_FROZEN"]
         holdout_outcomes = [
-            item
-            for item in evidence_items
-            if item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED"
+            item for item in evidence_items if item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED"
         ]
         selection_outcome = study["selection_outcome"]
         phase = study["phase"]
@@ -2963,19 +2799,14 @@ class ParameterStudy:
             )
         if holdout_outcome == "NOT_RUN":
             if holdout_outcomes:
-                raise RuntimeError(
-                    "Parameter Study holdout projection disagrees with evidence"
-                )
+                raise RuntimeError("Parameter Study holdout projection disagrees with evidence")
         elif (
             phase != "COMPLETED"
             or len(holdout_outcomes) != 1
             or len(accessed) != 1
-            or holdout_outcomes[0]["payload"].get("outcome")
-            != holdout_outcome
+            or holdout_outcomes[0]["payload"].get("outcome") != holdout_outcome
         ):
-            raise RuntimeError(
-                "Parameter Study holdout projection disagrees with evidence"
-            )
+            raise RuntimeError("Parameter Study holdout projection disagrees with evidence")
         if phase == "HOLDOUT_RUNNING" and len(accessed) != 1:
             raise RuntimeError("HOLDOUT_RUNNING requires recorded access")
 
@@ -2991,10 +2822,8 @@ class ParameterStudy:
                 len(champions) != 1
                 or not granted
                 or claim["holdout_identity_digest"] != holdout_identity
-                or claim["candidate_digest"]
-                != champions[0]["candidate_digest"]
-                or claim["effect_action_id"]
-                != self._effect_action_id(claim["binding_id"])
+                or claim["candidate_digest"] != champions[0]["candidate_digest"]
+                or claim["effect_action_id"] != self._effect_action_id(claim["binding_id"])
             ):
                 raise RuntimeError("holdout claim disagrees with frozen authorization")
         if accessed and claim is None:
@@ -3018,19 +2847,11 @@ class ParameterStudy:
                     or binding["metric_document_json"] is None
                     or metric.get("attempt_id") != binding["attempt_id"]
                 ):
-                    raise RuntimeError(
-                        "verified binding projection disagrees with evidence"
-                    )
+                    raise RuntimeError("verified binding projection disagrees with evidence")
             elif (
-                binding["state"] == "CONTESTED"
-                and binding["experiment_id"] not in contested
-            ) or (
-                binding["state"] == "SUBMITTED"
-                and binding["metric_document_json"] is not None
-            ):
-                raise RuntimeError(
-                    "Study binding projection disagrees with evidence"
-                )
+                binding["state"] == "CONTESTED" and binding["experiment_id"] not in contested
+            ) or (binding["state"] == "SUBMITTED" and binding["metric_document_json"] is not None):
+                raise RuntimeError("Study binding projection disagrees with evidence")
 
         outer_records = [
             item["payload"]
@@ -3040,19 +2861,12 @@ class ParameterStudy:
         for outer in outer_records:
             search_round = outer.get("search_round")
             round_bindings = [
-                binding
-                for binding in bindings
-                if binding["search_round"] == search_round
+                binding for binding in bindings if binding["search_round"] == search_round
             ]
-            inner = [
-                binding
-                for binding in round_bindings
-                if binding["role"] == "INNER_SCORE"
-            ]
+            inner = [binding for binding in round_bindings if binding["role"] == "INNER_SCORE"]
             selected = outer.get("selected_candidate_digest")
             if not inner or any(
-                binding["state"] not in {"VERIFIED", "FAILED"}
-                for binding in inner
+                binding["state"] not in {"VERIFIED", "FAILED"} for binding in inner
             ):
                 raise RuntimeError("outer selection has partial inner-fold evidence")
             if selected is not None and (
@@ -3067,13 +2881,10 @@ class ParameterStudy:
                 raise RuntimeError("outer selection has no verified audit binding")
         if champions:
             expected_outer = len(frozen_plan["validation"]["outer_rounds"])
-            if (
-                len(outer_records) != expected_outer
-                or not any(
-                    item["payload"].get("search_round") == "FINAL"
-                    for item in evidence_items
-                    if item["evidence_type"] == "CANDIDATE_EVALUATED"
-                )
+            if len(outer_records) != expected_outer or not any(
+                item["payload"].get("search_round") == "FINAL"
+                for item in evidence_items
+                if item["evidence_type"] == "CANDIDATE_EVALUATED"
             ):
                 raise RuntimeError("champion evidence is based on partial folds")
 
@@ -3168,19 +2979,16 @@ class ParameterStudy:
                 """,
                 (study_id,),
             ).fetchall()
-            has_authorized_dispatch = (
-                intent_response is not None
-                and any(
-                    self._valid_dispatch_action(
-                        connection,
-                        dispatch,
-                        study_id=study_id,
-                        effect=effect,
-                        effect_digest=effect_digest,
-                    )
-                    is not None
-                    for dispatch in dispatches
+            has_authorized_dispatch = intent_response is not None and any(
+                self._valid_dispatch_action(
+                    connection,
+                    dispatch,
+                    study_id=study_id,
+                    effect=effect,
+                    effect_digest=effect_digest,
                 )
+                is not None
+                for dispatch in dispatches
             )
             effect_attempt = connection.execute(
                 """
@@ -3199,9 +3007,7 @@ class ParameterStudy:
                 is not None
             )
             dispatch_in_flight = (
-                has_authorized_dispatch
-                and receipt_response is None
-                and effect_attempt is None
+                has_authorized_dispatch and receipt_response is None and effect_attempt is None
             )
 
         if (
@@ -3390,16 +3196,11 @@ class ParameterStudy:
                         "lease": current,
                     }
 
-            fencing_token = (
-                1 if current is None else current["fencing_token"] + 1
-            )
+            fencing_token = 1 if current is None else current["fencing_token"] + 1
             lease = {
                 "owner": self.coordinator_id,
                 "owner_nonce": self._owner_nonce(study_id, fencing_token),
-                "expires_at": _utc_text(
-                    now_value
-                    + timedelta(seconds=self.lease_duration_seconds)
-                ),
+                "expires_at": _utc_text(now_value + timedelta(seconds=self.lease_duration_seconds)),
                 "fencing_token": fencing_token,
             }
             action_id = self._lease_action_id(study_id, fencing_token)
@@ -3465,12 +3266,8 @@ class ParameterStudy:
         lease: dict[str, Any],
         now: str,
     ) -> dict[str, Any] | None:
-        frozen_identity_bytes = canonical_json_bytes(
-            frozen_plan["execution"]["identity"]
-        )
-        current_identity_bytes = canonical_json_bytes(
-            deepcopy(self.experiments.execution_identity)
-        )
+        frozen_identity_bytes = canonical_json_bytes(frozen_plan["execution"]["identity"])
+        current_identity_bytes = canonical_json_bytes(deepcopy(self.experiments.execution_identity))
         if frozen_identity_bytes == current_identity_bytes:
             return None
 
@@ -3568,6 +3365,7 @@ class ParameterStudy:
         status = result.get("status")
         if status not in {
             "NO_ELIGIBLE_CANDIDATE",
+            "NO_QUALIFIED_CANDIDATE",
             "CHAMPION_SELECTED",
             "HOLDOUT_PASSED",
             "HOLDOUT_FAILED",
@@ -3582,19 +3380,41 @@ class ParameterStudy:
         ).fetchone()
         if study is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
-        frozen_plan = _strict_json_object(
-            study["frozen_plan_json"], "Parameter Study frozen plan"
-        )
+        frozen_plan = _strict_json_object(study["frozen_plan_json"], "Parameter Study frozen plan")
 
-        if status == "NO_ELIGIBLE_CANDIDATE":
+        if status in {"NO_ELIGIBLE_CANDIDATE", "NO_QUALIFIED_CANDIDATE"}:
             if study["selection_outcome"] != "NOT_DETERMINED":
                 raise RuntimeError("Parameter Study selection is already frozen")
+            qualification_records = result.get("qualification_records", [])
+            qualification_projection = (
+                _qualification_terminal_projection(qualification_records)
+                if status == "NO_QUALIFIED_CANDIDATE"
+                else None
+            )
             payload = {
-                "selection_outcome": "NO_ELIGIBLE_CANDIDATE",
-                "holdout_outcome": "NOT_RUN",
-                "explanation": result.get(
-                    "explanation", "Every completed candidate was ineligible or failed."
+                "selection_outcome": status,
+                "qualification_outcome": (
+                    None
+                    if qualification_projection is None
+                    else qualification_projection["qualification_outcome"]
                 ),
+                "decision": (
+                    None
+                    if qualification_projection is None
+                    else qualification_projection["decision"]
+                ),
+                "champion": None,
+                "champion_evidence": None,
+                "holdout": {"access": "NOT_GRANTED", "outcome": "NOT_RUN"},
+                "explanation": result.get(
+                    "explanation",
+                    (
+                        "No candidate passed matched-exposure qualification."
+                        if qualification_projection is not None
+                        else "Every completed candidate was ineligible or failed."
+                    ),
+                ),
+                "qualification_records": qualification_records,
             }
             connection.execute(
                 """
@@ -3622,9 +3442,7 @@ class ParameterStudy:
         if status == "CHAMPION_SELECTED":
             evaluation = result.get("evaluation")
             evaluation_digest = (
-                evaluation.get("evaluation_digest")
-                if isinstance(evaluation, dict)
-                else None
+                evaluation.get("evaluation_digest") if isinstance(evaluation, dict) else None
             )
             outer_evidence_digest = result.get("outer_evidence_digest")
             if (
@@ -3728,9 +3546,7 @@ class ParameterStudy:
                     study_id,
                     holdout_identity,
                     occurred_at,
-                    canonical_json_bytes(
-                        {"candidate_digest": candidate_digest}
-                    ).decode(),
+                    canonical_json_bytes({"candidate_digest": candidate_digest}).decode(),
                     study_id,
                 ),
             )
@@ -3840,9 +3656,7 @@ class ParameterStudy:
             parts = path.split("/")
             if len(parts) != 4 or parts[:2] != ["", "operators"]:
                 raise RuntimeError("frozen search path is invalid")
-            sampled[path] = deepcopy(
-                candidate["operators"][parts[2]]["parameters"][parts[3]]
-            )
+            sampled[path] = deepcopy(candidate["operators"][parts[2]]["parameters"][parts[3]])
         return sampled
 
     @staticmethod
@@ -3874,10 +3688,7 @@ class ParameterStudy:
             ).fetchall()
         finally:
             connection.close()
-        return [
-            _strict_json_object(row["event_json"], "Suggestion Journal event")
-            for row in rows
-        ]
+        return [_strict_json_object(row["event_json"], "Suggestion Journal event") for row in rows]
 
     @staticmethod
     def _suggestion_from_event(event: dict[str, Any]) -> Suggestion:
@@ -3921,8 +3732,7 @@ class ParameterStudy:
     ) -> dict[str, Any]:
         event = suggestion.as_history_event()
         proposal_count = sum(
-            item.get("event_type")
-            in {"SUGGESTION_RECORDED", "DUPLICATE_SUGGESTION"}
+            item.get("event_type") in {"SUGGESTION_RECORDED", "DUPLICATE_SUGGESTION"}
             for item in history
         )
         if suggestion.proposal_sequence != proposal_count:
@@ -4027,9 +3837,7 @@ class ParameterStudy:
             "study_id": study_id,
             "search_round": search_round,
             "candidate_digest": candidate_digest,
-            "tell_state": (
-                "FAIL" if evaluation.get("status") == "FAILED" else "COMPLETE"
-            ),
+            "tell_state": ("FAIL" if evaluation.get("status") == "FAILED" else "COMPLETE"),
         }
 
     def _round_candidate_evaluation(
@@ -4117,9 +3925,7 @@ class ParameterStudy:
         now = self._now()
         with self.catalog.transaction(immediate=True) as connection:
             for candidate in candidates:
-                configuration_json = canonical_json_bytes(
-                    candidate["configuration"]
-                ).decode()
+                configuration_json = canonical_json_bytes(candidate["configuration"]).decode()
                 existing = connection.execute(
                     """
                     SELECT configuration_json
@@ -4130,9 +3936,7 @@ class ParameterStudy:
                 ).fetchone()
                 if existing is not None:
                     if existing["configuration_json"] != configuration_json:
-                        raise RuntimeError(
-                            "candidate digest is bound to a different configuration"
-                        )
+                        raise RuntimeError("candidate digest is bound to a different configuration")
                     continue
                 connection.execute(
                     """
@@ -4397,10 +4201,7 @@ class ParameterStudy:
                         binding["candidate_digest"],
                     ),
                 ).fetchone()
-                if (
-                    authorization is None
-                    or authorization["effect_action_id"] != effect_action_id
-                ):
+                if authorization is None or authorization["effect_action_id"] != effect_action_id:
                     raise RuntimeError(
                         "terminal holdout dispatch lacks durable accessed authorization"
                     )
@@ -4435,10 +4236,7 @@ class ParameterStudy:
                     intent["response_json"],
                     "Study execution intent",
                 )
-                if (
-                    intent["operation"] != "EFFECT_INTENT"
-                    or stored_intent.get("effect") != effect
-                ):
+                if intent["operation"] != "EFFECT_INTENT" or stored_intent.get("effect") != effect:
                     raise RuntimeError("durable Study execution intent conflicts")
                 holdout_ambiguous = binding["role"] == "TERMINAL_HOLDOUT"
         if holdout_ambiguous:
@@ -4451,22 +4249,18 @@ class ParameterStudy:
             not isinstance(result, dict)
             or set(result) != {"experiment_id", "attempt_id"}
             or not all(
-                isinstance(result[key], str)
-                and STUDY_ID.fullmatch(result[key]) is not None
+                isinstance(result[key], str) and STUDY_ID.fullmatch(result[key]) is not None
                 for key in ("experiment_id", "attempt_id")
             )
         ):
             raise RuntimeError(
-                "Parameter Study effects may return only durable "
-                "Experiment/Attempt identifiers"
+                "Parameter Study effects may return only durable Experiment/Attempt identifiers"
             )
         if (
             result["experiment_id"] != binding["experiment_id"]
             or result["attempt_id"] != binding["submitted_attempt_id"]
         ):
-            raise RuntimeError(
-                "effect result does not match the authorized binding"
-            )
+            raise RuntimeError("effect result does not match the authorized binding")
         response = {
             "status": "EFFECT_COMMITTED",
             "study_id": binding["study_id"],
@@ -4651,10 +4445,7 @@ class ParameterStudy:
                 experiment=experiment,
             )
         latest_attempt = experiment["attempts"][-1]
-        if (
-            binding["state"] != "VERIFIED"
-            and latest_attempt["attempt_id"] != binding["attempt_id"]
-        ):
+        if binding["state"] != "VERIFIED" and latest_attempt["attempt_id"] != binding["attempt_id"]:
             now = self._now()
             with self.catalog.transaction(immediate=True) as connection:
                 connection.execute(
@@ -4734,9 +4525,7 @@ class ParameterStudy:
                 claim["candidate_digest"] != binding["candidate_digest"]
                 or claim["configuration_json"] != configuration_json
             ):
-                raise RuntimeError(
-                    "one Attempt cannot verify two candidate configurations"
-                )
+                raise RuntimeError("one Attempt cannot verify two candidate configurations")
             current = connection.execute(
                 """
                 SELECT state FROM parameter_study_bindings
@@ -4820,14 +4609,11 @@ class ParameterStudy:
         inner_folds: list[dict[str, Any]],
     ) -> list[dict[str, Any]] | None:
         bindings = self._bindings(study_id, search_round=search_round)
-        candidate_digests = {
-            candidate["candidate_digest"] for candidate in candidates
-        }
+        candidate_digests = {candidate["candidate_digest"] for candidate in candidates}
         inner = [
             binding
             for binding in bindings
-            if binding["role"] == "INNER_SCORE"
-            and binding["candidate_digest"] in candidate_digests
+            if binding["role"] == "INNER_SCORE" and binding["candidate_digest"] in candidate_digests
         ]
         expected_count = len(candidates) * len(inner_folds)
         if len(inner) != expected_count or any(
@@ -4853,9 +4639,7 @@ class ParameterStudy:
                 raise RuntimeError("inner-fold evidence does not match the frozen plan")
             documents = []
             for binding in candidate_bindings:
-                experiment = self.experiments.experiment_detail(
-                    binding["experiment_id"]
-                )
+                experiment = self.experiments.experiment_detail(binding["experiment_id"])
                 if experiment["has_divergent_attempt"]:
                     self._record_contested_binding(
                         study_id=study_id,
@@ -4902,14 +4686,10 @@ class ParameterStudy:
             == search_round
         }
         now = self._now()
-        evaluations_by_candidate = {
-            item["candidate_digest"]: item for item in evaluations
-        }
+        evaluations_by_candidate = {item["candidate_digest"]: item for item in evaluations}
         with self.catalog.transaction(immediate=True) as connection:
             for candidate in candidates:
-                evaluation = evaluations_by_candidate.get(
-                    candidate["candidate_digest"]
-                )
+                evaluation = evaluations_by_candidate.get(candidate["candidate_digest"])
                 if evaluation is None:
                     continue
                 payload = {
@@ -4950,8 +4730,7 @@ class ParameterStudy:
         finally:
             connection.close()
         records = [
-            _strict_json_object(row["payload_json"], "outer selection evidence")
-            for row in rows
+            _strict_json_object(row["payload_json"], "outer selection evidence") for row in rows
         ]
         if len({record["search_round"] for record in records}) != len(records):
             raise RuntimeError("outer selection evidence contains duplicate rounds")
@@ -4995,19 +4774,14 @@ class ParameterStudy:
                 connection,
                 study_id=study_id,
                 evidence_type="OUTER_SELECTION_RECORDED",
-                candidate_digest=(
-                    None if selected is None else selected["candidate_digest"]
-                ),
+                candidate_digest=(None if selected is None else selected["candidate_digest"]),
                 payload=payload,
                 occurred_at=now,
             )
         return {
             "status": "OUTER_SELECTION_RECORDED",
             "study_id": study_id,
-            **{
-                key: payload[key]
-                for key in ("search_round", "selected_candidate_digest")
-            },
+            **{key: payload[key] for key in ("search_round", "selected_candidate_digest")},
         }
 
     def _freeze_selection(
@@ -5032,8 +4806,7 @@ class ParameterStudy:
         )
         outer_records = self._outer_records(study_id)
         expected_rounds = [
-            f"OUTER:{item['round']}"
-            for item in frozen_plan["validation"]["outer_rounds"]
+            f"OUTER:{item['round']}" for item in frozen_plan["validation"]["outer_rounds"]
         ]
         if list(outer_records) != expected_rounds:
             raise RuntimeError("outer evidence is partial or not chronological")
@@ -5190,10 +4963,7 @@ class ParameterStudy:
                 (study_id,),
             ).fetchone()
             if existing is not None:
-                stored = {
-                    key: existing[key]
-                    for key in claim
-                }
+                stored = {key: existing[key] for key in claim}
                 if stored != claim:
                     raise RuntimeError("durable holdout claim conflicts")
                 return dict(existing), False
@@ -5211,10 +4981,8 @@ class ParameterStudy:
             )
             if (
                 grant is None
-                or grant["holdout_identity_digest"]
-                != claim["holdout_identity_digest"]
-                or champion_payload.get("candidate_digest")
-                != candidate_digest
+                or grant["holdout_identity_digest"] != claim["holdout_identity_digest"]
+                or champion_payload.get("candidate_digest") != candidate_digest
             ):
                 raise RuntimeError("holdout authorization does not match champion")
             connection.execute(
@@ -5268,9 +5036,7 @@ class ParameterStudy:
                         canonical_json_bytes(
                             {
                                 "binding_id": binding_id,
-                                "effect_action_id": self._effect_action_id(
-                                    binding_id
-                                ),
+                                "effect_action_id": self._effect_action_id(binding_id),
                                 "access": "ACCESSED",
                                 "redispatch_allowed": False,
                             }
@@ -5316,9 +5082,7 @@ class ParameterStudy:
                 (study_id,),
             ).fetchone()
             if access is not None:
-                raise RuntimeError(
-                    "holdout access already exists without a durable binding"
-                )
+                raise RuntimeError("holdout access already exists without a durable binding")
             connection.execute(
                 """
                 INSERT INTO parameter_study_holdout_ledger(
@@ -5339,9 +5103,7 @@ class ParameterStudy:
                             "candidate_digest": claim["candidate_digest"],
                             "binding_id": claim["binding_id"],
                             "effect_action_id": claim["effect_action_id"],
-                            "parent_dataset_snapshot_id": frozen_plan["dataset"][
-                                "snapshot_id"
-                            ],
+                            "parent_dataset_snapshot_id": frozen_plan["dataset"]["snapshot_id"],
                             "fold_window": fold_window,
                             "access_boundary": "BEFORE_DATASET_MATERIALIZATION",
                         }
@@ -5491,10 +5253,13 @@ class ParameterStudy:
                     """,
                     (outcome, now, study_id),
                 )
-            elif _strict_json_object(
-                existing["payload_json"],
-                "holdout outcome evidence",
-            ) != payload:
+            elif (
+                _strict_json_object(
+                    existing["payload_json"],
+                    "holdout outcome evidence",
+                )
+                != payload
+            ):
                 raise RuntimeError("holdout outcome evidence conflicts")
         return {
             "status": f"HOLDOUT_{outcome}",
@@ -5556,9 +5321,7 @@ class ParameterStudy:
                 "experiment_id": binding["experiment_id"],
             }
         if binding["state"] == "FAILED":
-            experiment = self.experiments.experiment_detail(
-                binding["experiment_id"]
-            )
+            experiment = self.experiments.experiment_detail(binding["experiment_id"])
             if experiment["attempts"][-1]["attempt_id"] != binding["attempt_id"]:
                 return self._observe_binding(
                     study_id=study_id,
@@ -5641,9 +5404,7 @@ class ParameterStudy:
         frozen_plan: dict[str, Any],
     ) -> dict[str, Any]:
         outer_records = self._outer_records(study_id)
-        for search_round, inner_folds, outer_fold in self._selection_rounds(
-            frozen_plan
-        ):
+        for search_round, inner_folds, outer_fold in self._selection_rounds(frozen_plan):
             if search_round != "FINAL" and search_round in outer_records:
                 continue
             history = self._suggestion_history(study_id, search_round)
@@ -5654,9 +5415,9 @@ class ParameterStudy:
                     binding
                     for binding in bindings
                     if binding["state"] == "FAILED"
-                    and self.experiments.experiment_detail(
-                        binding["experiment_id"]
-                    )["attempts"][-1]["attempt_id"]
+                    and self.experiments.experiment_detail(binding["experiment_id"])["attempts"][
+                        -1
+                    ]["attempt_id"]
                     != binding["attempt_id"]
                 ),
                 None,
@@ -5671,11 +5432,7 @@ class ParameterStudy:
                     ),
                 )
             submitted = next(
-                (
-                    binding
-                    for binding in bindings
-                    if binding["state"] == "SUBMITTED"
-                ),
+                (binding for binding in bindings if binding["state"] == "SUBMITTED"),
                 None,
             )
             if submitted is not None:
@@ -5717,10 +5474,7 @@ class ParameterStudy:
                         fold_sequence=fold_sequence,
                         fold_window=fold_window,
                     )
-                    if not any(
-                        binding["binding_id"] == binding_id
-                        for binding in bindings
-                    ):
+                    if not any(binding["binding_id"] == binding_id for binding in bindings):
                         return self._dispatch_binding(
                             study_id=study_id,
                             frozen_plan=frozen_plan,
@@ -5733,20 +5487,13 @@ class ParameterStudy:
                     binding
                     for binding in bindings
                     if binding["role"] == "INNER_SCORE"
-                    and binding["candidate_digest"]
-                    == pending["candidate_digest"]
+                    and binding["candidate_digest"] == pending["candidate_digest"]
                 ]
                 if len(candidate_bindings) != len(inner_folds) or any(
-                    binding["state"] not in {"VERIFIED", "FAILED"}
-                    for binding in candidate_bindings
+                    binding["state"] not in {"VERIFIED", "FAILED"} for binding in candidate_bindings
                 ):
-                    raise RuntimeError(
-                        "partial inner evidence reached adaptive tell boundary"
-                    )
-                if any(
-                    binding["state"] == "FAILED"
-                    for binding in candidate_bindings
-                ):
+                    raise RuntimeError("partial inner evidence reached adaptive tell boundary")
+                if any(binding["state"] == "FAILED" for binding in candidate_bindings):
                     return self._record_inner_tell(
                         study_id=study_id,
                         search_round=search_round,
@@ -5776,9 +5523,7 @@ class ParameterStudy:
                         "study_id": study_id,
                         "search_round": search_round,
                         "candidate_digest": pending["candidate_digest"],
-                        "evaluation_digest": evaluations[0][
-                            "evaluation_digest"
-                        ],
+                        "evaluation_digest": evaluations[0]["evaluation_digest"],
                     }
                 return self._record_inner_tell(
                     study_id=study_id,
@@ -5786,12 +5531,8 @@ class ParameterStudy:
                     candidate_digest=pending["candidate_digest"],
                     evaluation={
                         "status": "COMPLETED",
-                        "validation_score": recorded["evaluation"][
-                            "validation_score"
-                        ],
-                        "evaluation_digest": recorded["evaluation"][
-                            "evaluation_digest"
-                        ],
+                        "validation_score": recorded["evaluation"]["validation_score"],
+                        "evaluation_digest": recorded["evaluation"]["evaluation_digest"],
                     },
                     history=history,
                 )
@@ -5864,11 +5605,7 @@ class ParameterStudy:
                 fold_window=outer_fold,
             )
             outer_binding = next(
-                (
-                    binding
-                    for binding in bindings
-                    if binding["binding_id"] == outer_binding_id
-                ),
+                (binding for binding in bindings if binding["binding_id"] == outer_binding_id),
                 None,
             )
             if outer_binding is None:
@@ -5897,17 +5634,13 @@ class ParameterStudy:
         frozen_plan: dict[str, Any],
     ) -> dict[str, Any]:
         if (
-            frozen_plan["evaluation"]["content_digest"]
-            != EVALUATION_POLICY_DIGEST
-            or frozen_plan["evaluation"]["manifest"]
-            != EVALUATION_POLICY_IDENTITY
+            frozen_plan["evaluation"]["content_digest"] != EVALUATION_POLICY_DIGEST
+            or frozen_plan["evaluation"]["manifest"] != EVALUATION_POLICY_IDENTITY
         ):
             raise RuntimeError("frozen evaluation policy identity has drifted")
         for binding in self._bindings(study_id):
             if binding["state"] == "VERIFIED":
-                experiment = self.experiments.experiment_detail(
-                    binding["experiment_id"]
-                )
+                experiment = self.experiments.experiment_detail(binding["experiment_id"])
                 if experiment["has_divergent_attempt"]:
                     return self._record_contested_binding(
                         study_id=study_id,
@@ -5917,9 +5650,7 @@ class ParameterStudy:
         if frozen_plan["search"]["suggester"] == "OPTUNA_TPE":
             return self._advance_optuna_selection(study_id, frozen_plan)
         outer_records = self._outer_records(study_id)
-        for search_round, inner_folds, outer_fold in self._selection_rounds(
-            frozen_plan
-        ):
+        for search_round, inner_folds, outer_fold in self._selection_rounds(frozen_plan):
             if search_round != "FINAL" and search_round in outer_records:
                 continue
             proposed_candidates = self._round_candidates(
@@ -5939,9 +5670,9 @@ class ParameterStudy:
                     binding
                     for binding in bindings
                     if binding["state"] == "FAILED"
-                    and self.experiments.experiment_detail(
-                        binding["experiment_id"]
-                    )["attempts"][-1]["attempt_id"]
+                    and self.experiments.experiment_detail(binding["experiment_id"])["attempts"][
+                        -1
+                    ]["attempt_id"]
                     != binding["attempt_id"]
                 ),
                 None,
@@ -5956,11 +5687,7 @@ class ParameterStudy:
                     ),
                 )
             submitted = next(
-                (
-                    binding
-                    for binding in bindings
-                    if binding["state"] == "SUBMITTED"
-                ),
+                (binding for binding in bindings if binding["state"] == "SUBMITTED"),
                 None,
             )
             if submitted is not None:
@@ -5982,10 +5709,7 @@ class ParameterStudy:
                         fold_sequence=fold_sequence,
                         fold_window=fold_window,
                     )
-                    if not any(
-                        binding["binding_id"] == binding_id
-                        for binding in bindings
-                    ):
+                    if not any(binding["binding_id"] == binding_id for binding in bindings):
                         return self._dispatch_binding(
                             study_id=study_id,
                             frozen_plan=frozen_plan,
@@ -6041,11 +5765,7 @@ class ParameterStudy:
                 fold_window=outer_fold,
             )
             outer_binding = next(
-                (
-                    binding
-                    for binding in bindings
-                    if binding["binding_id"] == outer_binding_id
-                ),
+                (binding for binding in bindings if binding["binding_id"] == outer_binding_id),
                 None,
             )
             selected_candidate = next(
@@ -6109,21 +5829,15 @@ class ParameterStudy:
         for binding in self._bindings(study_id):
             if binding["state"] == "CONTESTED":
                 continue
-            experiment = self.experiments.experiment_detail(
-                binding["experiment_id"]
-            )
+            experiment = self.experiments.experiment_detail(binding["experiment_id"])
             if experiment["has_divergent_attempt"]:
                 return self._record_contested_binding(
                     study_id=study_id,
                     binding=binding,
                     experiment=experiment,
                 )
-        if (
-            study["phase"] == "VALIDATING_SELECTION_PROCESS"
-            and (
-                study["control_status"] == "ACTIVE"
-                or binding_reconciliation
-            )
+        if study["phase"] == "VALIDATING_SELECTION_PROCESS" and (
+            study["control_status"] == "ACTIVE" or binding_reconciliation
         ):
             frozen_plan = _strict_json_object(
                 study["frozen_plan_json"],
@@ -6151,12 +5865,8 @@ class ParameterStudy:
                 if drift is not None:
                     return drift
             return self._advance_selection(study_id, frozen_plan)
-        if (
-            study["phase"] in {"HOLDOUT_READY", "HOLDOUT_RUNNING"}
-            and (
-                study["control_status"] == "ACTIVE"
-                or binding_reconciliation
-            )
+        if study["phase"] in {"HOLDOUT_READY", "HOLDOUT_RUNNING"} and (
+            study["control_status"] == "ACTIVE" or binding_reconciliation
         ):
             frozen_plan = _strict_json_object(
                 study["frozen_plan_json"],
@@ -6336,9 +6046,7 @@ class ParameterStudy:
                 "DISPATCH_EFFECT",
                 "RECONCILE_EFFECT",
             }:
-                raise RuntimeError(
-                    "Parameter Study readiness classification is invalid"
-                )
+                raise RuntimeError("Parameter Study readiness classification is invalid")
             dispatch_action_id = self._dispatch_action_id(
                 effect_digest,
                 lease["fencing_token"],
@@ -6415,13 +6123,16 @@ class ParameterStudy:
                     """,
                     (now, study_id),
                 )
-            elif self._valid_dispatch_action(
-                connection,
-                existing_dispatch,
-                study_id=study_id,
-                effect=effect_to_execute,
-                effect_digest=effect_digest,
-            ) is None:
+            elif (
+                self._valid_dispatch_action(
+                    connection,
+                    existing_dispatch,
+                    study_id=study_id,
+                    effect=effect_to_execute,
+                    effect_digest=effect_digest,
+                )
+                is None
+            ):
                 return {
                     "status": "ACTION_CONFLICT",
                     "action_id": dispatch_action_id,
@@ -6448,14 +6159,12 @@ class ParameterStudy:
             type(result) is not dict
             or set(result) != {"experiment_id", "attempt_id"}
             or any(
-                not isinstance(result[key], str)
-                or STUDY_ID.fullmatch(result[key]) is None
+                not isinstance(result[key], str) or STUDY_ID.fullmatch(result[key]) is None
                 for key in ("experiment_id", "attempt_id")
             )
         ):
             raise RuntimeError(
-                "Parameter Study effects may return only durable "
-                "Experiment/Attempt identifiers"
+                "Parameter Study effects may return only durable Experiment/Attempt identifiers"
             )
         response = {
             "status": "EFFECT_COMMITTED",
@@ -6497,8 +6206,7 @@ class ParameterStudy:
                 )
                 if (
                     valid_attempt is None
-                    or result.get("experiment_id")
-                    != valid_attempt["experiment_id"]
+                    or result.get("experiment_id") != valid_attempt["experiment_id"]
                     or result.get("attempt_id") != valid_attempt["attempt_id"]
                 ):
                     return {
@@ -6625,9 +6333,7 @@ class ParameterStudy:
             "RESUME",
             "CANCEL",
         }:
-            raise StudyValidationError(
-                "control operation must be PAUSE, RESUME, or CANCEL"
-            )
+            raise StudyValidationError("control operation must be PAUSE, RESUME, or CANCEL")
         operation = operation.upper()
         request_digest = hashlib.sha256(
             canonical_json_bytes(
@@ -6642,14 +6348,12 @@ class ParameterStudy:
             self._validate_study_projection(connection, study_id)
             existing_action = self._load_action(action_id, connection)
             if existing_action is not None:
-                if (
-                    not self._action_header_matches(
-                        existing_action,
-                        operation=f"CONTROL_{operation}",
-                        study_id=study_id,
-                        action_id=action_id,
-                        request_digest=request_digest,
-                    )
+                if not self._action_header_matches(
+                    existing_action,
+                    operation=f"CONTROL_{operation}",
+                    study_id=study_id,
+                    action_id=action_id,
+                    request_digest=request_digest,
                 ):
                     return {
                         "status": "ACTION_CONFLICT",
@@ -6671,8 +6375,7 @@ class ParameterStudy:
                     "CANCEL": "CANCELLED",
                 }[operation]
                 transitioned = (
-                    set(response)
-                    == {"status", "study_id", "control_status"}
+                    set(response) == {"status", "study_id", "control_status"}
                     and response["status"] in {expected_status, "NO_CHANGE"}
                     and response["study_id"] == study_id
                 )
@@ -6926,10 +6629,7 @@ class ParameterStudy:
 
         if holdout_history is None:
             raise RuntimeError("holdout history metadata is missing")
-        if any(
-            row["holdout_identity_digest"] != holdout_identity
-            for row in holdout_ledger
-        ):
+        if any(row["holdout_identity_digest"] != holdout_identity for row in holdout_ledger):
             raise RuntimeError("holdout ledger identity does not match its Study")
         holdout_events = {row["event_type"] for row in holdout_ledger}
         if "ACCESSED" in holdout_events:
@@ -6945,8 +6645,7 @@ class ParameterStudy:
         identities = {
             "dataset": frozen_plan["dataset"],
             "template": {
-                key: frozen_plan["template"][key]
-                for key in ("name", "version", "content_digest")
+                key: frozen_plan["template"][key] for key in ("name", "version", "content_digest")
             },
             "operators": {
                 slot: {
@@ -6985,6 +6684,10 @@ class ParameterStudy:
             if item["evidence_type"] == "CANDIDATE_EVALUATED"
             and item["payload"].get("search_round") == "FINAL"
         ]
+        uses_v2_qualification = any(
+            isinstance(item.get("evaluation", {}).get("qualification"), dict)
+            for item in final_evaluations
+        )
         rankings = sorted(
             [
                 {
@@ -6993,6 +6696,11 @@ class ParameterStudy:
                     **item["evaluation"],
                 }
                 for item in final_evaluations
+                if (
+                    not uses_v2_qualification
+                    or item.get("evaluation", {}).get("qualification", {}).get("state")
+                    == "QUALIFIED"
+                )
             ],
             key=lambda item: (
                 not item["champion_eligible"],
@@ -7028,9 +6736,7 @@ class ParameterStudy:
                 "account_policy": "FORCE_FLAT_WITH_COST",
                 "rounds": recorded_outer_rounds,
                 "ordered_net_daily_returns": [
-                    value
-                    for item in recorded_outer_rounds
-                    for value in item["net_daily_returns"]
+                    value for item in recorded_outer_rounds for value in item["net_daily_returns"]
                 ],
             }
         )
@@ -7059,9 +6765,7 @@ class ParameterStudy:
                 "Study Trial configuration",
             )
             if _digest(configuration) != trial["candidate_digest"]:
-                raise RuntimeError(
-                    "Study Trial projection does not match its candidate digest"
-                )
+                raise RuntimeError("Study Trial projection does not match its candidate digest")
             trial_configurations[trial["candidate_digest"]] = configuration
             trial_views.append(
                 {
@@ -7075,9 +6779,7 @@ class ParameterStudy:
             )
         round_order = {
             search_round: index
-            for index, (search_round, _, _) in enumerate(
-                self._selection_rounds(frozen_plan)
-            )
+            for index, (search_round, _, _) in enumerate(self._selection_rounds(frozen_plan))
         }
         suggestion_journal_views = []
         for row in sorted(
@@ -7095,14 +6797,9 @@ class ParameterStudy:
             if candidate is None:
                 candidate = trial_configurations[row["candidate_digest"]]
             evaluation = (
-                event["evaluation"]
-                if row["event_type"] == "INNER_EVALUATION_RECORDED"
-                else None
+                event["evaluation"] if row["event_type"] == "INNER_EVALUATION_RECORDED" else None
             )
-            failed = (
-                evaluation is not None
-                and evaluation.get("status") == "FAILED"
-            )
+            failed = evaluation is not None and evaluation.get("status") == "FAILED"
             suggestion_journal_views.append(
                 {
                     "search_round": row["search_round"],
@@ -7114,14 +6811,10 @@ class ParameterStudy:
                         candidate,
                     ),
                     "tell_state": (
-                        None
-                        if evaluation is None
-                        else ("FAIL" if failed else "COMPLETE")
+                        None if evaluation is None else ("FAIL" if failed else "COMPLETE")
                     ),
                     "objective": (
-                        None
-                        if evaluation is None or failed
-                        else evaluation["validation_score"]
+                        None if evaluation is None or failed else evaluation["validation_score"]
                     ),
                     "occurred_at": row["occurred_at"],
                     "event": event,
@@ -7151,8 +6844,7 @@ class ParameterStudy:
             if (
                 binding["candidate_digest"] not in trial_configurations
                 or _digest(task) != binding["task_digest"]
-                or task.get("dataset", {}).get("snapshot_id")
-                != binding["dataset_snapshot_id"]
+                or task.get("dataset", {}).get("snapshot_id") != binding["dataset_snapshot_id"]
                 or self._binding_id(
                     study_id=study_id,
                     search_round=binding["search_round"],
@@ -7164,9 +6856,7 @@ class ParameterStudy:
                 != binding["binding_id"]
                 or attempt["experiment_id"] != binding["experiment_id"]
             ):
-                raise RuntimeError(
-                    "Study binding projection does not match durable identity"
-                )
+                raise RuntimeError("Study binding projection does not match durable identity")
             stored_metric = (
                 None
                 if binding["metric_document_json"] is None
@@ -7175,27 +6865,24 @@ class ParameterStudy:
                     "Study binding Metric Document",
                 )
             )
-            metric_evidence = metric_evidence_by_binding.get(
-                binding["binding_id"]
-            )
+            metric_evidence = metric_evidence_by_binding.get(binding["binding_id"])
             if (
-                binding["state"] == "VERIFIED"
-                and (
-                    stored_metric is None
-                    or metric_evidence is None
-                    or metric_evidence.get("metric_document") != stored_metric
-                    or metric_evidence.get("attempt_id") != binding["attempt_id"]
+                (
+                    binding["state"] == "VERIFIED"
+                    and (
+                        stored_metric is None
+                        or metric_evidence is None
+                        or metric_evidence.get("metric_document") != stored_metric
+                        or metric_evidence.get("attempt_id") != binding["attempt_id"]
+                    )
                 )
-            ) or (
-                binding["state"] == "CONTESTED"
-                and binding["experiment_id"] not in contested_experiments
-            ) or (
-                binding["state"] == "SUBMITTED"
-                and stored_metric is not None
+                or (
+                    binding["state"] == "CONTESTED"
+                    and binding["experiment_id"] not in contested_experiments
+                )
+                or (binding["state"] == "SUBMITTED" and stored_metric is not None)
             ):
-                raise RuntimeError(
-                    "Study binding state disagrees with canonical evidence"
-                )
+                raise RuntimeError("Study binding state disagrees with canonical evidence")
             binding_views.append(
                 {
                     "binding_id": binding["binding_id"],
@@ -7226,17 +6913,12 @@ class ParameterStudy:
                     "metric_document": stored_metric,
                 }
             )
-        ranked_candidate_digests = {
-            ranking["candidate_digest"] for ranking in rankings
-        }
-        final_fold_count = len(
-            frozen_plan["validation"]["final_search_round"]["inner_folds"]
-        )
+        ranked_candidate_digests = {ranking["candidate_digest"] for ranking in rankings}
+        final_fold_count = len(frozen_plan["validation"]["final_search_round"]["inner_folds"])
         final_bindings = {
             (binding["candidate_digest"], binding["fold_sequence"]): binding
             for binding in binding_views
-            if binding["search_round"] == "FINAL"
-            and binding["role"] == "INNER_SCORE"
+            if binding["search_round"] == "FINAL" and binding["role"] == "INNER_SCORE"
         }
         unranked_trials = []
         for trial in trial_views:
@@ -7244,9 +6926,7 @@ class ParameterStudy:
                 continue
             missing_evidence = []
             for fold_sequence in range(1, final_fold_count + 1):
-                binding = final_bindings.get(
-                    (trial["candidate_digest"], fold_sequence)
-                )
+                binding = final_bindings.get((trial["candidate_digest"], fold_sequence))
                 if binding is None:
                     missing_evidence.append(
                         {
@@ -7280,22 +6960,12 @@ class ParameterStudy:
                     "missing_canonical_fold_evidence": missing_evidence,
                 }
             )
-        if (
-            study["selection_outcome"] == "CHAMPION_SELECTED"
-        ) != (champion_evidence is not None):
-            raise RuntimeError(
-                "Study selection projection disagrees with champion evidence"
-            )
-        if (
-            study["holdout_outcome"] != "NOT_RUN"
-            and not any(
-                item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED"
-                for item in evidence_items
-            )
+        if (study["selection_outcome"] == "CHAMPION_SELECTED") != (champion_evidence is not None):
+            raise RuntimeError("Study selection projection disagrees with champion evidence")
+        if study["holdout_outcome"] != "NOT_RUN" and not any(
+            item["evidence_type"] == "HOLDOUT_OUTCOME_RECORDED" for item in evidence_items
         ):
-            raise RuntimeError(
-                "Study holdout projection disagrees with canonical evidence"
-            )
+            raise RuntimeError("Study holdout projection disagrees with canonical evidence")
         public_outer_evidence = (
             champion_evidence["outer_evidence"]
             if champion_evidence is not None
@@ -7309,6 +6979,39 @@ class ParameterStudy:
         )
         if champion_evidence is None:
             decision_summary = None
+        no_qualified_evidence = next(
+            (
+                item["payload"]
+                for item in evidence_items
+                if item["payload"].get("selection_outcome") == "NO_QUALIFIED_CANDIDATE"
+            ),
+            None,
+        )
+        public_selection_outcome = study["selection_outcome"]
+        qualification_outcome = None
+        qualification_decision = None
+        qualification_records = [
+            deepcopy(item["evaluation"]["qualification"])
+            for item in final_evaluations
+            if isinstance(item.get("evaluation", {}).get("qualification"), dict)
+        ]
+        if no_qualified_evidence is not None:
+            public_selection_outcome = "NO_QUALIFIED_CANDIDATE"
+            qualification_outcome = "NO_QUALIFIED_CANDIDATE"
+            qualification_decision = "REJECTED_NO_EDGE"
+            qualification_records = deepcopy(no_qualified_evidence.get("qualification_records", []))
+            holdout_access = "NOT_GRANTED"
+            decision_summary = {
+                "claim": "REJECTED_NO_EDGE",
+                "champion_candidate_digest": None,
+                "champion_parameters": None,
+                "validation_score": None,
+                "primary_ties": [],
+                "outer_selections": [],
+                "outer_stability": "NOT_AVAILABLE",
+                "statistical_significance": "NOT_ESTABLISHED",
+                "rationale": no_qualified_evidence["explanation"],
+            }
         result = {
             "study_id": study["study_id"],
             "preview_digest": study["preview_digest"],
@@ -7316,21 +7019,20 @@ class ParameterStudy:
             "updated_at": study["updated_at"],
             "phase": study["phase"],
             "control_status": study["control_status"],
-            "selection_outcome": study["selection_outcome"],
+            "selection_outcome": public_selection_outcome,
+            "qualification_outcome": qualification_outcome,
+            "qualification_decision": qualification_decision,
+            "qualification_records": qualification_records,
             "holdout": {
                 "access": holdout_access,
                 "outcome": study["holdout_outcome"],
                 "freshness": holdout_freshness,
             },
-            "holdout_claim": (
-                None if holdout_claim is None else dict(holdout_claim)
-            ),
+            "holdout_claim": (None if holdout_claim is None else dict(holdout_claim)),
             "holdout_ledger": [
                 {
                     "sequence": item["sequence"],
-                    "holdout_identity_digest": item[
-                        "holdout_identity_digest"
-                    ],
+                    "holdout_identity_digest": item["holdout_identity_digest"],
                     "event_type": item["event_type"],
                     "occurred_at": item["occurred_at"],
                     "payload": _strict_json_object(

@@ -23,6 +23,11 @@ from .schemas import canonical_json_bytes
 from .strategy_replay import COST_FIELDS, EVENT_COLUMNS, TRADE_COLUMNS
 from .strategy_runner import RECONCILIATION_FIELDS, SETTLEMENT_RECONCILIATION_FIELDS
 from .study_contracts import normalize_fold_window
+from .study_qualification import (
+    QualificationError,
+    is_pristine_qualification,
+    rank_qualified,
+)
 from .total_return_claims import (
     TotalReturnQualificationError,
     qualification_record,
@@ -181,9 +186,7 @@ def _strict_json(payload: bytes, label: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
             if key in result:
-                raise MetricDocumentValidationError(
-                    f"{label} contains duplicate object key: {key}"
-                )
+                raise MetricDocumentValidationError(f"{label} contains duplicate object key: {key}")
             result[key] = value
         return result
 
@@ -213,17 +216,13 @@ def _root_relative_directory(
     try:
         relative = target.relative_to(state_root)
     except ValueError as exc:
-        raise MetricDocumentValidationError(
-            f"{label} is outside the state root"
-        ) from exc
+        raise MetricDocumentValidationError(f"{label} is outside the state root") from exc
     if not relative.parts:
         raise MetricDocumentValidationError(f"{label} cannot be the state root")
     descriptors: list[int] = []
     try:
         root_before = os.stat(state_root, follow_symlinks=False)
-        if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(
-            root_before.st_mode
-        ):
+        if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(root_before.st_mode):
             raise MetricDocumentValidationError("state root is not an immutable locator")
         root_descriptor = os.open(
             state_root,
@@ -245,9 +244,7 @@ def _root_relative_directory(
         parent_descriptor = root_descriptor
         for component in relative.parts:
             if component in {"", ".", ".."}:
-                raise MetricDocumentValidationError(
-                    f"{label} contains an unsafe path component"
-                )
+                raise MetricDocumentValidationError(f"{label} contains an unsafe path component")
             descriptor = os.open(
                 component,
                 os.O_RDONLY
@@ -295,9 +292,7 @@ def _immutable_file_at(
     try:
         descriptor = os.open(
             name,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=directory_descriptor,
         )
         before = os.fstat(descriptor)
@@ -307,16 +302,12 @@ def _immutable_file_at(
             or before.st_nlink != 1
             or before.st_size > maximum_bytes
         ):
-            raise MetricDocumentValidationError(
-                f"{label} is not a bounded immutable regular file"
-            )
+            raise MetricDocumentValidationError(f"{label} is not a bounded immutable regular file")
         payload = bytearray()
         while chunk := os.read(descriptor, min(1024 * 1024, maximum_bytes + 1)):
             payload.extend(chunk)
             if len(payload) > maximum_bytes:
-                raise MetricDocumentValidationError(
-                    f"{label} exceeds its byte bound"
-                )
+                raise MetricDocumentValidationError(f"{label} exceeds its byte bound")
         after = os.fstat(descriptor)
         if (
             after.st_dev,
@@ -370,9 +361,7 @@ def _date_series(frame: pd.DataFrame, column: str, label: str) -> pd.Series:
     except (TypeError, ValueError) as exc:
         raise MetricDocumentValidationError(f"{label}.{column} contains invalid dates") from exc
     if dates.isna().any() or dates.dt.strftime("%Y-%m-%d").tolist() != frame[column].tolist():
-        raise MetricDocumentValidationError(
-            f"{label}.{column} must use canonical YYYY-MM-DD dates"
-        )
+        raise MetricDocumentValidationError(f"{label}.{column} must use canonical YYYY-MM-DD dates")
     return dates
 
 
@@ -425,8 +414,7 @@ def _candidate_attempt_binding(
     if (
         not isinstance(resolved_template, Mapping)
         or not isinstance(candidate_template, Mapping)
-        or set(candidate_template)
-        != {"name", "version", "content_digest", "parameters"}
+        or set(candidate_template) != {"name", "version", "content_digest", "parameters"}
         or not isinstance(resolved_operators, Mapping)
         or not isinstance(candidate_operators, Mapping)
         or set(resolved_operators) != set(candidate_operators)
@@ -453,9 +441,7 @@ def _candidate_attempt_binding(
         if key not in {"evaluation_start", "evaluation_end", "terminal_handling"}
     }
     candidate_protocol_parameters = {
-        key: value
-        for key, value in candidate_parameters.items()
-        if key != "terminal_handling"
+        key: value for key, value in candidate_parameters.items() if key != "terminal_handling"
     }
     fold_window = resolved.get("dataset", {}).get("lineage", {}).get("view_spec", {})
     if (
@@ -477,14 +463,11 @@ def _candidate_attempt_binding(
             or not isinstance(resolved_operator, Mapping)
             or set(candidate_operator_value)
             != {"operator_id", "version", "content_digest", "parameters"}
-            or candidate_operator_value.get("operator_id")
-            != resolved_operator.get("operator_id")
-            or candidate_operator_value.get("version")
-            != resolved_operator.get("resolved_version")
+            or candidate_operator_value.get("operator_id") != resolved_operator.get("operator_id")
+            or candidate_operator_value.get("version") != resolved_operator.get("resolved_version")
             or candidate_operator_value.get("content_digest")
             != resolved_operator.get("content_digest")
-            or candidate_operator_value.get("parameters")
-            != resolved_operator.get("parameters")
+            or candidate_operator_value.get("parameters") != resolved_operator.get("parameters")
         ):
             raise MetricDocumentValidationError(
                 f"candidate operator {slot} does not match the Attempt"
@@ -496,9 +479,7 @@ def _candidate_attempt_binding(
     return {
         "strategy_configuration": canonical_candidate,
         "strategy_configuration_digest": candidate_digest,
-        "experiment_configuration_digest": _sha256(
-            canonical_json_bytes(experiment_configuration)
-        ),
+        "experiment_configuration_digest": _sha256(canonical_json_bytes(experiment_configuration)),
         "attempt_audit_digest": attempt_audit_digest,
     }
 
@@ -655,7 +636,9 @@ class MetricDocumentFactory:
             dataset_frame["Date"].dt.strftime("%Y-%m-%d").tolist(),
         )
         if fold_window is not None and dict(fold_window) != expected_window:
-            raise MetricDocumentValidationError("fold window does not match dataset scoring identity")
+            raise MetricDocumentValidationError(
+                "fold window does not match dataset scoring identity"
+            )
 
         if not isinstance(result_path, (str, Path)):
             raise MetricDocumentValidationError("result directory is unavailable")
@@ -674,9 +657,7 @@ class MetricDocumentFactory:
         ) as result_descriptor:
             root_metadata = os.fstat(result_descriptor)
             if stat.S_IMODE(root_metadata.st_mode) & 0o222:
-                raise MetricDocumentValidationError(
-                    "result directory is not immutable"
-                )
+                raise MetricDocumentValidationError("result directory is not immutable")
             names = set(os.listdir(result_descriptor))
             if names == base_required:
                 required = base_required
@@ -696,9 +677,7 @@ class MetricDocumentFactory:
                 for name in sorted(required)
             }
         if sum(len(payload) for payload in payloads.values()) > MAX_TOTAL_RESULT_BYTES:
-            raise MetricDocumentValidationError(
-                "result artifacts exceed the total byte bound"
-            )
+            raise MetricDocumentValidationError("result artifacts exceed the total byte bound")
         if _result_digest(payloads) != result_digest:
             raise MetricDocumentValidationError("Attempt result digest does not match artifacts")
 
@@ -738,8 +717,7 @@ class MetricDocumentFactory:
             or attempt_audit["template"] != resolved.get("template")
             or attempt_audit["dataset"] != resolved.get("dataset")
             or attempt_audit["operators"] != resolved.get("operators")
-            or attempt_audit["execution_identity"]
-            != resolved.get("execution_identity")
+            or attempt_audit["execution_identity"] != resolved.get("execution_identity")
             or attempt_audit["run_id"] != root.name
             or Path(attempt_audit["result_path"]).absolute() != root
             or attempt_audit["result_digest"] != result_digest
@@ -775,8 +753,7 @@ class MetricDocumentFactory:
             or run_manifest["run_id"] != root.name
             or SHA256.fullmatch(run_manifest["run_id"]) is None
             or run_manifest.get("dataset_snapshot_id") != snapshot_id
-            or run_manifest.get("dataset_canonical_sha256")
-            != dataset.get("canonical_sha256")
+            or run_manifest.get("dataset_canonical_sha256") != dataset.get("canonical_sha256")
         ):
             raise MetricDocumentValidationError("run manifest dataset identity mismatch")
 
@@ -801,11 +778,15 @@ class MetricDocumentFactory:
         daily_dates = _date_series(daily, "Date", "daily replay")
         if not daily_dates.is_monotonic_increasing or daily_dates.duplicated().any():
             raise MetricDocumentValidationError("daily replay dates must be unique and ordered")
-        scored_dates = dataset_frame.loc[
-            (dataset_frame["Date"] >= pd.Timestamp(expected_window["scoring_start"]))
-            & (dataset_frame["Date"] <= pd.Timestamp(expected_window["scoring_end"])),
-            "Date",
-        ].dt.strftime("%Y-%m-%d").tolist()
+        scored_dates = (
+            dataset_frame.loc[
+                (dataset_frame["Date"] >= pd.Timestamp(expected_window["scoring_start"]))
+                & (dataset_frame["Date"] <= pd.Timestamp(expected_window["scoring_end"])),
+                "Date",
+            ]
+            .dt.strftime("%Y-%m-%d")
+            .tolist()
+        )
         if daily["Date"].tolist() != scored_dates:
             raise MetricDocumentValidationError(
                 "daily replay dates do not exactly match the committed scoring mask"
@@ -876,10 +857,7 @@ class MetricDocumentFactory:
         if not trades.empty:
             for column in ("entry_date", "exit_date"):
                 trade_dates = _date_series(trades, column, "trade ledger")
-                if (
-                    trade_dates.min() < daily_dates.min()
-                    or trade_dates.max() > daily_dates.max()
-                ):
+                if trade_dates.min() < daily_dates.min() or trade_dates.max() > daily_dates.max():
                     raise MetricDocumentValidationError("trade ledger dates are invalid")
 
         required_metrics = {
@@ -976,7 +954,7 @@ class MetricDocumentFactory:
         expected_cash = initial
         expected_holdings = 0
         cumulative_cost = 0.0
-        for daily_row in (() if settlement_mode else daily.itertuples(index=False)):
+        for daily_row in () if settlement_mode else daily.itertuples(index=False):
             date = daily_row.Date
             day_events = events.loc[events["Date"] == date]
             if (
@@ -1017,15 +995,11 @@ class MetricDocumentFactory:
                         "event ledger opening state, price, or notional does not reconcile"
                     )
                 if event.side == "BUY":
-                    expected_cash -= float(event.notional_cny) + float(
-                        event.total_cost_cny
-                    )
+                    expected_cash -= float(event.notional_cny) + float(event.total_cost_cny)
                     expected_holdings += quantity
                     signed_quantity += quantity
                 elif event.side == "SELL":
-                    expected_cash += float(event.notional_cny) - float(
-                        event.total_cost_cny
-                    )
+                    expected_cash += float(event.notional_cny) - float(event.total_cost_cny)
                     expected_holdings -= quantity
                     signed_quantity -= quantity
                 else:
@@ -1095,16 +1069,12 @@ class MetricDocumentFactory:
                 float(events[field].sum()),
                 scale=initial,
             ):
-                raise MetricDocumentValidationError(
-                    f"cost breakdown does not reconcile: {field}"
-                )
-        for trade in (() if settlement_mode else trades.to_dict("records")):
+                raise MetricDocumentValidationError(f"cost breakdown does not reconcile: {field}")
+        for trade in () if settlement_mode else trades.to_dict("records"):
             gross = (float(trade["exit_price"]) - float(trade["entry_price"])) * int(
                 trade["quantity"]
             )
-            net = gross - float(trade["entry_cost_cny"]) - float(
-                trade["exit_cost_cny"]
-            )
+            net = gross - float(trade["entry_cost_cny"]) - float(trade["exit_cost_cny"])
             basis = float(trade["entry_price"]) * int(trade["quantity"]) + float(
                 trade["entry_cost_cny"]
             )
@@ -1117,12 +1087,10 @@ class MetricDocumentFactory:
                 raise MetricDocumentValidationError("trade ledger does not reconcile")
         expected_trades: list[tuple[dict[str, Any], dict[str, Any]]] = []
         open_event: dict[str, Any] | None = None
-        for event in (() if settlement_mode else events.to_dict("records")):
+        for event in () if settlement_mode else events.to_dict("records"):
             if event["side"] == "BUY":
                 if open_event is not None:
-                    raise MetricDocumentValidationError(
-                        "event ledger opens overlapping positions"
-                    )
+                    raise MetricDocumentValidationError("event ledger opens overlapping positions")
                 open_event = event
             else:
                 if open_event is None:
@@ -1131,9 +1099,7 @@ class MetricDocumentFactory:
                     )
                 expected_trades.append((open_event, event))
                 open_event = None
-        if not settlement_mode and (
-            open_event is not None or len(expected_trades) != len(trades)
-        ):
+        if not settlement_mode and (open_event is not None or len(expected_trades) != len(trades)):
             raise MetricDocumentValidationError(
                 "trade ledger does not match ordered execution events"
             )
@@ -1182,9 +1148,7 @@ class MetricDocumentFactory:
         )
         drawdown = equity / np.maximum.accumulate(np.concatenate(([initial], equity)))[1:] - 1.0
         maximum_drawdown = max(0.0, -float(drawdown.min()))
-        annual_turnover = (
-            float(events["notional_cny"].sum()) / initial * 252.0 / len(daily)
-        )
+        annual_turnover = float(events["notional_cny"].sum()) / initial * 252.0 / len(daily)
         independent = {
             "net_return": float(equity[-1] / initial - 1.0),
             "net_sharpe": net_sharpe,
@@ -1216,35 +1180,35 @@ class MetricDocumentFactory:
             historical_exposure=historical_exposure,
         )
         document = {
-                "schema_version": 1,
-                "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
-                "instrument": instrument,
-                "candidate_digest": candidate_digest,
-                "candidate_binding": candidate_binding,
-                "experiment_id": experiment_id,
-                "attempt_id": attempt_id,
-                "result_digest": result_digest,
-                "dataset_snapshot_id": snapshot_id,
-                "scoring_mask_sha256": manifest["scoring_mask_sha256"],
-                "fold_window": expected_window,
-                "artifact_digests": dict(sorted(artifact_digests.items())),
-                "scored_dates": scored_dates,
-                "net_daily_returns": [
-                    {"date": date, "return": float(value)}
-                    for date, value in zip(scored_dates, returns, strict=True)
-                ],
-                "metrics": independent,
-                "reported_metrics": metrics,
-                "total_return_qualification": total_return_qualification,
-                "reconciliation": {
-                    "immutable_artifacts": True,
-                    "scoring_mask": True,
-                    "finite_values": True,
-                    "dates": True,
-                    "ledger_equity_cost": True,
-                    "force_flat_with_cost": True,
-                },
-            }
+            "schema_version": 1,
+            "metric_engine": deepcopy(METRIC_ENGINE_IDENTITY),
+            "instrument": instrument,
+            "candidate_digest": candidate_digest,
+            "candidate_binding": candidate_binding,
+            "experiment_id": experiment_id,
+            "attempt_id": attempt_id,
+            "result_digest": result_digest,
+            "dataset_snapshot_id": snapshot_id,
+            "scoring_mask_sha256": manifest["scoring_mask_sha256"],
+            "fold_window": expected_window,
+            "artifact_digests": dict(sorted(artifact_digests.items())),
+            "scored_dates": scored_dates,
+            "net_daily_returns": [
+                {"date": date, "return": float(value)}
+                for date, value in zip(scored_dates, returns, strict=True)
+            ],
+            "metrics": independent,
+            "reported_metrics": metrics,
+            "total_return_qualification": total_return_qualification,
+            "reconciliation": {
+                "immutable_artifacts": True,
+                "scoring_mask": True,
+                "finite_values": True,
+                "dates": True,
+                "ledger_equity_cost": True,
+                "force_flat_with_cost": True,
+            },
+        }
         document["document_digest"] = _sha256(canonical_json_bytes(document))
         return _issue_verified_metric_document(document)
 
@@ -1265,9 +1229,7 @@ class RobustWalkForwardPolicy:
         if not metric_documents:
             raise EvaluationPolicyError("at least one Metric Document is required")
         if len(metric_documents) > MAX_METRIC_DOCUMENTS_PER_EVALUATION:
-            raise EvaluationPolicyError(
-                "Metric Document count exceeds the evaluation bound"
-            )
+            raise EvaluationPolicyError("Metric Document count exceeds the evaluation bound")
         required_parameters = {
             "stability_weight",
             "turnover_weight",
@@ -1280,7 +1242,11 @@ class RobustWalkForwardPolicy:
         stability_weight = self._nonnegative(parameters["stability_weight"], "stability_weight")
         turnover_weight = self._nonnegative(parameters["turnover_weight"], "turnover_weight")
         minimum_trades = parameters["minimum_trades"]
-        if isinstance(minimum_trades, bool) or not isinstance(minimum_trades, int) or minimum_trades < 0:
+        if (
+            isinstance(minimum_trades, bool)
+            or not isinstance(minimum_trades, int)
+            or minimum_trades < 0
+        ):
             raise EvaluationPolicyError("minimum_trades must be a non-negative integer")
         maximum_drawdown = self._optional_nonnegative(
             parameters["maximum_drawdown"], "maximum_drawdown"
@@ -1312,10 +1278,9 @@ class RobustWalkForwardPolicy:
         }
         documents: list[dict[str, Any]] = []
         for index, factory_document in enumerate(metric_documents):
-            if (
-                not isinstance(factory_document, VerifiedMetricDocument)
-                or not _is_pristine_verified_metric_document(factory_document)
-            ):
+            if not isinstance(
+                factory_document, VerifiedMetricDocument
+            ) or not _is_pristine_verified_metric_document(factory_document):
                 raise EvaluationPolicyError(
                     f"metric_documents[{index}] is not pristine "
                     "MetricDocumentFactory-issued evidence"
@@ -1328,11 +1293,7 @@ class RobustWalkForwardPolicy:
                 or not isinstance(document.get("document_digest"), str)
                 or _sha256(
                     canonical_json_bytes(
-                        {
-                            key: value
-                            for key, value in document.items()
-                            if key != "document_digest"
-                        }
+                        {key: value for key, value in document.items() if key != "document_digest"}
                     )
                 )
                 != document["document_digest"]
@@ -1354,11 +1315,8 @@ class RobustWalkForwardPolicy:
                     "experiment_configuration_digest",
                     "attempt_audit_digest",
                 }
-                or candidate_binding.get("strategy_configuration_digest")
-                != candidate_digest
-                or _sha256(
-                    canonical_json_bytes(candidate_binding.get("strategy_configuration"))
-                )
+                or candidate_binding.get("strategy_configuration_digest") != candidate_digest
+                or _sha256(canonical_json_bytes(candidate_binding.get("strategy_configuration")))
                 != candidate_digest
                 or any(
                     not isinstance(candidate_binding.get(key), str)
@@ -1386,9 +1344,7 @@ class RobustWalkForwardPolicy:
                 }
                 or any(value is not True for value in reconciliation.values())
             ):
-                raise EvaluationPolicyError(
-                    f"metric_documents[{index}] is not verified evidence"
-                )
+                raise EvaluationPolicyError(f"metric_documents[{index}] is not verified evidence")
             expected_metrics = {
                 "net_return",
                 "net_sharpe",
@@ -1411,9 +1367,7 @@ class RobustWalkForwardPolicy:
                 ]
                 != document["scored_dates"]
             ):
-                raise EvaluationPolicyError(
-                    f"metric_documents[{index}] metric evidence is invalid"
-                )
+                raise EvaluationPolicyError(f"metric_documents[{index}] metric evidence is invalid")
             role = document.get("fold_window", {}).get("role")
             if role not in {"INNER_SCORE", "OUTER_AUDIT", "TERMINAL_HOLDOUT"}:
                 raise EvaluationPolicyError(f"metric_documents[{index}] has an invalid role")
@@ -1438,13 +1392,14 @@ class RobustWalkForwardPolicy:
         fold_mad = float(median(abs(value - fold_median) for value in fold_sharpes))
         total_sessions = sum(len(document["scored_dates"]) for document in ordered)
         if total_sessions > MAX_SCORED_SESSIONS:
-            raise EvaluationPolicyError(
-                "Metric Document sessions exceed the evaluation bound"
+            raise EvaluationPolicyError("Metric Document sessions exceed the evaluation bound")
+        annual_turnover = (
+            sum(
+                float(document["metrics"]["annual_turnover"]) * len(document["scored_dates"])
+                for document in ordered
             )
-        annual_turnover = sum(
-            float(document["metrics"]["annual_turnover"]) * len(document["scored_dates"])
-            for document in ordered
-        ) / total_sessions
+            / total_sessions
+        )
         maximum_drawdown_value = max(
             float(document["metrics"]["maximum_drawdown"]) for document in ordered
         )
@@ -1458,22 +1413,20 @@ class RobustWalkForwardPolicy:
                     == "quant-platform/total-return-qualification@1"
                     and document["total_return_qualification"].get("claim_state")
                     == "AFTER_TAX_TOTAL_RETURN_VERIFIED"
-                    and document["total_return_qualification"].get("ranking", {}).get(
-                        "eligible_for_ranking"
-                    )
+                    and document["total_return_qualification"]
+                    .get("ranking", {})
+                    .get("eligible_for_ranking")
                     is True
-                    and document["total_return_qualification"].get("ranking", {}).get(
-                        "historical_exposure"
-                    )
+                    and document["total_return_qualification"]
+                    .get("ranking", {})
+                    .get("historical_exposure")
                     == "PRISTINE"
                 )
             )
             for document in ordered
         )
         validation_score = (
-            fold_median
-            - stability_weight * fold_mad
-            - turnover_weight * annual_turnover
+            fold_median - stability_weight * fold_mad - turnover_weight * annual_turnover
         )
         constraints = {
             "trusted_total_return": {
@@ -1489,10 +1442,7 @@ class RobustWalkForwardPolicy:
             "maximum_drawdown": {
                 "actual": maximum_drawdown_value,
                 "limit": maximum_drawdown,
-                "passed": (
-                    maximum_drawdown is None
-                    or maximum_drawdown_value <= maximum_drawdown
-                ),
+                "passed": (maximum_drawdown is None or maximum_drawdown_value <= maximum_drawdown),
             },
             "maximum_annual_turnover": {
                 "actual": annual_turnover,
@@ -1541,9 +1491,7 @@ class RobustWalkForwardPolicy:
                     name for name, value in constraints.items() if not value["passed"]
                 ],
             },
-            "metric_document_digests": [
-                document["document_digest"] for document in ordered
-            ],
+            "metric_document_digests": [document["document_digest"] for document in ordered],
             "total_return_qualifications": [
                 deepcopy(document["total_return_qualification"])
                 for document in ordered
@@ -1565,10 +1513,68 @@ class RobustWalkForwardPolicy:
         )
 
     def select(self, evaluations: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        qualification_aware = ["qualification" in value for value in evaluations]
+        if any(qualification_aware):
+            if not all(qualification_aware):
+                raise EvaluationPolicyError("qualified and legacy ranking evidence cannot be mixed")
+            try:
+                ranked = rank_qualified(evaluations)
+            except QualificationError as exc:
+                raise EvaluationPolicyError(str(exc)) from exc
+            return None if not ranked else ranked[0]
         eligible = [dict(value) for value in evaluations if value.get("eligible") is True]
         if not eligible:
             return None
         return min(eligible, key=self.ranking_key)
+
+    def evaluate_after_qualification(
+        self,
+        candidate_digest: str,
+        metric_documents: Sequence[Mapping[str, Any]],
+        parameters: Mapping[str, Any],
+        qualification: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Cross the v2 ranking seam only with pristine authority evidence."""
+
+        if (
+            not is_pristine_qualification(qualification)
+            or qualification.get("candidate_digest") != candidate_digest
+        ):
+            raise EvaluationPolicyError(
+                "scalar evaluation requires pristine candidate-bound qualification"
+            )
+        if qualification.get("state") != "QUALIFIED":
+            return {
+                "candidate_digest": candidate_digest,
+                "qualification": qualification,
+                "qualification_state": qualification.get("state"),
+                "eligibility": "INELIGIBLE",
+                "eligible": False,
+                "validation_score": None,
+                "ranking_position": None,
+                "explanation": {
+                    "claim": "REJECTED_NO_EDGE",
+                    "constraint_failures": list(qualification.get("reason_codes", [])),
+                },
+            }
+        if any(
+            document.get("fold_window", {}).get("role") != "INNER_SCORE"
+            for document in metric_documents
+        ):
+            raise EvaluationPolicyError(
+                "outer or holdout evidence cannot feed development qualification"
+            )
+        result = self.evaluate(candidate_digest, metric_documents, parameters)
+        if result["eligible"] is not True:
+            raise EvaluationPolicyError("qualified evidence contradicts the policy evaluation")
+        result["qualification"] = qualification
+        result["qualification_state"] = "QUALIFIED"
+        result["evaluation_digest"] = _sha256(
+            canonical_json_bytes(
+                {key: value for key, value in result.items() if key != "evaluation_digest"}
+            )
+        )
+        return result
 
     @staticmethod
     def _nonnegative(value: Any, label: str) -> float:
@@ -1638,8 +1644,7 @@ class NestedChronologicalSelection:
                 continue
             if (
                 not isinstance(outer_document, Mapping)
-                or outer_document.get("candidate_digest")
-                != selected["candidate_digest"]
+                or outer_document.get("candidate_digest") != selected["candidate_digest"]
                 or outer_document.get("fold_window", {}).get("role") != "OUTER_AUDIT"
             ):
                 raise EvaluationPolicyError(
@@ -1668,9 +1673,7 @@ class NestedChronologicalSelection:
         )
         champion = self.policy.select(final_evaluations)
         stitched_returns = [
-            value
-            for outer in ordered_outer
-            for value in outer.get("net_daily_returns", [])
+            value for outer in ordered_outer for value in outer.get("net_daily_returns", [])
         ]
         if champion is None:
             if holdout_document is not None:
@@ -1695,8 +1698,7 @@ class NestedChronologicalSelection:
         if holdout_document is not None:
             if (
                 holdout_document.get("candidate_digest") != champion_digest
-                or holdout_document.get("fold_window", {}).get("role")
-                != "TERMINAL_HOLDOUT"
+                or holdout_document.get("fold_window", {}).get("role") != "TERMINAL_HOLDOUT"
             ):
                 raise EvaluationPolicyError(
                     "holdout evidence must belong to the single frozen champion"
@@ -1706,9 +1708,7 @@ class NestedChronologicalSelection:
                 [holdout_document],
                 parameters,
             )
-            holdout_outcome = (
-                "PASSED" if holdout_evaluation["eligible"] else "FAILED"
-            )
+            holdout_outcome = "PASSED" if holdout_evaluation["eligible"] else "FAILED"
         return {
             "selection_outcome": "CHAMPION_SELECTED",
             "holdout_outcome": holdout_outcome,
@@ -1741,9 +1741,7 @@ class NestedChronologicalSelection:
                 raise EvaluationPolicyError(
                     "outer or holdout evidence cannot feed inner candidate selection"
                 )
-            evaluations.append(
-                self.policy.evaluate(candidate_digest, documents, parameters)
-            )
+            evaluations.append(self.policy.evaluate(candidate_digest, documents, parameters))
         return evaluations
 
 

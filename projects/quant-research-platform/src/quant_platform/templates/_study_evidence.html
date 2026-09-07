@@ -2,9 +2,9 @@
 {% set decision = study.get("decision_summary") %}
 {% if decision %}
 <section class="panel decision-summary" aria-labelledby="decision-summary-heading" data-testid="decision-summary">
-  <div class="section-heading"><div><p class="eyebrow">DECISION SUMMARY</p><h2 id="decision-summary-heading">Best observed parameters</h2></div><span class="status" data-status="{{ study.selection_outcome }}">{{ decision.claim }}</span></div>
+  <div class="section-heading"><div><p class="eyebrow">DECISION SUMMARY</p><h2 id="decision-summary-heading">{{ "Qualification decision" if decision.claim == "REJECTED_NO_EDGE" else "Best observed parameters" }}</h2></div><span class="status" data-status="{{ study.selection_outcome }}">{{ decision.claim }}</span></div>
   <p>{{ decision.rationale }}</p>
-  <div class="decision-champion"><span>Champion parameters</span><strong><code>{{ decision.champion_parameters|canonical_json }}</code></strong></div>
+  {% if decision.champion_candidate_digest %}<div class="decision-champion"><span>Champion parameters</span><strong><code>{{ decision.champion_parameters|canonical_json }}</code></strong></div>{% else %}<div class="notice compact-notice"><strong>NO_QUALIFIED_CANDIDATE</strong><p>REJECTED_NO_EDGE · No scalar ranking, champion, holdout grant, or holdout run exists.</p></div>{% endif %}
   <div class="holdout-dimensions">
     <div><span>Validation objective</span><strong>{{ decision.validation_score }}</strong></div>
     <div><span>Outer stability</span><strong>{{ decision.outer_stability }}</strong></div>
@@ -12,8 +12,26 @@
     <div><span>Terminal holdout</span><strong>{{ study.holdout.access }} · {{ study.holdout.outcome }}</strong></div>
   </div>
   {% if decision.primary_ties %}<div class="notice compact-notice"><strong>Primary-evidence ties required the frozen tie-break</strong><ul>{% for item in decision.primary_ties %}<li><code>{{ item.studied_parameters|canonical_json }}</code> <span class="mono">{{ item.candidate_digest }}</span></li>{% endfor %}</ul></div>{% endif %}
-  <p class="decision-caveat"><strong>Interpretation limit:</strong> NOT_ESTABLISHED means this Study did not run a separate statistical significance test. “Champion” is the observed winner under the frozen ranking and tie-break rules, not proof of a universally superior parameter.</p>
+  {% if decision.claim == "REJECTED_NO_EDGE" %}<p class="decision-caveat"><strong>Interpretation limit:</strong> REJECTED_NO_EDGE is a valid no-edge result. Rejected candidates are NOT_RANKED and cannot authorize holdout, deployment, production signals, or trading.</p>{% else %}<p class="decision-caveat"><strong>Interpretation limit:</strong> NOT_ESTABLISHED means this Study did not run a separate statistical significance test. “Champion” is the observed winner under the frozen ranking and tie-break rules, not proof of a universally superior parameter.</p>{% endif %}
   {% if decision.outer_selections %}<details><summary>Outer-round selection evidence</summary><ul>{% for item in decision.outer_selections %}<li><strong>{{ item.search_round }}</strong> <code>{{ item.studied_parameters|canonical_json }}</code></li>{% endfor %}</ul></details>{% endif %}
+</section>
+{% endif %}
+
+{% if study.get("qualification_records") %}
+<section class="panel qualification-evidence" aria-labelledby="qualification-evidence-heading" data-testid="qualification-evidence">
+  <div class="section-heading"><div><p class="eyebrow">SEALED PRE-RANKING EVIDENCE</p><h2 id="qualification-evidence-heading">Matched-exposure qualification</h2></div><span class="status" data-status="{{ study.qualification_outcome }}">{{ study.qualification_decision }}</span></div>
+  <p><strong>POLICY_CONSTRAINTS_PASSED</strong> means only legacy operational constraints passed. <strong>DEPLOYMENT_QUALIFIED</strong> means every accepted trust and qualification gate passed; it does not authorize deployment, signals, or trading. <strong>RETROSPECTIVE_DIAGNOSIS_ONLY</strong> evidence cannot become pristine or threshold-setting evidence.</p>
+  {% for qualification in study.qualification_records %}
+  <article class="qualification-record" data-state="{{ qualification.state }}">
+    <h3>{{ qualification.state }} · {{ qualification.ranking_status }}</h3>
+    <dl class="technical"><dt>Authority</dt><dd>{{ qualification.issuer }}</dd><dt>Qualification ID</dt><dd class="mono">{{ qualification.qualification_id }}</dd><dt>Candidate</dt><dd class="mono">{{ qualification.candidate_digest }}</dd><dt>Reasons</dt><dd>{{ qualification.reason_codes|join(", ") }}</dd></dl>
+    {% if qualification.get("aggregate") %}<details><summary>Sealed control and edge evidence</summary><pre>{{ qualification.aggregate|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("gates") %}<details><summary>Qualification gates</summary><pre>{{ qualification.gates|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("episodes") %}<details><summary>Natural, forced, boundary-open, and dependence evidence</summary><pre>{{ qualification.episodes|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("multiplicity") %}<details><summary>Closed family and significance evidence</summary><pre>{{ qualification.multiplicity|canonical_json }}</pre></details>{% endif %}
+    {% if qualification.get("continuous_state") %}<details><summary>Forced-flat disclosure and continuous-state diagnostic</summary><pre>{{ qualification.continuous_state|canonical_json }}</pre></details>{% endif %}
+  </article>
+  {% endfor %}
 </section>
 {% endif %}
 
@@ -43,7 +61,7 @@
 {% set bindings = study.get("bindings", []) %}
 {% set unranked_trials = study.get("unranked_trials", []) %}
 <section class="panel" aria-labelledby="trial-ranking-heading">
-  <div class="section-heading"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2 id="trial-ranking-heading">Trial ranking</h2></div><span class="badge">{{ trials|length }} Trials</span></div>
+  <div class="section-heading"><div><p class="eyebrow">CANDIDATE EVIDENCE</p><h2 id="trial-ranking-heading">{{ "Qualification evidence" if study.get("qualification_outcome") else "Trial ranking" }}</h2></div><span class="badge">{{ trials|length }} Trials</span></div>
   {% if unranked_trials %}
   <div class="notice compact-notice">
     <strong>{{ unranked_trials|length }} {{ "Trial was" if unranked_trials|length == 1 else "Trials were" }} excluded from ranking because complete canonical final-fold evidence is unavailable.</strong>
