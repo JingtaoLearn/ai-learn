@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+from .attempt_report import AttemptReportError, read_latest_report, read_report_artifact
 from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
@@ -870,7 +871,7 @@ def _verified_run_payloads(
 
 
 def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
-    return _verified_run_payloads(settings, attempt)["report.html"]
+    return read_latest_report(settings.state_root, attempt["attempt_id"])["html"]
 
 
 def create_app(
@@ -1999,22 +2000,40 @@ def create_app(
     async def report(request: Request, attempt_id: str):
         session = _session(request)
         attempt = experiments.attempt_detail(attempt_id)
-        experiment = experiments.experiment_detail(attempt["experiment_id"])
-        is_canonical = experiment["canonical_attempt_id"] == attempt_id
-        report_label = (
-            "Verified canonical report"
-            if is_canonical
-            else "Verified divergent rerun report"
-            if attempt.get("comparison") == "DIVERGENT"
-            else "Verified equivalent rerun report"
-        )
+        report_artifact_id = None
+        integrity_label = "Canonical report unavailable"
+        qualification_label = "Qualification not evaluated"
+        try:
+            canonical = await run_in_threadpool(
+                read_latest_report,
+                settings.state_root,
+                attempt_id,
+            )
+        except (AttemptReportError, OSError, ValueError):
+            canonical = None
+        if canonical is not None:
+            report_artifact_id = canonical["manifest"]["report_artifact_id"]
+            integrity_label = "Report artifact integrity verified"
+            fields = {
+                field["field_id"]: field
+                for section in canonical["document"]["sections"]
+                for field in section["fields"]
+            }
+            qualification = fields["matched_exposure_status"]
+            qualification_label = (
+                str(qualification["raw"])
+                if qualification["availability"] == "AVAILABLE"
+                else str(qualification["display"])
+            )
         return _render(
             request,
             "report_wrapper.html",
             session=session,
             attempt_id=attempt_id,
             attempt=attempt,
-            report_label=report_label,
+            report_artifact_id=report_artifact_id,
+            integrity_label=integrity_label,
+            qualification_label=qualification_label,
         )
 
     @app.get("/reports/{attempt_id}/content")
@@ -2029,10 +2048,47 @@ def create_app(
             payload = _report_payload(
                 settings, experiments.attempt_detail(attempt_id)
             )
-        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
+        except (AttemptReportError, FileNotFoundError, KeyError, OSError, RuntimeError, ValueError):
             return HTMLResponse("Report not found.", status_code=404)
         return Response(
             payload,
+            media_type="text/html",
+            headers={
+                "Content-Security-Policy": (
+                    "sandbox allow-scripts; default-src 'none'; "
+                    "connect-src 'none'; img-src data:; "
+                    "style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "form-action 'none'; base-uri 'none'; frame-ancestors 'self'; "
+                    "navigate-to 'none'"
+                ),
+                "Content-Disposition": "inline",
+            },
+        )
+
+    @app.get("/reports/{attempt_id}/artifacts/{report_artifact_id}/content")
+    async def report_artifact_content(
+        request: Request,
+        attempt_id: str,
+        report_artifact_id: str,
+    ):
+        _session(request)
+        experiments.attempt_detail(attempt_id)
+        if (
+            request.headers.get("sec-fetch-dest") != "iframe"
+            or request.headers.get("sec-fetch-site") not in {"same-origin", "same-site"}
+        ):
+            return HTMLResponse("Report content requires a same-site sandbox frame.", status_code=403)
+        try:
+            payload = await run_in_threadpool(
+                read_report_artifact,
+                settings.state_root,
+                attempt_id,
+                report_artifact_id,
+            )
+        except (AttemptReportError, OSError, ValueError):
+            return HTMLResponse("Report not found.", status_code=404)
+        return Response(
+            payload["html"],
             media_type="text/html",
             headers={
                 "Content-Security-Policy": (

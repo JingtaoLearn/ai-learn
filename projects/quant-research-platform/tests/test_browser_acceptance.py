@@ -181,8 +181,14 @@ def test_real_browser_desktop_mobile_with_and_without_javascript(tmp_path: Path)
                 ),
             )
             return
+        report_task = _task(snapshot_id)
+        report_task["operators"]["report"] = {
+            "operator_id": "canonical_attempt_report",
+            "version": "1.0.0",
+            "parameters": {},
+        }
         report_experiment = app.state.experiments.submit(
-            _task(snapshot_id), action_id="browser-report"
+            report_task, action_id="browser-report"
         )
         report_attempt = app.state.experiments.claim_next_attempt()
         report_result = ResolvedAttemptExecutor(

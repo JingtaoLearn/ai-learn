@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .attempt_report import REPORT_OPERATOR_ID, verify_report_operator_bundle
 from .catalog import Catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import DatasetValidationError, SAFE_INSTRUMENT, _verify_snapshot
@@ -319,7 +320,7 @@ class ExperimentService:
                 f"task.operators.{slot}.parameters",
             )
             mode = "latest" if requested_version == "latest" else "explicit"
-            resolved_operators[slot] = {
+            resolved_operator = {
                 "operator_id": operator_id,
                 "selector_mode": mode,
                 "requested_version": requested_version,
@@ -329,6 +330,30 @@ class ExperimentService:
                 "content_digest": selected["content_digest"],
                 "parameters": parameters,
             }
+            if slot == "report" and operator_id == REPORT_OPERATOR_ID:
+                report_identity = verify_report_operator_bundle(
+                    self.catalog.state_root / selected["bundle_path"],
+                    expected_content_digest=selected["content_digest"],
+                )
+                if (
+                    report_identity["parameter_schema"] != selected["parameter_schema"]
+                    or report_identity["defaults"] != selected["defaults"]
+                    or parameters != report_identity["defaults"]
+                ):
+                    raise TaskValidationError(
+                        "canonical report operator schema/default identity mismatch"
+                    )
+                resolved_operator.update(
+                    {
+                        "api_version": report_identity["api_version"],
+                        "source_sha256": report_identity["source_sha256"],
+                        "parameter_schema": report_identity["parameter_schema"],
+                        "defaults": report_identity["defaults"],
+                        "effective_parameters": parameters,
+                        "conformance_digest": report_identity["conformance_digest"],
+                    }
+                )
+            resolved_operators[slot] = resolved_operator
             requested_operators[slot] = {
                 "operator_id": operator_id,
                 "version": requested_version,
@@ -376,18 +401,26 @@ class ExperimentService:
             if "effective_start" in dataset
             else dataset
         )
-        identity["operators"] = {
-            slot: {
-                key: operator[key]
-                for key in (
-                    "operator_id",
-                    "resolved_version",
-                    "content_digest",
-                    "parameters",
+        identity["operators"] = {}
+        for slot, operator in resolved["operators"].items():
+            keys = [
+                "operator_id",
+                "resolved_version",
+                "content_digest",
+                "parameters",
+            ]
+            if slot == "report" and operator["operator_id"] == REPORT_OPERATOR_ID:
+                keys.extend(
+                    [
+                        "api_version",
+                        "source_sha256",
+                        "parameter_schema",
+                        "defaults",
+                        "effective_parameters",
+                        "conformance_digest",
+                    ]
                 )
-            }
-            for slot, operator in resolved["operators"].items()
-        }
+            identity["operators"][slot] = {key: operator[key] for key in keys}
         return identity
 
     def submit(self, task: Any, *, action_id: str) -> dict[str, Any]:

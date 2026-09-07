@@ -8,8 +8,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .attempt_report import (
+    REPORT_DEFAULTS,
+    REPORT_DOCUMENTATION,
+    REPORT_OPERATOR_ID,
+    REPORT_OPERATOR_VERSION,
+    REPORT_PARAMETER_SCHEMA,
+)
 from .catalog import Catalog
 from .datasets import _verify_snapshot, snapshot_status
+from .operator_service import write_canonical_report_bundle
 from .schemas import canonical_json_bytes, validate_defaults, validate_parameter_schema
 
 
@@ -159,7 +167,9 @@ BUILTINS = (
         "defaults": {},
     },
 )
-BUILTIN_OPERATOR_IDS = tuple(item["operator_id"] for item in BUILTINS)
+BUILTIN_OPERATOR_IDS = tuple(item["operator_id"] for item in BUILTINS) + (
+    REPORT_OPERATOR_ID,
+)
 DATASET_CREATED_AT = "2026-08-27T00:00:00Z"
 PRODUCTION_DATASET_NAMES = {
     "601328.SS": "Bank of Communications (601328.SS)",
@@ -317,3 +327,57 @@ def seed_catalog(catalog: Catalog) -> None:
             catalog._set_latest_if_newer(
                 connection, descriptor["operator_id"], "1.0.0", digest, "PUBLISHED"
             )
+
+    bundle_path, report_identity = write_canonical_report_bundle(catalog)
+    validate_parameter_schema(REPORT_PARAMETER_SCHEMA)
+    validate_defaults(REPORT_PARAMETER_SCHEMA, REPORT_DEFAULTS)
+    with catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO operators(
+                operator_id, slot, title_zh, summary_zh, created_at
+            ) VALUES (?, 'report', ?, ?, ?)
+            """,
+            (
+                REPORT_OPERATOR_ID,
+                "规范化 Attempt 报告",
+                "从密封 Attempt 证据生成仅展示、可复核的版本化报告。",
+                CREATED_AT,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO operator_versions(
+                operator_id, version, content_digest, parameter_schema_json,
+                defaults_json, documentation, bundle_path,
+                validation_evidence_json, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PUBLISHED', ?)
+            """,
+            (
+                REPORT_OPERATOR_ID,
+                REPORT_OPERATOR_VERSION,
+                report_identity["content_digest"],
+                canonical_json_bytes(REPORT_PARAMETER_SCHEMA).decode(),
+                canonical_json_bytes(REPORT_DEFAULTS).decode(),
+                REPORT_DOCUMENTATION,
+                bundle_path,
+                canonical_json_bytes(
+                    {
+                        "schema_version": 2,
+                        "passed": True,
+                        "candidate_digest": report_identity["content_digest"],
+                        "source_sha256": report_identity["source_sha256"],
+                        "conformance_digest": report_identity["conformance_digest"],
+                        "render_only": True,
+                    }
+                ).decode(),
+                CREATED_AT,
+            ),
+        )
+        catalog._set_latest_if_newer(
+            connection,
+            REPORT_OPERATOR_ID,
+            REPORT_OPERATOR_VERSION,
+            report_identity["content_digest"],
+            "PUBLISHED",
+        )

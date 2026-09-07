@@ -1,0 +1,90 @@
+{
+  "$id": "quant-platform/attempt-report-latest-pointer/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "previous_pointer_id": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "sequence": {
+            "const": 1
+          }
+        },
+        "required": [
+          "sequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "previous_pointer_id": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "attempt_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operator_content_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "pointer_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "previous_pointer_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "report_artifact_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_document_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "quant-platform/attempt-report-latest-pointer/v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "sequence": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "attempt_id",
+    "report_artifact_id",
+    "report_manifest_sha256",
+    "report_document_sha256",
+    "operator_content_digest",
+    "sequence",
+    "previous_pointer_id",
+    "pointer_id"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,106 @@
+{
+  "$id": "quant-platform/report-manifest/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "bundle_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "document_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "files": {
+      "items": false,
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "const": "report-document.json"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "const": "report.html"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "size": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path",
+            "size",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      ],
+      "type": "array"
+    },
+    "operator_content_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_artifact_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_document_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "report_html_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "quant-platform/report-manifest/v1"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "attempt_id",
+    "bundle_id",
+    "document_id",
+    "report_document_sha256",
+    "report_html_sha256",
+    "operator_content_digest",
+    "files",
+    "report_artifact_id"
+  ],
+  "type": "object"
+}

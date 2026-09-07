@@ -1,0 +1,423 @@
+{
+  "fixture_path": "fixtures/conformance-v2.json",
+  "negative_cases": [
+    {
+      "expected": "ATTACHMENT_SCHEMA",
+      "id": "N01",
+      "patch": {
+        "op": "remove",
+        "path": "/files/2"
+      },
+      "target": "attachments/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "ATTACHMENT_SCHEMA",
+      "id": "N02",
+      "patch": {
+        "op": "add",
+        "path": "/files/-",
+        "value": {
+          "path": "extra.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size": 3
+        }
+      },
+      "target": "attachments/TOTAL_RETURN_READ_TIME"
+    },
+    {
+      "expected": "ATTACHMENT_SCHEMA",
+      "id": "N03",
+      "patch": {
+        "op": "replace",
+        "path": "/files/0/path",
+        "value": "../projection.json"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "ATTACHMENT_SCHEMA",
+      "id": "N04",
+      "patch": {
+        "op": "replace",
+        "path": "/projection/ranking/0/state",
+        "value": "QUALIFIED"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "ATTACHMENT_PAYLOAD_HASH",
+      "id": "N05",
+      "patch": {
+        "op": "replace",
+        "path": "/files/0/sha256",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "attachments/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "ATTACHMENT_SCHEMA",
+      "id": "N06",
+      "patch": {
+        "op": "remove",
+        "path": "/ancestry/0"
+      },
+      "target": "attachments/MATCHED_EXPOSURE_TERMINAL"
+    },
+    {
+      "expected": "REPORT_DOCUMENT_SCHEMA",
+      "id": "N07",
+      "patch": {
+        "op": "replace",
+        "path": "/sections/1/fields/1/source_ref/pointer",
+        "value": "/status"
+      },
+      "target": "report_documents/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "REPORT_SOURCE_MISMATCH",
+      "id": "N08",
+      "patch": {
+        "op": "replace",
+        "path": "/sections/1/fields/4/raw",
+        "value": true
+      },
+      "target": "report_documents/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "REPORT_DOCUMENT_ID",
+      "id": "N09",
+      "patch": {
+        "op": "replace",
+        "path": "/document_id",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "target": "report_documents/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "REPORT_DOCUMENT_SCHEMA",
+      "id": "N10",
+      "patch": {
+        "op": "add",
+        "path": "/report_artifact_id",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "target": "report_documents/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "REPORT_ARTIFACT_ID",
+      "id": "N11",
+      "patch": {
+        "op": "replace",
+        "path": "/report_artifact_id",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "target": "report_artifact/manifest"
+    },
+    {
+      "expected": "STUDY_REFERENCE_MISSING",
+      "id": "N12",
+      "patch": {
+        "op": "replace",
+        "path": "/qualification_attachment_ids/0",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "STUDY_REFERENCE_KIND",
+      "id": "N13",
+      "patch": {
+        "op": "replace",
+        "path": "/qualification_attachment_ids/0",
+        "value": "4f3873c85eaa0b71634918d8f04b1e2b677507ac8a6502107621d356baae919a"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "STUDY_CROSS_STUDY",
+      "id": "N14",
+      "patch": {
+        "op": "replace",
+        "path": "/study_id",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "STUDY_EVENT_PAYLOAD",
+      "id": "N15",
+      "patch": {
+        "op": "replace",
+        "path": "/study_events/0/payload/state",
+        "value": "ADMISSION_REJECTED"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "STUDY_ATTACHMENT_ID_REQUIRED",
+      "id": "N16",
+      "patch": {
+        "op": "replace",
+        "path": "/qualification_attachment_ids/0",
+        "value": "3257f884a59335173add0a400d6fef588149532be6b6cf670ee136f31edabee6"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "STUDY_PROJECTION_MISMATCH",
+      "id": "N17",
+      "patch": {
+        "op": "replace",
+        "path": "/projection/ranking/0/state",
+        "value": "ADMISSION_REJECTED"
+      },
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "LATEST_POINTER_SCHEMA",
+      "id": "N18",
+      "patch": {
+        "op": "remove",
+        "path": "/record/schema_id"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_POINTER_MODE",
+      "id": "N19",
+      "patch": {
+        "op": "replace",
+        "path": "/observation/file_mode",
+        "value": "0644"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_ARTIFACT_BINDING",
+      "id": "N20",
+      "patch": {
+        "op": "replace",
+        "path": "/record/attempt_id",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_ARTIFACT_MISSING",
+      "id": "N21",
+      "patch": {
+        "op": "replace",
+        "path": "/observation/artifact_present",
+        "value": false
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_ARTIFACT_BINDING",
+      "id": "N22",
+      "patch": {
+        "op": "replace",
+        "path": "/record/report_manifest_sha256",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_POINTER_ID",
+      "id": "N23",
+      "patch": {
+        "op": "replace",
+        "path": "/record/pointer_id",
+        "value": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_POINTER_RACE",
+      "id": "N24",
+      "patch": {
+        "op": "replace",
+        "path": "/observation/lstat_after/mtime_ns",
+        "value": 18
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "CANDIDATE_QUALIFICATION_ID",
+      "id": "N25",
+      "patch": {
+        "attachment_key": "MATCHED_EXPOSURE_ADMISSION_REJECTED",
+        "op": "forge_qualification_graph",
+        "record_index": 1
+      },
+      "target": "resolved_study_graph"
+    },
+    {
+      "expected": "CANDIDATE_QUALIFICATION_ID",
+      "id": "N26",
+      "patch": {
+        "attachment_key": "MATCHED_EXPOSURE_TERMINAL",
+        "op": "forge_qualification_graph",
+        "record_index": 1
+      },
+      "target": "resolved_study_graph"
+    },
+    {
+      "expected": "CANDIDATE_QUALIFICATION_ID",
+      "id": "N27",
+      "patch": {
+        "attachment_key": "MATCHED_EXPOSURE_TERMINAL",
+        "op": "forge_qualification_graph",
+        "record_index": 3
+      },
+      "target": "resolved_study_graph"
+    },
+    {
+      "expected": "LATEST_POINTER_SCHEMA",
+      "id": "N28",
+      "patch": {
+        "op": "replace",
+        "path": "/record/sequence",
+        "value": 2
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_POINTER_SCHEMA",
+      "id": "N29",
+      "patch": {
+        "op": "replace",
+        "path": "/record/previous_pointer_id",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "LATEST_POINTER_TRANSITION",
+      "id": "N30",
+      "patch": {
+        "op": "reseal_pointer",
+        "path": "/next_record",
+        "value": {
+          "sequence": 4
+        }
+      },
+      "target": "revision5/latest_pointer_publication_transition"
+    },
+    {
+      "expected": "LATEST_POINTER_TRANSITION",
+      "id": "N31",
+      "patch": {
+        "op": "reseal_pointer",
+        "path": "/next_record",
+        "value": {
+          "previous_pointer_id": null,
+          "sequence": 1
+        }
+      },
+      "target": "revision5/latest_pointer_publication_transition"
+    },
+    {
+      "expected": "LATEST_POINTER_TRANSITION",
+      "id": "N32",
+      "patch": {
+        "op": "reseal_pointer",
+        "path": "/next_record",
+        "value": {
+          "previous_pointer_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      },
+      "target": "revision5/latest_pointer_publication_transition"
+    },
+    {
+      "expected": "LATEST_POINTER_SCHEMA",
+      "id": "N33",
+      "patch": {
+        "op": "reseal_pointer",
+        "path": "/next_record",
+        "value": {
+          "previous_pointer_id": null
+        }
+      },
+      "target": "revision5/latest_pointer_publication_transition"
+    },
+    {
+      "expected": "CANDIDATE_FAMILY_TERMINAL_BINDING",
+      "id": "N34",
+      "patch": {
+        "op": "forge_family_graph",
+        "path": "/policy/bootstrap_seed",
+        "value": 8
+      },
+      "target": "resolved_study_graph"
+    },
+    {
+      "expected": "CANDIDATE_FAMILY_TERMINAL_BINDING",
+      "id": "N35",
+      "patch": {
+        "op": "forge_family_graph",
+        "path": "/stress_scenario_set_digest",
+        "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "target": "resolved_study_graph"
+    }
+  ],
+  "positive_cases": [
+    {
+      "expected": "PASS_SCHEMA_TOPOLOGY_IDENTITY",
+      "id": "P01",
+      "target": "attachments/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "PASS_SCHEMA_TOPOLOGY_IDENTITY",
+      "id": "P02",
+      "target": "attachments/TOTAL_RETURN_READ_TIME"
+    },
+    {
+      "expected": "PASS_SCHEMA_TOPOLOGY_IDENTITY",
+      "id": "P03",
+      "target": "attachments/MATCHED_EXPOSURE_TERMINAL"
+    },
+    {
+      "expected": "PASS_RESOLVED_MIXED_PROJECTION_AND_EVENTS",
+      "id": "P04",
+      "target": "attachments/STUDY_TERMINAL_NO_QUALIFIED"
+    },
+    {
+      "expected": "PASS_FULL_POINTERS_AND_DOCUMENT_ID",
+      "id": "P05",
+      "target": "report_documents/TOTAL_RETURN_FULL"
+    },
+    {
+      "expected": "PASS_READ_TIME_POINTERS_AND_DOCUMENT_ID",
+      "id": "P06",
+      "target": "report_documents/TOTAL_RETURN_READ_TIME"
+    },
+    {
+      "expected": "PASS_ACYCLIC_MANIFEST_AND_ARTIFACT_ID",
+      "id": "P07",
+      "target": "report_artifact/manifest"
+    },
+    {
+      "expected": "PASS_SOURCE_ISSUED_ADMISSION_REJECTED_ATTACHMENT",
+      "id": "P08",
+      "target": "attachments/MATCHED_EXPOSURE_ADMISSION_REJECTED"
+    },
+    {
+      "expected": "PASS_CANONICAL_BOUND_RACE_FREE_POINTER",
+      "id": "P09",
+      "target": "latest_pointer"
+    },
+    {
+      "expected": "PASS_EXACT_MAIN_QUALIFICATION_REPLAY_RESOLVED_GRAPH",
+      "id": "P10",
+      "target": "resolved_study_graph"
+    },
+    {
+      "expected": "PASS_FIRST_TO_REPLACEMENT_POINTER_TRANSITION",
+      "id": "P11",
+      "target": "revision5/latest_pointer_publication_transition"
+    }
+  ],
+  "schema_version": 5
+}
