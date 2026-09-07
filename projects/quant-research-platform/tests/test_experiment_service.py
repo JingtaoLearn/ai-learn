@@ -12,7 +12,11 @@ from quant_platform.experiment_service import ExperimentService, TaskValidationE
 FIXTURE = Path(__file__).parent / "fixtures" / "strategy" / "daily.csv"
 
 
-def _service(tmp_path: Path) -> tuple[ExperimentService, str]:
+def _service(
+    tmp_path: Path,
+    *,
+    instrument: str = "SYNTH.SS",
+) -> tuple[ExperimentService, str]:
     root = tmp_path / "state"
     catalog = initialize_catalog(root)
     frame = pd.read_csv(FIXTURE)
@@ -21,7 +25,7 @@ def _service(tmp_path: Path) -> tuple[ExperimentService, str]:
         frame,
         root,
         {
-            "instrument": "SYNTH.SS",
+            "instrument": instrument,
             "provider": "synthetic",
             "market": "XSHG",
             "currency": "CNY",
@@ -41,11 +45,11 @@ def _service(tmp_path: Path) -> tuple[ExperimentService, str]:
     )
 
 
-def _task(snapshot_id: str) -> dict:
+def _task(snapshot_id: str, *, instrument: str = "SYNTH.SS") -> dict:
     return {
         "schema_version": 1,
         "dataset": {
-            "instrument": "SYNTH.SS",
+            "instrument": instrument,
             "snapshot_id": snapshot_id,
         },
         "template": {
@@ -351,3 +355,61 @@ def test_rerun_keeps_the_experiment_resolution_frozen_while_detail_reports_drift
     ]
     assert original["resolved_version"] == "1.0.0"
     assert service.experiment_detail(created["experiment_id"])["has_drift"] is True
+
+
+def test_a_share_attempt_and_experiment_reads_add_fail_closed_classification_without_mutation(
+    tmp_path: Path,
+):
+    instrument = "601328.SS"
+    service, snapshot_id = _service(tmp_path, instrument=instrument)
+    created = service.submit(
+        _task(snapshot_id, instrument=instrument),
+        action_id="historical-read-projection",
+    )
+    database = service.catalog.database_path
+    with service.catalog.connect() as connection:
+        before_rows = {
+            "experiments": [tuple(row) for row in connection.execute("SELECT * FROM experiments")],
+            "attempts": [tuple(row) for row in connection.execute("SELECT * FROM attempts")],
+            "migrations": [
+                tuple(row) for row in connection.execute("SELECT * FROM schema_migrations")
+            ],
+        }
+    before_stat = (database.stat().st_size, database.stat().st_mtime_ns)
+
+    attempt = service.attempt_detail(created["attempt_id"])
+    listed_attempt = service.list_attempts(created["experiment_id"])[0]
+    experiment = service.experiment_detail(created["experiment_id"])
+    listed_experiment = service.list_experiments()[0]
+
+    assert attempt["historical_classification"] == listed_attempt["historical_classification"]
+    assert attempt["historical_classification"]["primary_state"] == "MISSING_AUTHORITY"
+    assert attempt["historical_classification"]["dimensions"] == {
+        "integrity": "MISSING_AUTHORITY",
+        "accounting": "UNKNOWN",
+        "policy": "MISSING_POLICY",
+        "holdout_exposure": "NOT_APPLICABLE",
+        "matched_control": "NOT_APPLICABLE",
+        "deployment_qualification": "NOT_DEPLOYMENT_QUALIFIED",
+    }
+    attempt_sources = attempt["historical_classification"]["source_identities"]
+    assert attempt_sources["attempt_id_sha256"] != attempt["attempt_id"]
+    assert attempt_sources["experiment_id_sha256"] != attempt["experiment_id"]
+    assert instrument not in str(attempt["historical_classification"])
+
+    assert experiment["historical_classification"] == listed_experiment[
+        "historical_classification"
+    ]
+    assert experiment["historical_classification"]["primary_state"] == "MISSING_AUTHORITY"
+    assert not any(experiment["historical_classification"]["effects"].values())
+
+    with service.catalog.connect() as connection:
+        after_rows = {
+            "experiments": [tuple(row) for row in connection.execute("SELECT * FROM experiments")],
+            "attempts": [tuple(row) for row in connection.execute("SELECT * FROM attempts")],
+            "migrations": [
+                tuple(row) for row in connection.execute("SELECT * FROM schema_migrations")
+            ],
+        }
+    assert after_rows == before_rows
+    assert (database.stat().st_size, database.stat().st_mtime_ns) == before_stat

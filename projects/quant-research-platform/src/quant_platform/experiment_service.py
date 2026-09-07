@@ -14,10 +14,29 @@ from typing import Any
 from .catalog import Catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import DatasetValidationError, SAFE_INSTRUMENT, _verify_snapshot
+from .historical_evidence import (
+    PRIMARY_STATES,
+    build_output as build_historical_classification,
+    canonical_sha256,
+    identifier_sha256,
+    is_a_share_document,
+    strict_json_loads,
+)
 from .schemas import (
     SchemaValidationError,
     canonical_json_bytes,
     validate_parameters,
+)
+from .strategy_config import load_strategy_config
+from .strategy_runner import (
+    ARTIFACT_NAMES,
+    HASHED_ARTIFACT_NAMES,
+    RECONCILIATION_FIELDS,
+    SEMANTICS,
+    SETTLEMENT_ARTIFACT_NAMES,
+    SETTLEMENT_RECONCILIATION_FIELDS,
+    _load_strict_json,
+    _verify_run,
 )
 from .updates import snapshot_update_lineage
 
@@ -674,14 +693,192 @@ class ExperimentService:
                 """,
                 (experiment_id,),
             ).fetchall()
+            catalog_schema_version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
         finally:
             connection.close()
-        return [self._attempt_row(row) for row in rows]
+        return [self._attempt_row(row, catalog_schema_version) for row in rows]
 
-    def _attempt_row(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _attempt_row(
+        self,
+        row: sqlite3.Row,
+        catalog_schema_version: int,
+    ) -> dict[str, Any]:
         result = dict(row)
-        result["requested"] = json.loads(result.pop("requested_json"))
-        result["resolved"] = json.loads(result.pop("resolved_json"))
+        result["requested"] = strict_json_loads(result.pop("requested_json"))
+        result["resolved"] = strict_json_loads(result.pop("resolved_json"))
+        if not is_a_share_document(result["resolved"]):
+            return result
+
+        source_identities = {
+            "attempt_id_sha256": identifier_sha256(result["attempt_id"]),
+            "experiment_id_sha256": identifier_sha256(result["experiment_id"]),
+            "resolved_sha256": canonical_sha256(result["resolved"]),
+            "result_digest_sha256": result["result_digest"],
+            "catalog_schema_version": catalog_schema_version,
+        }
+        integrity = "MISSING_AUTHORITY"
+        accounting = "UNKNOWN"
+        policy = "MISSING_POLICY"
+        expected_attempt_id = canonical_sha256(
+            {
+                "experiment_id": result["experiment_id"],
+                "action_id": result["action_id"],
+                "sequence": result["sequence"],
+            }
+        )
+        if result["attempt_id"] != expected_attempt_id:
+            integrity = "CONTRADICTORY_AUTHORITY"
+            accounting = "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+        elif result["status"] == "SUCCEEDED":
+            try:
+                target = Path(result["result_path"]).absolute()
+                expected_parent = (self.catalog.state_root / "experiment-runs").absolute()
+                if target.parent != expected_parent or target.name == "":
+                    raise ValueError("result path is outside the immutable result root")
+                manifest = _load_strict_json(
+                    (target / "run_manifest.json").read_bytes(),
+                    "run manifest",
+                )
+                base_manifest_fields = {
+                    "schema_version",
+                    "run_id",
+                    "identity",
+                    "config_sha256",
+                    "dataset_snapshot_id",
+                    "dataset_canonical_sha256",
+                    "source_sha256",
+                    "source_files",
+                    "runtime",
+                    "git",
+                    "semantics",
+                    "reconciliation",
+                    "files",
+                }
+                manifest_fields = frozenset(manifest) if isinstance(manifest, dict) else frozenset()
+                if manifest_fields not in (
+                    frozenset(base_manifest_fields),
+                    frozenset(base_manifest_fields | {"accounting"}),
+                ) or manifest.get("schema_version") != 1:
+                    integrity = "UNKNOWN_ENTITY_VERSION"
+                    raise LookupError("unrecognized result manifest schema")
+                resolved_dataset = result["resolved"]["dataset"]
+                dataset_path = (
+                    self.catalog.state_root
+                    / "datasets"
+                    / resolved_dataset["instrument"]
+                    / resolved_dataset["snapshot_id"]
+                )
+                dataset_manifest = _verify_snapshot(
+                    dataset_path,
+                    resolved_dataset["snapshot_id"],
+                    verify_parent=True,
+                )
+                config = load_strategy_config(target / "config.json")
+                manifest_identity = manifest.get("identity")
+                if not isinstance(manifest_identity, dict):
+                    raise ValueError("result identity is invalid")
+                run_accounting = manifest.get("accounting")
+                expected_names = (
+                    ARTIFACT_NAMES
+                    if run_accounting is None
+                    else SETTLEMENT_ARTIFACT_NAMES
+                )
+                actual_names = {path.name for path in target.iterdir()}
+                expected_identity_fields = {
+                    "schema_version",
+                    "config_sha256",
+                    "dataset_snapshot_id",
+                    "source_sha256",
+                    "runtime",
+                }
+                if manifest_identity.get("composition_digest") is not None:
+                    expected_identity_fields.add("composition_digest")
+                if run_accounting is not None:
+                    expected_identity_fields.add("accounting")
+                if (
+                    actual_names != expected_names
+                    or set(manifest_identity) != expected_identity_fields
+                    or set(config.canonical)
+                    != {"schema_version", "dataset", "output_root", "template", "operators"}
+                    or config.canonical.get("schema_version") != 1
+                    or set(manifest["files"]) != expected_names - {"run_manifest.json"}
+                ):
+                    integrity = "UNKNOWN_ENTITY_VERSION"
+                    raise LookupError("unrecognized runner artifact signature")
+                _verify_run(
+                    target,
+                    target.name,
+                    config,
+                    dataset_path,
+                    dataset_manifest,
+                    manifest["source_sha256"],
+                    manifest["source_files"],
+                    manifest["runtime"],
+                    composition_digest=manifest_identity.get("composition_digest"),
+                    accounting=run_accounting,
+                )
+                digest = hashlib.sha256()
+                for name in (
+                    "daily_replay.csv",
+                    "events.csv",
+                    "trades.csv",
+                    "metrics.json",
+                    "cost_breakdown.json",
+                ):
+                    path = target / name
+                    if path.is_symlink() or not path.is_file():
+                        raise ValueError("result digest artifact is unavailable")
+                    digest.update(name.encode("utf-8"))
+                    digest.update(b"\0")
+                    digest.update(path.read_bytes())
+                    digest.update(b"\0")
+                if digest.hexdigest() != result["result_digest"]:
+                    raise ValueError("Attempt result digest does not match artifacts")
+                integrity = "VERIFIED_IMMUTABLE"
+                if run_accounting is None:
+                    if (
+                        manifest["semantics"] != SEMANTICS
+                        or set(manifest["files"]) != HASHED_ARTIFACT_NAMES
+                        or set(manifest["reconciliation"]) != RECONCILIATION_FIELDS
+                    ):
+                        integrity = "UNKNOWN_ENTITY_VERSION"
+                        raise LookupError("unrecognized old-runner signature")
+                    accounting = "PRICE_RETURN_ONLY"
+                    policy = "NOT_APPLICABLE_PRICE_ONLY"
+                elif (
+                    isinstance(run_accounting, dict)
+                    and run_accounting.get("claim") == "KNOWN_EVENT_CORRECTED_PARTIAL"
+                    and run_accounting.get("coverage_state") == "VERIFIED_EVENTS"
+                    and set(manifest["reconciliation"])
+                    == SETTLEMENT_RECONCILIATION_FIELDS
+                ):
+                    accounting = "KNOWN_EVENT_CORRECTED_PARTIAL"
+                    policy = "LEGACY_POLICY"
+                else:
+                    accounting = "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+                    policy = "MISSING_POLICY"
+            except LookupError:
+                accounting = "UNKNOWN"
+                policy = "MISSING_POLICY"
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                integrity = "TAMPERED_OR_WRITABLE"
+                accounting = "UNKNOWN"
+                policy = "MISSING_POLICY"
+        elif any(result[field] is not None for field in ("result_path", "result_digest")):
+            integrity = "CONTRADICTORY_AUTHORITY"
+            accounting = "AFTER_TAX_TOTAL_RETURN_UNVERIFIED"
+
+        result["historical_classification"] = build_historical_classification(
+            entity_type="ATTEMPT",
+            source_identities=source_identities,
+            integrity=integrity,
+            accounting=accounting,
+            policy=policy,
+            holdout_exposure="NOT_APPLICABLE",
+            matched_control="NOT_APPLICABLE",
+        )
         return result
 
     def attempt_detail(self, attempt_id: str) -> dict[str, Any]:
@@ -690,11 +887,14 @@ class ExperimentService:
             row = connection.execute(
                 "SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)
             ).fetchone()
+            catalog_schema_version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
         finally:
             connection.close()
         if row is None:
             raise TaskValidationError(f"unknown attempt: {attempt_id}")
-        return self._attempt_row(row)
+        return self._attempt_row(row, catalog_schema_version)
 
     def _operator_drift(self, operator: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -729,11 +929,14 @@ class ExperimentService:
                 """,
                 (experiment_id,),
             ).fetchone()[0]
+            catalog_schema_version = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
         finally:
             connection.close()
         if row is None:
             raise TaskValidationError(f"unknown experiment: {experiment_id}")
-        identity = json.loads(row["identity_json"])
+        identity = strict_json_loads(row["identity_json"])
         attempts = self.list_attempts(experiment_id)
         dataset = identity["dataset"]
         if attempts and "effective_start" in dataset:
@@ -753,7 +956,7 @@ class ExperimentService:
             )
             for slot in identity["operators"]
         }
-        return dict(row) | identity | {
+        result = dict(row) | identity | {
             "dataset": dataset,
             "operators": operators,
             "attempt_count": len(attempts),
@@ -762,6 +965,67 @@ class ExperimentService:
             "has_drift": any(item["drifted"] for item in operators.values()),
             "has_divergent_attempt": bool(divergent),
         }
+        if is_a_share_document(identity):
+            canonical_attempt = next(
+                (
+                    attempt
+                    for attempt in attempts
+                    if attempt["attempt_id"] == row["canonical_attempt_id"]
+                ),
+                None,
+            )
+            source_identities = {
+                "experiment_id_sha256": identifier_sha256(experiment_id),
+                "identity_sha256": canonical_sha256(identity),
+                "canonical_attempt_id_sha256": (
+                    None
+                    if row["canonical_attempt_id"] is None
+                    else identifier_sha256(row["canonical_attempt_id"])
+                ),
+                "catalog_schema_version": catalog_schema_version,
+            }
+            if canonical_attempt is None:
+                dimensions = {
+                    "integrity": "MISSING_AUTHORITY",
+                    "accounting": "UNKNOWN",
+                    "policy": "MISSING_POLICY",
+                }
+            else:
+                classifications = [
+                    attempt["historical_classification"]
+                    for attempt in attempts
+                    if "historical_classification" in attempt
+                ]
+                if classifications:
+                    restrictive = min(
+                        classifications,
+                        key=lambda item: PRIMARY_STATES.index(item["primary_state"]),
+                    )
+                    dimensions = {
+                        key: restrictive["dimensions"][key]
+                        for key in ("integrity", "accounting", "policy")
+                    }
+                else:
+                    dimensions = {
+                        "integrity": "CONTRADICTORY_AUTHORITY",
+                        "accounting": "AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                        "policy": "MISSING_POLICY",
+                    }
+                if divergent:
+                    dimensions["integrity"] = "CONTRADICTORY_AUTHORITY"
+            if canonical_sha256(identity) != experiment_id:
+                dimensions.update(
+                    integrity="CONTRADICTORY_AUTHORITY",
+                    accounting="AFTER_TAX_TOTAL_RETURN_UNVERIFIED",
+                )
+            result["historical_classification"] = build_historical_classification(
+                entity_type="EXPERIMENT",
+                source_identities=source_identities,
+                **dimensions,
+                holdout_exposure="UNKNOWN",
+                matched_control="MISSING",
+            )
+        return result
 
     def list_experiments(self) -> list[dict[str, Any]]:
         connection = self.catalog.connect()
@@ -785,7 +1049,9 @@ class ExperimentService:
                     "dataset",
                     "template",
                     "operators",
+                    "historical_classification",
                 )
+                if key in detail
             }
             for detail in (
                 self.experiment_detail(row["experiment_id"]) for row in rows

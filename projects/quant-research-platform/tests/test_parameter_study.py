@@ -1408,6 +1408,18 @@ def test_submit_persists_the_frozen_projection_and_initial_event_for_detail(
             },
         }
     ]
+    classification = detail["historical_classification"]
+    assert classification["primary_state"] == "MISSING_AUTHORITY"
+    assert classification["dimensions"] == {
+        "integrity": "MISSING_AUTHORITY",
+        "accounting": "UNKNOWN",
+        "policy": "MISSING_POLICY",
+        "holdout_exposure": "UNKNOWN",
+        "matched_control": "MISSING",
+        "deployment_qualification": "UNKNOWN_NOT_DEPLOYMENT_QUALIFIED",
+    }
+    assert classification["source_identities"]["study_id_sha256"] != detail["study_id"]
+    assert "SYNTH.SS" not in str(classification)
 
 
 def test_legacy_experiments_make_preledger_holdout_freshness_unknown(tmp_path: Path):
@@ -2082,6 +2094,34 @@ def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
         first["study_id"],
     ]
     assert all(item["phase"] == "FROZEN" for item in listed)
+    assert all("historical_classification" in item for item in listed)
+
+
+def test_study_list_and_detail_classification_are_read_only_and_source_equivalent(
+    tmp_path: Path,
+):
+    studies, _ = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    submitted = studies.submit(
+        _spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="historical-study-read",
+    )
+    database = studies.catalog.database_path
+    with studies.catalog.connect() as connection:
+        before_rows = list(connection.iterdump())
+    before_stat = (database.stat().st_size, database.stat().st_mtime_ns)
+
+    detail = studies.detail(submitted["study_id"])
+    listed = studies.list()[0]
+
+    assert detail["historical_classification"] == listed["historical_classification"]
+    assert detail["historical_classification"]["schema_version"] == 2
+    assert not any(detail["historical_classification"]["effects"].values())
+    with studies.catalog.connect() as connection:
+        after_rows = list(connection.iterdump())
+    assert after_rows == before_rows
+    assert (database.stat().st_size, database.stat().st_mtime_ns) == before_stat
 
 
 def test_executor_cannot_fabricate_all_ineligible_conclusion(tmp_path: Path):
