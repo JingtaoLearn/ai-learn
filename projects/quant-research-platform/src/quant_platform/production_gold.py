@@ -16,6 +16,7 @@ from .production_jobs import (
     decision_points,
     evaluate,
     identity,
+    identity_canonical_bytes,
     next_weekday,
     normalized_rows,
     parse_manifest,
@@ -145,7 +146,9 @@ class GoldProductionJob:
             {
                 "job_id": self.job_id,
                 "model": self.production_manifest_sha256,
-                "snapshot": identity(b"quantresearch-production-dataset/v1\0", normalized),
+                "snapshot": identity_canonical_bytes(
+                    b"quantresearch-production-dataset/v1\0", normalized
+                ),
             },
         )
         attempt_id = identity(
@@ -171,7 +174,7 @@ class GoldProductionJob:
             provider_url,
             "gold-au9999.tsv",
             raw,
-            normalized,
+            normalized.value,
             action,
             report,
             notification,

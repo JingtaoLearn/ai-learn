@@ -17,6 +17,7 @@ from .production_jobs import (
     decision_points,
     evaluate,
     identity,
+    identity_canonical_bytes,
     next_weekday,
     normalized_rows,
     parse_manifest,
@@ -166,7 +167,9 @@ class BocomProductionJob:
             {
                 "job_id": self.job_id,
                 "model": self.production_manifest_sha256,
-                "snapshot": identity(b"quantresearch-production-dataset/v1\0", normalized),
+                "snapshot": identity_canonical_bytes(
+                    b"quantresearch-production-dataset/v1\0", normalized
+                ),
             },
         )
         attempt_id = identity(
@@ -192,7 +195,7 @@ class BocomProductionJob:
             provider_url,
             "bocom-yahoo-chart.json",
             raw,
-            normalized,
+            normalized.value,
             action,
             report,
             notification,

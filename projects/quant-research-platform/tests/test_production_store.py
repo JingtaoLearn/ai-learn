@@ -12,6 +12,7 @@ from quant_platform.production_service import AdmissionPolicy, ProductionService
 from quant_platform.production_store import (
     IdempotencyConflict,
     ProductionStore,
+    ProductionStoreError,
     ScheduledFireConflict,
 )
 
@@ -144,3 +145,57 @@ def test_ledger_is_separate_production_sqlite_v1(tmp_path) -> None:
         assert json.loads(json.dumps(connection.execute("SELECT version FROM schema_migrations").fetchone()[0])) == 1
     finally:
         connection.close()
+
+
+def test_initialize_is_idempotent_and_preserves_existing_rows(tmp_path) -> None:
+    store, service = setup(tmp_path)
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+    before = store.get_request(value.request_id)
+
+    store.initialize()
+
+    assert store.get_request(value.request_id) == before
+    connection = store.connect()
+    try:
+        assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+    finally:
+        connection.close()
+
+
+def test_initialize_rejects_future_and_partial_migration_states(tmp_path) -> None:
+    future = ProductionStore(tmp_path / "future")
+    future.initialize()
+    connection = future.connect()
+    try:
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (2, '2030-01-01T00:00:00Z')"
+        )
+    finally:
+        connection.close()
+    with pytest.raises(ProductionStoreError, match="unsupported"):
+        future.initialize()
+
+    partial = ProductionStore(tmp_path / "partial")
+    partial.state_root.mkdir()
+    with sqlite3.connect(partial.database_path) as connection:
+        connection.execute("CREATE TABLE unexpected_partial_state(value TEXT)")
+    with pytest.raises(ProductionStoreError, match="partial"):
+        partial.initialize()
+    with sqlite3.connect(partial.database_path) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_schema WHERE name = 'schema_migrations'"
+        ).fetchone() is None
+
+
+def test_initialize_rejects_damaged_version_one_schema(tmp_path) -> None:
+    store = ProductionStore(tmp_path / "damaged")
+    store.initialize()
+    connection = store.connect()
+    try:
+        connection.execute("DROP TRIGGER immutable_terminal_delete")
+    finally:
+        connection.close()
+
+    with pytest.raises(ProductionStoreError, match="partial"):
+        store.initialize()

@@ -15,6 +15,23 @@ class ProductionJobError(RuntimeError):
     """Raised when immutable job input cannot produce a verified action."""
 
 
+@dataclass(frozen=True)
+class CanonicalJsonBytes:
+    """Validated canonical JSON bytes for the already-encoded identity seam."""
+
+    value: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.value) is not bytes:
+            raise TypeError("canonical JSON identity input must contain bytes")
+        try:
+            decoded = json.loads(self.value)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ProductionJobError("canonical JSON identity input is invalid") from exc
+        if canonical_json_bytes(decoded) != self.value:
+            raise ProductionJobError("canonical JSON identity input is not canonical")
+
+
 class ProviderClient(Protocol):
     def get(self, url: str, *, headers: Mapping[str, str], maximum_bytes: int) -> bytes: ...
 
@@ -200,16 +217,22 @@ def close_for_slope(
     return math.exp((low + high) / 2)
 
 
-def normalized_rows(rows: Sequence[Mapping[str, Any]]) -> bytes:
+def normalized_rows(rows: Sequence[Mapping[str, Any]]) -> CanonicalJsonBytes:
     serializable = [
         {key: (value.isoformat() if isinstance(value, date) else value) for key, value in row.items()}
         for row in rows
     ]
-    return canonical_json_bytes(serializable)
+    return CanonicalJsonBytes(canonical_json_bytes(serializable))
 
 
 def identity(domain: bytes, value: Any) -> str:
     return hashlib.sha256(domain + canonical_json_bytes(value)).hexdigest()
+
+
+def identity_canonical_bytes(domain: bytes, value: CanonicalJsonBytes) -> str:
+    if type(value) is not CanonicalJsonBytes:
+        raise TypeError("already-canonical identity requires CanonicalJsonBytes")
+    return hashlib.sha256(domain + value.value).hexdigest()
 
 
 def render_private_report(

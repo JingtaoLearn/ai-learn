@@ -30,11 +30,14 @@ class StateConflict(ProductionStoreError):
 
 TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED"})
 ACTIVE_STATES = frozenset({"ACCEPTED", "ACQUIRING", "COMPUTING", "PUBLISHING"})
-SCHEMA_V1 = """
+MIGRATION_AUTHORITY_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
-);
+)
+"""
+SCHEMA_V1 = (
+    """
 CREATE TABLE production_requests (
     request_id TEXT PRIMARY KEY,
     request_digest TEXT NOT NULL,
@@ -58,17 +61,29 @@ CREATE TABLE production_requests (
     CHECK((status = 'SUCCEEDED') = (result_id IS NOT NULL)),
     CHECK((status = 'SUCCEEDED') = (result_manifest_json IS NOT NULL)),
     CHECK((status = 'FAILED') = (failure_reason IS NOT NULL))
-);
-CREATE INDEX production_claimable ON production_requests(status, lease_expires_at, created_at);
+)
+""",
+    "CREATE INDEX production_claimable ON production_requests(status, lease_expires_at, created_at)",
+    """
 CREATE TRIGGER immutable_terminal_update
 BEFORE UPDATE ON production_requests
 WHEN OLD.status IN ('SUCCEEDED','FAILED')
-BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END;
+BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END
+""",
+    """
 CREATE TRIGGER immutable_terminal_delete
 BEFORE DELETE ON production_requests
 WHEN OLD.status IN ('SUCCEEDED','FAILED')
-BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END;
-"""
+BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END
+""",
+)
+EXPECTED_SCHEMA_V1 = {
+    "schema_migrations": MIGRATION_AUTHORITY_SQL,
+    "production_requests": SCHEMA_V1[0],
+    "production_claimable": SCHEMA_V1[1],
+    "immutable_terminal_update": SCHEMA_V1[2],
+    "immutable_terminal_delete": SCHEMA_V1[3],
+}
 
 
 def utc_now() -> datetime:
@@ -89,6 +104,28 @@ def _row(value: sqlite3.Row | None) -> dict[str, Any] | None:
         if result.get(field) is not None:
             result[field.removesuffix("_json")] = json.loads(result.pop(field))
     return result
+
+
+def _normalized_sql(value: str) -> str:
+    return " ".join(value.strip().removesuffix(";").split())
+
+
+def _schema_objects(connection: sqlite3.Connection) -> dict[str, str]:
+    return {
+        item["name"]: item["sql"]
+        for item in connection.execute(
+            "SELECT name, sql FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+    }
+
+
+def _require_exact_schema(objects: dict[str, str], expected: dict[str, str]) -> None:
+    if set(objects) != set(expected) or any(
+        _normalized_sql(objects[name]) != _normalized_sql(statement)
+        for name, statement in expected.items()
+    ):
+        raise ProductionStoreError("production ledger schema is partial or unsupported")
 
 
 class ProductionStore:
@@ -133,17 +170,32 @@ class ProductionStore:
 
     def initialize(self) -> None:
         with self.transaction(immediate=True) as connection:
+            objects = _schema_objects(connection)
+            authority = {"schema_migrations": MIGRATION_AUTHORITY_SQL}
+            if "schema_migrations" not in objects:
+                if objects:
+                    raise ProductionStoreError("production ledger schema is partial or unsupported")
+                connection.execute(MIGRATION_AUTHORITY_SQL)
+                objects = _schema_objects(connection)
+            _require_exact_schema(
+                {name: statement for name, statement in objects.items() if name == "schema_migrations"},
+                authority,
+            )
             existing = connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
             if not existing:
-                connection.executescript(SCHEMA_V1)
+                if set(objects) != {"schema_migrations"}:
+                    raise ProductionStoreError("production ledger schema is partial or unsupported")
+                for statement in SCHEMA_V1:
+                    connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
                     (utc_text(utc_now()),),
                 )
             elif [item["version"] for item in existing] != [1]:
                 raise ProductionStoreError("unsupported production ledger schema")
+            _require_exact_schema(_schema_objects(connection), EXPECTED_SCHEMA_V1)
 
     def admit(
         self,

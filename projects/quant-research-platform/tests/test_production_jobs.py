@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,7 +9,13 @@ import pytest
 
 from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_gold import GoldProductionJob
-from quant_platform.production_jobs import ProductionJobs
+from quant_platform.production_contract import canonical_json_bytes
+from quant_platform.production_jobs import (
+    CanonicalJsonBytes,
+    ProductionJobError,
+    ProductionJobs,
+    identity_canonical_bytes,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
@@ -75,3 +82,31 @@ def test_registry_injects_provider_and_never_constructs_local_fallback() -> None
     assert gold_url.startswith("https://vip.stock.finance.sina.com.cn/")
     assert provider.urls == [bocom_url, gold_url]
     assert all("flearn" not in url and "localhost" not in url for url in provider.urls)
+
+
+@pytest.mark.parametrize(
+    ("job", "raw_name"),
+    [
+        (BocomProductionJob(FIXTURES / "bocom-model-manifest.json"), "bocom-yahoo-chart.json"),
+        (GoldProductionJob(FIXTURES / "gold-model-manifest.json"), "gold-au9999.tsv"),
+    ],
+)
+def test_dataset_identity_hashes_canonical_bytes_exactly_once(job, raw_name) -> None:
+    computation = job.compute((FIXTURES / raw_name).read_bytes(), f"fixture://{raw_name}", SCHEDULED)
+    dataset_domain = b"quantresearch-production-dataset/v1\0"
+    snapshot = hashlib.sha256(dataset_domain + computation.normalized_bytes).hexdigest()
+    experiment_preimage = canonical_json_bytes(
+        {
+            "job_id": job.job_id,
+            "model": job.production_manifest_sha256,
+            "snapshot": snapshot,
+        }
+    )
+    assert computation.experiment_id == hashlib.sha256(
+        b"quantresearch-production-experiment/v1\0" + experiment_preimage
+    ).hexdigest()
+
+    with pytest.raises(TypeError, match="CanonicalJsonBytes"):
+        identity_canonical_bytes(dataset_domain, computation.normalized_bytes)  # type: ignore[arg-type]
+    with pytest.raises(ProductionJobError, match="not canonical"):
+        CanonicalJsonBytes(b'{"value": 1}')
