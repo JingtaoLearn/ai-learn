@@ -20,6 +20,7 @@ from quant_platform.attempt_report import (
     _identity,
     _validate_pointer_record,
     canonical_report_operator_bundle,
+    capture_total_return_read_time,
     publish_report_artifact,
     read_report_artifact,
     read_latest_report,
@@ -92,6 +93,19 @@ def _publish_fixture_report(
         report_document,
         render_report_document(report_document),
         fault=fault,
+    )
+
+
+def _valid_total_return_attachment() -> dict:
+    return capture_total_return_read_time(
+        attempt_id="a" * 64,
+        experiment_id="a" * 64,
+        bundle_id="a" * 64,
+        result_digest="a" * 64,
+        metric_document_digest="a" * 64,
+        source_issuer="STRATEGY_RUNNER",
+        source_total_return_claim="PRICE_RETURN_ONLY",
+        coverage_state="UNKNOWN_MISSING",
     )
 
 
@@ -218,7 +232,7 @@ def test_revision6_positive_authority_and_document_fixtures_validate():
 def test_report_document_rejects_self_consistent_cross_bound_attachment(binding: str):
     fixture = _fixture()
     document = copy.deepcopy(fixture["report_documents"]["TOTAL_RETURN_READ_TIME"])
-    attachment = copy.deepcopy(fixture["attachments"]["TOTAL_RETURN_READ_TIME"])
+    attachment = _valid_total_return_attachment()
     attachment[binding] = "b" * 64
     _reseal_attachment(attachment)
     _embed_attachment(document, "total_return_attachment", attachment)
@@ -230,7 +244,7 @@ def test_report_document_rejects_self_consistent_cross_bound_attachment(binding:
 def test_report_document_rejects_cross_metric_document_and_study_candidate_joins():
     fixture = _fixture()
     document = copy.deepcopy(fixture["report_documents"]["TOTAL_RETURN_READ_TIME"])
-    total = copy.deepcopy(fixture["attachments"]["TOTAL_RETURN_READ_TIME"])
+    total = _valid_total_return_attachment()
     matched = copy.deepcopy(fixture["attachments"]["MATCHED_EXPOSURE_TERMINAL"])
     study = copy.deepcopy(fixture["attachments"]["STUDY_TERMINAL_NO_QUALIFIED"])
     registry = {
@@ -383,6 +397,7 @@ def test_revision6_rejects_all_35_directed_negative_classes(
                         / "artifacts"
                         / published["artifact_id"]
                     )
+                    artifact.parent.chmod(0o700)
                     os.rename(artifact, case_root / "missing-artifact")
                     def verify(case_root=case_root, attempt_id=attempt_id):
                         read_latest_report(case_root, attempt_id)
@@ -629,6 +644,7 @@ def test_report_paths_reject_traversal_cross_attempt_and_stale_pointer(tmp_path:
     with pytest.raises(AttemptReportError):
         read_report_artifact(tmp_path, "b" * 64, artifact_id)
     artifact_root = tmp_path / "attempt-reports" / attempt_id / "artifacts" / artifact_id
+    artifact_root.parent.chmod(0o700)
     os.rename(artifact_root, tmp_path / "stale-artifact")
     with pytest.raises(AttemptReportError, match="missing"):
         read_latest_report(tmp_path, attempt_id)
