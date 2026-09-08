@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
-from quant_platform.production_client import ProductionClient, ProductionClientUnknown
+from quant_platform.production_client import (
+    ClientTLS,
+    ProductionClient,
+    ProductionClientError,
+    ProductionClientUnknown,
+)
 from quant_platform.production_contract import ProductionRequest, canonical_json_bytes, production_run_id
 
 
@@ -27,6 +33,13 @@ class SuccessTransport:
         self.run = production_run_id(value.request_id, self.release)
         self.experiment = "b" * 64
         self.attempt = "c" * 64
+        self.payloads = {
+            "provider-response.bin": b"provider",
+            "normalized-snapshot.json": b"[]",
+            "action.json": b"{}",
+            "report.html": b"<html></html>",
+            "notification.txt": b"verified notification",
+        }
         self.core = {
             "schema": "quantresearch-production-result/v1",
             "request_id": value.request_id,
@@ -34,8 +47,13 @@ class SuccessTransport:
             "production_release_id": self.release,
             "experiment_id": self.experiment,
             "attempt_id": self.attempt,
+            "job_id": value.job_id,
+            "production_manifest_sha256": value.production_manifest_sha256,
             "automatic_ordering": False,
-            "files": {"action.json": {"sha256": "d" * 64, "size": 10}},
+            "files": {
+                name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+                for name, payload in self.payloads.items()
+            },
         }
         self.result_id = hashlib.sha256(canonical_json_bytes(self.core)).hexdigest()
 
@@ -45,6 +63,8 @@ class SuccessTransport:
             status = "ACCEPTED"
         elif path.endswith(self.run):
             status = "SUCCEEDED"
+        elif "/files/" in path:
+            return 200, {}, self.payloads[path.rsplit("/", 1)[1]]
         else:
             return 200, {}, canonical_json_bytes(self.core | {"result_id": self.result_id})
         value = {
@@ -74,6 +94,7 @@ def test_client_polls_and_verifies_bound_immutable_result() -> None:
     result = client.submit_and_wait(value)
 
     assert result["result_id"] == transport.result_id
+    assert client.fetch_verified_file(result, "notification.txt") == b"verified notification"
     assert transport.posts == [
         (
             "/api/v1/production/runs",
@@ -115,3 +136,39 @@ def test_client_rejects_tampered_result_identity() -> None:
 
     with pytest.raises(Exception, match="identity"):
         client.submit_and_wait(value)
+
+
+def test_client_rejects_tampered_result_file() -> None:
+    value = request()
+    transport = SuccessTransport(value)
+    client = ProductionClient(transport, sleep=lambda _: None)
+    result = client.submit_and_wait(value)
+    transport.payloads["notification.txt"] = b"tampered"
+
+    with pytest.raises(ProductionClientError, match="file identity"):
+        client.fetch_verified_file(result, "notification.txt")
+
+
+def test_client_tls_rejects_non_loopback_and_unsafe_key_paths(tmp_path: Path) -> None:
+    certificate = tmp_path / "client.crt"
+    private_key = tmp_path / "client.key"
+    server_ca = tmp_path / "server-ca.crt"
+    for path in (certificate, private_key, server_ca):
+        path.write_text("test", encoding="utf-8")
+        path.chmod(0o600 if path == private_key else 0o644)
+
+    ClientTLS("https://127.0.0.1:8443", certificate, private_key, server_ca).validate()
+    with pytest.raises(ProductionClientError, match="loopback HTTPS"):
+        ClientTLS("https://zhlearn:8443", certificate, private_key, server_ca).validate()
+
+    private_key.chmod(0o644)
+    with pytest.raises(ProductionClientError, match="permissions"):
+        ClientTLS("https://127.0.0.1:8443", certificate, private_key, server_ca).validate()
+
+    private_key.chmod(0o600)
+    real_certificate = tmp_path / "real.crt"
+    real_certificate.write_text("test", encoding="utf-8")
+    linked_certificate = tmp_path / "linked.crt"
+    linked_certificate.symlink_to(real_certificate)
+    with pytest.raises(ProductionClientError, match="symlinks"):
+        ClientTLS("https://localhost:8443", linked_certificate, private_key, server_ca).validate()

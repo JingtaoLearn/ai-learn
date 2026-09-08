@@ -27,6 +27,7 @@ RESULT_FILES = frozenset(
         "notification.txt",
     }
 )
+CLIENT_RESULT_FILES = frozenset({"notification.txt"})
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024
 
 
@@ -185,6 +186,16 @@ class ProductionResultStore:
         if core.get("automatic_ordering") is not False:
             raise ProductionResultError("result violates the no-order contract")
         return manifest
+
+    def read_client_file(self, result_id: str, name: str) -> bytes:
+        if name not in CLIENT_RESULT_FILES:
+            raise ProductionResultError("result member is not available to the client")
+        manifest = self.verify(result_id)
+        payload = read_immutable(self.results_root / result_id / name)
+        actual = {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        if manifest["files"].get(name) != actual:
+            raise ProductionResultError("result member identity changed during read-back")
+        return payload
 
     def _publish_report(self, computation: JobComputation) -> None:
         current = self.publication_root / "current" / f"{computation.report_uuid}.html"

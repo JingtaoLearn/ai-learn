@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -12,6 +13,17 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from .production_contract import ProductionRequest, canonical_json_bytes, production_run_id
+
+
+RESULT_FILE_NAMES = frozenset(
+    {
+        "provider-response.bin",
+        "normalized-snapshot.json",
+        "action.json",
+        "report.html",
+        "notification.txt",
+    }
+)
 
 
 class ProductionClientError(RuntimeError):
@@ -45,11 +57,38 @@ class ClientTLS:
     server_ca: Path
     timeout_seconds: float = 15.0
 
+    @staticmethod
+    def _validate_path(label: str, path: Path, *, private: bool) -> None:
+        if not path.is_absolute():
+            raise ProductionClientError(f"{label} path must be absolute")
+        current = Path(path.anchor)
+        metadata: os.stat_result | None = None
+        try:
+            for component in path.parts[1:]:
+                current /= component
+                metadata = os.lstat(current)
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise ProductionClientError(f"{label} path must not contain symlinks")
+        except OSError as exc:
+            raise ProductionClientError(f"{label} path is unavailable") from exc
+        if (
+            metadata is None
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size == 0
+        ):
+            raise ProductionClientError(f"{label} path is unsafe")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if mode & 0o7000 or mode & 0o022 or (private and mode & 0o077):
+            raise ProductionClientError(f"{label} permissions are unsafe")
+
     def validate(self) -> None:
         parsed = urlsplit(self.base_url)
         if (
             parsed.scheme != "https"
             or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.username is not None
+            or parsed.password is not None
             or parsed.path not in {"", "/"}
             or parsed.query
             or parsed.fragment
@@ -60,11 +99,7 @@ class ClientTLS:
             ("client private key", self.client_private_key),
             ("server CA", self.server_ca),
         ):
-            if not path.is_absolute():
-                raise ProductionClientError(f"{label} path must be absolute")
-            metadata = os.stat(path, follow_symlinks=False)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise ProductionClientError(f"{label} path is unsafe")
+            self._validate_path(label, path, private=label == "client private key")
         if self.timeout_seconds <= 0 or self.timeout_seconds > 60:
             raise ProductionClientError("client timeout is outside the bounded range")
 
@@ -167,6 +202,10 @@ class ProductionClient:
             raise ProductionClientError("production run identity does not verify")
         if value["poll_uri"] != f"/api/v1/production/runs/{expected_run}":
             raise ProductionClientError("production poll URI does not verify")
+        if value["status"] == "SUCCEEDED" and value.get("result_uri") != (
+            f"/api/v1/production/results/{value.get('result_id')}"
+        ):
+            raise ProductionClientError("production result URI does not verify")
 
     @staticmethod
     def _verify_result(
@@ -175,21 +214,22 @@ class ProductionClient:
         if manifest.get("result_id") != status.get("result_id"):
             raise ProductionClientError("result identity differs from run status")
         core = {key: value for key, value in manifest.items() if key != "result_id"}
-        import hashlib
-
         if hashlib.sha256(canonical_json_bytes(core)).hexdigest() != manifest.get("result_id"):
             raise ProductionClientError("result manifest identity does not verify")
         if (
             manifest.get("request_id") != request.request_id
             or manifest.get("production_run_id") != status.get("production_run_id")
             or manifest.get("production_release_id") != status.get("production_release_id")
+            or manifest.get("job_id") != request.job_id
+            or manifest.get("production_manifest_sha256")
+            != request.production_manifest_sha256
             or manifest.get("experiment_id") != status.get("experiment_id")
             or manifest.get("attempt_id") != status.get("attempt_id")
             or manifest.get("automatic_ordering") is not False
         ):
             raise ProductionClientError("result manifest bindings do not verify")
         files = manifest.get("files")
-        if not isinstance(files, dict) or not files:
+        if not isinstance(files, dict) or set(files) != RESULT_FILE_NAMES:
             raise ProductionClientError("result manifest file inventory is absent")
         for name, item in files.items():
             if (
@@ -199,11 +239,43 @@ class ProductionClient:
                 or set(item) != {"sha256", "size"}
                 or not isinstance(item["sha256"], str)
                 or len(item["sha256"]) != 64
+                or any(character not in "0123456789abcdef" for character in item["sha256"])
                 or type(item["size"]) is not int
                 or item["size"] < 0
             ):
                 raise ProductionClientError("result manifest file inventory is invalid")
         return dict(manifest)
+
+    def fetch_verified_file(self, manifest: Mapping[str, Any], name: str) -> bytes:
+        files = manifest.get("files")
+        result_id = manifest.get("result_id")
+        if (
+            not isinstance(files, Mapping)
+            or name not in RESULT_FILE_NAMES
+            or set(files) != RESULT_FILE_NAMES
+            or not isinstance(result_id, str)
+            or len(result_id) != 64
+            or any(character not in "0123456789abcdef" for character in result_id)
+        ):
+            raise ProductionClientError("result file request is invalid")
+        expected = files[name]
+        if not isinstance(expected, Mapping) or set(expected) != {"sha256", "size"}:
+            raise ProductionClientError("result file identity is invalid")
+        try:
+            status, _headers, payload = self.transport.request(
+                "GET",
+                f"/api/v1/production/results/{result_id}/files/{name}",
+                headers={"Accept": "application/octet-stream"},
+                body=None,
+            )
+        except (OSError, TimeoutError, http.client.HTTPException) as exc:
+            raise ProductionClientUnknown(
+                str(manifest.get("request_id", "")), "production result file outcome is UNKNOWN"
+            ) from exc
+        actual = {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        if status != 200 or actual != dict(expected):
+            raise ProductionClientError("result file identity does not verify")
+        return payload
 
     def submit_and_wait(self, request: ProductionRequest) -> dict[str, Any]:
         body = request.canonical_body

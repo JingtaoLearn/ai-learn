@@ -125,6 +125,7 @@ def test_proxy_policy_is_exact_and_not_duplicated_in_proxy_dockerfile() -> None:
     assert all(host not in dockerfile for host in hosts)
     assert dockerfile.count("class Handler") == 1
     assert "ipaddress.ip_address" in dockerfile and "is_global" in dockerfile
+    assert "RUN python3 <<'PY'" in dockerfile
 
 
 def test_client_static_import_surface_has_no_compute_renderer_or_fallback() -> None:
