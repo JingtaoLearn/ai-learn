@@ -15,19 +15,21 @@ class ProductionContractError(ValueError):
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
-REQUEST_FIELDS = {
+SCHEDULED_REQUEST_FIELDS = {
     "schema_version",
     "job_id",
     "scheduled_for",
     "production_manifest_sha256",
     "request_id",
 }
-REQUEST_SUBJECT_FIELDS = (
+VALIDATION_REQUEST_FIELDS = {
     "schema_version",
     "job_id",
-    "scheduled_for",
+    "validation_for",
+    "validation_id",
     "production_manifest_sha256",
-)
+    "request_id",
+}
 RELEASE_FIELDS = {
     "schema",
     "production_api_image_digest",
@@ -91,20 +93,26 @@ def _strict_json_object(payload: bytes, *, maximum: int) -> dict[str, Any]:
 
 
 def canonical_scheduled_fire(value: Any) -> str:
-    if not isinstance(value, str) or not value.endswith("Z"):
-        raise ProductionContractError("scheduled_for must be canonical UTC RFC3339")
-    try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
-    except ValueError as exc:
-        raise ProductionContractError("scheduled_for must be canonical UTC RFC3339") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed) or parsed.microsecond:
-        raise ProductionContractError("scheduled_for must be whole-second UTC")
-    canonical = parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if canonical != value:
-        raise ProductionContractError("scheduled_for is not canonical")
+    canonical = canonical_utc_second(value, field="scheduled_for")
+    parsed = datetime.fromisoformat(canonical[:-1] + "+00:00")
     local = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
     if (local.hour, local.minute, local.second) != (8, 40, 0) or local.weekday() >= 5:
         raise ProductionContractError("scheduled_for is not a weekday 08:40 Asia/Shanghai fire")
+    return canonical
+
+
+def canonical_utc_second(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ProductionContractError(f"{field} must be canonical UTC RFC3339")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ProductionContractError(f"{field} must be canonical UTC RFC3339") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed) or parsed.microsecond:
+        raise ProductionContractError(f"{field} must be whole-second UTC")
+    canonical = parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if canonical != value:
+        raise ProductionContractError(f"{field} is not canonical")
     return canonical
 
 
@@ -112,9 +120,11 @@ def canonical_scheduled_fire(value: Any) -> str:
 class ProductionRequest:
     schema_version: int
     job_id: str
-    scheduled_for: str
     production_manifest_sha256: str
     request_id: str
+    scheduled_for: str | None = None
+    validation_for: str | None = None
+    validation_id: str | None = None
 
     @classmethod
     def from_bytes(
@@ -133,21 +143,43 @@ class ProductionRequest:
     def from_mapping(
         cls, value: Mapping[str, Any], *, validate_identity: bool = True
     ) -> ProductionRequest:
-        if not isinstance(value, Mapping) or set(value) != REQUEST_FIELDS:
-            raise ProductionContractError("request must contain exactly the five contract fields")
-        if type(value["schema_version"]) is not int or value["schema_version"] != 1:
-            raise ProductionContractError("schema_version must be integer 1")
+        if not isinstance(value, Mapping):
+            raise ProductionContractError("request must be an object")
+        fields = set(value)
+        if fields == SCHEDULED_REQUEST_FIELDS:
+            schema_version = 1
+            scheduled_for = canonical_scheduled_fire(value["scheduled_for"])
+            validation_for = None
+            validation_id = None
+        elif fields == VALIDATION_REQUEST_FIELDS:
+            schema_version = 2
+            scheduled_for = None
+            validation_for = canonical_utc_second(value["validation_for"], field="validation_for")
+            validation_id = value["validation_id"]
+            if not isinstance(validation_id, str) or SHA256.fullmatch(validation_id) is None:
+                raise ProductionContractError("validation_id must be lowercase SHA-256")
+        else:
+            raise ProductionContractError("request fields do not match a supported invocation")
+        if type(value["schema_version"]) is not int or value["schema_version"] != schema_version:
+            raise ProductionContractError(f"schema_version must be integer {schema_version}")
         job_id = value["job_id"]
         if not isinstance(job_id, str) or job_id not in SUPPORTED_JOB_IDS:
-            raise ProductionContractError("job_id is not supported by schema v1")
-        scheduled_for = canonical_scheduled_fire(value["scheduled_for"])
+            raise ProductionContractError(f"job_id is not supported by schema v{schema_version}")
         manifest = value["production_manifest_sha256"]
         request_id = value["request_id"]
         if not isinstance(manifest, str) or SHA256.fullmatch(manifest) is None:
             raise ProductionContractError("production_manifest_sha256 must be lowercase SHA-256")
         if not isinstance(request_id, str) or SHA256.fullmatch(request_id) is None:
             raise ProductionContractError("request_id must be lowercase SHA-256")
-        request = cls(1, job_id, scheduled_for, manifest, request_id)
+        request = cls(
+            schema_version,
+            job_id,
+            manifest,
+            request_id,
+            scheduled_for=scheduled_for,
+            validation_for=validation_for,
+            validation_id=validation_id,
+        )
         if validate_identity and request.request_id != request.expected_request_id:
             raise ProductionContractError("request_id does not match the canonical request subject")
         return request
@@ -169,9 +201,52 @@ class ProductionRequest:
         request_id = sha256_hex(canonical_json_bytes(subject))
         return cls.from_mapping(subject | {"request_id": request_id})
 
+    @classmethod
+    def build_validation(
+        cls,
+        *,
+        job_id: str,
+        validation_for: str,
+        validation_id: str,
+        production_manifest_sha256: str,
+    ) -> ProductionRequest:
+        subject = {
+            "schema_version": 2,
+            "job_id": job_id,
+            "validation_for": canonical_utc_second(validation_for, field="validation_for"),
+            "validation_id": validation_id,
+            "production_manifest_sha256": production_manifest_sha256,
+        }
+        request_id = sha256_hex(canonical_json_bytes(subject))
+        return cls.from_mapping(subject | {"request_id": request_id})
+
+    @property
+    def is_validation(self) -> bool:
+        return self.validation_id is not None
+
+    @property
+    def effective_for(self) -> str:
+        value = self.validation_for if self.is_validation else self.scheduled_for
+        if value is None:
+            raise ProductionContractError("request invocation time is absent")
+        return value
+
     @property
     def subject(self) -> dict[str, Any]:
-        return {field: getattr(self, field) for field in REQUEST_SUBJECT_FIELDS}
+        if self.is_validation:
+            return {
+                "schema_version": self.schema_version,
+                "job_id": self.job_id,
+                "validation_for": self.validation_for,
+                "validation_id": self.validation_id,
+                "production_manifest_sha256": self.production_manifest_sha256,
+            }
+        return {
+            "schema_version": self.schema_version,
+            "job_id": self.job_id,
+            "scheduled_for": self.scheduled_for,
+            "production_manifest_sha256": self.production_manifest_sha256,
+        }
 
     @property
     def body(self) -> dict[str, Any]:

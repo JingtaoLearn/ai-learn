@@ -202,6 +202,18 @@ class ProductionClient:
             raise ProductionClientError("production run identity does not verify")
         if value["poll_uri"] != f"/api/v1/production/runs/{expected_run}":
             raise ProductionClientError("production poll URI does not verify")
+        expected_validation = (
+            {"validation_id": request.validation_id, "validation_for": request.validation_for}
+            if request.is_validation
+            else {}
+        )
+        actual_validation = {
+            field: value[field]
+            for field in ("validation_id", "validation_for")
+            if field in value
+        }
+        if actual_validation != expected_validation:
+            raise ProductionClientError("validation invocation identity does not verify")
         if value["status"] == "SUCCEEDED" and value.get("result_uri") != (
             f"/api/v1/production/results/{value.get('result_id')}"
         ):

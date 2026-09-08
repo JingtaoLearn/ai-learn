@@ -77,6 +77,16 @@ WHEN OLD.status IN ('SUCCEEDED','FAILED')
 BEGIN SELECT RAISE(ABORT, 'terminal production rows are immutable'); END
 """,
 )
+SCHEMA_V2 = """
+CREATE TABLE validation_invocations (
+validation_id TEXT PRIMARY KEY,
+request_id TEXT NOT NULL UNIQUE REFERENCES production_requests(request_id),
+job_id TEXT NOT NULL,
+validation_for TEXT NOT NULL,
+created_at TEXT NOT NULL,
+UNIQUE(job_id, validation_for)
+)
+"""
 EXPECTED_SCHEMA_V1 = {
     "schema_migrations": MIGRATION_AUTHORITY_SQL,
     "production_requests": SCHEMA_V1[0],
@@ -84,6 +94,7 @@ EXPECTED_SCHEMA_V1 = {
     "immutable_terminal_update": SCHEMA_V1[2],
     "immutable_terminal_delete": SCHEMA_V1[3],
 }
+EXPECTED_SCHEMA_V2 = EXPECTED_SCHEMA_V1 | {"validation_invocations": SCHEMA_V2}
 MIGRATION_AUTHORITY_COLUMNS = (
     (0, "version", "INTEGER", 0, None, 1, 0),
     (1, "applied_at", "TEXT", 1, None, 0, 0),
@@ -224,10 +235,14 @@ class ProductionStore:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
                     (utc_text(utc_now()),),
                 )
-            elif [item["version"] for item in existing] != [1]:
+                existing = connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                ).fetchall()
+            versions = [item["version"] for item in existing]
+            if versions not in ([1], [1, 2]):
                 raise ProductionStoreError("unsupported production ledger schema")
             _require_migration_authority(connection)
-            expected_application_schema = {
+            expected_v1 = {
                 name: statement
                 for name, statement in EXPECTED_SCHEMA_V1.items()
                 if name != "schema_migrations"
@@ -237,7 +252,24 @@ class ProductionStore:
                 for name, statement in _schema_objects(connection).items()
                 if name != "schema_migrations"
             }
-            _require_exact_schema(application_schema, expected_application_schema)
+            if versions == [1]:
+                _require_exact_schema(application_schema, expected_v1)
+                connection.execute(SCHEMA_V2)
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)",
+                    (utc_text(utc_now()),),
+                )
+                application_schema = {
+                    name: statement
+                    for name, statement in _schema_objects(connection).items()
+                    if name != "schema_migrations"
+                }
+            expected_v2 = {
+                name: statement
+                for name, statement in EXPECTED_SCHEMA_V2.items()
+                if name != "schema_migrations"
+            }
+            _require_exact_schema(application_schema, expected_v2)
 
     def admit(
         self,
@@ -256,9 +288,16 @@ class ProductionStore:
                 if existing["request_digest"] != request.request_digest:
                     raise IdempotencyConflict("IDEMPOTENCY_CONFLICT")
                 return _row(existing) or {}, False
+            if request.validation_id is not None:
+                validation = connection.execute(
+                    "SELECT request_id FROM validation_invocations WHERE validation_id = ?",
+                    (request.validation_id,),
+                ).fetchone()
+                if validation is not None:
+                    raise IdempotencyConflict("VALIDATION_ID_CONFLICT")
             fire = connection.execute(
                 "SELECT request_id FROM production_requests WHERE job_id = ? AND scheduled_for = ?",
-                (request.job_id, request.scheduled_for),
+                (request.job_id, request.effective_for),
             ).fetchone()
             if fire is not None:
                 raise ScheduledFireConflict("SCHEDULED_FIRE_CONFLICT")
@@ -277,7 +316,7 @@ class ProductionStore:
                     request.request_digest,
                     request.canonical_body.decode("utf-8"),
                     request.job_id,
-                    request.scheduled_for,
+                    request.effective_for,
                     request.production_manifest_sha256,
                     production_release_id,
                     run_id,
@@ -285,6 +324,21 @@ class ProductionStore:
                     timestamp,
                 ),
             )
+            if request.validation_id is not None:
+                connection.execute(
+                    """
+                    INSERT INTO validation_invocations(
+                        validation_id, request_id, job_id, validation_for, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request.validation_id,
+                        request.request_id,
+                        request.job_id,
+                        request.effective_for,
+                        timestamp,
+                    ),
+                )
             created = connection.execute(
                 "SELECT * FROM production_requests WHERE request_id = ?", (request.request_id,)
             ).fetchone()

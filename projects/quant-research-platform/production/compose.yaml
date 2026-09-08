@@ -16,6 +16,7 @@ services:
     environment:
       HTTPS_PROXY: http://provider-egress-proxy:3128
       NO_PROXY: 127.0.0.1,localhost,report-edge
+      MPLCONFIGDIR: /tmp/matplotlib
       QR_PRODUCTION_STATE_ROOT: /var/lib/quantresearch/state
       QR_PRODUCTION_RELEASE_MANIFEST: /etc/quantresearch/authorities/release.json
       QR_PRODUCTION_AUTHORITIES_ROOT: /etc/quantresearch/authorities
@@ -44,6 +45,50 @@ services:
       provider-egress-proxy: {condition: service_healthy}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: {driver: local, options: {max-size: 20m, max-file: "5"}}
+
+  platform-ui:
+    image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+    pull_policy: never
+    entrypoint: ["python", "-m", "quant_platform.web"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    cpus: 1.00
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    restart: on-failure:5
+    stop_grace_period: 120s
+    env_file: /etc/quantresearch-production/secrets/ui.env
+    environment:
+      QUANT_STATE_ROOT: /var/lib/quantresearch/state/platform
+      QUANT_PROJECT_ROOT: /opt/project
+      QUANT_ALLOWED_EMAILS_FILE: /run/secrets/ui/allowed-emails.txt
+      QUANT_BIND_HOST: 0.0.0.0
+      QUANT_FORWARDED_ALLOW_IPS: "*"
+      QUANT_RUNNER_IMAGE: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+      MPLCONFIGDIR: /tmp/matplotlib
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - type: bind
+        source: /var/lib/quantresearch-production/state
+        target: /var/lib/quantresearch/state
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/ui/allowed-emails.txt
+        target: /run/secrets/ui/allowed-emails.txt
+        read_only: true
+        bind: {create_host_path: false}
+    expose: ["8090"]
+    networks: [api_internal]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8090/health', headers={'Host':'quant.ai.jingtao.fun'}), timeout=2).read()"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -81,8 +126,11 @@ services:
         target: /run/secrets/tls
         read_only: true
         bind: {create_host_path: false}
-    ports: ["80:8080", "443:8443", "127.0.0.1:8443:9443"]
+    ports: ["127.0.0.1:18090:8080", "127.0.0.1:8443:9443"]
     networks: [api_internal]
+    depends_on:
+      production-api: {condition: service_healthy}
+      platform-ui: {condition: service_healthy}
     healthcheck:
       test: [CMD, nginx, -t]
       interval: 30s
@@ -103,7 +151,7 @@ services:
     memswap_limit: 128m
     restart: on-failure:5
     stop_grace_period: 30s
-    tmpfs: [/tmp:size=16m,mode=1770,uid=10201,gid=10201]
+    tmpfs: ["/tmp:size=16m,mode=1770,uid=10201,gid=10201"]
     volumes:
       - type: bind
         source: /etc/quantresearch-production/egress-proxy

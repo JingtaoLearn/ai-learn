@@ -24,6 +24,7 @@ class AdmissionPolicy:
     capacity: int = 1
     before_window: timedelta = timedelta(minutes=15)
     after_window: timedelta = timedelta(hours=24)
+    validation_window: timedelta = timedelta(minutes=15)
 
     def validate_new(
         self,
@@ -35,11 +36,18 @@ class AdmissionPolicy:
         expected = self.allowed_manifests.get(request.job_id)
         if expected != request.production_manifest_sha256:
             raise ProductionAdmissionError(422, "AUTHORITY_REJECTED", "job/model authority is not allowed")
-        fire = datetime.fromisoformat(request.scheduled_for[:-1] + "+00:00")
         if now.tzinfo is None or now.utcoffset() is None:
             raise ProductionAdmissionError(503, "CLOCK_INVALID", "admission clock is not timezone-aware")
         clock = now.astimezone(UTC)
-        if not fire - self.before_window <= clock <= fire + self.after_window:
+        invocation = datetime.fromisoformat(request.effective_for[:-1] + "+00:00")
+        if request.is_validation and abs(clock - invocation) > self.validation_window:
+            raise ProductionAdmissionError(
+                422, "VALIDATION_WINDOW_REJECTED", "validation invocation is not immediate"
+            )
+        if (
+            not request.is_validation
+            and not invocation - self.before_window <= clock <= invocation + self.after_window
+        ):
             raise ProductionAdmissionError(422, "FIRE_WINDOW_REJECTED", "scheduled fire is outside admission window")
         if not self.ready():
             raise ProductionAdmissionError(503, "RELEASE_NOT_READY", "production release is not ready")
@@ -70,6 +78,14 @@ class ProductionService:
             "status": row["status"],
             "poll_uri": f"/api/v1/production/runs/{row['production_run_id']}",
         }
+        request_body = row.get("request_body")
+        if isinstance(request_body, Mapping) and "validation_id" in request_body:
+            payload.update(
+                {
+                    "validation_id": request_body["validation_id"],
+                    "validation_for": request_body["validation_for"],
+                }
+            )
         if row["status"] == "SUCCEEDED":
             payload.update(
                 {

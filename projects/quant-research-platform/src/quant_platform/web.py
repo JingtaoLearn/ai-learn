@@ -871,7 +871,10 @@ def _verified_run_payloads(
 
 
 def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
-    return read_latest_report(settings.state_root, attempt["attempt_id"])["html"]
+    latest = settings.state_root / "attempt-reports" / attempt["attempt_id"] / "latest.json"
+    if latest.exists() or latest.is_symlink():
+        return read_latest_report(settings.state_root, attempt["attempt_id"])["html"]
+    return _verified_run_payloads(settings, attempt)["report.html"]
 
 
 def create_app(
@@ -2146,9 +2149,12 @@ def main() -> None:
         name="quant-platform-worker",
         daemon=True,
     ).start()
+    bind_host = os.environ.get("QUANT_BIND_HOST", "127.0.0.1")
+    if bind_host not in {"127.0.0.1", "0.0.0.0"}:
+        raise RuntimeError("QUANT_BIND_HOST must be 127.0.0.1 or 0.0.0.0")
     uvicorn.run(
         application,
-        host="127.0.0.1",
+        host=bind_host,
         port=8090,
         proxy_headers=True,
         forwarded_allow_ips=os.environ.get("QUANT_FORWARDED_ALLOW_IPS", ""),

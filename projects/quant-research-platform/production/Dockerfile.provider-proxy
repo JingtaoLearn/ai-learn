@@ -12,6 +12,7 @@ import json
 import select
 import socket
 import socketserver
+import ssl
 
 MAX_HEADER = 8192
 
@@ -35,6 +36,22 @@ def resolve_global(host, port):
             raise OSError("destination resolved to a special address")
         accepted.append((family, kind, proto, address))
     return accepted
+
+
+def select_tls_address(host, choices):
+    context = ssl.create_default_context()
+    for family, kind, proto, address in choices:
+        candidate = socket.socket(family, kind, proto)
+        candidate.settimeout(5)
+        try:
+            candidate.connect(address)
+            with context.wrap_socket(candidate, server_hostname=host):
+                pass
+        except OSError:
+            candidate.close()
+            continue
+        return family, kind, proto, address
+    raise OSError("all resolved destination TLS endpoints failed")
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -68,7 +85,7 @@ class Handler(socketserver.BaseRequestHandler):
             return
         try:
             choices = resolve_global(host, port)
-            family, kind, proto, address = choices[0]
+            family, kind, proto, address = select_tls_address(host, choices)
             upstream = socket.socket(family, kind, proto)
             upstream.settimeout(10)
             upstream.connect(address)

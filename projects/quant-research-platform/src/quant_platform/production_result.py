@@ -27,7 +27,7 @@ RESULT_FILES = frozenset(
         "notification.txt",
     }
 )
-CLIENT_RESULT_FILES = frozenset({"notification.txt"})
+CLIENT_RESULT_FILES = frozenset({"notification.txt", "report.html"})
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024
 
 
