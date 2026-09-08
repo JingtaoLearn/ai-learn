@@ -59,6 +59,21 @@
   </dl></details>
 </section>
 
+<section class="panel" data-testid="operator-artifacts">
+  <h2>Immutable artifact bytes</h2>
+  <div class="table-wrap record-wrap"><table class="record-table"><caption>Closed PostgreSQL artifact set {{ operator.artifact_set_id }}</caption>
+    <thead><tr><th>Member</th><th>SHA-256</th><th>Bytes</th><th>Media type</th></tr></thead>
+    <tbody>{% for artifact in operator.artifacts %}
+      <tr>
+        <td data-label="Member"><a href="/operators/{{ operator.operator_id }}/{{ operator.version }}/artifacts/{{ artifact.logical_name }}">{{ artifact.logical_name }}</a></td>
+        <td data-label="SHA-256" class="mono">{{ artifact.artifact_sha256 }}</td>
+        <td data-label="Bytes">{{ artifact.byte_size }}</td>
+        <td data-label="Media type" class="mono">{{ artifact.media_type }}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+
 <section class="panel" data-testid="operator-version-history">
   <h2>Linked version history</h2>
   <div class="rows">{% for version in versions %}
@@ -76,6 +91,7 @@
     <dt>Operator ID</dt><dd>{{ operator.operator_id }}</dd>
     <dt>Slot</dt><dd>{{ operator.slot }}</dd>
     <dt>Digest</dt><dd>{{ operator.content_digest }}</dd>
+    <dt>Artifact set</dt><dd>{{ operator.artifact_set_id }}</dd>
     <dt>Created</dt><dd>{{ operator.created_at }}</dd>
   </dl></details>
 </section>

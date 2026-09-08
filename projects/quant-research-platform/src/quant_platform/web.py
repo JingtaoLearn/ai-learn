@@ -28,8 +28,9 @@ from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
-from .operator_service import OperatorService, OperatorSubmissionError
+from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
+from .postgres_persistence import PostgresOperatorPersistence
 from .resolved_runner import effective_execution_identity
 from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
@@ -881,9 +882,11 @@ def create_app(
     settings: Settings,
     *,
     clock: Callable[[], float] | None = None,
+    operator_persistence: PostgresOperatorPersistence | None = None,
+    operator_validator: Validator | None = None,
 ) -> FastAPI:
     settings = settings.validated()
-    catalog = initialize_catalog(settings.state_root)
+    catalog = initialize_catalog(settings.state_root, include_operators=False)
     datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
@@ -899,7 +902,12 @@ def create_app(
         release_locator=str(settings.project_root or settings.state_root),
     )
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
-    operators = OperatorService(catalog, runner_image=settings.runner_image)
+    operator_persistence = operator_persistence or PostgresOperatorPersistence.from_environment()
+    operators = OperatorService(
+        operator_persistence,
+        validator=operator_validator,
+        runner_image=settings.runner_image,
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.catalog = catalog
@@ -907,6 +915,7 @@ def create_app(
     app.state.experiments = experiments
     app.state.studies = studies
     app.state.operators = operators
+    app.state.operator_persistence = operator_persistence
     app.state.auth = auth
     app.mount(
         "/static",
@@ -1024,7 +1033,8 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        await run_in_threadpool(operator_persistence.verify_schema)
+        return {"status": "ok", "persistence": "postgresql", "schema": "operator-v1"}
 
     @app.get("/login")
     async def login(request: Request):
@@ -1177,6 +1187,23 @@ def create_app(
             }
         except ValueError as exc:
             return _json_error(404, "NOT_FOUND", str(exc))
+
+    @app.get("/api/operators/{operator_id}/artifacts/{logical_name}")
+    async def api_operator_artifact(
+        request: Request, operator_id: str, logical_name: str, version: str
+    ):
+        _session(request)
+        try:
+            payload, media_type, digest = await run_in_threadpool(
+                operators.artifact, operator_id, version, logical_name
+            )
+        except ValueError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"ETag": f'"sha256:{digest}"', "Cache-Control": "private, immutable"},
+        )
 
     @app.post("/api/operators")
     async def api_operator_submit(request: Request):
@@ -1517,6 +1544,23 @@ def create_app(
             versions=versions,
             latest=latest,
             is_latest=detail["version"] == latest["version"],
+        )
+
+    @app.get("/operators/{operator_id}/{version}/artifacts/{logical_name}")
+    async def operator_artifact(
+        request: Request, operator_id: str, version: str, logical_name: str
+    ):
+        _session(request)
+        try:
+            payload, media_type, digest = await run_in_threadpool(
+                operators.artifact, operator_id, version, logical_name
+            )
+        except ValueError as exc:
+            return HTMLResponse(str(exc), status_code=404)
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"ETag": f'"sha256:{digest}"', "Cache-Control": "private, immutable"},
         )
 
     @app.get("/templates/{name}/{version}")

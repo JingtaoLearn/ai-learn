@@ -253,7 +253,7 @@ def _write_builtin_bundle(
     return relative.as_posix()
 
 
-def seed_catalog(catalog: Catalog) -> None:
+def seed_catalog(catalog: Catalog, *, include_operators: bool = True) -> None:
     _seed_existing_dataset_catalog(catalog)
     validate_parameter_schema(TEMPLATE_SCHEMA)
     validate_defaults(TEMPLATE_SCHEMA, TEMPLATE_DEFAULTS)
@@ -283,6 +283,9 @@ def seed_catalog(catalog: Catalog) -> None:
                 CREATED_AT,
             ),
         )
+
+    if not include_operators:
+        return
 
     for descriptor in BUILTINS:
         validate_parameter_schema(descriptor["parameter_schema"])
