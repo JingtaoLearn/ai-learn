@@ -113,6 +113,19 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
     )
     assert result.status_code == 200
     assert results.verify(terminal["result_id"]) == result.json()
+    notification = client.get(
+        f"/api/v1/production/results/{terminal['result_id']}/files/notification.txt",
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+    assert notification.status_code == 200
+    assert notification.content == (
+        "交通银行 WAIT · 2026-01-22 · report 8991e9a8-1caa-41f5-b76b-6368259db5b4"
+    ).encode()
+    denied = client.get(
+        f"/api/v1/production/results/{terminal['result_id']}/files/action.json",
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+    assert denied.status_code == 404
     assert store.get_run(terminal["production_run_id"])["result_id"] == terminal["result_id"]
 
 

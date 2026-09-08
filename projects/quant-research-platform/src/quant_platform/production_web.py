@@ -110,6 +110,14 @@ def create_production_app(
             return _error(404, "RESULT_NOT_FOUND", str(exc))
         return _response(200, value)
 
+    @app.get("/api/v1/production/results/{result_id}/files/{name}")
+    async def result_file(result_id: str, name: str):
+        try:
+            value = await run_in_threadpool(results.read_client_file, result_id, name)
+        except ProductionResultError as exc:
+            return _error(404, "RESULT_FILE_NOT_FOUND", str(exc))
+        return Response(value, status_code=200, media_type="application/octet-stream")
+
     return app
 
 

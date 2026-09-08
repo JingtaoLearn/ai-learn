@@ -1,0 +1,58 @@
+{
+  "schema": "quantresearch-ailearn-schedule-cutover/v1",
+  "api": {
+    "base_url": "https://127.0.0.1:8443",
+    "transport": "host-managed SSH local forward with mTLS",
+    "client_certificate": "/home/jingtao/.hermes/secrets/quantresearch-production/client.crt",
+    "client_private_key": "/home/jingtao/.hermes/secrets/quantresearch-production/client.key",
+    "server_ca": "/home/jingtao/.hermes/secrets/quantresearch-production/server-ca.crt"
+  },
+  "runtime_files": [
+    "src/quant_platform/__init__.py",
+    "src/quant_platform/production_contract.py",
+    "src/quant_platform/production_client.py",
+    "src/quant_platform/production_schedule_client.py"
+  ],
+  "jobs": [
+    {
+      "id": "1cd5557264db",
+      "name": "gold-production-daily-action",
+      "enabled": true,
+      "no_agent": true,
+      "schedule": "40 8 * * 1-5",
+      "timezone": "Asia/Shanghai",
+      "deliver": "feishu:oc_33bdb4845220ee3788fe50c50cf333ed",
+      "script": "gold_production_api_action.py",
+      "model_id": "gold-au9999-ols55-ema1-b0175-s0275-v1",
+      "production_manifest_sha256": "8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745",
+      "prompt": "PRODUCTION AUDIT COPY — execute only gold_production_api_action.py. job_id=1cd5557264db; model_id=gold-au9999-ols55-ema1-b0175-s0275-v1; schedule=40 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745."
+    },
+    {
+      "id": "297c11cad0dc",
+      "name": "bocom-production-daily-action",
+      "enabled": true,
+      "no_agent": true,
+      "schedule": "40 8 * * 1-5",
+      "timezone": "Asia/Shanghai",
+      "deliver": "feishu:oc_33bdb4845220ee3788fe50c50cf333ed",
+      "script": "bocom_production_api_action.py",
+      "model_id": "bocom-20d-ema5-hysteresis-crossing-v1.2",
+      "production_manifest_sha256": "6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969",
+      "prompt": "PRODUCTION AUDIT COPY — execute only bocom_production_api_action.py. job_id=297c11cad0dc; model_id=bocom-20d-ema5-hysteresis-crossing-v1.2; schedule=40 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969."
+    }
+  ],
+  "rollback": [
+    {
+      "id": "1cd5557264db",
+      "script": "gold_slope_daily_action.py",
+      "script_sha256": "0eb7fc82a384c52bda310044594f3b60f1ac857300152e163b2f06266012748b",
+      "prompt": "PRODUCTION AUDIT COPY — execute only gold_slope_daily_action.py. model_id=gold-au9999-ols55-ema1-b0175-s0275-v1; asset=SGE.AU9999; schedule=40 8 * * 1-5 Asia/Shanghai; parameters={window_sessions:55,ema_span:1,buy_threshold_pct_per_day:0.175,sell_threshold_pct_per_day:-0.275,anchor_date:2021-05-10}; execution={position_set:[0,1],signal:completed_Au99.99_close,action:subsequent_session,roundtrip_spread_cny_per_g:5.0,automatic_ordering:false}; production_manifest_sha256=8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745; research_run_id=912079650d8d037f. The no-agent script must fail closed if its embedded parameters or immutable production manifest differ from this audited copy."
+    },
+    {
+      "id": "297c11cad0dc",
+      "script": "bocom_trend_daily_action.py",
+      "script_sha256": "a334e275c8852c50ddd1b22b4129ad2817f7af094937cf2b7dcf560857dab1d8",
+      "prompt": "PRODUCTION AUDIT COPY — execute only bocom_trend_daily_action.py. model_id=bocom-20d-ema5-hysteresis-crossing-v1.2; asset=601328.SS; schedule=40 8 * * 1-5 Asia/Shanghai; parameters={window_sessions:20,ema_span:5,buy_threshold_pct_per_day:0.20,sell_threshold_pct_per_day:-0.20,anchor_date:2025-01-02}; execution={position_set:[0,1],signal:adjusted_completed_close,action:next_XSHG_session_open,buy_cost_bps:8,sell_cost_bps:13,automatic_ordering:false}; production_manifest_sha256=6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969; evidence_sha256=19baa9f3c55a9e164fe0775be04f562a091fdec4f7e4440d460a19c0752441bc. The no-agent script must fail closed if its embedded parameters or immutable production manifest differ from this audited copy."
+    }
+  ]
+}
