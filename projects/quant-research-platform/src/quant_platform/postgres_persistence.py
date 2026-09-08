@@ -5,10 +5,12 @@ import hashlib
 import os
 import re
 import stat
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import psycopg
 from psycopg import sql
@@ -22,6 +24,9 @@ SCHEMA_NAME = "qr"
 SCHEMA_IDENTITY = "quantresearch-postgresql-operator-v1"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_OPERATOR_ARTIFACTS = 64
+MAX_MATERIALIZED_OPERATOR_BYTES = 64 * 1024 * 1024
+MAX_MATERIALIZED_OPERATORS = 7
 
 
 class PersistenceUnavailableError(RuntimeError):
@@ -466,7 +471,11 @@ class PostgresOperatorPersistence:
                         f"SELECT slot, title_zh, summary_zh FROM {SCHEMA_NAME}.operators WHERE operator_id = %s",
                         (operator_id,),
                     ).fetchone()
-                    if operator is not None and operator["slot"] != slot:
+                    if operator is not None and (
+                        operator["slot"] != slot
+                        or operator["title_zh"] != title_zh
+                        or operator["summary_zh"] != summary_zh
+                    ):
                         raise OperatorPersistenceConflict(
                             f"operator {operator_id} immutable metadata conflicts"
                         )
@@ -764,6 +773,65 @@ class PostgresOperatorPersistence:
         if hashlib.sha256(payload).hexdigest() != digest:
             raise PersistenceUnavailableError("PostgreSQL Operator artifact hash mismatch")
         return payload, row["media_type"], digest
+
+    @contextmanager
+    def materialize_operator_bundles(
+        self,
+        selections: dict[str, tuple[str, str]],
+    ) -> Iterator[dict[str, Path]]:
+        """Yield exact verified Operator trees and remove them after the caller returns."""
+
+        if (
+            not selections
+            or len(selections) > MAX_MATERIALIZED_OPERATORS
+            or any(re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) is None for name in selections)
+        ):
+            raise ValueError("materialized Operator selection is invalid or exceeds its limit")
+        with tempfile.TemporaryDirectory(prefix="quant-operator-bundles-") as temporary:
+            root = Path(temporary)
+            bundle_paths: dict[str, Path] = {}
+            total_bytes = 0
+            try:
+                for name in sorted(selections):
+                    operator_id, version = selections[name]
+                    detail = self.operator_detail(operator_id, version)
+                    members = detail["artifacts"]
+                    if not members or len(members) > MAX_OPERATOR_ARTIFACTS:
+                        raise PersistenceUnavailableError(
+                            "PostgreSQL Operator artifact membership exceeds its limit"
+                        )
+                    bundle = root / name
+                    bundle.mkdir(mode=0o700)
+                    for member in members:
+                        payload, media_type, digest = self.read_artifact(
+                            operator_id,
+                            version,
+                            member["logical_name"],
+                        )
+                        total_bytes += len(payload)
+                        if (
+                            total_bytes > MAX_MATERIALIZED_OPERATOR_BYTES
+                            or digest != member["artifact_sha256"]
+                            or len(payload) != member["byte_size"]
+                            or media_type != member["media_type"]
+                        ):
+                            raise PersistenceUnavailableError(
+                                "PostgreSQL Operator materialization identity mismatch"
+                            )
+                        target = bundle / member["logical_name"]
+                        with target.open("xb") as stream:
+                            stream.write(payload)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        target.chmod(0o444)
+                    bundle.chmod(0o555)
+                    bundle_paths[name] = bundle
+                yield bundle_paths
+            finally:
+                for bundle in bundle_paths.values():
+                    bundle.chmod(0o700)
+                    for target in bundle.iterdir():
+                        target.chmod(0o600)
 
 
 def main() -> int:

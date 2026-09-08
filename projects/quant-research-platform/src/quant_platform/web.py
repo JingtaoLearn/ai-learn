@@ -391,6 +391,7 @@ def _task_from_form(
     form: dict[str, str],
     *,
     catalog: Any,
+    operator_persistence: PostgresOperatorPersistence,
 ) -> dict[str, Any]:
     dataset_id = form.get("dataset_id", "")
     start_date = form.get("start_date", "")
@@ -414,7 +415,7 @@ def _task_from_form(
         if "@" not in selector:
             raise TaskValidationError(f"{slot} operator selection is required")
         operator_id, requested_version = selector.rsplit("@", 1)
-        selected = catalog.operator_detail(
+        selected = operator_persistence.operator_detail(
             operator_id,
             None if requested_version == "latest" else requested_version,
         )
@@ -887,9 +888,11 @@ def create_app(
 ) -> FastAPI:
     settings = settings.validated()
     catalog = initialize_catalog(settings.state_root, include_operators=False)
+    operator_persistence = operator_persistence or PostgresOperatorPersistence.from_environment()
     datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
+        operator_persistence=operator_persistence,
         execution_identity=effective_execution_identity(
             settings.project_root, settings.runner_image
         ),
@@ -902,7 +905,6 @@ def create_app(
         release_locator=str(settings.project_root or settings.state_root),
     )
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
-    operator_persistence = operator_persistence or PostgresOperatorPersistence.from_environment()
     operators = OperatorService(
         operator_persistence,
         validator=operator_validator,
@@ -1621,7 +1623,11 @@ def create_app(
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
         try:
-            task = _task_from_form(form, catalog=catalog)
+            task = _task_from_form(
+                form,
+                catalog=catalog,
+                operator_persistence=operator_persistence,
+            )
             preview = await run_in_threadpool(experiments.preview_task, task)
         except (TaskValidationError, ValueError) as exc:
             return _render(
@@ -1659,7 +1665,11 @@ def create_app(
         try:
             result = await run_in_threadpool(
                 experiments.submit,
-                _task_from_form(form, catalog=catalog),
+                _task_from_form(
+                    form,
+                    catalog=catalog,
+                    operator_persistence=operator_persistence,
+                ),
                 action_id=form.get("action_id") or secrets.token_hex(16),
             )
         except (TaskValidationError, ValueError) as exc:
@@ -2172,6 +2182,7 @@ def main() -> None:
     application = create_app(settings)
     executor = ResolvedAttemptExecutor(
         application.state.catalog,
+        operator_persistence=application.state.operator_persistence,
         output_root=settings.state_root / "experiment-runs",
         project_root=settings.project_root,
         runner_image=settings.runner_image,

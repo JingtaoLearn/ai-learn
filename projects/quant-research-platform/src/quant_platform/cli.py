@@ -215,6 +215,7 @@ def _domain_services(root: str) -> tuple:
     datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
+        operator_persistence=PostgresOperatorPersistence.from_environment(),
         execution_identity=effective_execution_identity(
             None, os.environ.get("QUANT_RUNNER_IMAGE")
         ),

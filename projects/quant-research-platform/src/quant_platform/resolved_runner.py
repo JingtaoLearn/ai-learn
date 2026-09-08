@@ -13,6 +13,7 @@ from .catalog import Catalog
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService
 from .isolation import build_composed_execution_command
+from .postgres_persistence import PostgresOperatorPersistence
 from .runner import RunnerTerminationError, _terminate_container, reconcile_container
 from .schemas import canonical_json_bytes
 from .seed import BUILTINS
@@ -131,6 +132,7 @@ class ResolvedAttemptExecutor:
         self,
         catalog: Catalog,
         *,
+        operator_persistence: PostgresOperatorPersistence,
         output_root: Path,
         project_root: Path | None = None,
         runner_image: str | None = None,
@@ -141,6 +143,7 @@ class ResolvedAttemptExecutor:
         identity_provider: ExecutionIdentityProvider = effective_execution_identity,
     ):
         self.catalog = catalog
+        self.operator_persistence = operator_persistence
         self.output_root = Path(output_root)
         self.project_root = project_root
         self.runner_image = runner_image
@@ -168,7 +171,7 @@ class ResolvedAttemptExecutor:
     def _verify_resolution(self, resolved: dict[str, Any]) -> None:
         for slot, operator in resolved["operators"].items():
             try:
-                published = self.catalog.operator_detail(
+                published = self.operator_persistence.operator_detail(
                     operator["operator_id"], operator["resolved_version"]
                 )
             except ValueError as exc:
@@ -362,14 +365,17 @@ class ResolvedAttemptExecutor:
         self.output_root.mkdir(parents=True, exist_ok=True)
         work_root = self.catalog.state_root / "work"
         work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        operator_bundles: dict[str, Path] = {}
+        operator_selections: dict[str, tuple[str, str]] = {}
         composition_operators: dict[str, Any] = {}
         for slot in sorted(custom_slots):
             operator = resolved["operators"][slot]
-            detail = self.catalog.operator_detail(
+            detail = self.operator_persistence.operator_detail(
                 operator["operator_id"], operator["resolved_version"]
             )
-            operator_bundles[slot] = self.catalog.state_root / detail["bundle_path"]
+            operator_selections[slot] = (
+                operator["operator_id"],
+                operator["resolved_version"],
+            )
             composition_operators[slot] = {
                 "bundle_path": f"/operators/{slot}",
                 "parameters": operator["parameters"],
@@ -400,92 +406,95 @@ class ResolvedAttemptExecutor:
         cidfile = control_dir / "container.cid"
         stdout_path = control_dir / "stdout.log"
         stderr_path = control_dir / "stderr.log"
-        try:
-            with os.fdopen(config_descriptor, "wb") as stream:
-                stream.write(canonical_json_bytes(legacy))
-            with os.fdopen(composition_descriptor, "wb") as stream:
-                stream.write(canonical_json_bytes(composition))
-            dataset = resolved["dataset"]
-            dataset_dir = (
-                self.catalog.state_root
-                / "datasets"
-                / dataset["instrument"]
-                / dataset["snapshot_id"]
-            )
-            command = build_composed_execution_command(
-                dataset_dir=dataset_dir,
-                output_root=self.output_root,
-                composition_file=composition_path,
-                config_file=config_path,
-                cidfile=cidfile,
-                operator_bundles=operator_bundles,
-                runner_image=self.runner_image,
-            )
-            self._verify_study_dataset_for_launch(resolved)
-            container_name = command[command.index("--name") + 1]
-            self.attempt_controller.record_physical_launch(
-                attempt["attempt_id"], container_name=container_name
-            )
-            with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-                try:
-                    process = self.process_launcher(
-                        command,
-                        stdin=subprocess.DEVNULL,
-                        stdout=stdout,
-                        stderr=stderr,
-                        shell=False,
-                        env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
-                        start_new_session=True,
-                        close_fds=True,
-                    )
-                except OSError as exc:
-                    self.attempt_controller.record_termination(
-                        attempt["attempt_id"],
-                        exit_status=None,
-                        outcome="LAUNCH_FAILED",
-                    )
-                    raise ResolvedExecutionError(
-                        "custom composition process launch failed"
-                    ) from exc
-                try:
-                    exit_status = process.wait(timeout=600)
-                except subprocess.TimeoutExpired as exc:
+        with self.operator_persistence.materialize_operator_bundles(
+            operator_selections
+        ) as operator_bundles:
+            try:
+                with os.fdopen(config_descriptor, "wb") as stream:
+                    stream.write(canonical_json_bytes(legacy))
+                with os.fdopen(composition_descriptor, "wb") as stream:
+                    stream.write(canonical_json_bytes(composition))
+                dataset = resolved["dataset"]
+                dataset_dir = (
+                    self.catalog.state_root
+                    / "datasets"
+                    / dataset["instrument"]
+                    / dataset["snapshot_id"]
+                )
+                command = build_composed_execution_command(
+                    dataset_dir=dataset_dir,
+                    output_root=self.output_root,
+                    composition_file=composition_path,
+                    config_file=config_path,
+                    cidfile=cidfile,
+                    operator_bundles=operator_bundles,
+                    runner_image=self.runner_image,
+                )
+                self._verify_study_dataset_for_launch(resolved)
+                container_name = command[command.index("--name") + 1]
+                self.attempt_controller.record_physical_launch(
+                    attempt["attempt_id"], container_name=container_name
+                )
+                with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
                     try:
-                        terminated_status = self.container_terminator(
-                            cidfile, container_name, process
+                        process = self.process_launcher(
+                            command,
+                            stdin=subprocess.DEVNULL,
+                            stdout=stdout,
+                            stderr=stderr,
+                            shell=False,
+                            env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+                            start_new_session=True,
+                            close_fds=True,
                         )
-                    except RunnerTerminationError as termination_error:
+                    except OSError as exc:
+                        self.attempt_controller.record_termination(
+                            attempt["attempt_id"],
+                            exit_status=None,
+                            outcome="LAUNCH_FAILED",
+                        )
+                        raise ResolvedExecutionError(
+                            "custom composition process launch failed"
+                        ) from exc
+                    try:
+                        exit_status = process.wait(timeout=600)
+                    except subprocess.TimeoutExpired as exc:
+                        try:
+                            terminated_status = self.container_terminator(
+                                cidfile, container_name, process
+                            )
+                        except RunnerTerminationError as termination_error:
+                            raise ResolvedTerminationUnconfirmed(
+                                "custom composition termination was not confirmed"
+                            ) from termination_error
+                        self.attempt_controller.record_termination(
+                            attempt["attempt_id"],
+                            exit_status=terminated_status,
+                            outcome="TIMED_OUT",
+                        )
+                        raise ResolvedExecutionError(
+                            "custom composition timed out after confirmed termination"
+                        ) from exc
+                    if not self.container_reconciler(cidfile):
                         raise ResolvedTerminationUnconfirmed(
-                            "custom composition termination was not confirmed"
-                        ) from termination_error
+                            "custom composition container absence was not confirmed"
+                        )
                     self.attempt_controller.record_termination(
                         attempt["attempt_id"],
-                        exit_status=terminated_status,
-                        outcome="TIMED_OUT",
+                        exit_status=exit_status,
+                        outcome="SUCCEEDED" if exit_status == 0 else "FAILED",
                     )
+                    for stream in (stdout, stderr):
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                stdout_payload = stdout_path.read_bytes()
+                if exit_status != 0:
                     raise ResolvedExecutionError(
-                        "custom composition timed out after confirmed termination"
-                    ) from exc
-                if not self.container_reconciler(cidfile):
-                    raise ResolvedTerminationUnconfirmed(
-                        "custom composition container absence was not confirmed"
+                        "custom composition worker exited unsuccessfully"
                     )
-                self.attempt_controller.record_termination(
-                    attempt["attempt_id"],
-                    exit_status=exit_status,
-                    outcome="SUCCEEDED" if exit_status == 0 else "FAILED",
-                )
-                for stream in (stdout, stderr):
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            stdout_payload = stdout_path.read_bytes()
-            if exit_status != 0:
-                raise ResolvedExecutionError(
-                    "custom composition worker exited unsuccessfully"
-                )
-        finally:
-            config_path.unlink(missing_ok=True)
-            composition_path.unlink(missing_ok=True)
+            finally:
+                config_path.unlink(missing_ok=True)
+                composition_path.unlink(missing_ok=True)
         lines = stdout_payload.splitlines()
         if len(stdout_payload) > 1_048_576 or len(lines) != 1:
             raise ResolvedExecutionError("custom composition launch failed")
