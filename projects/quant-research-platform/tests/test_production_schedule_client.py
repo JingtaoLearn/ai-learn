@@ -3,6 +3,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -201,3 +205,30 @@ def test_thin_client_imports_no_provider_or_computation_modules() -> None:
         assert not any(any(part in module for part in forbidden) for module in modules)
         assert "feng-learn" not in source.casefold()
         assert "zhlearn:" not in source.casefold()
+
+
+def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None:
+    package = tmp_path / "quant_platform"
+    package.mkdir()
+    (package / "__init__.py").write_bytes(b"")
+    for name in ("production_contract.py", "production_client.py", "production_schedule_client.py"):
+        shutil.copyfile(PACKAGE / name, package / name)
+
+    recipe = (PROJECT / "production" / "AILEARN-SCHEDULE-CUTOVER.md").read_text(
+        encoding="utf-8"
+    )
+    assert 'install -m 0444 /dev/null "$runtime/__init__.py"' in recipe
+    assert (
+        "for name in production_contract.py production_client.py production_schedule_client.py; do"
+        in recipe
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "quant_platform.production_schedule_client", "--help"],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "Trigger one reviewed QuantResearch production job" in completed.stdout
