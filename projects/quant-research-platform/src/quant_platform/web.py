@@ -28,8 +28,9 @@ from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
-from .operator_service import OperatorService, OperatorSubmissionError
+from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
+from .postgres_persistence import PostgresOperatorPersistence
 from .resolved_runner import effective_execution_identity
 from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
@@ -390,6 +391,7 @@ def _task_from_form(
     form: dict[str, str],
     *,
     catalog: Any,
+    operator_persistence: PostgresOperatorPersistence,
 ) -> dict[str, Any]:
     dataset_id = form.get("dataset_id", "")
     start_date = form.get("start_date", "")
@@ -413,7 +415,7 @@ def _task_from_form(
         if "@" not in selector:
             raise TaskValidationError(f"{slot} operator selection is required")
         operator_id, requested_version = selector.rsplit("@", 1)
-        selected = catalog.operator_detail(
+        selected = operator_persistence.operator_detail(
             operator_id,
             None if requested_version == "latest" else requested_version,
         )
@@ -881,12 +883,16 @@ def create_app(
     settings: Settings,
     *,
     clock: Callable[[], float] | None = None,
+    operator_persistence: PostgresOperatorPersistence | None = None,
+    operator_validator: Validator | None = None,
 ) -> FastAPI:
     settings = settings.validated()
-    catalog = initialize_catalog(settings.state_root)
+    catalog = initialize_catalog(settings.state_root, include_operators=False)
+    operator_persistence = operator_persistence or PostgresOperatorPersistence.from_environment()
     datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
+        operator_persistence=operator_persistence,
         execution_identity=effective_execution_identity(
             settings.project_root, settings.runner_image
         ),
@@ -899,7 +905,11 @@ def create_app(
         release_locator=str(settings.project_root or settings.state_root),
     )
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
-    operators = OperatorService(catalog, runner_image=settings.runner_image)
+    operators = OperatorService(
+        operator_persistence,
+        validator=operator_validator,
+        runner_image=settings.runner_image,
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.catalog = catalog
@@ -907,6 +917,7 @@ def create_app(
     app.state.experiments = experiments
     app.state.studies = studies
     app.state.operators = operators
+    app.state.operator_persistence = operator_persistence
     app.state.auth = auth
     app.mount(
         "/static",
@@ -1024,7 +1035,8 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        await run_in_threadpool(operator_persistence.verify_schema)
+        return {"status": "ok", "persistence": "postgresql", "schema": "operator-v1"}
 
     @app.get("/login")
     async def login(request: Request):
@@ -1177,6 +1189,23 @@ def create_app(
             }
         except ValueError as exc:
             return _json_error(404, "NOT_FOUND", str(exc))
+
+    @app.get("/api/operators/{operator_id}/artifacts/{logical_name}")
+    async def api_operator_artifact(
+        request: Request, operator_id: str, logical_name: str, version: str
+    ):
+        _session(request)
+        try:
+            payload, media_type, digest = await run_in_threadpool(
+                operators.artifact, operator_id, version, logical_name
+            )
+        except ValueError as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"ETag": f'"sha256:{digest}"', "Cache-Control": "private, immutable"},
+        )
 
     @app.post("/api/operators")
     async def api_operator_submit(request: Request):
@@ -1519,6 +1548,23 @@ def create_app(
             is_latest=detail["version"] == latest["version"],
         )
 
+    @app.get("/operators/{operator_id}/{version}/artifacts/{logical_name}")
+    async def operator_artifact(
+        request: Request, operator_id: str, version: str, logical_name: str
+    ):
+        _session(request)
+        try:
+            payload, media_type, digest = await run_in_threadpool(
+                operators.artifact, operator_id, version, logical_name
+            )
+        except ValueError as exc:
+            return HTMLResponse(str(exc), status_code=404)
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"ETag": f'"sha256:{digest}"', "Cache-Control": "private, immutable"},
+        )
+
     @app.get("/templates/{name}/{version}")
     async def template_detail(request: Request, name: str, version: str):
         session = _session(request)
@@ -1577,7 +1623,11 @@ def create_app(
         form = await _form_body(request)
         _csrf(request, session, form.get("csrf_token"))
         try:
-            task = _task_from_form(form, catalog=catalog)
+            task = _task_from_form(
+                form,
+                catalog=catalog,
+                operator_persistence=operator_persistence,
+            )
             preview = await run_in_threadpool(experiments.preview_task, task)
         except (TaskValidationError, ValueError) as exc:
             return _render(
@@ -1615,7 +1665,11 @@ def create_app(
         try:
             result = await run_in_threadpool(
                 experiments.submit,
-                _task_from_form(form, catalog=catalog),
+                _task_from_form(
+                    form,
+                    catalog=catalog,
+                    operator_persistence=operator_persistence,
+                ),
                 action_id=form.get("action_id") or secrets.token_hex(16),
             )
         except (TaskValidationError, ValueError) as exc:
@@ -2128,6 +2182,7 @@ def main() -> None:
     application = create_app(settings)
     executor = ResolvedAttemptExecutor(
         application.state.catalog,
+        operator_persistence=application.state.operator_persistence,
         output_root=settings.state_root / "experiment-runs",
         project_root=settings.project_root,
         runner_image=settings.runner_image,

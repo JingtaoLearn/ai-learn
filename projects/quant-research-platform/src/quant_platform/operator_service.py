@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -10,10 +9,9 @@ import stat
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from .attempt_report import (
     REPORT_BUNDLE_FILES,
@@ -22,6 +20,11 @@ from .attempt_report import (
 )
 from .catalog import Catalog
 from .isolation import build_operator_validation_command
+from .postgres_persistence import (
+    ArtifactInput,
+    OperatorPersistenceConflict,
+    PostgresOperatorPersistence,
+)
 from .runner import RunnerTerminationError, _terminate_container, reconcile_container
 from .submissions import EXECUTION_ENVELOPE
 from .schemas import (
@@ -187,29 +190,14 @@ def _normalize_submission(value: Any) -> dict[str, Any]:
 class OperatorService:
     def __init__(
         self,
-        catalog: Catalog,
+        persistence: PostgresOperatorPersistence,
         *,
         validator: Validator | None = None,
         runner_image: str | None = None,
     ):
-        self.catalog = catalog
+        self.persistence = persistence
         self.runner_image = runner_image
         self.validator = validator or self._docker_validator
-
-    @contextmanager
-    def _publication_lock(self) -> Iterator[None]:
-        lock_path = self.catalog.state_root / ".operator-publication.lock"
-        descriptor = os.open(
-            lock_path,
-            os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
 
     def _docker_validator(self, candidate: Path) -> dict[str, Any]:
         if self.runner_image is None:
@@ -217,7 +205,7 @@ class OperatorService:
         digest = json.loads(
             (candidate / "manifest.json").read_text(encoding="utf-8")
         )["content_digest"]
-        evidence_root = self.catalog.state_root / "validation-evidence" / digest
+        evidence_root = candidate.parent / ".validation-evidence" / digest
         evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         control_dir = Path(tempfile.mkdtemp(prefix=".run-", dir=evidence_root))
         cidfile = control_dir / "container.cid"
@@ -310,17 +298,17 @@ class OperatorService:
                 if re.fullmatch(r"[0-9a-f]{64}", candidate_id):
                     container_id = candidate_id
             final_parent = (
-                self.catalog.state_root
+                candidate.parent
                 / (
-                    "validation-evidence"
+                    ".validation-evidence"
                     if termination_confirmed
-                    else "quarantine/operator-validation-control"
+                    else ".validation-quarantine"
                 )
                 / digest
             )
             final_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             final = final_parent / control_dir.name.removeprefix(".")
-            control_relative = final.relative_to(self.catalog.state_root).as_posix()
+            control_relative = f"transient/{digest}/{final.name}"
             evidence = {
                 "schema_version": 1,
                 "passed": outcome == "SUCCEEDED",
@@ -396,227 +384,102 @@ class OperatorService:
         digest = hashlib.sha256(canonical_json_bytes(submission)).hexdigest()
         operator_id = submission["operator_id"]
         version = submission["version"]
-        with self._publication_lock():
-            try:
-                current = self.catalog.operator_detail(operator_id, version)
-            except ValueError:
-                current = None
-            if current is not None:
-                if current["content_digest"] != digest:
-                    raise OperatorConflictError(
-                        f"{operator_id}@{version} already exists with different content"
-                    )
-                self._verify_bundle(
-                    self.catalog.state_root / current["bundle_path"],
-                    submission=submission,
-                    digest=digest,
-                    expected_evidence=current["validation_evidence"],
+        try:
+            current = self.persistence.operator_detail(operator_id, version)
+        except ValueError:
+            current = None
+        if current is not None:
+            if current["content_digest"] != digest:
+                raise OperatorConflictError(
+                    f"{operator_id}@{version} already exists with different content"
                 )
-                return {
-                    "status": "NO_CHANGE",
-                    "operator_id": operator_id,
-                    "version": version,
-                    "content_digest": digest,
-                }
+            self._verify_persisted_submission(current, submission=submission, digest=digest)
+            return {
+                "status": "NO_CHANGE",
+                "operator_id": operator_id,
+                "version": version,
+                "content_digest": digest,
+            }
 
-            parent = self.catalog.state_root / "operators" / operator_id
-            parent.mkdir(parents=True, exist_ok=True)
-            target = parent / version
-            if target.exists():
-                evidence = self._verify_bundle(
-                    target, submission=submission, digest=digest
+        with tempfile.TemporaryDirectory(prefix=f"operator-{operator_id}-{version}-") as root:
+            staging = Path(root) / "candidate"
+            staging.mkdir(mode=0o700)
+            worker_manifest = {
+                key: submission[key]
+                for key in (
+                    "operator_id",
+                    "slot",
+                    "version",
+                    "parameter_schema",
+                    "defaults",
+                    "title_zh",
+                    "summary_zh",
+                    "documentation",
                 )
-                created_at = (
-                    datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+            }
+            (staging / "operator.py").write_text(submission["source"], encoding="utf-8")
+            (staging / "tests.json").write_bytes(
+                canonical_json_bytes(submission["tests"]) + b"\n"
+            )
+            (staging / "documentation.md").write_text(
+                submission["documentation"], encoding="utf-8"
+            )
+            (staging / "manifest.json").write_bytes(
+                canonical_json_bytes(worker_manifest | {"content_digest": digest}) + b"\n"
+            )
+            evidence = self.validator(staging)
+            self._verify_evidence(
+                evidence,
+                digest=digest,
+                slot=submission["slot"],
+                tests=submission["tests"],
+            )
+            (staging / "evidence.json").write_bytes(
+                canonical_json_bytes(evidence) + b"\n"
+            )
+            artifacts = [
+                ArtifactInput(
+                    logical_name=path.name,
+                    media_type={
+                        ".json": "application/json",
+                        ".md": "text/markdown; charset=utf-8",
+                        ".py": "text/x-python; charset=utf-8",
+                    }[path.suffix],
+                    payload=path.read_bytes(),
                 )
-                self.catalog.publish_operator_record(
+                for path in sorted(staging.iterdir())
+            ]
+            try:
+                return self.persistence.publish_operator(
                     operator_id=operator_id,
                     slot=submission["slot"],
                     version=version,
                     title_zh=submission["title_zh"],
                     summary_zh=submission["summary_zh"],
                     content_digest=digest,
-                    parameter_schema_json=canonical_json_bytes(
-                        submission["parameter_schema"]
-                    ).decode(),
-                    defaults_json=canonical_json_bytes(submission["defaults"]).decode(),
+                    parameter_schema=submission["parameter_schema"],
+                    defaults=submission["defaults"],
                     documentation=submission["documentation"],
-                    bundle_path=target.relative_to(self.catalog.state_root).as_posix(),
-                    validation_evidence_json=canonical_json_bytes(evidence).decode(),
-                    created_at=created_at,
+                    validation_evidence=evidence,
+                    artifacts=artifacts,
+                    created_at=datetime.now(UTC),
                 )
-                return {
-                    "status": "NO_CHANGE",
-                    "operator_id": operator_id,
-                    "version": version,
-                    "content_digest": digest,
-                }
-            staging = Path(tempfile.mkdtemp(prefix=f".{version}.", dir=parent))
-            try:
-                worker_manifest = {
-                    key: submission[key]
-                    for key in (
-                        "operator_id",
-                        "slot",
-                        "version",
-                        "parameter_schema",
-                        "defaults",
-                        "title_zh",
-                        "summary_zh",
-                        "documentation",
-                    )
-                }
-                (staging / "operator.py").write_text(
-                    submission["source"], encoding="utf-8"
-                )
-                (staging / "tests.json").write_bytes(
-                    canonical_json_bytes(submission["tests"]) + b"\n"
-                )
-                (staging / "documentation.md").write_text(
-                    submission["documentation"], encoding="utf-8"
-                )
-                (staging / "manifest.json").write_bytes(
-                    canonical_json_bytes(worker_manifest | {"content_digest": digest})
-                    + b"\n"
-                )
-                evidence = self.validator(staging)
-                self._verify_evidence(
-                    evidence,
-                    digest=digest,
-                    slot=submission["slot"],
-                    tests=submission["tests"],
-                )
-                (staging / "evidence.json").write_bytes(
-                    canonical_json_bytes(evidence) + b"\n"
-                )
-                for path in staging.iterdir():
-                    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
-                        raise OperatorSubmissionError(
-                            f"operator bundle contains unsafe file: {path.name}"
-                        )
-                    path.chmod(0o444)
-                staging.chmod(0o555)
-                os.rename(staging, target)
-                self._verify_bundle(
-                    target, submission=submission, digest=digest
-                )
-                created_at = (
-                    datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-                )
-                self.catalog.publish_operator_record(
-                    operator_id=operator_id,
-                    slot=submission["slot"],
-                    version=version,
-                    title_zh=submission["title_zh"],
-                    summary_zh=submission["summary_zh"],
-                    content_digest=digest,
-                    parameter_schema_json=canonical_json_bytes(
-                        submission["parameter_schema"]
-                    ).decode(),
-                    defaults_json=canonical_json_bytes(submission["defaults"]).decode(),
-                    documentation=submission["documentation"],
-                    bundle_path=target.relative_to(self.catalog.state_root).as_posix(),
-                    validation_evidence_json=canonical_json_bytes(evidence).decode(),
-                    created_at=created_at,
-                )
-            except OperatorValidationRunError as exc:
-                if staging.exists():
-                    if exc.outcome == "TERMINATION_UNCONFIRMED":
-                        quarantine_root = (
-                            self.catalog.state_root
-                            / "quarantine"
-                            / "operator-validation-candidates"
-                            / digest
-                        )
-                        quarantine_root.mkdir(
-                            parents=True, exist_ok=True, mode=0o700
-                        )
-                        quarantine = quarantine_root / staging.name.removeprefix(".")
-                        if quarantine.exists():
-                            raise OperatorSubmissionError(
-                                "operator candidate quarantine already exists"
-                            ) from exc
-                        for path in staging.iterdir():
-                            metadata = os.stat(path, follow_symlinks=False)
-                            if (
-                                stat.S_ISLNK(metadata.st_mode)
-                                or not stat.S_ISREG(metadata.st_mode)
-                                or metadata.st_nlink != 1
-                            ):
-                                raise OperatorSubmissionError(
-                                    "unsafe candidate cannot be quarantined"
-                                ) from exc
-                        os.rename(staging, quarantine)
-                        for path in quarantine.iterdir():
-                            path.chmod(0o444)
-                        quarantine.chmod(0o555)
-                    else:
-                        staging.chmod(0o700)
-                        shutil.rmtree(staging)
-                raise
-            except BaseException:
-                if staging.exists():
-                    staging.chmod(0o700)
-                    shutil.rmtree(staging)
-                if target.exists():
-                    target.chmod(0o700)
-                    for path in target.iterdir():
-                        path.chmod(0o600)
-                    shutil.rmtree(target)
-                raise
-        return {
-            "status": "CREATED",
-            "operator_id": operator_id,
-            "version": version,
-            "content_digest": digest,
-        }
+            except OperatorPersistenceConflict as exc:
+                raise OperatorConflictError(str(exc)) from exc
 
-    def _verify_bundle(
+    def _verify_persisted_submission(
         self,
-        target: Path,
+        current: dict[str, Any],
         *,
         submission: dict[str, Any],
         digest: str,
-        expected_evidence: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        expected_names = {
-            "documentation.md",
-            "evidence.json",
-            "manifest.json",
-            "operator.py",
-            "tests.json",
+    ) -> None:
+        expected = {
+            "operator.py": submission["source"].encode("utf-8"),
+            "tests.json": canonical_json_bytes(submission["tests"]) + b"\n",
+            "documentation.md": submission["documentation"].encode("utf-8"),
         }
-        if (
-            target.is_symlink()
-            or not target.is_dir()
-            or stat.S_IMODE(target.stat().st_mode) & 0o222
-            or {path.name for path in target.iterdir()} != expected_names
-        ):
-            raise OperatorSubmissionError("immutable operator bundle is unsafe or incomplete")
-        for path in target.iterdir():
-            metadata = os.stat(path, follow_symlinks=False)
-            if (
-                path.is_symlink()
-                or not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_nlink != 1
-                or stat.S_IMODE(metadata.st_mode) & 0o222
-            ):
-                raise OperatorSubmissionError(
-                    f"immutable operator bundle file is unsafe: {path.name}"
-                )
-        try:
-            manifest = json.loads(
-                (target / "manifest.json").read_text(encoding="utf-8")
-            )
-            tests = json.loads((target / "tests.json").read_text(encoding="utf-8"))
-            evidence = json.loads(
-                (target / "evidence.json").read_text(encoding="utf-8")
-            )
-            source = (target / "operator.py").read_text(encoding="utf-8")
-            documentation = (target / "documentation.md").read_text(encoding="utf-8")
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise OperatorSubmissionError("immutable operator bundle is unreadable") from exc
-        manifest_expected = {
+        manifest = {
             key: submission[key]
             for key in (
                 "operator_id",
@@ -629,22 +492,16 @@ class OperatorService:
                 "documentation",
             )
         } | {"content_digest": digest}
-        if (
-            manifest != manifest_expected
-            or source != submission["source"]
-            or documentation != submission["documentation"]
-            or tests != submission["tests"]
-        ):
-            raise OperatorSubmissionError("immutable operator bundle digest binding mismatch")
-        self._verify_evidence(
-            evidence,
-            digest=digest,
-            slot=submission["slot"],
-            tests=submission["tests"],
-        )
-        if expected_evidence is not None and evidence != expected_evidence:
-            raise OperatorSubmissionError("immutable operator bundle evidence mismatch")
-        return evidence
+        expected["manifest.json"] = canonical_json_bytes(manifest) + b"\n"
+        expected["evidence.json"] = canonical_json_bytes(current["validation_evidence"]) + b"\n"
+        if set(expected) != {item["logical_name"] for item in current["artifacts"]}:
+            raise OperatorSubmissionError("immutable Operator artifact set is incomplete")
+        for logical_name, payload in expected.items():
+            stored, _, stored_digest = self.persistence.read_artifact(
+                submission["operator_id"], submission["version"], logical_name
+            )
+            if stored != payload or hashlib.sha256(payload).hexdigest() != stored_digest:
+                raise OperatorSubmissionError("immutable Operator artifact digest binding mismatch")
 
     def _verify_evidence(
         self,
@@ -713,12 +570,17 @@ class OperatorService:
             raise OperatorSubmissionError("operator validation evidence did not pass")
 
     def list(self) -> list[dict[str, Any]]:
-        return self.catalog.list_operators()
+        return self.persistence.list_operators()
 
     def detail(
         self, operator_id: str, version: str | None = None
     ) -> dict[str, Any]:
-        return self.catalog.operator_detail(operator_id, version)
+        return self.persistence.operator_detail(operator_id, version)
 
     def list_versions(self, operator_id: str) -> list[dict[str, Any]]:
-        return self.catalog.list_operator_versions(operator_id)
+        return self.persistence.list_operator_versions(operator_id)
+
+    def artifact(
+        self, operator_id: str, version: str, logical_name: str
+    ) -> tuple[bytes, str, str]:
+        return self.persistence.read_artifact(operator_id, version, logical_name)

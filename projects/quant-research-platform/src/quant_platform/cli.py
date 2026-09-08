@@ -14,6 +14,7 @@ from .dataset_service import DatasetService
 from .experiment_service import ExperimentService
 from .operator_service import OperatorService
 from .parameter_study import ParameterStudy, StudyNotFoundError
+from .postgres_persistence import PostgresOperatorPersistence
 from .resolved_runner import effective_execution_identity
 from .runner import run_submission
 from .strategy_runner import run_strategy_config
@@ -214,6 +215,7 @@ def _domain_services(root: str) -> tuple:
     datasets = DatasetService(catalog)
     experiments = ExperimentService(
         catalog,
+        operator_persistence=PostgresOperatorPersistence.from_environment(),
         execution_identity=effective_execution_identity(
             None, os.environ.get("QUANT_RUNNER_IMAGE")
         ),
@@ -312,9 +314,8 @@ def _execute(args: argparse.Namespace) -> dict:
             )
         }
     if args.command == "operator":
-        catalog, _ = _domain_services(args.root)
         operators = OperatorService(
-            catalog,
+            PostgresOperatorPersistence.from_environment(),
             runner_image=getattr(args, "runner_image", None),
         )
         if args.operator_command == "list":

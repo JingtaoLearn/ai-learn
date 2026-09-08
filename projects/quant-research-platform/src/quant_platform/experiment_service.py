@@ -23,6 +23,7 @@ from .historical_evidence import (
     is_a_share_document,
     strict_json_loads,
 )
+from .postgres_persistence import PostgresOperatorPersistence
 from .schemas import (
     SchemaValidationError,
     canonical_json_bytes,
@@ -147,10 +148,12 @@ class ExperimentService:
         self,
         catalog: Catalog,
         *,
+        operator_persistence: PostgresOperatorPersistence,
         execution_identity: dict[str, Any],
         datasets: DatasetService | None = None,
     ):
         self.catalog = catalog
+        self.operator_persistence = operator_persistence
         if not isinstance(execution_identity, dict) or not execution_identity:
             raise ValueError("execution_identity must be a non-empty object")
         canonical_json_bytes(execution_identity)
@@ -320,11 +323,13 @@ class ExperimentService:
                     f"task.operators.{slot} selector values must be strings"
                 )
             try:
-                latest = self.catalog.operator_detail(operator_id)
+                latest = self.operator_persistence.operator_detail(operator_id)
                 selected = (
                     latest
                     if requested_version == "latest"
-                    else self.catalog.operator_detail(operator_id, requested_version)
+                    else self.operator_persistence.operator_detail(
+                        operator_id, requested_version
+                    )
                 )
             except ValueError as exc:
                 raise TaskValidationError(str(exc)) from exc
@@ -350,10 +355,13 @@ class ExperimentService:
                 "parameters": parameters,
             }
             if slot == "report" and operator_id == REPORT_OPERATOR_ID:
-                report_identity = verify_report_operator_bundle(
-                    self.catalog.state_root / selected["bundle_path"],
-                    expected_content_digest=selected["content_digest"],
-                )
+                with self.operator_persistence.materialize_operator_bundles(
+                    {"report": (operator_id, selected["version"])}
+                ) as bundles:
+                    report_identity = verify_report_operator_bundle(
+                        bundles["report"],
+                        expected_content_digest=selected["content_digest"],
+                    )
                 if (
                     report_identity["parameter_schema"] != selected["parameter_schema"]
                     or report_identity["defaults"] != selected["defaults"]
@@ -709,7 +717,7 @@ class ExperimentService:
 
     def _refresh_action_audit(self, resolved: dict[str, Any]) -> dict[str, Any]:
         for operator in resolved["operators"].values():
-            latest = self.catalog.operator_detail(operator["operator_id"])
+            latest = self.operator_persistence.operator_detail(operator["operator_id"])
             operator["latest_version_at_submission"] = latest["version"]
             operator["latest_content_digest_at_submission"] = latest[
                 "content_digest"
@@ -931,7 +939,7 @@ class ExperimentService:
 
     def _operator_drift(self, operator: dict[str, Any]) -> dict[str, Any]:
         try:
-            latest = self.catalog.operator_detail(operator["operator_id"])
+            latest = self.operator_persistence.operator_detail(operator["operator_id"])
             drifted = (
                 latest["version"] != operator["resolved_version"]
                 or latest["content_digest"] != operator["content_digest"]

@@ -371,7 +371,7 @@ class Catalog:
             finally:
                 connection.close()
 
-    def initialize(self) -> Catalog:
+    def initialize(self, *, include_operators: bool = True) -> Catalog:
         with self._initialization_lock():
             connection = self.connect()
             try:
@@ -423,7 +423,7 @@ class Catalog:
                 connection.close()
             from .seed import seed_catalog
 
-            seed_catalog(self)
+            seed_catalog(self, include_operators=include_operators)
         return self
 
     def register_dataset(self, value: dict[str, str]) -> dict[str, str]:
@@ -716,5 +716,7 @@ class Catalog:
             )
 
 
-def initialize_catalog(state_root: Path | str) -> Catalog:
-    return Catalog(state_root).initialize()
+def initialize_catalog(
+    state_root: Path | str, *, include_operators: bool = True
+) -> Catalog:
+    return Catalog(state_root).initialize(include_operators=include_operators)

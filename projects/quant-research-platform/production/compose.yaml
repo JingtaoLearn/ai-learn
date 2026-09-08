@@ -1,5 +1,65 @@
 name: quantresearch-production
 services:
+  postgres:
+    image: postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    pull_policy: never
+    restart: on-failure:5
+    environment:
+      POSTGRES_DB: quantresearch
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-superuser
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - type: bind
+        source: /etc/quantresearch-production/secrets/postgres-superuser
+        target: /run/secrets/postgres-superuser
+        read_only: true
+        bind: {create_host_path: false}
+    expose: ["5432"]
+    networks: [api_internal]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d quantresearch"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging: {driver: local, options: {max-size: 10m, max-file: "3"}}
+
+  schema-migrate:
+    image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+    pull_policy: never
+    entrypoint: ["python", "-m", "quant_platform.postgres_persistence", "migrate"]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    environment:
+      QUANT_POSTGRES_MIGRATION_HOST: postgres
+      QUANT_POSTGRES_MIGRATION_DATABASE: quantresearch
+      QUANT_POSTGRES_MIGRATION_USER: postgres
+      QUANT_POSTGRES_MIGRATION_PASSWORD_FILE: /run/secrets/postgres-superuser
+      QUANT_POSTGRES_HOST: postgres
+      QUANT_POSTGRES_DATABASE: quantresearch
+      QUANT_POSTGRES_USER: qr_runtime
+      QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
+      MPLCONFIGDIR: /tmp/matplotlib
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    volumes:
+      - type: bind
+        source: /etc/quantresearch-production/secrets/postgres-superuser
+        target: /run/secrets/postgres-superuser
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/postgres-runtime
+        target: /run/secrets/postgres-runtime
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [api_internal]
+    depends_on:
+      postgres: {condition: service_healthy}
+
   production-api:
     image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
     pull_policy: never
@@ -72,6 +132,10 @@ services:
       QUANT_BIND_HOST: 0.0.0.0
       QUANT_FORWARDED_ALLOW_IPS: "*"
       QUANT_RUNNER_IMAGE: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+      QUANT_POSTGRES_HOST: postgres
+      QUANT_POSTGRES_DATABASE: quantresearch
+      QUANT_POSTGRES_USER: qr_runtime
+      QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
       MPLCONFIGDIR: /tmp/matplotlib
     tmpfs:
       - /tmp:size=256m,mode=1777
@@ -85,8 +149,15 @@ services:
         target: /run/secrets/ui/allowed-emails.txt
         read_only: true
         bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/postgres-runtime
+        target: /run/secrets/postgres-runtime
+        read_only: true
+        bind: {create_host_path: false}
     expose: ["8090"]
     networks: [api_internal]
+    depends_on:
+      schema-migrate: {condition: service_completed_successfully}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8090/health', headers={'Host':'quant.ai.jingtao.fun'}), timeout=2).read()"]
       interval: 30s
@@ -171,3 +242,6 @@ networks:
   api_internal: {driver: bridge, internal: true, attachable: false}
   provider_proxy_internal: {driver: bridge, internal: true, attachable: false}
   provider_egress: {driver: bridge, internal: false, attachable: false}
+
+volumes:
+  postgres_data:

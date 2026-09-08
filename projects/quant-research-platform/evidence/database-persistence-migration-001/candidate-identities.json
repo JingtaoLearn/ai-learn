@@ -1,0 +1,19 @@
+{
+  "schema": "quantresearch-postgresql-candidate-identities/v1",
+  "postgres_image": {
+    "reference": "postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2",
+    "architecture": "amd64"
+  },
+  "application_image": {
+    "local_reference": "quantresearch-postgres-slice:candidate",
+    "image_id": "sha256:11860d6c181bbb90007f0049853cde009cf5f18738a5017e5d332120af69ffba",
+    "architecture": "amd64"
+  },
+  "dependency_lock": {
+    "path": "requirements.lock",
+    "sha256": "8bf7d1caebf58e8c9442972c2d7908c23d2067248d6bbf735c6b923432139354",
+    "driver": "psycopg[binary]==3.3.5"
+  },
+  "pyproject_sha256": "cde21a37e82690192ec5ca596a7037cd11df7c66a471ebfc40b94ec52baf6d98",
+  "production_compose_sha256": "2b923c53a6ae618a9264ced848cb3bf0ffaf0d6611bc697760b60b9c5aa811e9"
+}
