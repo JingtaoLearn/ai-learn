@@ -1,0 +1,9 @@
+*
+!README.md
+!pyproject.toml
+!requirements.lock
+!src/
+!src/**
+!production/
+!production/Dockerfile.api
+!production/Dockerfile.api.dockerignore

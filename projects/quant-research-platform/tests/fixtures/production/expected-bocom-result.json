@@ -1,0 +1,8 @@
+{
+  "action": "WAIT",
+  "automatic_ordering": false,
+  "costs": {"buy_cost_bps": 8, "sell_cost_bps": 13},
+  "latest_market_date": "2026-01-22",
+  "model_version": "bocom-20d-ema5-hysteresis-crossing-v1.2",
+  "report_uuid": "8991e9a8-1caa-41f5-b76b-6368259db5b4"
+}

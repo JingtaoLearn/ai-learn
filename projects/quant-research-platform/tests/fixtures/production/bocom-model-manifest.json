@@ -1,0 +1,39 @@
+{
+  "asset": {
+    "market": "XSHG",
+    "name": "交通银行",
+    "symbol": "601328.SS"
+  },
+  "evidence": {
+    "report_url": "https://share.ai.jingtao.fun/8991e9a8-1caa-41f5-b76b-6368259db5b4.html?v=13",
+    "results_sha256": "19baa9f3c55a9e164fe0775be04f562a091fdec4f7e4440d460a19c0752441bc"
+  },
+  "execution": {
+    "automatic_ordering": false,
+    "buy_cost_bps": 8,
+    "fill_timing": "next XSHG session open",
+    "position_set": [
+      0,
+      1
+    ],
+    "sell_cost_bps": 13,
+    "signal_information": "adjusted closes available before execution"
+  },
+  "model_id": "bocom-20d-ema5-hysteresis-crossing-v1.2",
+  "parameters": {
+    "anchor_date": "2025-01-02",
+    "buy_threshold_pct_per_day": 0.2,
+    "ema_span": 5,
+    "sell_threshold_pct_per_day": -0.2,
+    "window_sessions": 20
+  },
+  "promoted_at": "2026-08-20T20:18:02+08:00",
+  "promotion_authority": "Jingtao requested frozen daily action reporting",
+  "promotion_policy": {
+    "experiments_may_modify_this_manifest": false,
+    "future_parameter_studies_auto_promote": false,
+    "required_to_replace": "new immutable manifest plus explicit Jingtao approval plus cron guard digest update"
+  },
+  "schema_version": 1,
+  "stage": "PRODUCTION_FROZEN"
+}

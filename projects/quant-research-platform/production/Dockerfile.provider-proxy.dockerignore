@@ -1,0 +1,5 @@
+*
+!production/
+!production/Dockerfile.provider-proxy
+!production/Dockerfile.provider-proxy.dockerignore
+!production/provider-proxy-policy.json

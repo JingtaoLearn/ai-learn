@@ -1,0 +1,8 @@
+{
+  "action": "WAIT",
+  "automatic_ordering": false,
+  "latest_market_date": "2026-02-26",
+  "model_version": "gold-au9999-ols55-ema1-b0175-s0275-v1",
+  "parameters": {"roundtrip_spread_cny_per_g": 5.0},
+  "report_uuid": "f642b386-74c0-4e9f-92e6-563e7c6a5d69"
+}
