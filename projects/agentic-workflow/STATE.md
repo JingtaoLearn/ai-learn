@@ -2,27 +2,37 @@
 
 ## Phase
 
-First product-level persistent Owner tracer verified.
+Principle-aware functional prototype validation.
 
-## Current reality
+## Current design
 
-- The heavy Agentic Workflow implementation has been removed from the active path.
-- Official Hermes documentation confirms that a Bot is a Profile and every Bot has a canonical persistent Bot Chat.
-- A Product Owner Agent's canonical Bot Chat/Session is the product decision brain; files are supporting projections and handoff artifacts.
-- Sessions retain conversation history. Heartbeat and Loop re-enter the same Session, while Cron starts a fresh isolated Session per tick.
-- Skills are on-demand professional methods selected for an observed Gap and Action; Toolsets are role capabilities.
-- Two Agent processes must not share the same profile.
-- The Product Owner remains singleton; every safely parallelizable concrete Specialist role may use up to three isolated Profile slots with no static cross-role global cap.
-- Formal heavy tests/builds/data work run on eligible remote execution hosts under exact-SHA and manifest-verified workspace rules.
-- `AgenticWorkflow-Assistant`, `ProductOwnerAgent-QuantResearch`, `ResearchAgent-QuantResearch`, and `ReviewerAgent-AgenticWorkflow` exist as isolated Profiles with the approved display names and `gpt-5.6-sol` reasoning policy.
-- Scheduled Signals reached canonical Owner Session `20260903_075757_73a49f`; that Owner invoked Research Bot Chat `20260903_082058_d3fc23` through native `message_agent`, read the real Result, and wrote the Decision and State updates.
-- Independent Product and Standards review passed with zero blockers at Agentic Workflow design SHA `0e3f43e3fd560a1e7734ad0b1a191e99028388d0`; the complete tracer evidence is in `VALIDATION.md`.
-- The superseded Owner crons are paused, the recovery job is inactive after its single completed run, and no recurring tracer-only timer remains active.
+- Goal, Principles, and Validation are distinct first-class elements.
+- Every Action resolves `Hard Boundaries -> Default Principles -> Product Principles -> Role Principles -> Task Constraints`.
+- Default and Role Principles are canonical files; Product Principles remain Jingtao-owned.
+- Formal Handoffs bind exact Default/Product/Role content identities and observable Validation.
+- One stable Profile represents one Role. Safe concurrency uses up to three isolated task Sessions under that Profile; numbered duplicate Profiles are superseded.
+- Product Owner remains singleton with one canonical persistent Session.
+- Skills are optional professional methods and Tools are bounded capabilities; neither is a mandatory workflow stage.
+- Operational mechanics live in Portfolio, Execution, communication, and task contracts rather than being copied into Principles or every SOUL.
+
+## Prototype posture
+
+The whole current environment is a validation environment, including services on hosts named as production machines. The preferred path is the smallest reversible user-visible prototype followed by direct observation of actual effect.
+
+Architecture completeness, broad hardening, abstraction, and large test suites are deferred unless they are required to validate the claim or protect a Hard Boundary. Tests are evidence tools, not progress metrics.
+
+## Verified history
+
+The first product-level persistent Owner-to-Specialist-to-Owner tracer remains historical evidence in `VALIDATION.md`. Its original topology statements describe what was tested at that time and are superseded where the current README and templates now define one Profile per Role plus isolated task Sessions.
 
 ## Current frontier
 
-Use the verified Product Agent Suite to execute the separately governed next QuantResearch action selected by the Owner: one isolated, no-network reference-loop Spike. The Spike must preserve exact identities, command output, checksums, and read-only sealing evidence and must not alter production or production signals.
+Apply the principle hierarchy to the live `AgenticWorkflow-Assistant` and QuantResearch Product Agent Suite, then run one bounded real tracer proving:
 
-## Deferred
+1. common Principle revision resolution;
+2. independent Role judgment;
+3. user-visible or decision-relevant effect;
+4. stale/conflicting context rejection;
+5. Result-driven Owner replanning.
 
-Create Builder, Reviewer, or Operations Profiles only when an observed Gap and Action need them. Real-time product information events are the final trigger; a verified event adapter remains deferred until the relevant source is selected. Do not add A2A, Profile distributions, a custom runtime, database, or mandatory validation framework during this phase.
+Do not add a Principle engine, database, fixed pipeline, or large test framework.

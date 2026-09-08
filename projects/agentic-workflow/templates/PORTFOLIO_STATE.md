@@ -1,100 +1,82 @@
 # Product Portfolio State Contract
 
-Use one instance per product. This is a compact mutable projection for the persistent Product Owner, not a replacement backlog, task database, or workflow runtime.
+Use one per product. `STATE.md` is a compact mutable projection for the persistent Owner, not a task database or substitute decision brain.
 
 ## Concepts
 
-- **Portfolio** — all durable Workstreams contributing to the Product Goal.
-- **Workstream** — one outcome lane that survives multiple sequential Actions.
-- **Action** — one bounded executable outcome, normally represented by one Kanban card and one run directory.
-- **Ready set** — Workstreams with a dependency-complete, safe next Action.
-- **Role pool** — zero to three isolated Profile instances for one concrete Specialist role; Product Owner is singleton.
-- **Execution slot** — an unoccupied role-pool Profile plus a non-overlapping workspace/seam lease and an eligible live execution host. There is no static cross-role global cap.
-- **Safety/stage-gate class** — the tuple of authorization boundary, irreversible-risk tier, and next unmet product gate used only to compare fairness among genuinely substitutable ready Actions. Actions in different classes are not peers for oldest-ready selection.
+- **Portfolio** — all durable outcome Workstreams contributing to the Goal.
+- **Workstream** — one outcome lane that survives multiple Actions.
+- **Action** — one bounded result assigned to one Role and task Session.
+- **Ready set** — dependency-complete, safe candidate Actions.
+- **Execution slot** — an available task Session plus a non-conflicting workspace/seam and eligible host.
+- **Legal wait** — no positive-value legal Action remains, an external fact is genuinely unavailable, a Jingtao-owned decision is required, or the Goal is complete.
 
 ## Reconciliation
 
-On every Signal, Result, Review, Decision, or recovery Pulse:
+On each Signal, Result, Review, Decision, or recovery Pulse:
 
-1. Reconcile every non-Done Workstream from live tracker, Kanban, process, production, and evidence facts.
-2. Update lane state, health, Evidence, Gap, current/next Action, dependencies, and wake condition.
-3. Build the Ready set and fill every safe independent execution slot.
-4. Enforce slots `01..03` per concrete Specialist role, one process per Profile, one writer per physical workspace, one lease holder per mutable semantic seam, one Integrator per target branch, native dependencies, stable idempotency/fencing, and live host capability.
-5. Rank ready Actions by irreversible safety/correctness risk, stage-gate leverage, user value, evidence age, and starvation.
-6. Let blocked or waiting lanes coexist with progress in unrelated ready lanes.
-7. Set `ready_since` only when a lane first becomes READY; preserve it across compatible skips. Increment `skipped_slot_releases` only when a verified compatible slot is released and assigned to a peer Action in the same safety/stage-gate class. Reset both fields when the lane leaves READY, its Action or class materially changes, or it is staffed. Within one class, select the oldest `ready_since` first. After three compatible skips, staff the lane at the next compatible release unless evidence proves it is no longer ready. Reclassification requires that changed evidence and an exact reconsider trigger; parking is never a fairness escape hatch.
-8. Record `CAPACITY_SATURATED` only when every prerequisite is verified and the compatible Profile/workspace/host slot is observably occupied, with the exact releasing task/process as the wake condition. A missing, unavailable, or unverified Profile, lease, dependency, budget, or safety fact makes the lane `BLOCKED` with health `UNKNOWN` and its own evidence-acquisition wake condition, not capacity saturation.
-9. Enter a Portfolio-level wait only when every non-Done lane is Active, Waiting, Blocked, deliberately Parked with a reconsider trigger, or has no positive-value bounded Action.
+1. read Goal, effective Principles, current evidence, and live system state;
+2. update each Workstream's outcome, evidence, Gap, state, health, Action, and wake;
+3. explicitly identify missing user-visible effects;
+4. build the Ready set and select the largest safe bounded Action set;
+5. prefer decisive uncertainty reduction and user-visible validated effect over architecture completeness;
+6. admit safe independent work across Role task Sessions;
+7. validate Results from owning artifacts and systems;
+8. replan from evidence rather than preserving backlog order;
+9. record a Portfolio wait only after every non-Done lane lacks a positive-value legal Action.
 
-## State and health
+Do not make fairness counters, fixed Issue order, or infrastructure activity more important than Goal progress. Add scheduling mechanics only after a real starvation or recovery problem is observed.
 
-State:
+## States
 
-- `ACTIVE` — an Action is executing or under review.
-- `READY` — a safe dependency-complete Action exists but is not staffed.
-- `WAITING` — external evidence or a scheduled event is pending.
-- `BLOCKED` — a dependency or authorization prevents progress.
-- `PARKED` — deliberately unstaffed; a reconsider trigger is required.
-- `DONE` — the Workstream outcome and acceptance are complete.
+- `ACTIVE` — a bounded Action is executing or under Review.
+- `READY` — a safe next Action exists.
+- `WAITING` — a real external observation or scheduled event is pending.
+- `BLOCKED` — a dependency or authority prevents progress.
+- `PARKED` — deliberately lower value than available alternatives; reconsider trigger required.
+- `DONE` — Workstream outcome and acceptance are complete.
 
-Health is independent: `ON_TRACK`, `AT_RISK`, `OFF_TRACK`, or `UNKNOWN`.
+Health is separate: `ON_TRACK`, `AT_RISK`, `OFF_TRACK`, or `UNKNOWN`.
 
-## `STATE.md` shape
+## Compact `STATE.md`
 
 ```markdown
 # <Product> State
 
 Verified at: <timestamp>
-Fact sources: <tracker, board, process, production, artifact handles>
+Fact sources: <owning handles>
 
 ## Product posture
-- Phase: ...
-- Destination: ...
+- Current Goal outcome: ...
+- Most important unmet user-visible effect: ...
 - Portfolio health: ...
 
-## Execution capacity
-- Host/token budget: ...
-- Single-writer constraints: ...
-- Occupied slots: ...
-- Available compatible slots: ...
+## Active Action set
+- <Workstream / Action / Role / task Session / workspace / wake>
 
-## Workstream portfolio
-| ID | Outcome | State / health | Active or next Action | Ready age / skips |
-|---|---|---|---|
-| `WS-...` | ... | `ACTIVE / ON_TRACK` | task/Agent/workspace or next candidate | `ready_since`; `skipped_slot_releases` |
-
-## Non-Done Workstream detail
-### `WS-...`
-- Verified: <timestamp and fact-source handles>
-- Evidence: ...
-- Gap: ...
-- Current or next Action: ...
-- Task / role pool / Profile slot / workspace / execution host: ...
-- Dependencies: ...
-- Shared-seam constraints: <interfaces, schemas, files, or leases this lane shares with named Workstreams>
-- Wake: ...
-- Ready since / skipped compatible slot releases: ...
-
-## Ready-set policy
-<Which lanes must be assessed when capacity opens; include the concrete aging rule and never prescribe a fixed issue order.>
+## Workstreams
+| ID | Outcome | State / health | Evidence | Gap | Active or next Action | Wake |
+|---|---|---|---|---|---|---|
+| `WS-...` | ... | ... | ... | ... | ... | ... |
 
 ## Cross-Workstream constraints
-<Shared seams, native dependencies, workspace conflicts, production isolation.>
+- <shared seams, dependencies, host limits, Hard Boundaries>
 
 ## User-owned decisions
-<Only irreducible product/risk/authorization choices.>
+- <only substantive product/risk/authority choices>
 
-## Recently completed checkpoints
-<Compact handles only.>
+## Recent validated effects
+- <compact result handles>
 ```
 
 ## Authority split
 
-- Goal/Principles own destination and constraints.
-- `STATE.md` owns the current Portfolio projection.
-- GitHub Issues/PRs own outcome acceptance and integration history.
-- Kanban owns executable tasks, dependencies, assignees, attempts, review, and blockers.
-- `runs/<id>/` owns immutable Handoff/Result/Correction/Decision evidence.
+- Goal owns destination.
+- Default/Product/Role Principles own choice constraints.
+- State owns current projection.
+- Tracker owns product outcome acceptance and integration history.
+- Kanban owns formal task lifecycle.
+- Run artifacts own frozen Handoff/Result/Review evidence.
 - The persistent Owner Session owns living product judgment.
 
-Do not copy complete task comments, Results, or Issue specifications into `STATE.md`. Volatile claims carry a verification time and source handle.
+Keep State concise. Do not paste full task logs, long Results, operating manuals, or historical incident recipes into it.
