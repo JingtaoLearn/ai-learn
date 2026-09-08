@@ -29,10 +29,6 @@ services:
         target: /var/lib/quantresearch/state
         bind: {create_host_path: false}
       - type: bind
-        source: /var/lib/quantresearch-production/publication
-        target: /var/lib/quantresearch/publication
-        bind: {create_host_path: false}
-      - type: bind
         source: /etc/quantresearch-production/authorities
         target: /etc/quantresearch/authorities
         read_only: true
@@ -71,7 +67,7 @@ services:
       - /var/run:size=8m,mode=0750,uid=10101,gid=10101
     volumes:
       - type: bind
-        source: /var/lib/quantresearch-production/publication/current
+        source: /var/lib/quantresearch-production/state/publication/current
         target: /srv/reports
         read_only: true
         bind: {create_host_path: false}
