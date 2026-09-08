@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .production_contract import canonical_json_bytes
-from .production_jobs import JobComputation, ProductionJobs, ProviderClient
+from .production_jobs import (
+    FormalComputation,
+    JobComputation,
+    ProductionInput,
+    ProductionJobs,
+    ProviderClient,
+)
 from .production_result import ProductionResultStore
 from .production_store import ProductionStore
 
@@ -43,7 +49,10 @@ class ProductionWorker:
         self.crash = crash
 
     @staticmethod
-    def _scheduled(row: Mapping[str, Any]) -> datetime:
+    def _scheduled(row: Mapping[str, Any]) -> datetime | None:
+        request = row.get("request_body")
+        if isinstance(request, Mapping) and request.get("operation") is not None:
+            return None
         return datetime.fromisoformat(row["scheduled_for"][:-1] + "+00:00")
 
     def _stage_root(self, row: Mapping[str, Any]) -> Path:
@@ -69,20 +78,48 @@ class ProductionWorker:
                 staging.chmod(0o700)
                 shutil.rmtree(staging)
 
-    def _acquisition(self, row: Mapping[str, Any]) -> tuple[str, bytes]:
+    def _acquisition(self, row: Mapping[str, Any]) -> ProductionInput:
         target = self._stage_root(row) / "acquisition"
         if not target.exists():
-            url, raw = self.jobs.acquire(row["job_id"], self.provider, self._scheduled(row))
+            value = self.jobs.stage_input(
+                row["job_id"],
+                self.provider,
+                self._scheduled(row),
+                request_id=row["request_id"],
+            )
             self._write_generation(
                 target,
-                {"identity.json": canonical_json_bytes({"provider_url": url}), "raw.bin": raw},
+                {
+                    "identity.json": canonical_json_bytes(
+                        {"kind": value.kind, **dict(value.identity)}
+                    ),
+                    "raw.bin": value.payload,
+                },
             )
         identity = json.loads((target / "identity.json").read_bytes())
-        return identity["provider_url"], (target / "raw.bin").read_bytes()
+        kind = identity.pop("kind", "provider-get")
+        if kind == "provider-get" and "method" not in identity:
+            identity["method"] = "GET"
+        return ProductionInput(kind, identity, (target / "raw.bin").read_bytes())
 
     @staticmethod
-    def _computation_payloads(value: JobComputation) -> dict[str, bytes]:
+    def _computation_payloads(
+        value: JobComputation | FormalComputation,
+    ) -> dict[str, bytes]:
+        if isinstance(value, FormalComputation):
+            identity = {
+                "kind": "formal",
+                "job_id": value.job_id,
+                "production_manifest_sha256": value.production_manifest_sha256,
+                "operation": value.operation,
+                "authority_sha256": value.authority_sha256,
+                "experiment_id": value.experiment_id,
+                "attempt_id": value.attempt_id,
+                "files": sorted(value.files),
+            }
+            return {"identity.json": canonical_json_bytes(identity), **dict(value.files)}
         identity = {
+            "kind": "daily",
             "job_id": value.job_id,
             "model_id": value.model_id,
             "production_manifest_sha256": value.production_manifest_sha256,
@@ -102,8 +139,18 @@ class ProductionWorker:
         }
 
     @staticmethod
-    def _load_computation(target: Path) -> JobComputation:
+    def _load_computation(target: Path) -> JobComputation | FormalComputation:
         identity = json.loads((target / "identity.json").read_bytes())
+        if identity.get("kind") == "formal":
+            return FormalComputation(
+                job_id=identity["job_id"],
+                production_manifest_sha256=identity["production_manifest_sha256"],
+                operation=identity["operation"],
+                authority_sha256=identity["authority_sha256"],
+                files={name: (target / name).read_bytes() for name in identity["files"]},
+                experiment_id=identity["experiment_id"],
+                attempt_id=identity["attempt_id"],
+            )
         return JobComputation(
             identity["job_id"],
             identity["model_id"],
@@ -120,10 +167,17 @@ class ProductionWorker:
             identity["attempt_id"],
         )
 
-    def _computation(self, row: Mapping[str, Any], url: str, raw: bytes) -> JobComputation:
+    def _computation(
+        self, row: Mapping[str, Any], value: ProductionInput
+    ) -> JobComputation | FormalComputation:
         target = self._stage_root(row) / "computation"
         if not target.exists():
-            computed = self.jobs.compute(row["job_id"], raw, url, self._scheduled(row))
+            computed = self.jobs.compute_input(
+                row["job_id"],
+                value,
+                self._scheduled(row),
+                request_id=row["request_id"],
+            )
             self._write_generation(target, self._computation_payloads(computed))
         return self._load_computation(target)
 
@@ -138,21 +192,21 @@ class ProductionWorker:
                 )
                 self.crash("after_accepted")
             if row["status"] == "ACQUIRING":
-                url, raw = self._acquisition(row)
+                production_input = self._acquisition(row)
                 self.crash("after_acquisition_sealed")
                 row = self.store.transition(
                     row["request_id"], self.owner, "ACQUIRING", "COMPUTING", now=self.clock()
                 )
             else:
-                url, raw = self._acquisition(row)
+                production_input = self._acquisition(row)
             if row["status"] == "COMPUTING":
-                computation = self._computation(row, url, raw)
+                computation = self._computation(row, production_input)
                 self.crash("after_computation_sealed")
                 row = self.store.transition(
                     row["request_id"], self.owner, "COMPUTING", "PUBLISHING", now=self.clock()
                 )
             else:
-                computation = self._computation(row, url, raw)
+                computation = self._computation(row, production_input)
             manifest = self.results.publish(row, computation)
             self.crash("after_result_and_report_sealed")
             terminal = self.store.finish_success(

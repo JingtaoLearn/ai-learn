@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import replace
 from decimal import Decimal
-from statistics import median
-from typing import Mapping, Sequence
+from statistics import NormalDist, median
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -40,6 +41,8 @@ from gold_research.focus_contract import (
 )
 
 COMPARATOR_NAMES = ("CASH", "BUY_AND_HOLD", "EQUAL_EXPOSURE")
+_CALIBRATION_BATCH_PATHS = 128
+_SYNTHETIC_UPDATES = INCREMENTS - WARMUP_INCREMENTS
 
 
 def _candidate_glr(prefix: np.ndarray, tau: np.ndarray, total: float, count: int) -> np.ndarray:
@@ -363,7 +366,7 @@ def evaluate_once(
 
 
 def calibration_plan() -> dict[str, object]:
-    """Return the sealed plan only; this implementation Action never executes it."""
+    """Return the sealed, non-configurable synthetic calibration plan."""
 
     streams = np.random.SeedSequence(SYNTHETIC_SEED).spawn(11)
     return {
@@ -380,4 +383,310 @@ def calibration_plan() -> dict[str, object]:
         "total_paths": SYNTHETIC_PATHS,
         "thresholds": 1,
         "recalibrations": 0,
+    }
+
+
+def _array_bytes(value: np.ndarray, dtype: str) -> bytes:
+    return np.asarray(value, dtype=dtype, order="C").tobytes(order="C")
+
+
+def _detector_path_outputs(innovations: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate the exact exhaustive statistic for a bounded batch of synthetic paths."""
+
+    if innovations.ndim != 2 or innovations.shape[1] != INCREMENTS:
+        raise ContractViolation("synthetic path batch must have exactly 756 innovations")
+    observed = innovations[:, WARMUP_INCREMENTS:]
+    if not np.all(np.isfinite(observed)):
+        raise ContractViolation("synthetic innovations must be finite")
+    prefix = np.cumsum(observed, axis=1, dtype=np.float64)
+    paths = innovations.shape[0]
+    statistics = np.empty((paths, _SYNTHETIC_UPDATES), dtype=np.float64)
+    changepoints = np.empty((paths, _SYNTHETIC_UPDATES), dtype=np.int16)
+    directions = np.empty((paths, _SYNTHETIC_UPDATES), dtype=np.int8)
+    statistics[:, 0] = 0.0
+    changepoints[:, 0] = 0
+    directions[:, 0] = np.where(observed[:, 0] > 0.0, 1, -1)
+    rows = np.arange(paths)
+    for count in range(2, _SYNTHETIC_UPDATES + 1):
+        candidates = np.arange(1, count, dtype=np.float64)
+        total = prefix[:, count - 1, None]
+        left = prefix[:, : count - 1]
+        candidate_statistics = 0.5 * (
+            left * left / candidates
+            + (total - left) ** 2 / (count - candidates)
+            - total * total / count
+        )
+        best = np.argmax(candidate_statistics, axis=1)
+        statistics[:, count - 1] = np.maximum(0.0, candidate_statistics[rows, best])
+        changepoints[:, count - 1] = best + 1
+        post_sum = prefix[:, count - 1] - prefix[rows, best]
+        directions[:, count - 1] = np.where(post_sum > 0.0, 1, -1)
+    if not np.all(np.isfinite(statistics)) or np.any(statistics < 0.0):
+        raise ContractViolation("synthetic detector output is invalid")
+    return statistics, changepoints, directions
+
+
+def _digest_outputs(
+    digest: Any, statistics: np.ndarray, changepoints: np.ndarray, directions: np.ndarray
+) -> None:
+    digest.update(_array_bytes(statistics, "<f8"))
+    digest.update(_array_bytes(changepoints, "<i2"))
+    digest.update(_array_bytes(directions, "i1"))
+
+
+def _stream_batches(
+    stream: np.random.SeedSequence,
+    paths: int,
+    *,
+    delta: float = 0.0,
+    boundary: int | None = None,
+):
+    generator = np.random.default_rng(stream)
+    innovations_digest = hashlib.sha256()
+    outputs_digest = hashlib.sha256()
+    generated = 0
+    while generated < paths:
+        size = min(_CALIBRATION_BATCH_PATHS, paths - generated)
+        innovations = generator.standard_normal((size, INCREMENTS), dtype=np.float64)
+        innovations_digest.update(_array_bytes(innovations, "<f8"))
+        observations = innovations.copy()
+        if boundary is not None:
+            observations[:, boundary:] += delta
+        statistics, changepoints, directions = _detector_path_outputs(observations)
+        _digest_outputs(outputs_digest, statistics, changepoints, directions)
+        generated += size
+        yield statistics, directions, generated, innovations_digest, outputs_digest
+
+
+def _stream_identity(
+    stream: np.random.SeedSequence,
+    paths: int,
+    innovations_digest: Any,
+    outputs_digest: Any,
+) -> dict[str, Any]:
+    return {
+        "spawn_key": list(stream.spawn_key),
+        "path_count": paths,
+        "innovations_sha256": innovations_digest.hexdigest(),
+        "detector_outputs_sha256": outputs_digest.hexdigest(),
+        "encoding": (
+            "fixed-128-path chunks; innovations=<f8 C-order 756/path; "
+            "outputs=<f8 statistic then <i2 changepoint then i1 direction, C-order"
+        ),
+    }
+
+
+def _calibration_stream(stream: np.random.SeedSequence) -> tuple[dict[str, Any], np.ndarray]:
+    maxima: list[np.ndarray] = []
+    innovations_digest = outputs_digest = None
+    for statistics, directions, _, innovations_digest, outputs_digest in _stream_batches(
+        stream, NULL_CALIBRATION_PATHS
+    ):
+        adjacent = np.where(
+            directions[:, 1:] == directions[:, :-1],
+            np.minimum(statistics[:, 1:], statistics[:, :-1]),
+            -np.inf,
+        )
+        maxima.append(np.max(adjacent, axis=1))
+    assert innovations_digest is not None and outputs_digest is not None
+    values = np.concatenate(maxima)
+    if len(values) != NULL_CALIBRATION_PATHS or not np.all(np.isfinite(values)):
+        raise ContractViolation("null calibration maxima are invalid")
+    return (
+        _stream_identity(
+            stream, NULL_CALIBRATION_PATHS, innovations_digest, outputs_digest
+        ),
+        values,
+    )
+
+
+def _null_validation_stream(
+    stream: np.random.SeedSequence, threshold: float
+) -> tuple[dict[str, Any], int]:
+    false_transitions = 0
+    innovations_digest = outputs_digest = None
+    for statistics, directions, _, innovations_digest, outputs_digest in _stream_batches(
+        stream, NULL_VALIDATION_PATHS
+    ):
+        qualifies = statistics >= threshold
+        false_transitions += int(
+            np.count_nonzero(
+                np.any(
+                    qualifies[:, 1:]
+                    & qualifies[:, :-1]
+                    & (directions[:, 1:] == 1)
+                    & (directions[:, :-1] == 1),
+                    axis=1,
+                )
+            )
+        )
+    assert innovations_digest is not None and outputs_digest is not None
+    return (
+        _stream_identity(stream, NULL_VALIDATION_PATHS, innovations_digest, outputs_digest),
+        false_transitions,
+    )
+
+
+def _first_confirmations(
+    statistics: np.ndarray, directions: np.ndarray, threshold: float
+) -> tuple[np.ndarray, np.ndarray]:
+    paths = statistics.shape[0]
+    registers = np.zeros(paths, dtype=np.int8)
+    confirmation_time = np.zeros(paths, dtype=np.int16)
+    confirmation_direction = np.zeros(paths, dtype=np.int8)
+    unresolved = np.ones(paths, dtype=bool)
+    for offset in range(_SYNTHETIC_UPDATES):
+        qualifies = statistics[:, offset] >= threshold
+        current = directions[:, offset]
+        confirms = unresolved & qualifies & (registers == current)
+        confirmation_time[confirms] = WARMUP_INCREMENTS + 1 + offset
+        confirmation_direction[confirms] = current[confirms]
+        unresolved[confirms] = False
+        clear = ~qualifies | confirms
+        registers[clear] = 0
+        arm = unresolved & qualifies & (registers != current)
+        registers[arm] = current[arm]
+    return confirmation_time, confirmation_direction
+
+
+def _detectability_stream(
+    stream: np.random.SeedSequence, threshold: float, delta: float, boundary: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    counts = {
+        "correct": 0,
+        "pre_change": 0,
+        "boundary_straddling": 0,
+        "wrong_direction": 0,
+        "late": 0,
+        "missing": 0,
+    }
+    delays = np.zeros(62, dtype=np.int64)
+    innovations_digest = outputs_digest = None
+    for statistics, directions, _, innovations_digest, outputs_digest in _stream_batches(
+        stream, 10_000, delta=delta, boundary=boundary
+    ):
+        times, alarm_directions = _first_confirmations(statistics, directions, threshold)
+        missing = times == 0
+        pre_change = (times != 0) & (times <= boundary)
+        straddling = times == boundary + 1
+        wrong = (times > boundary + 1) & (alarm_directions == -1)
+        delay = times.astype(np.int32) - boundary
+        correct = (alarm_directions == 1) & (delay >= 2) & (delay <= 63)
+        late = (alarm_directions == 1) & (delay > 63)
+        counts["missing"] += int(np.count_nonzero(missing))
+        counts["pre_change"] += int(np.count_nonzero(pre_change))
+        counts["boundary_straddling"] += int(np.count_nonzero(straddling))
+        counts["wrong_direction"] += int(np.count_nonzero(wrong))
+        counts["correct"] += int(np.count_nonzero(correct))
+        counts["late"] += int(np.count_nonzero(late))
+        if np.any(correct):
+            delays += np.bincount(delay[correct] - 2, minlength=62)
+    assert innovations_digest is not None and outputs_digest is not None
+    if sum(counts.values()) != 10_000:
+        raise ContractViolation("detectability classifications are not exhaustive")
+    rate = counts["correct"] / 10_000
+    record = {
+        "delta": format(delta, ".2f"),
+        "boundary": boundary,
+        "paths": 10_000,
+        "correct_count": counts["correct"],
+        "correct_rate_hex": rate.hex(),
+        "correct_rate_decimal": repr(rate),
+        "failure_counts": {key: value for key, value in counts.items() if key != "correct"},
+        "delay_2_to_63_counts": delays.tolist(),
+        "delay_histogram_sha256": hashlib.sha256(_array_bytes(delays, "<i8")).hexdigest(),
+        "pass": rate >= 0.80 if delta == 0.50 else None,
+    }
+    return _stream_identity(stream, 10_000, innovations_digest, outputs_digest), record
+
+
+def _wilson_upper(successes: int, trials: int) -> float:
+    z = NormalDist().inv_cdf(0.95)
+    proportion = successes / trials
+    denominator = 1.0 + z * z / trials
+    center = proportion + z * z / (2.0 * trials)
+    radius = z * math.sqrt(proportion * (1.0 - proportion) / trials + z * z / (4.0 * trials**2))
+    return (center + radius) / denominator
+
+
+def execute_synthetic_calibration() -> dict[str, Any]:
+    """Execute the frozen one-threshold, 140,000-path calibration exactly once."""
+
+    streams = np.random.SeedSequence(SYNTHETIC_SEED).spawn(11)
+    stream_documents: list[dict[str, Any]] = []
+    calibration_stream, maxima = _calibration_stream(streams[0])
+    stream_documents.append({"name": "calibration", **calibration_stream})
+    ordered = np.sort(maxima)
+    threshold = float(ordered[CALIBRATION_RANK - 1])
+    calibration = CalibrationDocument(threshold=threshold)
+
+    null_stream, false_transitions = _null_validation_stream(streams[1], threshold)
+    stream_documents.append({"name": "null_validation", **null_stream})
+    wilson_upper = _wilson_upper(false_transitions, NULL_VALIDATION_PATHS)
+
+    cells: list[dict[str, Any]] = []
+    stream_index = 2
+    for delta in (0.25, 0.50, 1.00):
+        for boundary in (189, 378, 567):
+            stream_document, cell = _detectability_stream(
+                streams[stream_index], threshold, delta, boundary
+            )
+            stream_documents.append(
+                {"name": f"delta_{delta:.2f}_boundary_{boundary}", **stream_document}
+            )
+            cells.append(cell)
+            stream_index += 1
+
+    null_pass = wilson_upper <= 0.05
+    detectability_pass = all(cell["pass"] is True for cell in cells if cell["delta"] == "0.50")
+    terminal = "PASS" if null_pass and detectability_pass else "DETECTABILITY_FAILED"
+    return {
+        "schema": "focus-synthetic-calibration/v1",
+        "status": terminal,
+        "labels": ["SGE_AU9999_PROXY", "FIXED_SPREAD_ASSUMPTION_5_CNY_PER_G"],
+        "protocol": {
+            "horizon": INCREMENTS,
+            "warmup": WARMUP_INCREMENTS,
+            "master_seed": SYNTHETIC_SEED,
+            "detector_variants": 1,
+            "calibrated_thresholds": 1,
+            "recalibrations": 0,
+            "extra_seeds_effects_horizons_nulls": 0,
+            "batch_paths": _CALIBRATION_BATCH_PATHS,
+        },
+        "streams": stream_documents,
+        "calibration": {
+            "paths": NULL_CALIBRATION_PATHS,
+            "q_rule": "min adjacent statistics only when adjacent directions are equal",
+            "ordered_rank": CALIBRATION_RANK,
+            "threshold_float_hex": threshold.hex(),
+            "threshold_decimal": repr(threshold),
+            "ordered_statistics_sha256": hashlib.sha256(_array_bytes(ordered, "<f8")).hexdigest(),
+            "document": {
+                "threshold_float_hex": calibration.threshold.hex(),
+                "master_seed": calibration.master_seed,
+                "path_count": calibration.path_count,
+                "thresholds_calibrated": calibration.thresholds_calibrated,
+                "recalibrations": calibration.recalibrations,
+            },
+        },
+        "null_validation": {
+            "paths": NULL_VALIDATION_PATHS,
+            "paths_with_false_state_transition": false_transitions,
+            "wilson_one_sided_95_upper_float_hex": wilson_upper.hex(),
+            "wilson_one_sided_95_upper_decimal": repr(wilson_upper),
+            "pass": null_pass,
+        },
+        "detectability_cells": cells,
+        "totals": {
+            "generated_paths": SYNTHETIC_PATHS,
+            "null_calibration_paths": NULL_CALIBRATION_PATHS,
+            "null_validation_paths": NULL_VALIDATION_PATHS,
+            "detectability_paths": 90_000,
+            "provider_requests": 0,
+            "sge_requests": 0,
+            "evaluation_executions": 0,
+            "flearn_fallbacks": 0,
+            "market_outcome_bytes": 0,
+        },
     }

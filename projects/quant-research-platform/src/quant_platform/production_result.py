@@ -10,16 +10,15 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .production_contract import SHA256, canonical_json_bytes
-from .production_jobs import JobComputation
+from .production_jobs import FormalComputation, JobComputation
 
 
 class ProductionResultError(RuntimeError):
     """Raised when a production result cannot be sealed or verified."""
 
 
-RESULT_FILES = frozenset(
+DAILY_RESULT_FILES = frozenset(
     {
-        "result-manifest.json",
         "provider-response.bin",
         "normalized-snapshot.json",
         "action.json",
@@ -27,7 +26,18 @@ RESULT_FILES = frozenset(
         "notification.txt",
     }
 )
-CLIENT_RESULT_FILES = frozenset({"notification.txt"})
+FORMAL_RESULT_FILES = frozenset(
+    {
+        "calibration.json",
+        "03-CALIBRATION_CLAIMED.json",
+        "04-CALIBRATION_SEALED.json",
+    }
+)
+RESULT_FILES_BY_SCHEMA = {
+    "quantresearch-production-result/v1": DAILY_RESULT_FILES,
+    "quantresearch-production-formal-result/v1": FORMAL_RESULT_FILES,
+}
+CLIENT_RESULT_FILES = frozenset({"notification.txt", "report.html"}) | FORMAL_RESULT_FILES
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024
 
 
@@ -122,7 +132,13 @@ class ProductionResultStore:
                 raise ProductionResultError("result root is unsafe")
 
     @staticmethod
-    def _artifact_payloads(computation: JobComputation) -> dict[str, bytes]:
+    def _artifact_payloads(
+        computation: JobComputation | FormalComputation,
+    ) -> dict[str, bytes]:
+        if isinstance(computation, FormalComputation):
+            if set(computation.files) != FORMAL_RESULT_FILES:
+                raise ProductionResultError("formal result member set is invalid")
+            return dict(computation.files)
         return {
             "provider-response.bin": computation.raw_bytes,
             "normalized-snapshot.json": computation.normalized_bytes,
@@ -133,14 +149,15 @@ class ProductionResultStore:
 
     @staticmethod
     def _manifest_core(
-        row: Mapping[str, Any], computation: JobComputation, payloads: Mapping[str, bytes]
+        row: Mapping[str, Any],
+        computation: JobComputation | FormalComputation,
+        payloads: Mapping[str, bytes],
     ) -> dict[str, Any]:
         files = {
             name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
             for name, payload in sorted(payloads.items())
         }
-        return {
-            "schema": "quantresearch-production-result/v1",
+        common = {
             "request_id": row["request_id"],
             "production_run_id": row["production_run_id"],
             "production_release_id": row["production_release_id"],
@@ -148,6 +165,31 @@ class ProductionResultStore:
             "attempt_id": computation.attempt_id,
             "job_id": computation.job_id,
             "production_manifest_sha256": computation.production_manifest_sha256,
+            "automatic_ordering": False,
+            "files": files,
+        }
+        if isinstance(computation, FormalComputation):
+            calibration = payloads["calibration.json"]
+            claimed = payloads["03-CALIBRATION_CLAIMED.json"]
+            sealed = payloads["04-CALIBRATION_SEALED.json"]
+            return {
+                "schema": "quantresearch-production-formal-result/v1",
+                **common,
+                "operation": computation.operation,
+                "input": {
+                    "kind": "no-network-operation",
+                    "authority_sha256": computation.authority_sha256,
+                    "network_access": False,
+                },
+                "calibration_sha256": hashlib.sha256(calibration).hexdigest(),
+                "phase_claims": {
+                    "CALIBRATION_CLAIMED": hashlib.sha256(claimed).hexdigest(),
+                    "CALIBRATION_SEALED": hashlib.sha256(sealed).hexdigest(),
+                },
+            }
+        return {
+            "schema": "quantresearch-production-result/v1",
+            **common,
             "model_id": computation.model_id,
             "provider_request": {"method": "GET", "url": computation.provider_url},
             "provider_response_sha256": hashlib.sha256(computation.raw_bytes).hexdigest(),
@@ -156,8 +198,6 @@ class ProductionResultStore:
             "report_filename": f"{computation.report_uuid}.html",
             "report_sha256": hashlib.sha256(computation.report_html).hexdigest(),
             "generated_at": computation.action["generated_at"],
-            "automatic_ordering": False,
-            "files": files,
         }
 
     def verify(self, result_id: str) -> dict[str, Any]:
@@ -167,17 +207,23 @@ class ProductionResultStore:
         if target.is_symlink() or not target.is_dir() or stat.S_IMODE(target.stat().st_mode) & 0o222:
             raise ProductionResultError("unsafe immutable result directory is unavailable")
         members = {path.name for path in target.iterdir()}
-        if members != RESULT_FILES:
+        if "result-manifest.json" not in members:
+            raise ProductionResultError("immutable result manifest is absent")
+        manifest = _strict_json(
+            read_immutable(target / "result-manifest.json"), "result manifest"
+        )
+        schema = manifest.get("schema")
+        result_files = RESULT_FILES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+        if result_files is None or members != result_files | {"result-manifest.json"}:
             raise ProductionResultError("immutable result member set is invalid")
-        payloads = {name: read_immutable(target / name) for name in RESULT_FILES}
-        manifest = _strict_json(payloads["result-manifest.json"], "result manifest")
+        payloads = {name: read_immutable(target / name) for name in result_files}
         if manifest.get("result_id") != result_id:
             raise ProductionResultError("stored result_id does not match its path")
         core = {key: value for key, value in manifest.items() if key != "result_id"}
         if hashlib.sha256(canonical_json_bytes(core)).hexdigest() != result_id:
             raise ProductionResultError("result manifest identity is invalid")
         files = core.get("files")
-        if not isinstance(files, dict) or set(files) != RESULT_FILES - {"result-manifest.json"}:
+        if not isinstance(files, dict) or set(files) != result_files:
             raise ProductionResultError("result file inventory is invalid")
         for name, expected in files.items():
             actual = {"sha256": hashlib.sha256(payloads[name]).hexdigest(), "size": len(payloads[name])}
@@ -185,12 +231,31 @@ class ProductionResultStore:
                 raise ProductionResultError(f"result member identity mismatch: {name}")
         if core.get("automatic_ordering") is not False:
             raise ProductionResultError("result violates the no-order contract")
+        if schema == "quantresearch-production-formal-result/v1":
+            result_input = core.get("input")
+            phase_claims = core.get("phase_claims")
+            if (
+                core.get("operation") != "calibrate-once"
+                or not isinstance(result_input, dict)
+                or result_input.get("kind") != "no-network-operation"
+                or result_input.get("network_access") is not False
+                or core.get("calibration_sha256")
+                != files["calibration.json"]["sha256"]
+                or phase_claims
+                != {
+                    "CALIBRATION_CLAIMED": files["03-CALIBRATION_CLAIMED.json"]["sha256"],
+                    "CALIBRATION_SEALED": files["04-CALIBRATION_SEALED.json"]["sha256"],
+                }
+            ):
+                raise ProductionResultError("formal result bindings are invalid")
         return manifest
 
     def read_client_file(self, result_id: str, name: str) -> bytes:
         if name not in CLIENT_RESULT_FILES:
             raise ProductionResultError("result member is not available to the client")
         manifest = self.verify(result_id)
+        if name not in manifest["files"]:
+            raise ProductionResultError("result member is not available for this result class")
         payload = read_immutable(self.results_root / result_id / name)
         actual = {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
         if manifest["files"].get(name) != actual:
@@ -244,7 +309,9 @@ class ProductionResultStore:
                     raise ProductionResultError("prior report rollback failed") from exc
             raise
 
-    def publish(self, row: Mapping[str, Any], computation: JobComputation) -> dict[str, Any]:
+    def publish(
+        self, row: Mapping[str, Any], computation: JobComputation | FormalComputation
+    ) -> dict[str, Any]:
         self._prepare()
         payloads = self._artifact_payloads(computation)
         if any(len(payload) > MAX_RESULT_MEMBER_BYTES for payload in payloads.values()):
@@ -276,7 +343,8 @@ class ProductionResultStore:
                     staging.chmod(0o700)
                     shutil.rmtree(staging)
         verified = self.verify(result_id)
-        self._publish_report(computation)
+        if isinstance(computation, JobComputation):
+            self._publish_report(computation)
         if self.verify(result_id) != verified:
             raise ProductionResultError("result changed during report publication")
         return verified

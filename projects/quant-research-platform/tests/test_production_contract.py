@@ -5,6 +5,8 @@ import json
 import pytest
 
 from quant_platform.production_contract import (
+    FOCUS_CALIBRATION_JOB_ID,
+    FOCUS_CALIBRATION_OPERATION,
     ProductionContractError,
     ProductionRelease,
     ProductionRequest,
@@ -54,6 +56,27 @@ def test_normative_165_byte_run_id_vector() -> None:
     assert production_run_id("0" * 64, "1" * 64) == (
         "60ed25c043967205f1ee989bc814fdd23541a825a32091017908b4d973a95a90"
     )
+
+
+def test_focus_calibration_operation_has_one_fixed_request_identity() -> None:
+    request = ProductionRequest.build_operation(
+        job_id=FOCUS_CALIBRATION_JOB_ID,
+        operation=FOCUS_CALIBRATION_OPERATION,
+        production_manifest_sha256="9" * 64,
+    )
+    assert request.schema_version == 3
+    assert request.is_operation
+    assert request.effective_for == "calibrate-once"
+    assert set(request.body) == {
+        "schema_version",
+        "job_id",
+        "operation",
+        "production_manifest_sha256",
+        "request_id",
+    }
+    assert ProductionRequest.from_bytes(request.canonical_body) == request
+    with pytest.raises(ProductionContractError, match="operation class"):
+        ProductionRequest.from_mapping(request.body | {"job_id": "1cd5557264db"})
 
 
 @pytest.mark.parametrize(

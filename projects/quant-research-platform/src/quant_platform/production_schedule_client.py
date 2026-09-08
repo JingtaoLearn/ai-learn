@@ -138,6 +138,38 @@ def validate_schedule_record(job: ScheduledJob, jobs_path: Path) -> None:
         raise ProductionClientError("scheduled job timing differs from the reviewed client")
 
 
+def run_request(
+    job: ScheduledJob,
+    *,
+    request: ProductionRequest,
+    tls: ClientTLS,
+    transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
+    client_factory: Callable[[Any], Any] = ProductionClient,
+) -> bytes:
+    client = client_factory(transport_factory(tls))
+    manifest = client.submit_and_wait(request)
+    if (
+        manifest.get("schema") != "quantresearch-production-result/v1"
+        or manifest.get("job_id") != job.job_id
+        or manifest.get("model_id") != job.model_id
+        or manifest.get("production_manifest_sha256") != job.production_manifest_sha256
+        or manifest.get("report_filename") != job.report_filename
+        or manifest.get("automatic_ordering") is not False
+    ):
+        raise ProductionClientError("result does not match the scheduled job contract")
+    report = client.fetch_verified_file(manifest, "report.html")
+    if not report or b"<html" not in report[:4096].lower():
+        raise ProductionClientError("report payload is invalid")
+    notification = client.fetch_verified_file(manifest, "notification.txt")
+    try:
+        text = notification.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProductionClientError("notification payload is not UTF-8") from exc
+    if not text or "\x00" in text or len(notification) > 16_384:
+        raise ProductionClientError("notification payload is invalid")
+    return notification
+
+
 def run_job(
     job: ScheduledJob,
     *,
@@ -153,25 +185,37 @@ def run_job(
         scheduled_for=scheduled_for,
         production_manifest_sha256=job.production_manifest_sha256,
     )
-    client = client_factory(transport_factory(tls))
-    manifest = client.submit_and_wait(request)
-    if (
-        manifest.get("schema") != "quantresearch-production-result/v1"
-        or manifest.get("job_id") != job.job_id
-        or manifest.get("model_id") != job.model_id
-        or manifest.get("production_manifest_sha256") != job.production_manifest_sha256
-        or manifest.get("report_filename") != job.report_filename
-        or manifest.get("automatic_ordering") is not False
-    ):
-        raise ProductionClientError("result does not match the scheduled job contract")
-    notification = client.fetch_verified_file(manifest, "notification.txt")
-    try:
-        text = notification.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ProductionClientError("notification payload is not UTF-8") from exc
-    if not text or "\x00" in text or len(notification) > 16_384:
-        raise ProductionClientError("notification payload is invalid")
-    return notification
+    return run_request(
+        job,
+        request=request,
+        tls=tls,
+        transport_factory=transport_factory,
+        client_factory=client_factory,
+    )
+
+
+def run_validation(
+    job: ScheduledJob,
+    *,
+    validation_for: str,
+    validation_id: str,
+    tls: ClientTLS,
+    transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
+    client_factory: Callable[[Any], Any] = ProductionClient,
+) -> bytes:
+    request = ProductionRequest.build_validation(
+        job_id=job.job_id,
+        validation_for=validation_for,
+        validation_id=validation_id,
+        production_manifest_sha256=job.production_manifest_sha256,
+    )
+    return run_request(
+        job,
+        request=request,
+        tls=tls,
+        transport_factory=transport_factory,
+        client_factory=client_factory,
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -180,6 +224,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trigger one reviewed QuantResearch production job")
     parser.add_argument("--job-id", required=True, choices=sorted(JOBS))
     parser.add_argument("--scheduled-for")
+    parser.add_argument("--validation-for")
+    parser.add_argument("--validation-id")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--client-certificate", type=Path, default=secrets / "client.crt")
     parser.add_argument("--client-private-key", type=Path, default=secrets / "client.key")
@@ -191,19 +237,32 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        scheduled_for = args.scheduled_for or scheduled_fire_for(datetime.now(TIMEZONE))
-        scheduled_for = canonical_scheduled_fire(scheduled_for)
-        notification = run_job(
-            JOBS[args.job_id],
-            scheduled_for=scheduled_for,
-            tls=ClientTLS(
-                base_url=args.base_url,
-                client_certificate=args.client_certificate,
-                client_private_key=args.client_private_key,
-                server_ca=args.server_ca,
-            ),
-            jobs_path=args.jobs_file,
+        if args.scheduled_for and (args.validation_for or args.validation_id):
+            raise ProductionContractError("scheduled and validation invocations are distinct")
+        if bool(args.validation_for) != bool(args.validation_id):
+            raise ProductionContractError("validation-for and validation-id are required together")
+        tls = ClientTLS(
+            base_url=args.base_url,
+            client_certificate=args.client_certificate,
+            client_private_key=args.client_private_key,
+            server_ca=args.server_ca,
         )
+        if args.validation_id:
+            notification = run_validation(
+                JOBS[args.job_id],
+                validation_for=args.validation_for,
+                validation_id=args.validation_id,
+                tls=tls,
+            )
+        else:
+            scheduled_for = args.scheduled_for or scheduled_fire_for(datetime.now(TIMEZONE))
+            scheduled_for = canonical_scheduled_fire(scheduled_for)
+            notification = run_job(
+                JOBS[args.job_id],
+                scheduled_for=scheduled_for,
+                tls=tls,
+                jobs_path=args.jobs_file,
+            )
     except (OSError, ProductionClientError, ProductionContractError, ValueError) as exc:
         print(f"production client failed closed: {exc}", file=sys.stderr)
         return 1

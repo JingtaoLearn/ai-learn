@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from gold_research.focus_contract import Phase, canonical_json_bytes as focus_json, contract_document
+from gold_research.focus_runner import claim_phase
 from quant_platform.production_bocom import BocomProductionJob
-from quant_platform.production_contract import ProductionRelease, ProductionRequest
+from quant_platform.production_client import ProductionClient
+from quant_platform.production_contract import (
+    FOCUS_CALIBRATION_JOB_ID,
+    FOCUS_CALIBRATION_OPERATION,
+    ProductionRelease,
+    ProductionRequest,
+)
+from quant_platform.production_focus import FocusCalibrationProductionJob
 from quant_platform.production_gold import GoldProductionJob
 from quant_platform.production_jobs import ProductionJobs
 from quant_platform.production_result import ProductionResultError, ProductionResultStore
@@ -136,6 +146,93 @@ def test_identity_boundary_rejects_browser_auth_and_unverified_calls(tmp_path) -
     browser = headers(value) | {"Cookie": "session=browser", "X-CSRF-Token": "browser"}
     assert client.post("/api/v1/production/runs", content=value.canonical_body, headers=browser).status_code == 403
     assert client.get("/health/live").status_code == 200
+
+
+def test_focus_operation_traverses_authenticated_idempotent_client_path_without_provider(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified = "1" * 64
+    reviewed = "2" * 64
+    authority = {
+        "schema": "quant-research/focus-calibration-authority/v1",
+        "contract_sha256": hashlib.sha256(focus_json(contract_document()) + b"\n").hexdigest(),
+        "implementation_verified_sha256": verified,
+        "implementation_reviewed_sha256": reviewed,
+    }
+    authority_path = tmp_path / "focus-calibration-authority.json"
+    authority_path.write_bytes(focus_json(authority) + b"\n")
+    authority_path.chmod(0o444)
+    focus_root = tmp_path / "focus"
+    claim_phase(focus_root / "phase-ledger", Phase.IMPLEMENTATION_VERIFIED, verified)
+    claim_phase(focus_root / "phase-ledger", Phase.IMPLEMENTATION_REVIEWED, reviewed)
+
+    def synthetic():
+        return {
+            "schema": "focus-synthetic-calibration/v1",
+            "status": "PASS",
+            "totals": {
+                "generated_paths": 140_000,
+                "provider_requests": 0,
+                "sge_requests": 0,
+                "evaluation_executions": 0,
+                "flearn_fallbacks": 0,
+                "market_outcome_bytes": 0,
+            },
+        }
+
+    monkeypatch.setattr("gold_research.focus_runner.execute_synthetic_calibration", synthetic)
+    store = ProductionStore(tmp_path / "state")
+    store.initialize()
+    results = ProductionResultStore(tmp_path / "results")
+    job = FocusCalibrationProductionJob(authority_path, focus_root)
+    service = ProductionService(
+        store, AdmissionPolicy({job.job_id: job.production_manifest_sha256}, release())
+    )
+    provider = FixtureProvider()
+    provider.calls = 0
+    worker = ProductionWorker(
+        store,
+        ProductionJobs([job]),
+        provider,
+        results,
+        work_root=tmp_path / "work",
+        owner="focus-worker",
+    )
+    api = TestClient(create_production_app(service, results, verified_client_identity=IDENTITY))
+
+    class MTLSTestTransport:
+        def request(self, method, path, *, headers, body):
+            response = api.request(
+                method,
+                path,
+                headers=dict(headers) | {VERIFIED_CLIENT_HEADER: IDENTITY},
+                content=body,
+            )
+            return response.status_code, dict(response.headers), response.content
+
+    request_value = ProductionRequest.build_operation(
+        job_id=FOCUS_CALIBRATION_JOB_ID,
+        operation=FOCUS_CALIBRATION_OPERATION,
+        production_manifest_sha256=job.production_manifest_sha256,
+    )
+
+    def run_worker(_seconds):
+        worker.run_once()
+
+    production_client = ProductionClient(MTLSTestTransport(), sleep=run_worker)
+    first = production_client.submit_and_wait(request_value)
+    document = production_client.verify_focus_calibration(first)
+    second = production_client.submit_and_wait(request_value)
+
+    assert first == second
+    assert document["totals"]["generated_paths"] == 140_000
+    assert first["input"]["network_access"] is False
+    assert provider.calls == 0
+    assert api.post(
+        "/api/v1/production/runs",
+        content=request_value.canonical_body,
+        headers={"Idempotency-Key": request_value.request_id, "Content-Type": "application/json"},
+    ).status_code == 403
 
 
 def test_crash_recovery_reuses_sealed_acquisition_and_computation(tmp_path) -> None:

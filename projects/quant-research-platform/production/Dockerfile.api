@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --gid 10001 quantresearch \
     && useradd --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin quantresearch
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-wqy-zenhei=0.9.45-8 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.lock /opt/project/requirements.lock
 RUN pip install --upgrade pip==25.2 \
     && pip install --no-cache-dir --require-hashes -r /opt/project/requirements.lock

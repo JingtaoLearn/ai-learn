@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from .production_contract import ProductionRequest, canonical_json_bytes, production_run_id
 
 
-RESULT_FILE_NAMES = frozenset(
+DAILY_RESULT_FILE_NAMES = frozenset(
     {
         "provider-response.bin",
         "normalized-snapshot.json",
@@ -24,6 +24,18 @@ RESULT_FILE_NAMES = frozenset(
         "notification.txt",
     }
 )
+FORMAL_RESULT_FILE_NAMES = frozenset(
+    {
+        "calibration.json",
+        "03-CALIBRATION_CLAIMED.json",
+        "04-CALIBRATION_SEALED.json",
+    }
+)
+RESULT_FILE_NAMES_BY_SCHEMA = {
+    "quantresearch-production-result/v1": DAILY_RESULT_FILE_NAMES,
+    "quantresearch-production-formal-result/v1": FORMAL_RESULT_FILE_NAMES,
+}
+RESULT_FILE_NAMES = DAILY_RESULT_FILE_NAMES | FORMAL_RESULT_FILE_NAMES
 
 
 class ProductionClientError(RuntimeError):
@@ -171,7 +183,7 @@ class ProductionClient:
         poll_attempts: int = 30,
         sleep: Callable[[float], None] = time.sleep,
     ):
-        if not 1 <= transport_attempts <= 5 or not 1 <= poll_attempts <= 120:
+        if not 1 <= transport_attempts <= 5 or not 1 <= poll_attempts <= 360:
             raise ProductionClientError("client retry or poll bound is invalid")
         self.transport = transport
         self.transport_attempts = transport_attempts
@@ -202,6 +214,21 @@ class ProductionClient:
             raise ProductionClientError("production run identity does not verify")
         if value["poll_uri"] != f"/api/v1/production/runs/{expected_run}":
             raise ProductionClientError("production poll URI does not verify")
+        expected_validation = (
+            {"validation_id": request.validation_id, "validation_for": request.validation_for}
+            if request.is_validation
+            else {}
+        )
+        actual_validation = {
+            field: value[field]
+            for field in ("validation_id", "validation_for")
+            if field in value
+        }
+        if actual_validation != expected_validation:
+            raise ProductionClientError("validation invocation identity does not verify")
+        expected_operation = request.operation if request.is_operation else None
+        if value.get("operation") != expected_operation:
+            raise ProductionClientError("formal operation identity does not verify")
         if value["status"] == "SUCCEEDED" and value.get("result_uri") != (
             f"/api/v1/production/results/{value.get('result_id')}"
         ):
@@ -229,7 +256,11 @@ class ProductionClient:
         ):
             raise ProductionClientError("result manifest bindings do not verify")
         files = manifest.get("files")
-        if not isinstance(files, dict) or set(files) != RESULT_FILE_NAMES:
+        schema = manifest.get("schema")
+        expected_files = (
+            RESULT_FILE_NAMES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+        )
+        if expected_files is None or not isinstance(files, dict) or set(files) != expected_files:
             raise ProductionClientError("result manifest file inventory is absent")
         for name, item in files.items():
             if (
@@ -252,7 +283,6 @@ class ProductionClient:
         if (
             not isinstance(files, Mapping)
             or name not in RESULT_FILE_NAMES
-            or set(files) != RESULT_FILE_NAMES
             or not isinstance(result_id, str)
             or len(result_id) != 64
             or any(character not in "0123456789abcdef" for character in result_id)
@@ -276,6 +306,59 @@ class ProductionClient:
         if status != 200 or actual != dict(expected):
             raise ProductionClientError("result file identity does not verify")
         return payload
+
+    def verify_focus_calibration(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
+        result_input = manifest.get("input")
+        if (
+            manifest.get("schema") != "quantresearch-production-formal-result/v1"
+            or manifest.get("operation") != "calibrate-once"
+            or manifest.get("automatic_ordering") is not False
+            or not isinstance(result_input, Mapping)
+            or result_input.get("kind") != "no-network-operation"
+            or result_input.get("network_access") is not False
+        ):
+            raise ProductionClientError("FOCuS calibration result class does not verify")
+        calibration_raw = self.fetch_verified_file(manifest, "calibration.json")
+        claimed_raw = self.fetch_verified_file(manifest, "03-CALIBRATION_CLAIMED.json")
+        sealed_raw = self.fetch_verified_file(manifest, "04-CALIBRATION_SEALED.json")
+        calibration = _json_response(calibration_raw)
+        claimed = _json_response(claimed_raw)
+        sealed = _json_response(sealed_raw)
+        calibration_sha256 = hashlib.sha256(calibration_raw).hexdigest()
+        phase_claims = manifest.get("phase_claims")
+        totals = calibration.get("totals")
+        if (
+            manifest.get("calibration_sha256") != calibration_sha256
+            or not isinstance(phase_claims, Mapping)
+            or phase_claims.get("CALIBRATION_CLAIMED")
+            != hashlib.sha256(claimed_raw).hexdigest()
+            or phase_claims.get("CALIBRATION_SEALED")
+            != hashlib.sha256(sealed_raw).hexdigest()
+            or claimed
+            != {
+                "schema": "quant-research/focus-phase-claim/v1",
+                "ordinal": 3,
+                "phase": "CALIBRATION_CLAIMED",
+                "evidence_sha256": manifest.get("request_id"),
+            }
+            or sealed
+            != {
+                "schema": "quant-research/focus-phase-claim/v1",
+                "ordinal": 4,
+                "phase": "CALIBRATION_SEALED",
+                "evidence_sha256": calibration_sha256,
+            }
+            or calibration.get("schema") != "focus-synthetic-calibration/v1"
+            or not isinstance(totals, Mapping)
+            or totals.get("generated_paths") != 140_000
+            or totals.get("provider_requests") != 0
+            or totals.get("sge_requests") != 0
+            or totals.get("evaluation_executions") != 0
+            or totals.get("flearn_fallbacks") != 0
+            or totals.get("market_outcome_bytes") != 0
+        ):
+            raise ProductionClientError("FOCuS calibration members do not verify")
+        return calibration
 
     def submit_and_wait(self, request: ProductionRequest) -> dict[str, Any]:
         body = request.canonical_body

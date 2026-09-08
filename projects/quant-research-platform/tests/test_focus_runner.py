@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 from pathlib import Path
 
 import pytest
 
-from gold_research.focus_contract import ContractViolation, Phase
-from gold_research.focus_runner import claim_phase, main, verify_implementation
+from gold_research.focus_contract import (
+    ContractViolation,
+    Phase,
+    canonical_json_bytes,
+    contract_document,
+)
+from gold_research.focus_runner import calibrate_once, claim_phase, main, verify_implementation
 from gold_research.sge_daily_report import EXPECTED_HEADERS
 
 
@@ -92,11 +98,54 @@ def test_phase_ledger_rejects_forged_prerequisite(tmp_path: Path) -> None:
     assert not (ledger / "02-IMPLEMENTATION_REVIEWED.json").exists()
 
 
+def test_calibration_requires_review_and_reuses_seal_without_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified = "1" * 64
+    reviewed = "2" * 64
+    authority = {
+        "schema": "quant-research/focus-calibration-authority/v1",
+        "contract_sha256": hashlib.sha256(
+            canonical_json_bytes(contract_document()) + b"\n"
+        ).hexdigest(),
+        "implementation_verified_sha256": verified,
+        "implementation_reviewed_sha256": reviewed,
+    }
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_bytes(canonical_json_bytes(authority) + b"\n")
+    authority_path.chmod(0o444)
+    output = tmp_path / "output"
+    ledger = output / "phase-ledger"
+    claim_phase(ledger, Phase.IMPLEMENTATION_VERIFIED, verified)
+    with pytest.raises(ContractViolation, match="IMPLEMENTATION_REVIEWED"):
+        calibrate_once(authority_path, output, claim_identity="3" * 64)
+    claim_phase(ledger, Phase.IMPLEMENTATION_REVIEWED, reviewed)
+    calls = []
+
+    def synthetic():
+        calls.append(True)
+        return {
+            "schema": "focus-synthetic-calibration/v1",
+            "status": "PASS",
+            "totals": {"generated_paths": 140_000},
+        }
+
+    monkeypatch.setattr("gold_research.focus_runner.execute_synthetic_calibration", synthetic)
+    first = calibrate_once(authority_path, output, claim_identity="3" * 64)
+    second = calibrate_once(authority_path, output, claim_identity="3" * 64)
+    assert first["status"] == "CREATED"
+    assert second["status"] == "NO_CHANGE"
+    assert first["evidence_sha256"] == second["evidence_sha256"]
+    assert calls == [True]
+    assert (ledger / "03-CALIBRATION_CLAIMED.json").stat().st_mode & 0o777 == 0o444
+    assert (ledger / "04-CALIBRATION_SEALED.json").stat().st_mode & 0o777 == 0o444
+
+
 def test_unreviewed_effectful_phases_and_unknown_options_fail_closed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     contract = _contract(tmp_path / "contract.json")
-    for command in ("calibrate-once", "collect", "finalize", "evaluate-once"):
+    for command in ("collect", "finalize", "evaluate-once"):
         assert main(
             [
                 command,
@@ -109,6 +158,18 @@ def test_unreviewed_effectful_phases_and_unknown_options_fail_closed(
         result = json.loads(capsys.readouterr().out)
         assert result["status"] == "REJECTED"
         assert "not admitted" in result["reason"]
+    assert main(
+        [
+            "calibrate-once",
+            "--contract",
+            str(contract),
+            "--output-root",
+            str(tmp_path / "calibrate-once"),
+        ]
+    ) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "REJECTED"
+    assert "authority" in result["reason"]
     with pytest.raises(SystemExit) as caught:
         main(
             [
