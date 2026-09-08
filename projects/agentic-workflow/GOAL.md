@@ -1,31 +1,30 @@
 # Goal
 
-Validate a minimal but real Agentic Workflow in which AI Agents are the functional and decision-making nodes, each product has one canonical persistent Product Owner Session as its decision brain, and simple shared files support evidence and handoffs without replacing that Session.
+Validate a minimal but real Agentic Workflow in which AI Agents are functional and decision-making nodes, each product has one canonical persistent Product Owner Session, and explicit Goal, Principles, Validation, shared evidence, and Handoffs connect independent Roles without becoming a fixed workflow engine.
 
 The workflow should:
 
-- let a Hermes Product Owner Agent retain this fixed Goal and current information in its canonical persistent Session;
-- let real-time information events enter that existing Owner Session as Signals;
-- gather live facts directly through existing tools when they can change the decision;
-- reconcile all non-Done Workstreams and choose a capacity-bounded set of safe independent Actions with the Agents best suited to perform them;
-- pass the same Goal plus one Workstream-specific Handoff to each selected Agent;
-- return the Result to the Owner;
-- let each Result change the affected Workstream, the next Action set, Agent allocation, or a justified lane/Portfolio wait.
+- deliver Signals into the existing Owner Session;
+- resolve Hard, Default, Product, Role, and Task Principle layers;
+- reconcile Goal and current Evidence into bounded Gaps and Action sets;
+- let each selected Role exercise its own professional judgment;
+- prioritize reversible user-visible prototypes and real effect validation;
+- return Result and Review evidence to the same Owner;
+- let each Result change or reaffirm the next decision.
 
 ## Current phase
 
-Functional validation only.
-
-## Principles
-
-- Prefer real Agent calls over framework code.
-- Keep shared context in Markdown files.
-- Let Agents choose Skills and Tools when needed.
-- Do not build a database, kernel, state machine, receipt system, replay engine, or connector framework.
-- Do not write or run tests.
-- Keep every individual Action bounded; one Signal may produce several independent Workstream Actions when compatible execution slots exist.
-- Do not merge, deploy, change production signals, or perform high-risk external actions without Jingtao's explicit approval.
+Functional prototype validation only. A host or service named production remains part of this validation environment unless Jingtao explicitly changes the product phase. Production placement does not by itself require production-engineering completeness.
 
 ## Success
 
-The workflow must complete at least one useful, evidence-backed action on a real project through `Product Owner Session → Specialist → Result → Product Owner decision`. A file round-trip against the superseded Agentic Workflow implementation alone is not sufficient.
+A real product iteration proves that:
+
+1. Owner and Specialist resolve the same exact Principle Context;
+2. the Role's professional judgment changes how the Action is performed;
+3. the user-visible or decision-relevant effect is observable;
+4. only the minimum validation needed for that claim and Hard Boundaries is performed;
+5. stale/conflicting Principle Context fails closed;
+6. the Owner reads the result and makes the next decision.
+
+A file round-trip, framework scaffold, large test suite, or formally deployed service without observed user effect is insufficient.

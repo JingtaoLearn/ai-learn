@@ -1,161 +1,109 @@
 # Product Agent Suite Template
 
-Copy this document for one product only. Replace every `<Product>` with one UpperCamelCase product segment such as `QuantResearch`. Defining a suite does not authorize creating live Profiles or changing permissions, schedules, production, merge, deployment, paid, or public state.
+Instantiate this document for one product. It defines authority and information flow; it does not authorize a live side effect by itself.
 
 ## Product contract
 
 - Product: `<Product>`
-- Jingtao-owned Goal: `<link to the canonical Goal>`
-- Principles: `<unchanged owner-approved Principles>`
-- Portfolio state contract: [`PORTFOLIO_STATE.md`](PORTFOLIO_STATE.md)
-- Specialist pool and remote execution contract: [`EXECUTION_POOL.md`](EXECUTION_POOL.md)
-- Safety boundary: `<allowed effects and existing approval gates>`
-- Canonical Product Owner display name: `ProductOwnerAgent-<Product>`
-- Canonical Owner Session: `<persistent Bot Chat identifier or title>`
-- Exact-Session callback adapter: `session-messenger` installed in every participating Profile
-- Verified Signal routes: `<Cron bot-chat, webhook/Kanban, or immediate session-messenger adapter into the exact Owner Session>`
-- Temporary clock/backstop: `<none, Heartbeat, Loop, or Cron with removal condition>`
+- Product space: `<absolute shared path>`
+- Goal: `<path and current revision>`
+- Product Principles: `<path and current revision>`
+- Default Principles: `<shared path and current revision>`
+- Principle resolution: `<shared resolution contract>`
+- Hard Boundaries: `<shared file, system policy, and explicit authorization sources with revisions>`
+- State/Portfolio: `<paths>`
+- Execution contract: `<path>`
+- Canonical Owner: `ProductOwnerAgent-<Product>` / `<Profile ID>` / `<exact persistent Session>`
+- Signal/result routes: `<verified native or narrow supported routes>`
+- Temporary backstop: `<none or exact removal condition>`
 
-The Owner Session is the product decision brain. `GOAL.md`, `STATE.md`, `INBOX.md`, Handoffs, Results, and Decisions are inspectable supporting artifacts. They do not replace the Session.
+The Owner Session is the living product decision brain. Goal, Principles, State, Handoffs, Results, and Reviews are inspectable shared sources; none replaces that Session.
 
-The Owner continuously re-enters `Goal + Principles -> Portfolio Evidence -> Workstream Gaps -> Action set` after every Signal, Result, Review, Decision, or recovery Pulse. The Goal supplies direction and the owner-approved Principles constrain every valid move. Finishing one Action only reopens capacity. The Owner fills every safe independent execution slot rather than serializing the whole product behind one global frontier.
+## Effective Principle Context
 
-Maintain a compact live role registry containing each display name, Profile ID, role pool, slot number, responsibility, canonical Session when one exists, model/reasoning policy, and readiness evidence. Inspect it together with `hermes profile list` before assigning or requesting a role. Product Owner is singleton. Every safely parallelizable concrete Specialist role may use slots `01..03`; slot `04` is invalid and no static cross-role global cap is imposed.
+Every Agent resolves and identity-binds:
 
-## Display-name rule
+`Hard Boundaries -> Default Principles -> Product Principles -> Role Principles -> Task Constraints`
 
-Every product Agent display name has exactly two UpperCamelCase segments joined by one hyphen:
-
-`<RoleAgent>-<Product>`
-
-Valid examples:
-
-- `ProductOwnerAgent-QuantResearch`
-- `ResearchAgent-QuantResearch`
-
-A role or product name that needs another hyphen must be recast as one UpperCamelCase segment. Record the separate Hermes Profile ID beside the display name when the native machine identifier differs.
-
-## Model and reasoning policy
-
-Every Agent uses `gpt-5.6-sol`. No Claude model is selected anywhere: not as a default, task override, fallback, or review model.
-
-- `ProductOwnerAgent-<Product>` uses `max` reasoning.
-- Research, Scout, Experiment, and other evidence specialists use exactly `high` reasoning.
-- Implementation Agents, `AgenticWorkflow-Assistant`, and independent Reviewer Agents use exactly `xhigh` reasoning.
-
-Record both model and reasoning effort in the live Profile configuration and in any Kanban or Cron override that can replace Profile defaults.
+Use [`../principles/RESOLUTION.md`](../principles/RESOLUTION.md). Formal work uses [`HANDOFF.md`](HANDOFF.md) and binds the exact Default/Product/Role SHA-256 identities. Workers return `PRINCIPLE_CONTEXT_STALE` or `PRINCIPLE_CONTEXT_CONFLICT` instead of guessing.
 
 ## Smallest suite
 
-| Display name | Responsibility | Interface | Initial Toolsets | Disclosed Skills | Creation evidence |
-|---|---|---|---|---|---|
-| `ProductOwnerAgent-<Product>` | Own the Goal-aware next decision in one canonical Owner Session | Signal and Evidence in; Handoff or Owner Decision out | `file`, `web`, `session_search`, `skills` | Only methods selected for observed Gaps | Required for every product |
-| `<SpecialistRoleAgent>-<Product>` | Close one recurring class of Gap without taking product ownership | Complete Handoff in; sourced Result out | `<narrow role capabilities>` | `<methods needed by this role>` | `<observed Gap requiring an independent role>` |
+Start with the Owner. Add only Roles supported by observed recurring Gaps.
 
-Delete the specialist row until its creation evidence exists. Add further rows one at a time; a hypothetical role is not a suite requirement.
+| Role | Stable Profile | Responsibility | Role Principles | Initial capabilities |
+|---|---|---|---|---|
+| Product Owner | `productowneragent<product>` | select Goal-aligned Action sets and absorb Results | `principles/roles/PRODUCT_OWNER.md` | product evidence, files, routing, Kanban |
+| `<Specialist>` | `<profile id>` | close one recurring Gap class | `<role principle path>` | only capabilities required by that Role |
 
-Profiles isolate Hermes state, not operating-system filesystem access. Every Action therefore follows [`EXECUTION_POOL.md`](EXECUTION_POOL.md): exact Profile instance, Session, branch/worktree or exact-SHA checkout, run directory, read/write sets, semantic seams, execution host, lease and fencing identity. Formal tests, regression, builds, containers, large data work, backtests and other heavy commands run on an eligible remote execution host; source and data move only by the contract's immutable-SHA and manifest rules.
+One Role has one Profile. Safe concurrency uses zero to three isolated task Sessions under that Profile. The Product Owner remains singleton with one canonical Session.
 
-A Kanban worker is already the background Agent for its card. When the selected Matt method says to spawn a background researcher, a Research worker applies the method directly in its current Session instead of spawning the same Handoff again. Nested Agents are reserved for genuinely independent subproblems with separate ownership.
+Display names use exactly `<RoleAgent>-<Product>` with two UpperCamelCase segments.
 
-Use the board's normal transient-failure budget for formal work. Set `max_retries` to at least `2` unless a documented deterministic hazard requires one-attempt fail-closed behavior. A reviewer crash must not silently become a PASS or force a cross-product reviewer substitution.
+## Model policy
 
-## Signal contract
+- every Agent uses `gpt-5.6-sol`;
+- Product Owner uses `max` reasoning;
+- Research/Experiment roles use `high`;
+- Implementation, independent Reviewer, and AgenticWorkflow Assistant use `xhigh`;
+- no task or scheduled override may silently change this policy.
 
-A Signal is new information, not merely elapsed time.
+## Role prompt contract
 
-1. Deliver the Signal into the existing canonical Owner Session.
-2. Interpret it against the Goal and accumulated product decisions.
-3. Gather only Evidence that can change the decision.
-4. Reconcile every non-Done Workstream, then build the Ready set.
-5. Select the largest safe Action set across `01..03` role-pool slots under Profile, workspace, semantic-seam, dependency, idempotency, fencing and live-host constraints.
-6. Route formal work through Kanban, short live canonical Bot Chat consultation through `message_agent`, and headless exact-Session callbacks through `session-messenger`.
-7. Return every Specialist Result to this same Owner Session through the selected native or callback route.
-8. Reconcile the whole Portfolio immediately after accepting, rejecting, or invalidating any Result; refill capacity or record lane-local and Portfolio legal waits with exact wake conditions.
+Every Role SOUL contains only:
 
-If the Owner card was created from a plain CLI Session, do not assume Kanban auto-subscribed that Session to `notify+wake`. On terminal task state, send one idempotent `session-messenger` RESULT/REVIEW envelope to the exact Owner Session unless a verified native subscription already delivered it.
+1. identity and product responsibility;
+2. authority and refusal boundary;
+3. mandatory paths for Default, Product, and Role Principles;
+4. required product and execution contracts;
+5. result destination and broad communication boundary.
 
-Every formal Handoff for a CLI Owner records the callback Profile, exact Session, stable correlation/idempotency identities, required terminal message type, and artifact/hash evidence. The terminal worker—normally the final Reviewer—sends that envelope after the board reaches terminal state. A recovery Pulse may repair a missed wake, but the next Action remains the Owner's decision.
+Do not copy complete Principle text, current Session IDs, host inventory, retry procedures, or incident repairs into every SOUL. Keep volatile identities in the product context and Handoff.
 
-For a replyable `session-messenger` message, include both exact Session endpoints; the receiver swaps them, preserves the stable `correlation_id`, sets `causation_id` to the inbound `message_id`, and advances the bounded hop count. Scheduled Signals prefer Cron `bot-chat`; immediate source adapters may use the same `agent-message/v1` envelope with a source label and no callback Session. Record the condition that removes every timer.
+## Dynamic product loop
 
-Review never rewrites immutable specialist evidence. A material finding creates a separately hashed additive correction, returns the card to the original specialist, and requires another independent review before the Owner accepts the package.
+On every material Signal, Result, Review, Decision, or recovery Pulse, the Owner:
 
-## Handoff template
+1. reads Goal, effective Principles, State, and decision-relevant evidence;
+2. identifies the highest-value Gaps, including user-visible unmet effects;
+3. selects the largest safe bounded Action set;
+4. creates complete Handoffs with frozen Principle Context and Validation;
+5. delegates to the exact Role Profile in isolated task Sessions;
+6. reads returned evidence and any independent Review;
+7. validates the actual effect in the owning system or user surface;
+8. replans, stops, waits, or dispatches the next Action set.
 
-### Goal
+This is a reasoning loop, not a fixed sequence of Skills or implementation stages.
 
-`<The unchanged owner-owned objective relevant to this Action>`
+## Prototype-first delivery
 
-### Evidence
+For all current product suites, including services placed on hosts called production machines:
 
-- `<Fact — source>`
+- put the smallest reversible capability in front of the user early;
+- validate actual usefulness and behavior before broad hardening;
+- keep tests proportional to the claim and risk;
+- do not require production-grade architecture merely because deployment reaches a production-named host;
+- preserve Hard Boundaries, existing user data, rollback, and explicitly protected semantics.
 
-### Gap
+A Reviewer evaluates the accepted prototype effect, not whether the implementation looks maximally formal.
 
-`<One missing knowledge, judgment, or result preventing progress>`
+## Work, review, and return
 
-### Action
+- Use Kanban for formal work with acceptance, artifacts, blocking, review, or recovery.
+- Use short native Agent conversation only for lightweight consultation.
+- Persist task evidence before wake/callback.
+- a Reviewer reads the same frozen Hard Boundary, authorization, Resolution, Default, Product, Role, and Handoff identities plus the immutable candidate.
+- `REVISE` creates additive correction evidence; it never rewrites the reviewed artifact.
+- Completion returns to the exact canonical Owner Session, which reads the evidence and makes the next product decision.
 
-`<One bounded outcome, not a list of stages>`
+## Product validation
 
-### Workstream
+A product iteration is complete only when:
 
-`<One stable Portfolio lane ID>`
+- the user-visible or decision-relevant effect can be observed;
+- the owning system is read back;
+- the Result records effective Principle revisions and any exception;
+- required Hard Boundary checks pass;
+- the Owner uses the evidence to update the next decision.
 
-### Agent
-
-`<One display name from this Product Agent Suite>`
-
-### Pool and slot
-
-`<Concrete role pool and exact isolated Profile ID>`
-
-### Workspace and seams
-
-- Workspace: `<workspace_id and exact path>`
-- Base/candidate: `<immutable SHA identities>`
-- Read set: `<immutable inputs>`
-- Write set: `<owned paths/resources>`
-- Shared seams: `<schema/interface/dataset/deployment/integration conflicts>`
-
-### Execution
-
-- Host/resource class: `<control | remote host; light | heavy>`
-- Transfer manifest: `<path or none>`
-- Lease/fencing: `<owner, heartbeat/expiry, fencing identity>`
-
-### Selected Matt flow
-
-`<domain-modeling | codebase-design | writing-for-agents | research | to-spec | none>`
-
-### Why this flow
-
-`<How this professional method fits the observed Gap and Action, or why direct action is sufficient>`
-
-### Acceptance
-
-- `<Checkable condition>`
-- `<Every required output and Evidence item accounted for>`
-
-### Safety
-
-- Allowed: `<effects this Action may perform>`
-- Approval required: `<team, permission, production, merge, deployment, paid, public, or other gated effects>`
-- Preserve: `<Goal, Principles, data, and existing controls that remain unchanged>`
-
-### Owner terminal callback
-
-- Profile: `<exact Product Owner Profile>`
-- Session: `<exact canonical Owner Session>`
-- Correlation: `<stable Action/run identity>`
-- Terminal type mapping: `<PASS/done -> REVIEW; attributed blocked -> BLOCKED; REVISE is non-terminal>`
-- Idempotency keys: `<literal stable key for each terminal mapping>`
-- Sender: `<terminal worker, normally the final Reviewer>`
-- Evidence: `<artifact paths and hashes to include>`
-
-## Owner completion check
-
-Before sending the Handoff, verify that every heading above is present and specific, the selected Profile is an unoccupied valid slot `01..03`, and the Agent still resolves to `gpt-5.6-sol` with the role's required reasoning effort. Before accepting the Result, verify every Acceptance item, remote manifest and artifact hash from Evidence rather than treating completion prose as proof. Then update the affected Workstream, reconcile every other non-Done lane, dispatch the selected Action set, and update supporting State only when the compact projection changed.
-
-`continue` makes one lane eligible for another bounded Action. A Portfolio-level `wait` is legal only when every non-Done lane is Active, Waiting, Blocked, Parked with a reconsider trigger, has no positive-value bounded Action, or the Goal is objectively complete. A recovery Pulse only wakes the exact Owner Session to reconcile the Portfolio; the Owner alone selects work.
+Test count, document count, task completion, deployment status, and Agent confidence are not substitutes for this validation.

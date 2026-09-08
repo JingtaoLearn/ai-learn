@@ -40,7 +40,7 @@ projects/
 
 ## Agent Workflows
 
-- [agentic-workflow](agentic-workflow/) — native Hermes product-Agent suites in which each Product Owner Agent keeps one canonical persistent Session and routes bounded work from live Signals.
+- [agentic-workflow](agentic-workflow/) — principle-aware native Hermes product-Agent suites: Goal, layered Principles, Role-specific judgment, and observable Validation around one persistent Product Owner Session.
 
 ## Adding a New Project
 
