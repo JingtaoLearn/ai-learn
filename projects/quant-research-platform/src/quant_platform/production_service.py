@@ -39,13 +39,18 @@ class AdmissionPolicy:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ProductionAdmissionError(503, "CLOCK_INVALID", "admission clock is not timezone-aware")
         clock = now.astimezone(UTC)
-        invocation = datetime.fromisoformat(request.effective_for[:-1] + "+00:00")
-        if request.is_validation and abs(clock - invocation) > self.validation_window:
+        invocation = (
+            None
+            if request.is_operation
+            else datetime.fromisoformat(request.effective_for[:-1] + "+00:00")
+        )
+        if request.is_validation and invocation is not None and abs(clock - invocation) > self.validation_window:
             raise ProductionAdmissionError(
                 422, "VALIDATION_WINDOW_REJECTED", "validation invocation is not immediate"
             )
         if (
-            not request.is_validation
+            invocation is not None
+            and not request.is_validation
             and not invocation - self.before_window <= clock <= invocation + self.after_window
         ):
             raise ProductionAdmissionError(422, "FIRE_WINDOW_REJECTED", "scheduled fire is outside admission window")
@@ -86,6 +91,8 @@ class ProductionService:
                     "validation_for": request_body["validation_for"],
                 }
             )
+        if isinstance(request_body, Mapping) and "operation" in request_body:
+            payload["operation"] = request_body["operation"]
         if row["status"] == "SUCCEEDED":
             payload.update(
                 {

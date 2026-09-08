@@ -22,6 +22,7 @@ from gold_research.focus_contract import (
 from gold_research.focus_evaluation import (
     COMPARATOR_NAMES,
     FocusDetector,
+    _detector_path_outputs,
     apply_detector_output,
     calibration_plan,
     circular_bootstrap_lower_bounds,
@@ -140,6 +141,18 @@ def test_calibration_plan_is_exact_and_does_not_execute_paths() -> None:
     assert len(plan["change_cells"]) == 9
     assert plan["thresholds"] == 1
     assert plan["recalibrations"] == 0
+
+
+def test_batched_calibration_detector_matches_the_reviewed_scalar_detector() -> None:
+    innovations = np.random.default_rng(42).standard_normal((2, 756))
+    statistics, changepoints, directions = _detector_path_outputs(innovations)
+    for path in range(2):
+        detector = FocusDetector()
+        for offset, value in enumerate(innovations[path, 63:]):
+            expected = detector.update(float(value))
+            assert statistics[path, offset] == expected.statistic
+            assert changepoints[path, offset] == expected.changepoint
+            assert directions[path, offset] == (1 if expected.direction is Direction.UP else -1)
 
 
 def test_full_synthetic_fixture_preserves_three_comparators_and_terminal() -> None:

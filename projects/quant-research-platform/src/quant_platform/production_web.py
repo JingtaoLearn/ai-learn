@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .production_bocom import BocomProductionJob
 from .production_contract import ProductionRelease
+from .production_focus import FocusCalibrationProductionJob
 from .production_gold import GoldProductionJob
 from .production_jobs import ProductionJobs
 from .production_result import ProductionResultError, ProductionResultStore
@@ -158,13 +159,20 @@ def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
     results = ProductionResultStore(state_root)
     bocom = BocomProductionJob(authorities / "bocom-model-manifest.json")
     gold = GoldProductionJob(authorities / "gold-model-manifest.json")
+    focus = FocusCalibrationProductionJob(
+        authorities / "focus-calibration-authority.json", state_root / "focus-calibration"
+    )
     policy = AdmissionPolicy(
-        {bocom.job_id: bocom.production_manifest_sha256, gold.job_id: gold.production_manifest_sha256},
+        {
+            bocom.job_id: bocom.production_manifest_sha256,
+            gold.job_id: gold.production_manifest_sha256,
+            focus.job_id: focus.production_manifest_sha256,
+        },
         release,
         ready=lambda: True,
     )
     service = ProductionService(store, policy)
-    jobs = ProductionJobs([bocom, gold])
+    jobs = ProductionJobs([bocom, gold, focus])
     worker = ProductionWorker(
         store,
         jobs,

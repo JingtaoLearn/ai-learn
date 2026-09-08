@@ -28,7 +28,7 @@ from gold_research.focus_contract import (
     contract_document,
     strict_json_loads,
 )
-from gold_research.focus_evaluation import calibration_plan
+from gold_research.focus_evaluation import calibration_plan, execute_synthetic_calibration
 from gold_research.sge_daily_report import CONTENT_TYPE, EXPECTED_HEADERS, build_request, parse_version
 
 _PHASE_ORDER = tuple(Phase)
@@ -111,6 +111,16 @@ def _read_phase_claim(path: Path, ordinal: int, phase: Phase) -> str:
     if raw != canonical_json_bytes(document) + b"\n":
         raise ContractViolation("phase claim is not canonically encoded")
     return evidence_sha256
+
+
+def read_phase_claim(ledger_root: Path, phase: Phase) -> str:
+    """Read and verify one canonical claim at its frozen ledger position."""
+
+    index = _PHASE_ORDER.index(phase)
+    path = ledger_root / f"{index + 1:02d}-{phase.value}.json"
+    if not path.is_file():
+        raise ContractViolation(f"missing phase prerequisite {phase.value}")
+    return _read_phase_claim(path, index + 1, phase)
 
 
 def claim_phase(ledger_root: Path, phase: Phase, evidence_sha256: str) -> bool:
@@ -273,6 +283,113 @@ def verify_implementation(contract_path: Path, output_root: Path) -> dict[str, A
     }
 
 
+def _calibration_authority(path: Path) -> tuple[dict[str, Any], str]:
+    info = _regular_single_link(path)
+    if info.st_mode & 0o022:
+        raise ContractViolation("calibration authority must not be group/world writable")
+    raw = path.read_bytes()
+    document = strict_json_loads(raw)
+    fields = {
+        "schema",
+        "contract_sha256",
+        "implementation_verified_sha256",
+        "implementation_reviewed_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != fields:
+        raise ContractViolation("calibration authority has the wrong schema")
+    if document["schema"] != "quant-research/focus-calibration-authority/v1":
+        raise ContractViolation("calibration authority schema is not supported")
+    for field in fields - {"schema"}:
+        value = document[field]
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ContractViolation(f"calibration authority {field} must be lowercase SHA-256")
+    expected_contract = _sha256(canonical_json_bytes(contract_document()) + b"\n")
+    if document["contract_sha256"] != expected_contract:
+        raise ContractViolation("calibration authority binds a different FOCuS contract")
+    if raw != canonical_json_bytes(document) + b"\n":
+        raise ContractViolation("calibration authority is not canonical")
+    return document, _sha256(raw)
+
+
+def calibrate_once(
+    authority_path: Path,
+    output_root: Path,
+    *,
+    claim_identity: str | None = None,
+) -> dict[str, Any]:
+    """Claim, execute and seal the frozen synthetic calibration without retrying work."""
+
+    authority, authority_sha256 = _calibration_authority(authority_path)
+    if claim_identity is None:
+        claim_identity = _sha256(
+            b"quant-research/focus-calibration-claim/v1\n" + authority_sha256.encode("ascii")
+        )
+    if len(claim_identity) != 64 or any(
+        character not in "0123456789abcdef" for character in claim_identity
+    ):
+        raise ContractViolation("calibration claim identity must be lowercase SHA-256")
+    ledger = output_root / "phase-ledger"
+    if read_phase_claim(ledger, Phase.IMPLEMENTATION_VERIFIED) != authority[
+        "implementation_verified_sha256"
+    ]:
+        raise ContractViolation("IMPLEMENTATION_VERIFIED does not match calibration authority")
+    if read_phase_claim(ledger, Phase.IMPLEMENTATION_REVIEWED) != authority[
+        "implementation_reviewed_sha256"
+    ]:
+        raise ContractViolation("IMPLEMENTATION_REVIEWED does not match calibration authority")
+
+    calibration_root = output_root / "synthetic-calibration"
+    calibration_path = calibration_root / "calibration.json"
+    claimed_path = ledger / "03-CALIBRATION_CLAIMED.json"
+    sealed_path = ledger / "04-CALIBRATION_SEALED.json"
+    if calibration_root.exists():
+        if not calibration_path.is_file() or not claimed_path.is_file() or not sealed_path.is_file():
+            raise ContractViolation("existing calibration seal is partial")
+        if read_phase_claim(ledger, Phase.CALIBRATION_CLAIMED) != claim_identity:
+            raise ContractViolation("existing calibration claim has a different identity")
+        payload = calibration_path.read_bytes()
+        if read_phase_claim(ledger, Phase.CALIBRATION_SEALED) != _sha256(payload):
+            raise ContractViolation("existing calibration seal identity differs")
+        document = strict_json_loads(payload)
+        if not isinstance(document, dict) or document.get("totals", {}).get("generated_paths") != (
+            SYNTHETIC_PATHS
+        ):
+            raise ContractViolation("existing calibration document is invalid")
+        return {
+            "status": "NO_CHANGE",
+            "phase": Phase.CALIBRATION_SEALED.value,
+            "evidence_sha256": _sha256(payload),
+            "document": document,
+        }
+    if claimed_path.exists():
+        read_phase_claim(ledger, Phase.CALIBRATION_CLAIMED)
+        raise ContractViolation("calibration was already claimed without a seal; rerun is forbidden")
+
+    claim_phase(ledger, Phase.CALIBRATION_CLAIMED, claim_identity)
+    document = execute_synthetic_calibration()
+    document["authority"] = {
+        "authority_sha256": authority_sha256,
+        "contract_sha256": authority["contract_sha256"],
+        "implementation_verified_sha256": authority["implementation_verified_sha256"],
+        "implementation_reviewed_sha256": authority["implementation_reviewed_sha256"],
+        "claim_identity": claim_identity,
+    }
+    calibration_path = publish_immutable(calibration_root, "calibration.json", document)
+    payload = calibration_path.read_bytes()
+    evidence_sha256 = _sha256(payload)
+    claim_phase(ledger, Phase.CALIBRATION_SEALED, evidence_sha256)
+    return {
+        "status": "CREATED",
+        "phase": Phase.CALIBRATION_SEALED.value,
+        "evidence_sha256": evidence_sha256,
+        "document": document,
+    }
+
+
 def _not_admitted(command: str) -> None:
     raise ContractViolation(
         f"{command} is not admitted before independent implementation Review and its next phase gate"
@@ -297,6 +414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         if args.command == "verify-implementation":
             result = verify_implementation(args.contract, args.output_root)
+        elif args.command == "calibrate-once":
+            result = calibrate_once(args.contract, args.output_root)
         else:
             _not_admitted(args.command)
             raise AssertionError("unreachable")

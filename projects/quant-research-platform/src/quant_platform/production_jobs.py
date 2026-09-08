@@ -62,6 +62,30 @@ class JobComputation:
     attempt_id: str
 
 
+@dataclass(frozen=True)
+class ProductionInput:
+    kind: str
+    identity: Mapping[str, Any]
+    payload: bytes
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"provider-get", "no-network-operation"}:
+            raise ProductionJobError("production input kind is not supported")
+        if type(self.payload) is not bytes:
+            raise ProductionJobError("production input payload must be bytes")
+
+
+@dataclass(frozen=True)
+class FormalComputation:
+    job_id: str
+    production_manifest_sha256: str
+    operation: str
+    authority_sha256: str
+    files: Mapping[str, bytes]
+    experiment_id: str
+    attempt_id: str
+
+
 class ProductionJob(Protocol):
     job_id: str
     production_manifest_sha256: str
@@ -74,6 +98,17 @@ class ProductionJob(Protocol):
         provider_url: str,
         scheduled_for: datetime,
     ) -> JobComputation: ...
+
+
+class NoNetworkProductionJob(Protocol):
+    job_id: str
+    production_manifest_sha256: str
+
+    def acquire_no_network(self, request_id: str) -> ProductionInput: ...
+
+    def compute_no_network(
+        self, value: ProductionInput, request_id: str
+    ) -> FormalComputation: ...
 
 
 def parse_manifest(
@@ -266,8 +301,8 @@ def next_weekday(value: date) -> date:
 class ProductionJobs:
     """Small job interface with provider and model details hidden in adapters."""
 
-    def __init__(self, jobs: Sequence[ProductionJob]):
-        self._jobs = {job.job_id: job for job in jobs}
+    def __init__(self, jobs: Sequence[ProductionJob | NoNetworkProductionJob]):
+        self._jobs: dict[str, Any] = {job.job_id: job for job in jobs}
         if len(self._jobs) != len(jobs):
             raise ProductionJobError("production job IDs must be unique")
 
@@ -279,6 +314,28 @@ class ProductionJobs:
         except KeyError as exc:
             raise ProductionJobError("production job is not registered") from exc
         return job.acquire(client, scheduled_for)
+
+    def stage_input(
+        self,
+        job_id: str,
+        client: ProviderClient,
+        scheduled_for: datetime | None,
+        *,
+        request_id: str,
+    ) -> ProductionInput:
+        try:
+            job = self._jobs[job_id]
+        except KeyError as exc:
+            raise ProductionJobError("production job is not registered") from exc
+        acquire_no_network = getattr(job, "acquire_no_network", None)
+        if acquire_no_network is not None:
+            return acquire_no_network(request_id)
+        if scheduled_for is None:
+            raise ProductionJobError("provider job requires a scheduled invocation time")
+        url, raw = job.acquire(client, scheduled_for)
+        return ProductionInput(
+            "provider-get", {"method": "GET", "provider_url": url}, raw
+        )
 
     def compute(
         self,
@@ -292,3 +349,27 @@ class ProductionJobs:
         except KeyError as exc:
             raise ProductionJobError("production job is not registered") from exc
         return job.compute(raw, provider_url, scheduled_for)
+
+    def compute_input(
+        self,
+        job_id: str,
+        value: ProductionInput,
+        scheduled_for: datetime | None,
+        *,
+        request_id: str,
+    ) -> JobComputation | FormalComputation:
+        try:
+            job = self._jobs[job_id]
+        except KeyError as exc:
+            raise ProductionJobError("production job is not registered") from exc
+        if value.kind == "no-network-operation":
+            compute_no_network = getattr(job, "compute_no_network", None)
+            if compute_no_network is None:
+                raise ProductionJobError("job does not support a no-network operation")
+            return compute_no_network(value, request_id)
+        if scheduled_for is None or value.identity.get("method") != "GET":
+            raise ProductionJobError("provider input identity is invalid")
+        provider_url = value.identity.get("provider_url")
+        if not isinstance(provider_url, str):
+            raise ProductionJobError("provider input URL is invalid")
+        return self.compute(job_id, value.payload, provider_url, scheduled_for)

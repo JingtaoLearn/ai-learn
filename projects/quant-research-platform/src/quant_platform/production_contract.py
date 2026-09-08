@@ -30,6 +30,13 @@ VALIDATION_REQUEST_FIELDS = {
     "production_manifest_sha256",
     "request_id",
 }
+OPERATION_REQUEST_FIELDS = {
+    "schema_version",
+    "job_id",
+    "operation",
+    "production_manifest_sha256",
+    "request_id",
+}
 RELEASE_FIELDS = {
     "schema",
     "production_api_image_digest",
@@ -40,7 +47,10 @@ RELEASE_FIELDS = {
     "provider_contract_sha256",
     "api_contract_sha256",
 }
-SUPPORTED_JOB_IDS = frozenset({"297c11cad0dc", "1cd5557264db"})
+DAILY_JOB_IDS = frozenset({"297c11cad0dc", "1cd5557264db"})
+FOCUS_CALIBRATION_JOB_ID = "9d9adff99888"
+SUPPORTED_JOB_IDS = DAILY_JOB_IDS | {FOCUS_CALIBRATION_JOB_ID}
+FOCUS_CALIBRATION_OPERATION = "calibrate-once"
 RUN_ID_DOMAIN = b"quantresearch-production-run-id/v1\n"
 
 
@@ -125,6 +135,7 @@ class ProductionRequest:
     scheduled_for: str | None = None
     validation_for: str | None = None
     validation_id: str | None = None
+    operation: str | None = None
 
     @classmethod
     def from_bytes(
@@ -151,13 +162,23 @@ class ProductionRequest:
             scheduled_for = canonical_scheduled_fire(value["scheduled_for"])
             validation_for = None
             validation_id = None
+            operation = None
         elif fields == VALIDATION_REQUEST_FIELDS:
             schema_version = 2
             scheduled_for = None
             validation_for = canonical_utc_second(value["validation_for"], field="validation_for")
             validation_id = value["validation_id"]
+            operation = None
             if not isinstance(validation_id, str) or SHA256.fullmatch(validation_id) is None:
                 raise ProductionContractError("validation_id must be lowercase SHA-256")
+        elif fields == OPERATION_REQUEST_FIELDS:
+            schema_version = 3
+            scheduled_for = None
+            validation_for = None
+            validation_id = None
+            operation = value["operation"]
+            if operation != FOCUS_CALIBRATION_OPERATION:
+                raise ProductionContractError("formal operation is not supported")
         else:
             raise ProductionContractError("request fields do not match a supported invocation")
         if type(value["schema_version"]) is not int or value["schema_version"] != schema_version:
@@ -165,6 +186,8 @@ class ProductionRequest:
         job_id = value["job_id"]
         if not isinstance(job_id, str) or job_id not in SUPPORTED_JOB_IDS:
             raise ProductionContractError(f"job_id is not supported by schema v{schema_version}")
+        if (schema_version == 3) != (job_id == FOCUS_CALIBRATION_JOB_ID):
+            raise ProductionContractError("job_id does not match the request operation class")
         manifest = value["production_manifest_sha256"]
         request_id = value["request_id"]
         if not isinstance(manifest, str) or SHA256.fullmatch(manifest) is None:
@@ -179,6 +202,7 @@ class ProductionRequest:
             scheduled_for=scheduled_for,
             validation_for=validation_for,
             validation_id=validation_id,
+            operation=operation,
         )
         if validate_identity and request.request_id != request.expected_request_id:
             raise ProductionContractError("request_id does not match the canonical request subject")
@@ -220,12 +244,35 @@ class ProductionRequest:
         request_id = sha256_hex(canonical_json_bytes(subject))
         return cls.from_mapping(subject | {"request_id": request_id})
 
+    @classmethod
+    def build_operation(
+        cls,
+        *,
+        job_id: str,
+        operation: str,
+        production_manifest_sha256: str,
+    ) -> ProductionRequest:
+        subject = {
+            "schema_version": 3,
+            "job_id": job_id,
+            "operation": operation,
+            "production_manifest_sha256": production_manifest_sha256,
+        }
+        request_id = sha256_hex(canonical_json_bytes(subject))
+        return cls.from_mapping(subject | {"request_id": request_id})
+
     @property
     def is_validation(self) -> bool:
         return self.validation_id is not None
 
     @property
+    def is_operation(self) -> bool:
+        return self.operation is not None
+
+    @property
     def effective_for(self) -> str:
+        if self.is_operation:
+            return self.operation or ""
         value = self.validation_for if self.is_validation else self.scheduled_for
         if value is None:
             raise ProductionContractError("request invocation time is absent")
@@ -233,6 +280,13 @@ class ProductionRequest:
 
     @property
     def subject(self) -> dict[str, Any]:
+        if self.is_operation:
+            return {
+                "schema_version": self.schema_version,
+                "job_id": self.job_id,
+                "operation": self.operation,
+                "production_manifest_sha256": self.production_manifest_sha256,
+            }
         if self.is_validation:
             return {
                 "schema_version": self.schema_version,
