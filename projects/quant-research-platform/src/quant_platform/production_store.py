@@ -175,11 +175,16 @@ def _require_migration_authority(connection: sqlite3.Connection) -> None:
 
 
 class ProductionStore:
-    """One-writer SQLite ledger independent from the research catalog."""
+    """Production ledger using PostgreSQL in normal configured runtime."""
 
     def __init__(self, state_root: Path | str):
         self.state_root = Path(state_root).absolute()
         self.database_path = self.state_root / "production.sqlite3"
+        self._postgres = None
+        if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+            from .full_persistence import FullPostgresPersistence
+
+            self._postgres = FullPostgresPersistence.from_environment()
 
     def _prepare_root(self) -> None:
         self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -191,7 +196,9 @@ class ProductionStore:
         ):
             raise ProductionStoreError("production ledger path is unsafe")
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self) -> Any:
+        if self._postgres is not None:
+            return self._postgres.production_connection()
         self._prepare_root()
         connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
         connection.row_factory = sqlite3.Row
@@ -215,6 +222,20 @@ class ProductionStore:
             connection.close()
 
     def initialize(self) -> None:
+        if self._postgres is not None:
+            connection = self.connect()
+            try:
+                versions = [
+                    row["version"]
+                    for row in connection.execute(
+                        "SELECT version FROM production_schema_migrations ORDER BY version"
+                    ).fetchall()
+                ]
+            finally:
+                connection.close()
+            if versions != [1, 2]:
+                raise ProductionStoreError("unsupported PostgreSQL production ledger schema")
+            return
         with self.transaction(immediate=True) as connection:
             objects = _schema_objects(connection)
             if "schema_migrations" not in objects:

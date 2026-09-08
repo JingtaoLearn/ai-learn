@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -1086,6 +1086,8 @@ class DatasetService:
             raise DatasetResolutionError(str(exc)) from exc
 
     def _discover_existing(self) -> None:
+        if self.catalog._postgres is not None:
+            return
         datasets_root = self.catalog.state_root / "datasets"
         if not datasets_root.exists():
             return
@@ -1146,6 +1148,24 @@ class DatasetService:
     def _latest(
         self, item: DatasetCatalogItem
     ) -> tuple[dict[str, Any], pd.DataFrame] | None:
+        if self.catalog._postgres is not None:
+            snapshot_id = self.catalog._postgres.dataset_current_snapshot(item.instrument)
+            if snapshot_id is None:
+                return None
+            with self.catalog._postgres.materialize_dataset_snapshot(
+                item.instrument, snapshot_id
+            ) as target:
+                verified = _verify_snapshot(
+                    target, snapshot_id, include_frame=True, require_name=False
+                )
+            if not isinstance(verified, tuple):
+                raise DatasetResolutionError("snapshot verifier did not return market data")
+            manifest, frame = verified
+            if manifest["metadata"] != item.metadata:
+                raise DatasetResolutionError(
+                    "latest snapshot metadata conflicts with dataset catalog"
+                )
+            return manifest, frame
         pointer = (
             self.catalog.state_root
             / "datasets"
@@ -1214,72 +1234,83 @@ class DatasetService:
             raise DatasetResolutionError("snapshot_id must be a lower-case SHA-256 value")
         item = self._item(dataset_id)
         target = self.catalog.state_root / "datasets" / item.instrument / snapshot_id
-        if target.is_symlink() or not target.is_dir():
+        if self.catalog._postgres is None and (target.is_symlink() or not target.is_dir()):
             raise DatasetResolutionError(
                 f"unknown immutable dataset snapshot: {item.instrument}@{snapshot_id}"
             )
         try:
-            manifest = _verify_snapshot(target, snapshot_id, verify_parent=True)
-            if manifest["metadata"] != item.metadata:
-                raise DatasetResolutionError(
-                    "snapshot metadata conflicts with dataset catalog"
+            target_context = (
+                self.catalog._postgres.materialize_dataset_snapshot(item.instrument, snapshot_id)
+                if self.catalog._postgres is not None
+                else nullcontext(target)
+            )
+            with target_context as verified_target:
+                manifest = _verify_snapshot(
+                    verified_target,
+                    snapshot_id,
+                    verify_parent=True,
+                    require_name=self.catalog._postgres is None,
                 )
-            if manifest["schema_version"] in {4, 5}:
-                evidence = _verified_action_evidence(target, manifest)
-                document = evidence.document
-                coverage = document["coverage"]
-                corporate_actions = {
-                    "coverage_state": coverage["payload"]["coverage_state"],
-                    "coverage_id": coverage["coverage_id"],
-                    "source_contract_version": document["source_contract_version"],
-                    "complete_enumeration_contract": document[
-                        "complete_enumeration_contract"
-                    ],
-                    "complete_contract_id": document.get("complete_contract_id"),
-                    "limitations": coverage["payload"]["limitations"],
-                    "events": document["revisions"],
-                    "artifacts": document["artifacts"],
-                    "requests": document["requests"],
-                    "retrievals": document["retrievals"],
-                    "findings": document["findings"],
-                    "total_return_claim": document["total_return_claim"],
-                    "effective_total_return": read_time_classification(
-                        source_issuer="CORPORATE_ACTION_COLLECTOR",
-                        source_total_return_claim=document["total_return_claim"],
-                        coverage_state=coverage["payload"]["coverage_state"],
-                    ),
-                    "explanation": (
-                        "Known events with incomplete interval coverage are not verified "
-                        "total return."
-                        if coverage["payload"]["coverage_state"] == "VERIFIED_EVENTS"
-                        else "Unknown or partial corporate-action evidence is not verified "
-                        "total return."
-                    ),
-                }
-            else:
-                corporate_actions = {
-                    "coverage_state": "UNKNOWN_MISSING",
-                    "coverage_id": None,
-                    "source_contract_version": None,
-                    "complete_enumeration_contract": False,
-                    "complete_contract_id": None,
-                    "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
-                    "events": [],
-                    "artifacts": [],
-                    "requests": [],
-                    "retrievals": [],
-                    "findings": [],
-                    "total_return_claim": "FORBIDDEN",
-                    "effective_total_return": read_time_classification(
-                        source_issuer="HISTORICAL_RECORD",
-                        source_total_return_claim="FORBIDDEN",
-                        coverage_state="UNKNOWN_MISSING",
-                    ),
-                    "explanation": (
-                        "Unknown or partial corporate-action evidence is not verified "
-                        "total return."
-                    ),
-                }
+                if manifest["metadata"] != item.metadata:
+                    raise DatasetResolutionError(
+                        "snapshot metadata conflicts with dataset catalog"
+                    )
+                if manifest["schema_version"] in {4, 5}:
+                    evidence = _verified_action_evidence(verified_target, manifest)
+                    document = evidence.document
+                    coverage = document["coverage"]
+                    corporate_actions = {
+                        "coverage_state": coverage["payload"]["coverage_state"],
+                        "coverage_id": coverage["coverage_id"],
+                        "source_contract_version": document["source_contract_version"],
+                        "complete_enumeration_contract": document[
+                            "complete_enumeration_contract"
+                        ],
+                        "complete_contract_id": document.get("complete_contract_id"),
+                        "limitations": coverage["payload"]["limitations"],
+                        "events": document["revisions"],
+                        "artifacts": document["artifacts"],
+                        "requests": document["requests"],
+                        "retrievals": document["retrievals"],
+                        "findings": document["findings"],
+                        "total_return_claim": document["total_return_claim"],
+                        "effective_total_return": read_time_classification(
+                            source_issuer="CORPORATE_ACTION_COLLECTOR",
+                            source_total_return_claim=document["total_return_claim"],
+                            coverage_state=coverage["payload"]["coverage_state"],
+                        ),
+                        "explanation": (
+                            "Known events with incomplete interval coverage are not verified "
+                            "total return."
+                            if coverage["payload"]["coverage_state"] == "VERIFIED_EVENTS"
+                            else "Unknown or partial corporate-action evidence is not verified "
+                            "total return."
+                        ),
+                    }
+                else:
+                    corporate_actions = {
+                        "coverage_state": "UNKNOWN_MISSING",
+                        "coverage_id": None,
+                        "source_contract_version": None,
+                        "complete_enumeration_contract": False,
+                        "complete_contract_id": None,
+                        "limitations": ["LEGACY_SNAPSHOT_NO_ACTION_EVIDENCE"],
+                        "events": [],
+                        "artifacts": [],
+                        "requests": [],
+                        "retrievals": [],
+                        "findings": [],
+                        "total_return_claim": "FORBIDDEN",
+                        "effective_total_return": read_time_classification(
+                            source_issuer="HISTORICAL_RECORD",
+                            source_total_return_claim="FORBIDDEN",
+                            coverage_state="UNKNOWN_MISSING",
+                        ),
+                        "explanation": (
+                            "Unknown or partial corporate-action evidence is not verified "
+                            "total return."
+                        ),
+                    }
         except DatasetResolutionError:
             raise
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
@@ -1338,6 +1369,22 @@ class DatasetService:
             )
 
         root = self.catalog.state_root.resolve()
+        if self.catalog._postgres is not None:
+            current = self.catalog._postgres.dataset_current_snapshot(instrument)
+            if current is None:
+                yield False
+                return
+            try:
+                with self.catalog._postgres.materialize_dataset_snapshot(
+                    instrument, current
+                ) as target:
+                    manifest = _verify_snapshot(target, current, require_name=False)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise DatasetResolutionError(
+                    f"current dataset resolution failed verification: {exc}"
+                ) from exc
+            yield current == snapshot_id and manifest["canonical_sha256"] == canonical_sha256
+            return
         with _InstrumentLock(root, instrument):
             pointer = root / "datasets" / instrument / "latest.json"
             if not pointer.exists():

@@ -28,7 +28,7 @@ services:
   schema-migrate:
     image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
     pull_policy: never
-    entrypoint: ["python", "-m", "quant_platform.postgres_persistence", "migrate"]
+    entrypoint: ["python", "-m", "quant_platform.full_persistence", "migrate"]
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
@@ -77,17 +77,23 @@ services:
       HTTPS_PROXY: http://provider-egress-proxy:3128
       NO_PROXY: 127.0.0.1,localhost,report-edge
       MPLCONFIGDIR: /tmp/matplotlib
-      QR_PRODUCTION_STATE_ROOT: /var/lib/quantresearch/state
+      QR_PRODUCTION_STATE_ROOT: /run/quantresearch/state
       QR_PRODUCTION_RELEASE_MANIFEST: /etc/quantresearch/authorities/release.json
       QR_PRODUCTION_AUTHORITIES_ROOT: /etc/quantresearch/authorities
       QR_VERIFIED_CLIENT_IDENTITY: ${QR_VERIFIED_CLIENT_IDENTITY:?set reviewed certificate subject}
+      QUANT_POSTGRES_HOST: postgres
+      QUANT_POSTGRES_DATABASE: quantresearch
+      QUANT_POSTGRES_USER: qr_runtime
+      QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
+      QUANT_RESIDUAL_ROOT: /var/lib/quantresearch/residual
     tmpfs:
       - /tmp:size=128m,mode=1777
       - /run/quantresearch:size=16m,mode=0700,uid=10001,gid=10001
     volumes:
       - type: bind
-        source: /var/lib/quantresearch-production/state
-        target: /var/lib/quantresearch/state
+        source: /var/lib/quantresearch-production/residual
+        target: /var/lib/quantresearch/residual
+        read_only: true
         bind: {create_host_path: false}
       - type: bind
         source: /etc/quantresearch-production/authorities
@@ -99,9 +105,15 @@ services:
         target: /run/secrets/provider
         read_only: true
         bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/postgres-runtime
+        target: /run/secrets/postgres-runtime
+        read_only: true
+        bind: {create_host_path: false}
     expose: ["8090"]
     networks: [api_internal, provider_proxy_internal]
     depends_on:
+      schema-migrate: {condition: service_completed_successfully}
       provider-egress-proxy: {condition: service_healthy}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=2).read()"]
@@ -126,7 +138,7 @@ services:
     stop_grace_period: 120s
     env_file: /etc/quantresearch-production/secrets/ui.env
     environment:
-      QUANT_STATE_ROOT: /var/lib/quantresearch/state/platform
+      QUANT_STATE_ROOT: /run/quantresearch/state
       QUANT_PROJECT_ROOT: /opt/project
       QUANT_ALLOWED_EMAILS_FILE: /run/secrets/ui/allowed-emails.txt
       QUANT_BIND_HOST: 0.0.0.0
@@ -137,12 +149,15 @@ services:
       QUANT_POSTGRES_USER: qr_runtime
       QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
       MPLCONFIGDIR: /tmp/matplotlib
+      QUANT_RESIDUAL_ROOT: /var/lib/quantresearch/residual
     tmpfs:
       - /tmp:size=256m,mode=1777
+      - /run/quantresearch:size=128m,mode=0700,uid=10001,gid=10001
     volumes:
       - type: bind
-        source: /var/lib/quantresearch-production/state
-        target: /var/lib/quantresearch/state
+        source: /var/lib/quantresearch-production/residual
+        target: /var/lib/quantresearch/residual
+        read_only: true
         bind: {create_host_path: false}
       - type: bind
         source: /etc/quantresearch-production/secrets/ui/allowed-emails.txt
@@ -182,11 +197,6 @@ services:
       - /var/cache/nginx:size=32m,mode=0750,uid=10101,gid=10101
       - /var/run:size=8m,mode=0750,uid=10101,gid=10101
     volumes:
-      - type: bind
-        source: /var/lib/quantresearch-production/state/publication/current
-        target: /srv/reports
-        read_only: true
-        bind: {create_host_path: false}
       - type: bind
         source: /etc/quantresearch-production/nginx
         target: /etc/nginx
