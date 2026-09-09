@@ -885,6 +885,34 @@ def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
     return _verified_run_payloads(settings, attempt)["report.html"]
 
 
+def _dashboard_context(catalog: Any, operators: OperatorService) -> dict[str, Any]:
+    """Read only the aggregate and recent data rendered by the dashboard."""
+    connection = catalog.connect()
+    try:
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM experiments) AS experiment_count,
+                (SELECT COUNT(*) FROM attempts) AS attempt_count,
+                (SELECT COUNT(*) FROM attempts WHERE status IN (
+                    'FAILED', 'INTERRUPTED', 'TERMINATION_UNCONFIRMED'
+                )) AS failure_count
+            """
+        ).fetchone()
+        attempts = connection.execute(
+            "SELECT * FROM attempts ORDER BY created_at DESC LIMIT 8"
+        ).fetchall()
+    finally:
+        connection.close()
+    return {
+        "experiment_count": counts["experiment_count"],
+        "attempt_count": counts["attempt_count"],
+        "operator_count": len(operators.list()),
+        "failure_count": counts["failure_count"],
+        "attempts": [dict(row) for row in attempts],
+    }
+
+
 def create_app(
     settings: Settings,
     *,
@@ -1437,31 +1465,12 @@ def create_app(
             session = _session(request)
         except AuthError:
             return RedirectResponse("/login", status_code=303)
-        history = experiments.list_experiments()
-        connection = catalog.connect()
-        try:
-            attempts = connection.execute(
-                "SELECT * FROM attempts ORDER BY created_at DESC LIMIT 8"
-            ).fetchall()
-            failures = connection.execute(
-                """
-                SELECT COUNT(*) FROM attempts
-                WHERE status IN (
-                    'FAILED', 'INTERRUPTED', 'TERMINATION_UNCONFIRMED'
-                )
-                """
-            ).fetchone()[0]
-        finally:
-            connection.close()
+        context = await run_in_threadpool(_dashboard_context, catalog, operators)
         return _render(
             request,
             "dashboard.html",
             session=session,
-            experiment_count=len(history),
-            attempt_count=sum(item["attempt_count"] for item in history),
-            operator_count=len(operators.list()),
-            failure_count=failures,
-            attempts=[dict(row) for row in attempts],
+            **context,
         )
 
     @app.get("/datasets/{dataset_id}/snapshots/{snapshot_id}")
