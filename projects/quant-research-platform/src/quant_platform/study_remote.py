@@ -654,6 +654,7 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
     source_commit text NOT NULL CHECK (source_commit ~ '^[0-9a-f]{{40}}$'),
     source_tree text NOT NULL CHECK (source_tree ~ '^[0-9a-f]{{40}}$'),
     status text NOT NULL CHECK (status IN ('ACCEPTED','DISPATCHED','RUNNING','SUCCEEDED','FAILED')),
+    acceptance_ambiguous boolean NOT NULL DEFAULT false,
     latest_progress jsonb,
     final_result jsonb,
     failure jsonb,
@@ -662,6 +663,8 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
     CHECK ((status = 'SUCCEEDED') = (final_result IS NOT NULL)),
     CHECK ((status = 'FAILED') = (failure IS NOT NULL))
 );
+ALTER TABLE qr_study.jobs
+    ADD COLUMN IF NOT EXISTS acceptance_ambiguous boolean NOT NULL DEFAULT false;
 CREATE OR REPLACE FUNCTION qr_study.reject_terminal_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'terminal Study rows are immutable'; END $$;
 DROP TRIGGER IF EXISTS immutable_terminal_study_update ON qr_study.jobs;
@@ -768,19 +771,12 @@ class StudyPostgresStore:
         digest = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
         with self.config.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE",
-                (frozen["job_id"],),
-            ).fetchone()
-            if row is not None:
-                if row["request_digest"] != digest or row["frozen_request"] != frozen:
-                    raise StudyIdempotencyConflict("Study identity already has different frozen inputs")
-                return self._normalized(row), False
-            row = connection.execute(
                 """
                 INSERT INTO qr_study.jobs(
                     study_id, request_digest, frozen_request, worker_endpoint,
                     worker_image, source_commit, source_tree, status
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,'ACCEPTED') RETURNING *
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,'ACCEPTED')
+                ON CONFLICT (study_id) DO NOTHING RETURNING *
                 """,
                 (
                     frozen["job_id"],
@@ -792,7 +788,17 @@ class StudyPostgresStore:
                     frozen["source_tree"],
                 ),
             ).fetchone()
-            return self._normalized(row), True
+            if row is not None:
+                return self._normalized(row), True
+            row = connection.execute(
+                "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE",
+                (frozen["job_id"],),
+            ).fetchone()
+            if row is None:
+                raise StudyRemoteError("authoritative Study row disappeared")
+            if row["request_digest"] != digest or row["frozen_request"] != frozen:
+                raise StudyIdempotencyConflict("Study identity already has different frozen inputs")
+            return self._normalized(row), False
 
     @staticmethod
     def _normalized(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -815,6 +821,24 @@ class StudyPostgresStore:
 
     def observe(self, study_id: str, remote: Mapping[str, Any]) -> dict[str, Any]:
         return self._record_remote(study_id, remote, dispatch=False)
+
+    def mark_acceptance_ambiguous(self, study_id: str) -> dict[str, Any]:
+        with self.config.connect() as connection:
+            current = connection.execute(
+                "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE", (study_id,)
+            ).fetchone()
+            if current is None:
+                raise StudyRemoteError("authoritative Study row disappeared")
+            if current["status"] in TERMINAL_STATES or current["acceptance_ambiguous"]:
+                return self._normalized(current)
+            row = connection.execute(
+                """
+                UPDATE qr_study.jobs SET acceptance_ambiguous=true,
+                    updated_at=clock_timestamp() WHERE study_id=%s RETURNING *
+                """,
+                (study_id,),
+            ).fetchone()
+            return self._normalized(row)
 
     def _record_remote(
         self, study_id: str, remote: Mapping[str, Any], *, dispatch: bool
@@ -867,6 +891,8 @@ class StudyPostgresStore:
             if current is None:
                 raise StudyRemoteError("authoritative Study row disappeared")
             if current["status"] in TERMINAL_STATES:
+                return self._normalized(current)
+            if current["acceptance_ambiguous"]:
                 return self._normalized(current)
             row = connection.execute(
                 """
@@ -956,6 +982,7 @@ class StudyDispatcher:
         self, request: Mapping[str, Any], initial_error: StudyTransportError
     ) -> dict[str, Any]:
         study_id = str(request["job_id"])
+        self.store.mark_acceptance_ambiguous(study_id)
         try:
             response = self.client.read(study_id)
             remote = response.value.get("job")

@@ -36,6 +36,7 @@ class _AuthoritativeStore(StudyPostgresStore):
                 "study_id": request["job_id"],
                 "worker_endpoint": endpoint,
                 "status": "ACCEPTED",
+                "acceptance_ambiguous": False,
                 "latest_progress": None,
                 "final_result": None,
                 "failure": None,
@@ -50,6 +51,11 @@ class _AuthoritativeStore(StudyPostgresStore):
     def observe(self, study_id, remote):
         return self._record_remote(study_id, remote, dispatch=False)
 
+    def mark_acceptance_ambiguous(self, study_id):
+        row = self.rows[study_id]
+        row["acceptance_ambiguous"] = True
+        return dict(row)
+
     def _record_remote(self, study_id, remote, *, dispatch):
         row = self.rows[study_id]
         status = remote["status"]
@@ -62,6 +68,8 @@ class _AuthoritativeStore(StudyPostgresStore):
     def fail_unavailable(self, study_id, message):
         self.fail_unavailable_calls += 1
         row = self.rows[study_id]
+        if row["acceptance_ambiguous"]:
+            return dict(row)
         row["status"] = "FAILED"
         row["failure"] = {
             "code": "FENG_UNAVAILABLE",
@@ -339,6 +347,7 @@ def test_prior_acceptance_ambiguity_survives_later_connection_refusal(tmp_path: 
         thread.join(timeout=2)
 
     assert first["authoritative"]["status"] == "ACCEPTED"
+    assert first["authoritative"]["acceptance_ambiguous"] is True
     assert first["remote"] is None
     assert remote_before_retry["status"] == "SUCCEEDED"
     assert retry["authoritative"]["status"] == "ACCEPTED"
