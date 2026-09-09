@@ -15,6 +15,7 @@ from quant_platform.study_remote import (
     StudyTransportError,
     StudyWorkerServer,
     WorkerJobStore,
+    canonical_json_bytes,
     freeze_synthetic_request,
 )
 
@@ -37,12 +38,15 @@ class _AuthoritativeStore(StudyPostgresStore):
                 "worker_endpoint": endpoint,
                 "status": "ACCEPTED",
                 "acceptance_ambiguous": False,
+                "ambiguous_through_generation": 0,
+                "dispatch_generation": 0,
                 "dispatch_claim_id": None,
                 "dispatch_claim_expires_at": None,
                 "dispatch_post_started": False,
                 "latest_progress": None,
                 "final_result": None,
                 "failure": None,
+                "negative_receipt": None,
             }
             self.rows[request["job_id"]] = row
             return dict(row), True
@@ -52,7 +56,12 @@ class _AuthoritativeStore(StudyPostgresStore):
         row = self.rows[study_id]
         if row["status"] in {"SUCCEEDED", "FAILED"}:
             return dict(row), False
-        row["acceptance_ambiguous"] |= row["dispatch_post_started"]
+        if row["dispatch_post_started"]:
+            row["acceptance_ambiguous"] = True
+            row["ambiguous_through_generation"] = max(
+                row["ambiguous_through_generation"], row["dispatch_generation"]
+            )
+        row["dispatch_generation"] += 1
         row["dispatch_claim_id"] = dispatch_claim_id
         row["dispatch_claim_expires_at"] = lease_seconds
         row["dispatch_post_started"] = False
@@ -78,6 +87,10 @@ class _AuthoritativeStore(StudyPostgresStore):
         row["acceptance_ambiguous"] |= (
             row["dispatch_claim_id"] == dispatch_claim_id and row["dispatch_post_started"]
         )
+        if row["dispatch_claim_id"] == dispatch_claim_id and row["dispatch_post_started"]:
+            row["ambiguous_through_generation"] = max(
+                row["ambiguous_through_generation"], row["dispatch_generation"]
+            )
         if row["dispatch_claim_id"] == dispatch_claim_id:
             row["dispatch_claim_id"] = None
             row["dispatch_claim_expires_at"] = None
@@ -92,6 +105,27 @@ class _AuthoritativeStore(StudyPostgresStore):
         row["final_result"] = remote.get("result") if status == "SUCCEEDED" else None
         row["failure"] = remote.get("failure") if status == "FAILED" else None
         row["acceptance_ambiguous"] = False
+        row["ambiguous_through_generation"] = 0
+        row["negative_receipt"] = None
+        row["dispatch_claim_id"] = None
+        row["dispatch_claim_expires_at"] = None
+        row["dispatch_post_started"] = False
+        return dict(row)
+
+    def resolve_fenced_absence(self, study_id, dispatch_claim_id, receipt, message):
+        row = self.rows[study_id]
+        if row["dispatch_claim_id"] != dispatch_claim_id:
+            return dict(row)
+        row["status"] = "FAILED"
+        row["acceptance_ambiguous"] = False
+        row["ambiguous_through_generation"] = 0
+        row["failure"] = {
+            "code": "FENG_UNAVAILABLE",
+            "message": message,
+            "local_compute_attempted": False,
+            "negative_receipt_id": receipt["negative_receipt_id"],
+        }
+        row["negative_receipt"] = receipt
         row["dispatch_claim_id"] = None
         row["dispatch_claim_expires_at"] = None
         row["dispatch_post_started"] = False
@@ -129,15 +163,22 @@ class _LoseFirstAcceptedResponse(SignedStudyClient):
         self.endpoint = client.endpoint
         self.submit_calls = 0
 
-    def submit(self, request, *, on_post_start=None):
+    def submit(self, request, *, dispatch_generation=1, on_post_start=None):
         self.submit_calls += 1
-        response = self.client.submit(request, on_post_start=on_post_start)
+        response = self.client.submit(
+            request,
+            dispatch_generation=dispatch_generation,
+            on_post_start=on_post_start,
+        )
         if self.submit_calls == 1:
             raise StudyTransportError("simulated response loss")
         return response
 
     def read(self, job_id):
         return self.client.read(job_id)
+
+    def fence(self, request, through_generation):
+        return self.client.fence(request, through_generation)
 
 
 class _HideInitialAcceptedJob(SignedStudyClient):
@@ -147,20 +188,31 @@ class _HideInitialAcceptedJob(SignedStudyClient):
         self.submit_calls = 0
         self.read_calls = 0
 
-    def submit(self, request, *, on_post_start=None):
+    def submit(self, request, *, dispatch_generation=1, on_post_start=None):
         self.submit_calls += 1
         if self.submit_calls == 1:
-            self.client.submit(request, on_post_start=on_post_start)
+            self.client.submit(
+                request,
+                dispatch_generation=dispatch_generation,
+                on_post_start=on_post_start,
+            )
             raise StudyTransportError("simulated accepted response loss")
         if self.submit_calls == 2:
             raise StudyTransportError("simulated unresolved replay")
-        return self.client.submit(request, on_post_start=on_post_start)
+        return self.client.submit(
+            request,
+            dispatch_generation=dispatch_generation,
+            on_post_start=on_post_start,
+        )
 
     def read(self, job_id):
         self.read_calls += 1
         if self.read_calls == 1:
             raise StudyTransportError("simulated unresolved immediate read")
         return self.client.read(job_id)
+
+    def fence(self, request, through_generation):
+        return self.client.fence(request, through_generation)
 
 
 def _keypair(root: Path, name: str = "control-private") -> Path:
@@ -258,6 +310,35 @@ def test_wrong_signing_identity_is_rejected_without_dispatch(tmp_path: Path):
     try:
         with pytest.raises(StudyTransportError, match="403 AUTHENTICATION_REJECTED"):
             client.submit(request)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    assert list(state_root.iterdir()) == []
+
+
+def test_unenveloped_v1_dispatch_is_rejected_without_worker_document(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    state_root = tmp_path / "state"
+    server = StudyWorkerServer(
+        ("127.0.0.1", 0),
+        WorkerJobStore(state_root, IMAGE),
+        private_key.with_suffix(".pub.pem"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = SignedStudyClient(f"http://127.0.0.1:{server.server_port}", private_key)
+    request = freeze_synthetic_request(
+        iterations=10,
+        seed=2,
+        checkpoint_count=1,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+    try:
+        with pytest.raises(StudyTransportError, match="422 INVALID_REQUEST"):
+            client._request("POST", "/v1/studies", canonical_json_bytes(request))
     finally:
         server.shutdown()
         server.server_close()
@@ -397,7 +478,7 @@ def test_prior_acceptance_ambiguity_survives_later_connection_refusal(tmp_path: 
     assert converged["authoritative"]["status"] == "SUCCEEDED"
     assert converged["authoritative"]["final_result"] == remote_before_retry["result"]
     assert converged["local_compute_attempted"] is False
-    assert authoritative_store.fail_unavailable_calls == 1
+    assert authoritative_store.fail_unavailable_calls == 0
     assert len(authoritative_store.rows) == 1
-    assert client.submit_calls == 3
+    assert client.submit_calls == 2
     assert [path.name for path in state_root.iterdir()] == [f"{request['job_id']}.json"]

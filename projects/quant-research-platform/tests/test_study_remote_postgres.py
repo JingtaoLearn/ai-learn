@@ -67,13 +67,20 @@ class _PauseBeforePost(SignedStudyClient):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def submit(self, request, *, on_post_start=None):
+    def submit(self, request, *, dispatch_generation=1, on_post_start=None):
         self.entered.set()
         assert self.release.wait(timeout=10)
-        return self.client.submit(request, on_post_start=on_post_start)
+        return self.client.submit(
+            request,
+            dispatch_generation=dispatch_generation,
+            on_post_start=on_post_start,
+        )
 
     def read(self, job_id):
         return self.client.read(job_id)
+
+    def fence(self, request, through_generation):
+        return self.client.fence(request, through_generation)
 
 
 class _PauseAfterAcceptedResponse(SignedStudyClient):
@@ -85,10 +92,14 @@ class _PauseAfterAcceptedResponse(SignedStudyClient):
         self.accepted = threading.Event()
         self.release = threading.Event()
 
-    def submit(self, request, *, on_post_start=None):
+    def submit(self, request, *, dispatch_generation=1, on_post_start=None):
         self.submit_calls += 1
         if self.submit_calls == 1:
-            self.client.submit(request, on_post_start=on_post_start)
+            self.client.submit(
+                request,
+                dispatch_generation=dispatch_generation,
+                on_post_start=on_post_start,
+            )
             self.accepted.set()
             assert self.release.wait(timeout=10)
             raise StudyTransportError("simulated accepted response loss")
@@ -97,6 +108,9 @@ class _PauseAfterAcceptedResponse(SignedStudyClient):
     def read(self, job_id):
         self.read_calls += 1
         raise StudyTransportError("simulated unresolved immediate read")
+
+    def fence(self, request, through_generation):
+        return self.client.fence(request, through_generation)
 
 
 class _PauseAfterResponse(SignedStudyClient):
@@ -107,8 +121,12 @@ class _PauseAfterResponse(SignedStudyClient):
         self.accepted = threading.Event()
         self.release = threading.Event()
 
-    def submit(self, request, *, on_post_start=None):
-        response = self.client.submit(request, on_post_start=on_post_start)
+    def submit(self, request, *, dispatch_generation=1, on_post_start=None):
+        response = self.client.submit(
+            request,
+            dispatch_generation=dispatch_generation,
+            on_post_start=on_post_start,
+        )
         self.accepted.set()
         assert self.release.wait(timeout=10)
         if self.lose_response:
@@ -118,6 +136,9 @@ class _PauseAfterResponse(SignedStudyClient):
     def read(self, job_id):
         return self.client.read(job_id)
 
+    def fence(self, request, through_generation):
+        return self.client.fence(request, through_generation)
+
 
 class _GateBeforeAcceptanceStore(WorkerJobStore):
     def __init__(self, root: Path, worker_image: str):
@@ -125,10 +146,9 @@ class _GateBeforeAcceptanceStore(WorkerJobStore):
         self.request_in_handler = threading.Event()
         self.release_acceptance = threading.Event()
 
-    def submit(self, request):
+    def _before_acceptance(self, request, dispatch_generation):
         self.request_in_handler.set()
         assert self.release_acceptance.wait(timeout=10)
-        return super().submit(request)
 
 
 def _start_server(store: WorkerJobStore, public_key: Path, port: int = 0):
@@ -536,17 +556,108 @@ def test_refusal_and_abandoned_pre_acceptance_claims_resolve(tmp_path: Path):
     )
 
 
-def test_v2_schema_migration_replay_and_foreign_identity_rejection():
+def test_post_start_no_send_is_authoritatively_fenced_before_failure(tmp_path: Path):
+    store = StudyPostgresStore.from_environment()
+    store.initialize()
+    private_key = _keypair(tmp_path)
+    worker_store = WorkerJobStore(tmp_path / "worker-state", IMAGE)
+    server, server_thread = _start_server(
+        worker_store, private_key.with_suffix(".pub.pem")
+    )
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    client = SignedStudyClient(endpoint, private_key, timeout_seconds=0.5)
+    dispatcher = StudyDispatcher(store, client)
+    dispatcher.DISPATCH_LEASE_SECONDS = 1
+    request = _request(seed=int.from_bytes(os.urandom(4), "big"))
+    store.admit(request, endpoint)
+    old_claim = "b" * 32
+    old_row, acquired = store.begin_dispatch(
+        request["job_id"], old_claim, lease_seconds=1
+    )
+    assert acquired is True
+    assert old_row["dispatch_generation"] == 1
+    assert store.mark_post_started(request["job_id"], old_claim) is True
+
+    with pytest.raises(StudyTransportError, match="404 NOT_FOUND"):
+        client.read(request["job_id"])
+    before_fence = store.get(request["job_id"])
+    assert before_fence is not None
+    assert before_fence["status"] == "ACCEPTED"
+    assert before_fence["dispatch_post_started"] is True
+    assert before_fence["acceptance_ambiguous"] is False
+
+    time.sleep(1.1)
+    resolved = dispatcher.submit(request)
+    final_row = store.get(request["job_id"])
+    receipt = resolved["negative_receipt"]
+
+    assert final_row is not None
+    assert final_row["status"] == "FAILED"
+    assert final_row["failure"]["code"] == "FENG_UNAVAILABLE"
+    assert final_row["acceptance_ambiguous"] is False
+    assert final_row["negative_receipt"] == receipt
+    assert receipt["outcome"] == "ABSENT_FENCED"
+    assert receipt["fenced_through_generation"] == 2
+    assert worker_store.status(request["job_id"]) is None
+
+    with pytest.raises(StudyTransportError, match="409 DISPATCH_FENCED"):
+        client.submit(request, dispatch_generation=old_row["dispatch_generation"])
+    with pytest.raises(StudyTransportError, match="404 NOT_FOUND"):
+        client.read(request["job_id"])
+
+    terminal_replay = dispatcher.submit(request)
+    shape = store.storage_shape(request["job_id"])
+    task_documents = list((tmp_path / "worker-state").glob("*.json"))
+    fence_documents = list((tmp_path / "worker-state" / ".dispatch-fences").glob("*.json"))
+    assert terminal_replay["authoritative"] == final_row
+    assert task_documents == []
+    assert len(fence_documents) == 1
+    assert shape["study_rows"] == 1
+    assert shape["attempt_rows"] == 0
+    assert shape["experiment_rows"] == 0
+    assert shape["per_iteration_event_rows"] == 0
+    assert resolved["local_compute_attempted"] is False
+    print(
+        canonical_json_bytes(
+            {
+                "scenario": "post_start_no_send_authoritative_negative_fence",
+                "request_order": [
+                    "postgres_mark_post_started_generation_1",
+                    "signed_unfenced_get_404",
+                    "lease_expiry",
+                    "signed_fence_through_generation_2",
+                    "postgres_failed_feng_unavailable",
+                    "delayed_generation_1_rejected",
+                    "signed_get_404",
+                ],
+                "before_fence": before_fence,
+                "negative_receipt": receipt,
+                "final_postgresql": final_row,
+                "task_document_count": len(task_documents),
+                "fence_document_count": len(fence_documents),
+                "storage_shape": shape,
+                "local_compute_attempted": resolved["local_compute_attempted"],
+            }
+        ).decode("utf-8")
+    )
+    server.shutdown()
+    server.server_close()
+    server_thread.join(timeout=2)
+
+
+def test_v3_schema_migration_replay_and_foreign_identity_rejection():
     store = StudyPostgresStore.from_environment()
     store.initialize()
     with store.config.connect() as connection:
         connection.execute(
-            "ALTER TABLE qr_study.jobs DROP CONSTRAINT valid_study_dispatch_post_started"
+            "ALTER TABLE qr_study.jobs DROP CONSTRAINT valid_study_dispatch_generations"
         )
-        connection.execute("ALTER TABLE qr_study.jobs DROP COLUMN dispatch_post_started")
+        connection.execute("ALTER TABLE qr_study.jobs DROP COLUMN negative_receipt")
+        connection.execute("ALTER TABLE qr_study.jobs DROP COLUMN ambiguous_through_generation")
+        connection.execute("ALTER TABLE qr_study.jobs DROP COLUMN dispatch_generation")
         connection.execute(
             "UPDATE qr_study.schema_identity SET identity=%s WHERE singleton",
-            ("quantresearch-lightweight-study-postgresql-v2",),
+            ("quantresearch-lightweight-study-postgresql-v3",),
         )
 
     store.initialize()
@@ -555,13 +666,15 @@ def test_v2_schema_migration_replay_and_foreign_identity_rejection():
         identity = connection.execute(
             "SELECT identity FROM qr_study.schema_identity WHERE singleton"
         ).fetchone()["identity"]
-        column = connection.execute(
+        columns = connection.execute(
             """
-            SELECT is_nullable, column_default FROM information_schema.columns
+            SELECT column_name, is_nullable, column_default FROM information_schema.columns
             WHERE table_schema='qr_study' AND table_name='jobs'
-              AND column_name='dispatch_post_started'
+              AND column_name IN (
+                  'ambiguous_through_generation', 'dispatch_generation', 'negative_receipt'
+              ) ORDER BY column_name
             """
-        ).fetchone()
+        ).fetchall()
         connection.execute(
             "UPDATE qr_study.schema_identity SET identity='foreign-study-schema' WHERE singleton"
         )
@@ -572,18 +685,26 @@ def test_v2_schema_migration_replay_and_foreign_identity_rejection():
         with store.config.connect() as connection:
             connection.execute(
                 "UPDATE qr_study.schema_identity SET identity=%s WHERE singleton",
-                ("quantresearch-lightweight-study-postgresql-v2",),
+                ("quantresearch-lightweight-study-postgresql-v3",),
             )
         store.initialize()
 
     assert identity == SCHEMA_IDENTITY
-    assert column == {"is_nullable": "NO", "column_default": "false"}
+    assert columns == [
+        {
+            "column_name": "ambiguous_through_generation",
+            "is_nullable": "NO",
+            "column_default": "0",
+        },
+        {"column_name": "dispatch_generation", "is_nullable": "NO", "column_default": "0"},
+        {"column_name": "negative_receipt", "is_nullable": "YES", "column_default": None},
+    ]
     print(
         canonical_json_bytes(
             {
-                "scenario": "v2_schema_migration_replay_and_identity_mismatch",
+                "scenario": "v3_schema_migration_replay_and_identity_mismatch",
                 "migrated_identity": identity,
-                "dispatch_post_started_column": column,
+                "v4_columns": columns,
                 "foreign_identity_rejected": True,
             }
         ).decode("utf-8")

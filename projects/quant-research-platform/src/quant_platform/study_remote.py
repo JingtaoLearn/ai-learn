@@ -23,12 +23,14 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 PROTOCOL = "quantresearch-study-worker/v1"
+DISPATCH_PROTOCOL = "quantresearch-study-dispatch/v2"
 JOB_TYPE = "deterministic-synthetic-search-v1"
-SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v3"
+SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v4"
 MAX_BODY_BYTES = 16_384
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_ITERATIONS = 100_000_000
 MAX_CHECKPOINTS = 20
+MAX_DISPATCH_GENERATION = 9_223_372_036_854_775_807
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 HEX_32 = re.compile(r"^[0-9a-f]{32}$")
@@ -49,6 +51,10 @@ class StudyAuthenticationError(StudyRemoteError):
 
 
 class StudyIdempotencyConflict(StudyRemoteError):
+    pass
+
+
+class StudyDispatchFenced(StudyRemoteError):
     pass
 
 
@@ -186,6 +192,64 @@ def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
     if value.get("job_type") != JOB_TYPE or value.get("job_id") != rebuilt["job_id"]:
         raise StudyValidationError("Study request identity does not match its frozen inputs")
     return rebuilt
+
+
+def _validate_dispatch_generation(value: Any, label: str) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_DISPATCH_GENERATION:
+        raise StudyValidationError(f"{label} must be a positive signed 64-bit integer")
+    return value
+
+
+def _dispatch_envelope(request: Mapping[str, Any], dispatch_generation: int) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "protocol": DISPATCH_PROTOCOL,
+        "dispatch_generation": _validate_dispatch_generation(
+            dispatch_generation, "dispatch_generation"
+        ),
+        "request": validate_request(request),
+    }
+
+
+def _validate_dispatch_envelope(value: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
+    _exact_fields(
+        value,
+        {"schema_version", "protocol", "dispatch_generation", "request"},
+        "Study dispatch envelope",
+    )
+    if value.get("schema_version") != 1 or value.get("protocol") != DISPATCH_PROTOCOL:
+        raise StudyValidationError("Study dispatch protocol identity is unsupported")
+    if not isinstance(value.get("request"), dict):
+        raise StudyValidationError("Study dispatch request must be an object")
+    return validate_request(value["request"]), _validate_dispatch_generation(
+        value.get("dispatch_generation"), "dispatch_generation"
+    )
+
+
+def _fence_envelope(request: Mapping[str, Any], through_generation: int) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "protocol": DISPATCH_PROTOCOL,
+        "fence_through_generation": _validate_dispatch_generation(
+            through_generation, "fence_through_generation"
+        ),
+        "request": validate_request(request),
+    }
+
+
+def _validate_fence_envelope(value: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
+    _exact_fields(
+        value,
+        {"schema_version", "protocol", "fence_through_generation", "request"},
+        "Study dispatch fence",
+    )
+    if value.get("schema_version") != 1 or value.get("protocol") != DISPATCH_PROTOCOL:
+        raise StudyValidationError("Study dispatch fence protocol identity is unsupported")
+    if not isinstance(value.get("request"), dict):
+        raise StudyValidationError("Study dispatch fence request must be an object")
+    return validate_request(value["request"]), _validate_dispatch_generation(
+        value.get("fence_through_generation"), "fence_through_generation"
+    )
 
 
 def _signature_message(method: str, path: str, timestamp: str, body: bytes) -> bytes:
@@ -328,6 +392,7 @@ class WorkerJobStore:
         self.worker_image = worker_image
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
+        self._inflight_generations: dict[str, set[int]] = {}
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _path(self, job_id: str) -> Path:
@@ -359,8 +424,45 @@ class WorkerJobStore:
             if temporary.exists():
                 temporary.unlink()
 
-    def submit(self, request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    def _fence_path(self, job_id: str) -> Path:
+        self._path(job_id)
+        return self.root / ".dispatch-fences" / f"{job_id}.json"
+
+    def _read_fence(self, job_id: str) -> dict[str, Any] | None:
+        path = self._fence_path(job_id)
+        if not path.exists():
+            return None
+        return _strict_object(path.read_bytes(), "worker dispatch fence")
+
+    def _write_fence(self, fence: Mapping[str, Any]) -> None:
+        target = self._fence_path(str(fence["job_id"]))
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(canonical_json_bytes(fence))
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.chmod(0o600)
+            os.replace(temporary, target)
+            directory_descriptor = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def _before_acceptance(self, _request: Mapping[str, Any], _dispatch_generation: int) -> None:
+        """Test seam after worker admission starts and before its task document is written."""
+
+    def submit(
+        self, request: Mapping[str, Any], dispatch_generation: int
+    ) -> tuple[dict[str, Any], bool]:
         frozen = validate_request(request)
+        generation = _validate_dispatch_generation(dispatch_generation, "dispatch_generation")
         if frozen["worker_image"] != self.worker_image:
             raise StudyValidationError("requested worker image does not match running worker")
         request_digest = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
@@ -370,31 +472,132 @@ class WorkerJobStore:
                 if existing.get("request_digest") != request_digest:
                     raise StudyIdempotencyConflict("job identity already has different frozen inputs")
                 return existing, True
-            state = {
+            fence = self._read_fence(frozen["job_id"])
+            if fence is not None:
+                if fence.get("request_digest") != request_digest:
+                    raise StudyIdempotencyConflict("dispatch fence has different frozen inputs")
+                if generation <= fence.get("fenced_through_generation", 0):
+                    raise StudyDispatchFenced("Study dispatch generation is authoritatively fenced")
+            self._inflight_generations.setdefault(frozen["job_id"], set()).add(generation)
+        try:
+            self._before_acceptance(frozen, generation)
+            with self._lock:
+                existing = self._read(frozen["job_id"])
+                if existing is not None:
+                    if existing.get("request_digest") != request_digest:
+                        raise StudyIdempotencyConflict(
+                            "job identity already has different frozen inputs"
+                        )
+                    return existing, True
+                fence = self._read_fence(frozen["job_id"])
+                if fence is not None and generation <= fence.get(
+                    "fenced_through_generation", 0
+                ):
+                    raise StudyDispatchFenced(
+                        "Study dispatch generation is authoritatively fenced"
+                    )
+                state = {
+                    "schema_version": 1,
+                    "protocol": PROTOCOL,
+                    "job_id": frozen["job_id"],
+                    "request_digest": request_digest,
+                    "source_commit": frozen["source_commit"],
+                    "source_tree": frozen["source_tree"],
+                    "worker_image": self.worker_image,
+                    "status": "ACCEPTED",
+                    "progress": {
+                        "completed_iterations": 0,
+                        "total_iterations": frozen["iterations"],
+                    },
+                    "checkpoints": [],
+                    "result": None,
+                    "failure": None,
+                    "updated_at": _utc_now(),
+                }
+                self._write(state)
+                thread = threading.Thread(
+                    target=self._execute,
+                    args=(frozen,),
+                    name=f"study-{frozen['job_id'][:12]}",
+                    daemon=True,
+                )
+                self._threads[frozen["job_id"]] = thread
+                thread.start()
+                return state, False
+        finally:
+            with self._lock:
+                inflight = self._inflight_generations.get(frozen["job_id"])
+                if inflight is not None:
+                    inflight.discard(generation)
+                    if not inflight:
+                        self._inflight_generations.pop(frozen["job_id"], None)
+
+    def fence(self, request: Mapping[str, Any], through_generation: int) -> dict[str, Any]:
+        frozen = validate_request(request)
+        generation = _validate_dispatch_generation(
+            through_generation, "fence_through_generation"
+        )
+        if frozen["worker_image"] != self.worker_image:
+            raise StudyValidationError("requested worker image does not match running worker")
+        request_digest = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
+        with self._lock:
+            existing = self._read(frozen["job_id"])
+            if existing is not None:
+                if existing.get("request_digest") != request_digest:
+                    raise StudyIdempotencyConflict("job identity already has different frozen inputs")
+                return {
+                    "schema_version": 1,
+                    "protocol": DISPATCH_PROTOCOL,
+                    "outcome": "EXISTS",
+                    "job_id": frozen["job_id"],
+                    "request_digest": request_digest,
+                    "fenced_through_generation": 0,
+                    "negative_receipt_id": None,
+                    "job": existing,
+                }
+            fence = self._read_fence(frozen["job_id"])
+            if fence is not None and fence.get("request_digest") != request_digest:
+                raise StudyIdempotencyConflict("dispatch fence has different frozen inputs")
+            active = sorted(
+                item
+                for item in self._inflight_generations.get(frozen["job_id"], set())
+                if item <= generation
+            )
+            if active:
+                return {
+                    "schema_version": 1,
+                    "protocol": DISPATCH_PROTOCOL,
+                    "outcome": "IN_FLIGHT",
+                    "job_id": frozen["job_id"],
+                    "request_digest": request_digest,
+                    "fenced_through_generation": (
+                        0 if fence is None else fence["fenced_through_generation"]
+                    ),
+                    "negative_receipt_id": None,
+                    "job": None,
+                }
+            fenced_through = max(
+                generation, 0 if fence is None else fence["fenced_through_generation"]
+            )
+            receipt_identity = {
                 "schema_version": 1,
-                "protocol": PROTOCOL,
+                "protocol": DISPATCH_PROTOCOL,
                 "job_id": frozen["job_id"],
                 "request_digest": request_digest,
-                "source_commit": frozen["source_commit"],
-                "source_tree": frozen["source_tree"],
-                "worker_image": self.worker_image,
-                "status": "ACCEPTED",
-                "progress": {"completed_iterations": 0, "total_iterations": frozen["iterations"]},
-                "checkpoints": [],
-                "result": None,
-                "failure": None,
+                "fenced_through_generation": fenced_through,
+            }
+            receipt_id = hashlib.sha256(canonical_json_bytes(receipt_identity)).hexdigest()
+            persisted = {
+                **receipt_identity,
+                "negative_receipt_id": receipt_id,
                 "updated_at": _utc_now(),
             }
-            self._write(state)
-            thread = threading.Thread(
-                target=self._execute,
-                args=(frozen,),
-                name=f"study-{frozen['job_id'][:12]}",
-                daemon=True,
-            )
-            self._threads[frozen["job_id"]] = thread
-            thread.start()
-            return state, False
+            self._write_fence(persisted)
+            return {
+                **persisted,
+                "outcome": "ABSENT_FENCED",
+                "job": None,
+            }
 
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -535,7 +738,10 @@ class _StudyWorkerHandler(BaseHTTPRequestHandler):
         self._response(200, {"ok": True, "job": state})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/studies":
+        prefix = "/v1/studies/"
+        is_submit = self.path == "/v1/studies"
+        is_fence = self.path.startswith(prefix) and self.path.endswith("/fence")
+        if not is_submit and not is_fence:
             self._error(404, "NOT_FOUND", "unknown worker route")
             return
         if self.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
@@ -553,13 +759,29 @@ class _StudyWorkerHandler(BaseHTTPRequestHandler):
         if not self._authenticate(body):
             return
         try:
-            request = _strict_object(body, "Study request")
-            state, replay = self.server.store.submit(request)
+            value = _strict_object(body, "Study dispatch request")
+            if is_submit:
+                request, generation = _validate_dispatch_envelope(value)
+                state, replay = self.server.store.submit(request, generation)
+            else:
+                job_id = self.path[len(prefix) : -len("/fence")]
+                if "/" in job_id or HEX_64.fullmatch(job_id) is None:
+                    raise StudyValidationError("job identity is invalid")
+                request, generation = _validate_fence_envelope(value)
+                if request["job_id"] != job_id:
+                    raise StudyValidationError("fence path and request identity differ")
+                receipt = self.server.store.fence(request, generation)
         except StudyIdempotencyConflict as exc:
             self._error(409, "IDEMPOTENCY_CONFLICT", str(exc))
             return
+        except StudyDispatchFenced as exc:
+            self._error(409, "DISPATCH_FENCED", str(exc))
+            return
         except StudyValidationError as exc:
             self._error(422, "INVALID_REQUEST", str(exc))
+            return
+        if is_fence:
+            self._response(200, {"ok": True, "fence": receipt})
             return
         self._response(
             200 if replay else 202,
@@ -644,13 +866,21 @@ class SignedStudyClient:
         self,
         request: Mapping[str, Any],
         *,
+        dispatch_generation: int = 1,
         on_post_start: Callable[[], bool] | None = None,
     ) -> RemoteResponse:
         return self._request(
             "POST",
             "/v1/studies",
-            canonical_json_bytes(request),
+            canonical_json_bytes(_dispatch_envelope(request, dispatch_generation)),
             on_post_start=on_post_start,
+        )
+
+    def fence(self, request: Mapping[str, Any], through_generation: int) -> RemoteResponse:
+        frozen = validate_request(request)
+        path = f"/v1/studies/{frozen['job_id']}/fence"
+        return self._request(
+            "POST", path, canonical_json_bytes(_fence_envelope(frozen, through_generation))
         )
 
     def read(self, job_id: str) -> RemoteResponse:
@@ -671,7 +901,8 @@ VALUES (true, '{SCHEMA_IDENTITY}')
 ON CONFLICT (singleton) DO UPDATE SET identity=EXCLUDED.identity
 WHERE qr_study.schema_identity.identity IN (
     'quantresearch-lightweight-study-postgresql-v1',
-    'quantresearch-lightweight-study-postgresql-v2'
+    'quantresearch-lightweight-study-postgresql-v2',
+    'quantresearch-lightweight-study-postgresql-v3'
 );
 CREATE TABLE IF NOT EXISTS qr_study.jobs (
     study_id text PRIMARY KEY CHECK (study_id ~ '^[0-9a-f]{{64}}$'),
@@ -683,12 +914,15 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
     source_tree text NOT NULL CHECK (source_tree ~ '^[0-9a-f]{{40}}$'),
     status text NOT NULL CHECK (status IN ('ACCEPTED','DISPATCHED','RUNNING','SUCCEEDED','FAILED')),
     acceptance_ambiguous boolean NOT NULL DEFAULT false,
+    ambiguous_through_generation bigint NOT NULL DEFAULT 0 CHECK (ambiguous_through_generation >= 0),
+    dispatch_generation bigint NOT NULL DEFAULT 0 CHECK (dispatch_generation >= 0),
     dispatch_claim_id text CHECK (dispatch_claim_id ~ '^[0-9a-f]{{32}}$'),
     dispatch_claim_expires_at timestamptz,
     dispatch_post_started boolean NOT NULL DEFAULT false,
     latest_progress jsonb,
     final_result jsonb,
     failure jsonb,
+    negative_receipt jsonb,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     CHECK ((dispatch_claim_id IS NULL) = (dispatch_claim_expires_at IS NULL)),
@@ -698,10 +932,26 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
 );
 ALTER TABLE qr_study.jobs
     ADD COLUMN IF NOT EXISTS acceptance_ambiguous boolean NOT NULL DEFAULT false;
+ALTER TABLE qr_study.jobs
+    ADD COLUMN IF NOT EXISTS ambiguous_through_generation bigint NOT NULL DEFAULT 0;
+ALTER TABLE qr_study.jobs
+    ADD COLUMN IF NOT EXISTS dispatch_generation bigint NOT NULL DEFAULT 0;
 ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_id text;
 ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_expires_at timestamptz;
 ALTER TABLE qr_study.jobs
     ADD COLUMN IF NOT EXISTS dispatch_post_started boolean NOT NULL DEFAULT false;
+ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS negative_receipt jsonb;
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='valid_study_dispatch_generations'
+          AND conrelid='qr_study.jobs'::regclass
+    ) THEN
+        ALTER TABLE qr_study.jobs ADD CONSTRAINT valid_study_dispatch_generations CHECK (
+            ambiguous_through_generation >= 0 AND dispatch_generation >= 0 AND
+            ambiguous_through_generation <= dispatch_generation
+        );
+    END IF;
+END $$;
 DO $$ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname='valid_study_dispatch_claim'
@@ -908,6 +1158,11 @@ class StudyPostgresStore:
                 """
                 UPDATE qr_study.jobs SET
                     acceptance_ambiguous=(acceptance_ambiguous OR dispatch_post_started),
+                    ambiguous_through_generation=CASE
+                        WHEN dispatch_post_started THEN
+                            greatest(ambiguous_through_generation, dispatch_generation)
+                        ELSE ambiguous_through_generation END,
+                    dispatch_generation=dispatch_generation + 1,
                     dispatch_claim_id=%s,
                     dispatch_claim_expires_at=clock_timestamp() + (%s * interval '1 second'),
                     dispatch_post_started=false, updated_at=clock_timestamp()
@@ -957,6 +1212,10 @@ class StudyPostgresStore:
                         acceptance_ambiguous OR
                         (status='ACCEPTED' AND dispatch_claim_id=%s AND dispatch_post_started)
                     ),
+                    ambiguous_through_generation=CASE
+                        WHEN status='ACCEPTED' AND dispatch_claim_id=%s AND dispatch_post_started
+                        THEN greatest(ambiguous_through_generation, dispatch_generation)
+                        ELSE ambiguous_through_generation END,
                     dispatch_claim_id=CASE WHEN dispatch_claim_id=%s THEN NULL
                                            ELSE dispatch_claim_id END,
                     dispatch_claim_expires_at=CASE WHEN dispatch_claim_id=%s THEN NULL
@@ -966,6 +1225,7 @@ class StudyPostgresStore:
                     updated_at=clock_timestamp() WHERE study_id=%s RETURNING *
                 """,
                 (
+                    dispatch_claim_id,
                     dispatch_claim_id,
                     dispatch_claim_id,
                     dispatch_claim_id,
@@ -1006,6 +1266,7 @@ class StudyPostgresStore:
                 """
                 UPDATE qr_study.jobs SET status=%s, latest_progress=%s,
                     final_result=%s, failure=%s, acceptance_ambiguous=false,
+                    ambiguous_through_generation=0, negative_receipt=NULL,
                     dispatch_claim_id=NULL, dispatch_claim_expires_at=NULL,
                     dispatch_post_started=false, updated_at=clock_timestamp()
                 WHERE study_id=%s RETURNING *
@@ -1016,6 +1277,95 @@ class StudyPostgresStore:
                     _jsonb(result) if result is not None else None,
                     _jsonb(failure) if failure is not None else None,
                     study_id,
+                ),
+            ).fetchone()
+            return self._normalized(row)
+
+    def resolve_fenced_absence(
+        self,
+        study_id: str,
+        dispatch_claim_id: str,
+        receipt: Mapping[str, Any],
+        message: str,
+    ) -> dict[str, Any]:
+        self._validate_dispatch_claim(dispatch_claim_id)
+        _exact_fields(
+            receipt,
+            {
+                "schema_version",
+                "protocol",
+                "outcome",
+                "job_id",
+                "request_digest",
+                "fenced_through_generation",
+                "negative_receipt_id",
+                "updated_at",
+                "job",
+            },
+            "Feng negative receipt",
+        )
+        if (
+            receipt.get("schema_version") != 1
+            or receipt.get("protocol") != DISPATCH_PROTOCOL
+            or receipt.get("outcome") != "ABSENT_FENCED"
+            or receipt.get("job_id") != study_id
+            or receipt.get("job") is not None
+            or HEX_64.fullmatch(str(receipt.get("request_digest", ""))) is None
+            or HEX_64.fullmatch(str(receipt.get("negative_receipt_id", ""))) is None
+        ):
+            raise StudyTransportError("Feng negative receipt identity is invalid")
+        through_generation = _validate_dispatch_generation(
+            receipt.get("fenced_through_generation"), "fenced_through_generation"
+        )
+        receipt_identity = {
+            "schema_version": 1,
+            "protocol": DISPATCH_PROTOCOL,
+            "job_id": study_id,
+            "request_digest": receipt["request_digest"],
+            "fenced_through_generation": through_generation,
+        }
+        expected_receipt_id = hashlib.sha256(
+            canonical_json_bytes(receipt_identity)
+        ).hexdigest()
+        if not hmac.compare_digest(str(receipt["negative_receipt_id"]), expected_receipt_id):
+            raise StudyTransportError("Feng negative receipt digest is invalid")
+        failure = {
+            "code": "FENG_UNAVAILABLE",
+            "message": message,
+            "local_compute_attempted": False,
+            "negative_receipt_id": receipt["negative_receipt_id"],
+        }
+        with self.config.connect() as connection:
+            current = connection.execute(
+                "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE", (study_id,)
+            ).fetchone()
+            if current is None:
+                raise StudyRemoteError("authoritative Study row disappeared")
+            if current["status"] in TERMINAL_STATES:
+                return self._normalized(current)
+            if current["dispatch_claim_id"] != dispatch_claim_id:
+                return self._normalized(current)
+            if (
+                current["request_digest"] != receipt["request_digest"]
+                or not current["acceptance_ambiguous"]
+                or through_generation < current["ambiguous_through_generation"]
+                or through_generation < current["dispatch_generation"]
+            ):
+                raise StudyTransportError("Feng negative receipt does not fence possible acceptance")
+            row = connection.execute(
+                """
+                UPDATE qr_study.jobs SET status='FAILED', failure=%s,
+                    acceptance_ambiguous=false, ambiguous_through_generation=0,
+                    negative_receipt=%s, dispatch_claim_id=NULL,
+                    dispatch_claim_expires_at=NULL, dispatch_post_started=false,
+                    updated_at=clock_timestamp()
+                WHERE study_id=%s AND dispatch_claim_id=%s RETURNING *
+                """,
+                (
+                    _jsonb(failure),
+                    _jsonb(dict(receipt)),
+                    study_id,
+                    dispatch_claim_id,
                 ),
             ).fetchone()
             return self._normalized(row)
@@ -1111,9 +1461,15 @@ class StudyDispatcher:
                 "dispatch_elapsed_ms": None,
                 "local_compute_attempted": False,
             }
+        dispatch_generation = int(authoritative["dispatch_generation"])
+        if authoritative["acceptance_ambiguous"]:
+            return self._reconcile_prior_ambiguity(
+                frozen, dispatch_claim_id, dispatch_generation
+            )
         try:
             response = self.client.submit(
                 frozen,
+                dispatch_generation=dispatch_generation,
                 on_post_start=lambda: self.store.mark_post_started(
                     frozen["job_id"], dispatch_claim_id
                 ),
@@ -1121,12 +1477,66 @@ class StudyDispatcher:
             return self._record_submit_response(frozen["job_id"], dispatch_claim_id, response)
         except StudyTransportError as exc:
             if exc.acceptance_ambiguous:
-                return self._reconcile_ambiguous_submit(frozen, dispatch_claim_id, exc)
+                return self._reconcile_ambiguous_submit(
+                    frozen, dispatch_claim_id, dispatch_generation, exc
+                )
             return {
                 "authoritative": self.store.fail_unavailable(
                     frozen["job_id"], dispatch_claim_id, str(exc)
                 ),
                 "remote": None,
+                "idempotent_replay": False,
+                "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
+            }
+
+    def _reconcile_prior_ambiguity(
+        self,
+        request: Mapping[str, Any],
+        dispatch_claim_id: str,
+        dispatch_generation: int,
+    ) -> dict[str, Any]:
+        study_id = str(request["job_id"])
+        try:
+            response = self.client.fence(request, dispatch_generation)
+            receipt = response.value.get("fence")
+            if not isinstance(receipt, dict) or receipt.get("job_id") != study_id:
+                raise StudyTransportError("Feng worker returned an invalid fence receipt")
+            outcome = receipt.get("outcome")
+            if outcome == "EXISTS":
+                remote = receipt.get("job")
+                if not isinstance(remote, dict) or remote.get("job_id") != study_id:
+                    raise StudyTransportError("Feng fence returned the wrong job identity")
+                authoritative = self.store.observe(study_id, remote)
+            elif outcome == "ABSENT_FENCED":
+                remote = None
+                authoritative = self.store.resolve_fenced_absence(
+                    study_id,
+                    dispatch_claim_id,
+                    receipt,
+                    "authenticated Feng fence proved no accepted Study task",
+                )
+            elif outcome == "IN_FLIGHT":
+                remote = None
+                authoritative = self.store.mark_acceptance_ambiguous(
+                    study_id, dispatch_claim_id
+                )
+            else:
+                raise StudyTransportError("Feng worker returned an unsupported fence outcome")
+            return {
+                "authoritative": authoritative,
+                "remote": remote,
+                "negative_receipt": receipt if outcome == "ABSENT_FENCED" else None,
+                "idempotent_replay": False,
+                "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
+            }
+        except StudyTransportError:
+            authoritative = self.store.mark_acceptance_ambiguous(study_id, dispatch_claim_id)
+            return {
+                "authoritative": authoritative,
+                "remote": None,
+                "negative_receipt": None,
                 "idempotent_replay": False,
                 "dispatch_elapsed_ms": None,
                 "local_compute_attempted": False,
@@ -1150,6 +1560,7 @@ class StudyDispatcher:
         self,
         request: Mapping[str, Any],
         dispatch_claim_id: str,
+        dispatch_generation: int,
         initial_error: StudyTransportError,
     ) -> dict[str, Any]:
         study_id = str(request["job_id"])
@@ -1173,7 +1584,9 @@ class StudyDispatcher:
 
         try:
             return self._record_submit_response(
-                study_id, dispatch_claim_id, self.client.submit(request)
+                study_id,
+                dispatch_claim_id,
+                self.client.submit(request, dispatch_generation=dispatch_generation),
             )
         except StudyTransportError:
             authoritative = self.store.get(study_id)
