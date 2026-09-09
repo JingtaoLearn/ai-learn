@@ -372,6 +372,9 @@ class ProductionClient:
                 status, value = self._request(
                     "POST", "/api/v1/production/runs", headers=headers, body=body
                 )
+                if status == 429 and attempt + 1 < self.transport_attempts:
+                    self.sleep(min(8, 2**attempt))
+                    continue
                 if status not in {200, 202}:
                     raise ProductionClientError(f"production admission returned HTTP {status}")
                 self._verify_status(value, request)
