@@ -1,12 +1,18 @@
+import asyncio
 import json
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 
+import httpx
+import quant_platform.web as web_module
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
 from test_attempt_report import _install_cross_attempt_artifact
+from test_auth import _claims, _token
 from test_experiment_service import _task
 from test_web_api import authenticate, bocom_action_view, make_app, snapshot
 
@@ -112,6 +118,120 @@ def test_primary_pages_have_semantic_browser_selectors(tmp_path: Path):
         assert response.status_code == 200, route
         assert f'data-page="{page}"' in response.text
         assert all(tag in response.text for tag in ("<nav", "<main", "data-testid="))
+
+
+def test_post_sso_dashboard_keeps_health_responsive_during_slow_catalog_read(
+    tmp_path: Path, monkeypatch
+):
+    class OperatorPersistence(web_module.PostgresOperatorPersistence):
+        def __init__(self):
+            pass
+
+        def verify_schema(self):
+            return None
+
+        def list_operators(self):
+            return [{"operator_id": "first"}, {"operator_id": "second"}]
+
+    allowlist = tmp_path / "allowed.txt"
+    allowlist.write_text("researcher@example.com\n", encoding="utf-8")
+    app = web_module.create_app(
+        web_module.Settings(
+            environment="test",
+            auth_mode="sso",
+            state_root=tmp_path / "state",
+            public_url="https://quant.ai.jingtao.fun",
+            allowed_hosts=("quant.ai.jingtao.fun",),
+            auth_shared_secret="s" * 48,
+            session_secret="c" * 48,
+            allowed_emails_file=allowlist,
+            sso_login_url="https://ms-login.ai.jingtao.fun/auth/login",
+            sso_audience="https://quant.ai.jingtao.fun/auth/callback",
+            sso_callback_url="https://quant.ai.jingtao.fun/auth/callback",
+            password_scrypt_hash=None,
+            secure_cookies=True,
+        ),
+        clock=lambda: 1_787_800_000,
+        operator_persistence=OperatorPersistence(),
+    )
+    experiment_id = "e" * 64
+    attempt_id = "a" * 64
+    with app.state.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO experiments(experiment_id, identity_json, created_at)
+            VALUES (?, '{}', '2026-09-09T00:00:00Z')
+            """,
+            (experiment_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts(
+                attempt_id, experiment_id, action_id, sequence, status,
+                requested_json, resolved_json, created_at
+            ) VALUES (?, ?, 'dashboard-probe', 1, 'FAILED', '{}', '{}',
+                      '2026-09-09T00:00:01Z')
+            """,
+            (attempt_id, experiment_id),
+        )
+    original_dashboard_context = web_module._dashboard_context
+    dashboard_started = threading.Event()
+    release_dashboard = threading.Event()
+
+    def slow_dashboard_context(catalog, operators):
+        dashboard_started.set()
+        if not release_dashboard.wait(timeout=2):
+            raise AssertionError("dashboard probe was not released")
+        return original_dashboard_context(catalog, operators)
+
+    monkeypatch.setattr(web_module, "_dashboard_context", slow_dashboard_context)
+
+    async def probe() -> tuple[httpx.Response, httpx.Response, httpx.Response, float, float]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://quant.ai.jingtao.fun",
+            headers={"host": "quant.ai.jingtao.fun"},
+            follow_redirects=False,
+        ) as client:
+            callback = await client.post(
+                "/auth/callback", data={"token": _token(_claims())}
+            )
+            assert callback.status_code == 303
+            assert callback.headers["location"] == "/"
+
+            landing_request = asyncio.create_task(client.get("/"))
+            assert await asyncio.to_thread(dashboard_started.wait, 1)
+            started_at = time.perf_counter()
+            health = await asyncio.wait_for(client.get("/health"), timeout=0.5)
+            health_latency = time.perf_counter() - started_at
+            release_dashboard.set()
+            landing = await asyncio.wait_for(landing_request, timeout=1)
+            started_at = time.perf_counter()
+            health_after = await asyncio.wait_for(client.get("/health"), timeout=0.5)
+            health_after_latency = time.perf_counter() - started_at
+            return landing, health, health_after, health_latency, health_after_latency
+
+    try:
+        landing, health, health_after, health_latency, health_after_latency = asyncio.run(
+            probe()
+        )
+    finally:
+        release_dashboard.set()
+
+    assert landing.status_code == 200
+    assert 'data-page="dashboard"' in landing.text
+    assert f'data-copy-value="{attempt_id}"' in landing.text
+    assert "<span>Experiments</span><strong>1</strong>" in landing.text
+    assert "<span>Attempts</span><strong>1</strong>" in landing.text
+    assert "<span>Published operators</span><strong>2</strong>" in landing.text
+    assert "<span>Failures</span><strong>1</strong>" in landing.text
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+    assert health_after.status_code == 200
+    assert health_after.json()["status"] == "ok"
+    assert health_latency < 0.5
+    assert health_after_latency < 0.5
 
 
 def test_proofline_shell_maps_sections_and_keeps_mobile_utilities_native(
