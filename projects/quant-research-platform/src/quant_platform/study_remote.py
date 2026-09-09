@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import threading
@@ -19,9 +20,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
-
-from .schemas import canonical_json_bytes
-
 
 PROTOCOL = "quantresearch-study-worker/v1"
 JOB_TYPE = "deterministic-synthetic-search-v1"
@@ -54,6 +52,19 @@ class StudyIdempotencyConflict(StudyRemoteError):
 
 class StudyTransportError(StudyRemoteError):
     pass
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise StudyValidationError("JSON values must be serializable and finite") from exc
 
 
 def _utc_now() -> str:
@@ -653,6 +664,75 @@ EXECUTE FUNCTION qr_study.reject_terminal_mutation();
 """
 
 
+@dataclass(frozen=True)
+class StudyPostgresConfig:
+    host: str
+    port: int
+    dbname: str
+    user: str
+    password_file: Path
+    connect_timeout: int = 5
+
+    @classmethod
+    def from_environment(cls) -> "StudyPostgresConfig":
+        prefix = "QR_STUDY_POSTGRES_"
+        password_file = os.environ.get(f"{prefix}PASSWORD_FILE")
+        if not password_file:
+            raise StudyRemoteError(f"{prefix}PASSWORD_FILE is required")
+        try:
+            port = int(os.environ.get(f"{prefix}PORT", "5432"))
+            timeout = int(os.environ.get(f"{prefix}CONNECT_TIMEOUT", "5"))
+        except ValueError as exc:
+            raise StudyRemoteError("PostgreSQL port/timeout must be integers") from exc
+        return cls(
+            host=os.environ.get(f"{prefix}HOST", "postgres"),
+            port=port,
+            dbname=os.environ.get(f"{prefix}DATABASE", "quantresearch"),
+            user=os.environ.get(f"{prefix}USER", "qr_runtime"),
+            password_file=Path(password_file),
+            connect_timeout=timeout,
+        ).validated()
+
+    def validated(self) -> "StudyPostgresConfig":
+        if not self.host or not self.dbname or not self.user:
+            raise StudyRemoteError("PostgreSQL connection identity is incomplete")
+        if not 1 <= self.port <= 65535 or not 1 <= self.connect_timeout <= 60:
+            raise StudyRemoteError("PostgreSQL port/timeout is outside its allowed range")
+        try:
+            metadata = os.stat(self.password_file, follow_symlinks=False)
+        except OSError as exc:
+            raise StudyRemoteError("PostgreSQL password file is unavailable") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise StudyRemoteError("PostgreSQL password file must be a regular file")
+        return self
+
+    def password(self) -> str:
+        try:
+            value = self.password_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise StudyRemoteError("PostgreSQL password file is unreadable") from exc
+        if not value or "\0" in value or "\n" in value or "\r" in value:
+            raise StudyRemoteError("PostgreSQL password file has invalid content")
+        return value
+
+    def connect(self) -> Any:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            return psycopg.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password(),
+                connect_timeout=self.connect_timeout,
+                row_factory=dict_row,
+            )
+        except (ImportError, OSError) as exc:
+            raise StudyRemoteError("PostgreSQL client is unavailable") from exc
+
+
 class StudyPostgresStore:
     """One authoritative PostgreSQL row per lightweight Study, independent of Attempts."""
 
@@ -661,9 +741,7 @@ class StudyPostgresStore:
 
     @classmethod
     def from_environment(cls) -> "StudyPostgresStore":
-        from .postgres_persistence import PostgresConfig
-
-        return cls(PostgresConfig.from_environment(prefix="QR_STUDY_POSTGRES_"))
+        return cls(StudyPostgresConfig.from_environment())
 
     def initialize(self) -> None:
         with self.config.connect() as connection:

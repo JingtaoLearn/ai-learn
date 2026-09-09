@@ -7,9 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin study-worker \
     && pip install --no-cache-dir --disable-pip-version-check "psycopg[binary]==3.3.5"
 
-COPY src /opt/project/src
+COPY src/quant_platform/study_remote.py /opt/study_remote.py
 
 USER 10001:10001
 WORKDIR /run/study-worker
 EXPOSE 8091
-ENTRYPOINT ["python", "-m", "quant_platform.study_remote", "worker"]
+ENTRYPOINT ["python", "/opt/study_remote.py", "worker"]
