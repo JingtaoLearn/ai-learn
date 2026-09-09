@@ -23,6 +23,10 @@ from quant_platform.production_jobs import (
     staged_package_identity,
 )
 from quant_platform import production_jobs
+from quant_platform.production_package_authority import (
+    FilesystemPackageIdentityAuthority,
+    PackageIdentityAuthorityError,
+)
 from quant_platform.production_worker import ProductionWorker
 
 
@@ -273,7 +277,10 @@ def test_staged_reconstruction_preserves_regular_input_daily_and_formal_bytes(tm
 def test_actual_producer_external_identity_rejects_post_seal_mutation_and_reseal(
     tmp_path, stage: str, member: str
 ) -> None:
-    target = tmp_path / "work" / "run" / stage
+    work_root = tmp_path / "work"
+    run_id = "a" * 64
+    generation_stage = "acquisition" if stage == "input" else "computation"
+    target = work_root / run_id / generation_stage
     if stage == "input":
         payloads = ProductionJobs.input_payloads(
             ProductionInput(
@@ -294,10 +301,15 @@ def test_actual_producer_external_identity_rejects_post_seal_mutation_and_reseal
         read = ProductionJobs.read_computation
 
     worker = object.__new__(ProductionWorker)
-    worker.work_root = tmp_path / "work"
+    worker.work_root = work_root
+    worker.package_identity_authority = FilesystemPackageIdentityAuthority(
+        work_root, tmp_path / "package-identities"
+    )
     package_identity = worker._write_generation(target, payloads)
     identity_bytes = (target / "identity.json").read_bytes()
-    external_identity_path = worker._generation_identity_path(target)
+    external_identity_path = (
+        tmp_path / "package-identities" / run_id / f"{generation_stage}.sha256"
+    )
     external_identity_bytes = external_identity_path.read_bytes()
 
     member_path = target / member
@@ -320,15 +332,15 @@ def test_actual_producer_external_identity_rejects_post_seal_mutation_and_reseal
 
     assert (target / "identity.json").read_bytes() == identity_bytes
     assert external_identity_path.read_bytes() == external_identity_bytes
-    assert worker._read_generation_identity(target) == package_identity
     changed_payloads = dict(payloads)
     changed_payloads[member] = new_payload
-    assert worker._write_generation(target, changed_payloads) == package_identity
+    with pytest.raises(PackageIdentityAuthorityError, match="conflicts"):
+        worker._write_generation(target, changed_payloads)
     with pytest.raises(ProductionJobError, match="package identity mismatch"):
         read(target, expected_package_identity=package_identity)
     target.chmod(0o700)
     shutil.rmtree(target)
-    with pytest.raises(ProductionJobError, match="conflicts with generation"):
+    with pytest.raises(PackageIdentityAuthorityError, match="conflicts"):
         worker._write_generation(target, changed_payloads)
 
 

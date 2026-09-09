@@ -197,9 +197,9 @@ def _read_staged_members(
     target: Path,
     allowed_shapes: frozenset[frozenset[str]],
     label: str,
-    expected_package_identity: str,
+    expected_package_identity: str | None,
 ) -> dict[str, bytes]:
-    if (
+    if expected_package_identity is not None and (
         not isinstance(expected_package_identity, str)
         or SHA256.fullmatch(expected_package_identity) is None
     ):
@@ -268,7 +268,10 @@ def _read_staged_members(
             or _stat_fingerprint(before) != _stat_fingerprint(target_after)
         ):
             raise ProductionJobError(f"staged {label} directory changed during read")
-        if staged_package_identity(payloads) != expected_package_identity:
+        if (
+            expected_package_identity is not None
+            and staged_package_identity(payloads) != expected_package_identity
+        ):
             raise ProductionJobError(f"staged {label} package identity mismatch")
         return payloads
     except OSError as exc:
@@ -277,6 +280,18 @@ def _read_staged_members(
         for member_fd, _ in members.values():
             os.close(member_fd)
         os.close(directory_fd)
+
+
+def inspect_staged_package(target: Path, *, label: str) -> str:
+    """Read one sealed package safely and derive its identity for the external authority."""
+
+    if label == "production input":
+        allowed_shapes = frozenset({_INPUT_MEMBERS})
+    elif label == "production computation":
+        allowed_shapes = frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS})
+    else:
+        raise ProductionJobError("staged package label is invalid")
+    return staged_package_identity(_read_staged_members(target, allowed_shapes, label, None))
 
 
 def _staged_identity(payload: bytes, label: str) -> dict[str, Any]:
