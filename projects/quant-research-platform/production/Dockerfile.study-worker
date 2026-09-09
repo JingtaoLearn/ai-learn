@@ -1,0 +1,15 @@
+FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/project/src
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin study-worker \
+    && pip install --no-cache-dir --disable-pip-version-check "psycopg[binary]==3.3.5"
+
+COPY src /opt/project/src
+
+USER 10001:10001
+WORKDIR /run/study-worker
+EXPOSE 8091
+ENTRYPOINT ["python", "-m", "quant_platform.study_remote", "worker"]
