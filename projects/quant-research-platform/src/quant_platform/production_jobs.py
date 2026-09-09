@@ -145,7 +145,7 @@ def _read_fd(fd: int) -> bytes:
 
 
 def _open_staged_member(
-    directory_fd: int, name: str, label: str
+    directory_fd: int, name: str, label: str, expected_fingerprint: tuple[int, ...]
 ) -> tuple[int, tuple[int, ...]]:
     flags = os.O_RDONLY | os.O_NONBLOCK
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -156,14 +156,17 @@ def _open_staged_member(
     try:
         before = os.fstat(member_fd)
         path_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        fingerprint = _stat_fingerprint(before)
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
             or before.st_mode & 0o222
-            or _stat_fingerprint(before) != _stat_fingerprint(path_before)
+            or fingerprint != _stat_fingerprint(path_before)
         ):
             raise ProductionJobError(f"staged {label} member is unsafe")
-        return member_fd, _stat_fingerprint(before)
+        if fingerprint != expected_fingerprint:
+            raise ProductionJobError(f"staged {label} member changed during read")
+        return member_fd, fingerprint
     except OSError as exc:
         os.close(member_fd)
         raise ProductionJobError(f"staged {label} member is unsafe") from exc
@@ -194,8 +197,16 @@ def _read_staged_members(
         ):
             raise ProductionJobError(f"staged {label} member set is invalid")
         ordered_names = ["identity.json", *sorted(shape - {"identity.json"})]
+        expected_fingerprints = {
+            name: _stat_fingerprint(
+                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            )
+            for name in ordered_names
+        }
         for name in ordered_names:
-            members[name] = _open_staged_member(directory_fd, name, label)
+            members[name] = _open_staged_member(
+                directory_fd, name, label, expected_fingerprints[name]
+            )
         for name, (member_fd, fingerprint) in members.items():
             if (
                 _stat_fingerprint(os.fstat(member_fd)) != fingerprint
