@@ -1,6 +1,6 @@
 {
   "schema": "kanban-mobile-snapshot/v1",
-  "generated_at": "2026-09-09T11:19:24+08:00",
+  "generated_at": "2026-09-09T11:31:20+08:00",
   "timezone": "Asia/Shanghai",
   "boards": [
     {
@@ -24,8 +24,7 @@
       "counts": {
         "archived": 94,
         "blocked": 6,
-        "done": 221,
-        "running": 1
+        "done": 222
       }
     }
   ],
@@ -42,7 +41,6 @@
       "started_at": "2026-09-01T10:06:12+08:00",
       "completed_at": "2026-09-02T12:39:03+08:00",
       "heartbeat_at": "2026-09-02T12:38:58+08:00",
-      "last_run_at": "2026-09-02T12:39:03+08:00",
       "summary": "Integrated the exact reviewed #140 provider-retrieval checkpoint through PR #223 and merged it to main as a184589; the merged tree is byte-identical to f960659 and exact post-merge CI passed. Updated #140 with read-back-verified evidence; no deployment or scheduler activation occ"
     },
     {
@@ -57,8 +55,7 @@
       "started_at": "2026-09-02T10:15:35+08:00",
       "completed_at": "2026-09-02T10:19:20+08:00",
       "heartbeat_at": "2026-09-02T10:18:50+08:00",
-      "last_run_at": "2026-09-02T10:19:20+08:00",
-      "summary": "本轮完成 - 独立从实时仓库、GitHub、Kanban、Cron 与 feng-learn 复核 #193 分类交付：5 active + 5 unique evidence + 29 merged/duplicated + 2 unknown = 41；集合无重叠且完整覆盖全部 41 个 quant-* worktree。#193 仍 OPEN，本轮未新建/删除 worktree，未改仓库文件、分支或生产。 - 回读确认完整分类评论：[link] 验证 - 执行 git fetch --prune 后 origin/main 仍为 cf31a8a47"
+      "summary": "本轮完成 - 独立从实时仓库、GitHub、Kanban、Cron 与 feng-learn 复核 #193 分类交付：5 active + 5 unique evidence + 29 merged/duplicated + 2 unknown = 41；集合无重叠且完整覆盖全部 41 个 quant-* worktree。#193 仍 OPEN，本轮未新建/删除 worktree，未改仓库文件、分支或生产。 - 回读确认完整分类评论：[link] 验证 - 执行 git fetch --prune 后 [private reference] 仍为 c"
     },
     {
       "id": "t_4286aa0b",
@@ -72,7 +69,6 @@
       "started_at": "2026-09-02T10:08:33+08:00",
       "completed_at": "2026-09-02T10:15:15+08:00",
       "heartbeat_at": "2026-09-02T10:14:57+08:00",
-      "last_run_at": "2026-09-02T10:15:15+08:00",
       "summary": "Executed the exact #193 fallback lane without touching repository files or deleting worktrees. Published and read-back verified the complete 41-worktree classification (5 active, 5 unique evidence, 29 merged/duplicated, 2 unknown), exact resumable mapping, preservation actions, u"
     },
     {
@@ -87,7 +83,6 @@
       "started_at": "2026-09-02T10:02:01+08:00",
       "completed_at": "2026-09-02T10:08:11+08:00",
       "heartbeat_at": "2026-09-02T10:07:24+08:00",
-      "last_run_at": "2026-09-02T10:08:11+08:00",
       "summary": "Completed the 2026-09-02 10:00 evidence-first reconciliation. feng-learn GitHub authentication is still invalid, so the clean reviewed #140 checkpoint `f96065961e3a0d8750a3e893c0d6d6a22dfc85ca` and #150 checkpoint `c5c50698a3878175955fa8e06660efa21b9317c3` remain unchanged and un"
     },
     {
@@ -102,7 +97,6 @@
       "started_at": "2026-09-01T23:06:36+08:00",
       "completed_at": "2026-09-01T23:12:47+08:00",
       "heartbeat_at": "2026-09-01T23:11:53+08:00",
-      "last_run_at": "2026-09-01T23:12:47+08:00",
       "summary": "本轮完成 独立复核 #150 有界检查点 c5c50698a3878175955fa8e06660efa21b9317c3：工作树干净且只涉及约定的 4 个文件。夜间状态已持久化：#150 与 #140 均为各自 owning worktree 内的干净提交，无本任务后台进程，生产未变，主工作树既有无关修改未触碰。 [link] 验证 Python 3.11 聚焦测试 17/17；真实 tier runner 风险层 142/142、子系统 17/17、JSON exit 0；Python 3.12 聚焦测试 17/17。Ruff、compileall、"
     },
     {
@@ -117,8 +111,7 @@
       "started_at": "2026-09-01T22:11:24+08:00",
       "completed_at": "2026-09-01T23:06:22+08:00",
       "heartbeat_at": "2026-09-01T23:05:24+08:00",
-      "last_run_at": "2026-09-01T23:06:22+08:00",
-      "summary": "#150 bounded checkpoint is clean at `c5c50698a3878175955fa8e06660efa21b9317c3` on `feat/quant-verification-tiers-150`: local focused tests 17/17 passed; the real tier runner passed risk 142/142 then subsystem 17/17 with JSON exit 0; Ruff, compileall, diff-check, and exact-range G"
+      "summary": "#150 bounded checkpoint is clean at `c5c50698a3878175955fa8e06660efa21b9317c3` on [private reference]: local focused tests 17/17 passed; the real tier runner passed risk 142/142 then subsystem 17/17 with JSON exit 0; Ruff, compileall, diff-check, and exact-range Gitleaks (6 commi"
     },
     {
       "id": "t_8f5a192d",
@@ -132,7 +125,6 @@
       "started_at": "2026-09-01T22:02:05+08:00",
       "completed_at": "2026-09-01T22:10:30+08:00",
       "heartbeat_at": "2026-09-01T22:09:39+08:00",
-      "last_run_at": "2026-09-01T22:10:30+08:00",
       "summary": "Completed the full 22:00 reconciliation from live evidence. #195 has 11/11 native subissues open; #140 is still the only quant active frontier, while #201/#202 remain credential-blocked, #203 is blocked by #200, and #150/#193 are natively unblocked. The only open PRs are unrelate"
     },
     {
@@ -147,8 +139,7 @@
       "started_at": "2026-09-01T10:01:10+08:00",
       "completed_at": "2026-09-01T10:05:59+08:00",
       "heartbeat_at": "2026-09-01T10:05:28+08:00",
-      "last_run_at": "2026-09-01T10:05:59+08:00",
-      "summary": "Confirmed #140 as the sole active unblocked frontier. Exact slice: finish the audited composite XSHG provider (Yahoo only through T-1 + official SSE whole T bar), then add official session/closure and bounded suspension evidence; no scheduler activation. Checkpoint: worktree `[pr"
+      "summary": "Confirmed #140 as the sole active unblocked frontier. Exact slice: finish the audited composite XSHG provider (Yahoo only through T-1 + official SSE whole T bar), then add official session/closure and bounded suspension evidence; no scheduler activation. Checkpoint: worktree [pri"
     },
     {
       "id": "t_6b58cead",
@@ -161,23 +152,7 @@
       "created_at": "2026-09-09T11:18:47+08:00",
       "started_at": "2026-09-09T11:18:56+08:00",
       "completed_at": null,
-      "heartbeat_at": "2026-09-09T11:19:07+08:00",
-      "last_run_at": null,
-      "summary": ""
-    },
-    {
-      "id": "t_a70af148",
-      "title": "Integrate PostgreSQL migration with scheduled delivery repair",
-      "board": "quant-research-platform",
-      "board_name": "Quant Research Platform",
-      "status": "running",
-      "assignee": "implementationagentquantresearch",
-      "priority": 3300,
-      "created_at": "2026-09-09T11:16:02+08:00",
-      "started_at": "2026-09-09T11:16:04+08:00",
-      "completed_at": null,
-      "heartbeat_at": "2026-09-09T11:19:18+08:00",
-      "last_run_at": null,
+      "heartbeat_at": "2026-09-09T11:30:49+08:00",
       "summary": ""
     },
     {
@@ -192,7 +167,6 @@
       "started_at": "2026-09-09T10:06:22+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-09T10:17:11+08:00",
-      "last_run_at": "2026-09-09T10:20:14+08:00",
       "summary": "Implemented the final PostgreSQL Parameter Study invariant correction as immutable candidate dcb091b5aca806891fa5ffe305fc5436d736ca84. Exact-image fresh-target validation under qr_runtime accepted all valid Study forms, rejected all 33 malformed/domain probes, and read back zero "
     },
     {
@@ -207,7 +181,6 @@
       "started_at": "2026-09-09T08:18:20+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-09T09:05:48+08:00",
-      "last_run_at": "2026-09-09T09:07:58+08:00",
       "summary": "Closed F1-F3 in immutable candidate 06026fcc: PostgreSQL transactional Dataset publication, transactional Attempt/report completion with path-only rejection, and enforced Parameter Study domains/identity/FKs. Exact-image PostgreSQL/UI/API/fail-closed evidence passed and is record"
     },
     {
@@ -222,7 +195,6 @@
       "started_at": "2026-09-08T19:11:29+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-08T19:15:43+08:00",
-      "last_run_at": "2026-09-08T19:16:25+08:00",
       "summary": "PRINCIPLE_CONTEXT_STALE: Handoff 002 binds OPERATING-CONTEXT SHA-256 4da1ef9a… (via AUTHORIZATION-IDENTITY-002) and Goal 57c41d75…, but live hashes are 606a3d3e… and 60972e89…. AUTHORIZATION-IDENTITY-003 is not enough without a newly hashed Handoff that binds the live fix-forward"
     },
     {
@@ -237,7 +209,6 @@
       "started_at": "2026-09-08T17:06:21+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-08T17:12:45+08:00",
-      "last_run_at": "2026-09-08T17:13:13+08:00",
       "summary": "Repository `JingtaoLearn/ai-learn` is PUBLIC, so the required private PR cannot be created within the no-public-effect authority. PR #256 was immediately closed unmerged and its branch deleted; provide an authorized private target or explicitly authorize a public PR."
     },
     {
@@ -252,8 +223,7 @@
       "started_at": "2026-09-08T01:46:47+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-08T01:55:42+08:00",
-      "last_run_at": "2026-09-08T01:56:21+08:00",
-      "summary": "BLOCKED_APPLY: the protected-write gate rejected constructing the isolated proposed `expected-postimages/AGENTS.md` and explicitly prohibited retry or path-based bypass. A supervising authorized Hermes Session must approve/perform that protected proposal construction; then re-rea"
+      "summary": "BLOCKED_APPLY: the protected-write gate rejected constructing the isolated proposed [private reference] and explicitly prohibited retry or path-based bypass. A supervising authorized Hermes Session must approve/perform that protected proposal construction; then re-read both curre"
     },
     {
       "id": "t_48eb4243",
@@ -267,8 +237,21 @@
       "started_at": "2026-09-06T14:49:40+08:00",
       "completed_at": null,
       "heartbeat_at": "2026-09-06T15:05:46+08:00",
-      "last_run_at": "2026-09-06T15:06:06+08:00",
-      "summary": "The protected-file approval gate denied the required projects/quant-research-platform/AGENTS.md edit after its interactive prompt timed out and explicitly prohibited retry or alternate writes. Approve that protected edit and requeue this same workspace; exact additive patch and v"
+      "summary": "The protected-file approval gate denied the required [private reference] edit after its interactive prompt timed out and explicitly prohibited retry or alternate writes. Approve that protected edit and requeue this same workspace; exact additive patch and verified partial evidenc"
+    },
+    {
+      "id": "t_a70af148",
+      "title": "Integrate PostgreSQL migration with scheduled delivery repair",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "done",
+      "assignee": "revieweragentquantresearch",
+      "priority": 3300,
+      "created_at": "2026-09-09T11:16:02+08:00",
+      "started_at": "2026-09-09T11:16:04+08:00",
+      "completed_at": "2026-09-09T11:24:39+08:00",
+      "heartbeat_at": "2026-09-09T11:23:41+08:00",
+      "summary": "PASS with zero findings. Independently verified candidate 2bee51e16dbbe65ac2330a98836995d39614dcca is the exact conflict-free 18-path union of accepted PostgreSQL dcb091b and scheduled-delivery f702cfb, with both-parent ancestry, per-path blob equality, merge-tree equality, intac"
     },
     {
       "id": "t_545ec10d",
@@ -282,7 +265,6 @@
       "started_at": "2026-09-09T10:43:38+08:00",
       "completed_at": "2026-09-09T10:50:07+08:00",
       "heartbeat_at": "2026-09-09T10:49:05+08:00",
-      "last_run_at": "2026-09-09T10:50:07+08:00",
       "summary": "PASS with zero findings. Candidate dcb091b independently closes the sole REVIEW-005 Parameter Study invariant gap: exact-image fresh PostgreSQL v3 rejected all 33 malformed qr_runtime probes, accepted all valid action/table-family writes, preserved unchanged Dataset/Attempt read "
     },
     {
@@ -297,7 +279,6 @@
       "started_at": "2026-09-09T10:12:19+08:00",
       "completed_at": "2026-09-09T10:16:23+08:00",
       "heartbeat_at": "2026-09-09T10:15:37+08:00",
-      "last_run_at": "2026-09-09T10:16:23+08:00",
       "summary": "PRINCIPLE_CONTEXT_CONFLICT: the exact bound image makes platform-ui unconditionally require PostgreSQL, while the Handoff simultaneously forbids database cutover and requires four-container health. No deployment or API request was performed; final read-back confirms the existing "
     },
     {
@@ -312,7 +293,6 @@
       "started_at": "2026-09-09T09:30:40+08:00",
       "completed_at": "2026-09-09T09:48:00+08:00",
       "heartbeat_at": "2026-09-09T09:47:17+08:00",
-      "last_run_at": "2026-09-09T09:48:00+08:00",
       "summary": "PASS with zero findings. Independently verified the complete bound Principle Context, immutable candidate 2f2e1e8689c4e890f99ffd60261eeeba2bbe9db0, substantive Gold/BOCOM message rendering, bounded identical-request HTTP 429 recovery, disposable API replay/no-duplicate behavior, "
     },
     {
@@ -327,7 +307,6 @@
       "started_at": "2026-09-09T09:35:23+08:00",
       "completed_at": "2026-09-09T09:39:33+08:00",
       "heartbeat_at": "2026-09-09T09:38:39+08:00",
-      "last_run_at": "2026-09-09T09:39:33+08:00",
       "summary": "REVISE with 1 finite finding. Candidate 06026fcc closes REVIEW-004 F1/F2, but F3 remains incomplete: on the exact disposable PostgreSQL v2 target, qr_runtime accepted malformed Parameter Study action values that the accepted SQLite schema rejects; the probe was rolled back with z"
     },
     {
@@ -342,7 +321,6 @@
       "started_at": "2026-09-09T01:21:40+08:00",
       "completed_at": "2026-09-09T01:29:30+08:00",
       "heartbeat_at": "2026-09-09T01:29:08+08:00",
-      "last_run_at": "2026-09-09T01:29:30+08:00",
       "summary": "PASS with zero findings. Independently reconstructed candidate 325c2309d87eb4071193f539e56c895315dba7cc, verified the complete frozen Principle Context, reproduced exact-image F1/F2 closure plus preserved focused PostgreSQL evidence, and persisted additive REVIEW-002.md with dige"
     },
     {
@@ -357,7 +335,6 @@
       "started_at": "2026-09-09T00:18:11+08:00",
       "completed_at": "2026-09-09T00:28:15+08:00",
       "heartbeat_at": "2026-09-09T00:28:10+08:00",
-      "last_run_at": "2026-09-09T00:28:15+08:00",
       "summary": "REVISE with 2 finite findings. The exact PostgreSQL UI/machine, importer, idempotency/conflict, immutable, fail-closed, image/lock, and cleanup evidence reproduced, but the active experiment/runner Operator path still depends on empty SQLite/bundle authority and cross-version con"
     },
     {
@@ -372,7 +349,6 @@
       "started_at": "2026-09-08T22:48:53+08:00",
       "completed_at": "2026-09-08T22:55:22+08:00",
       "heartbeat_at": "2026-09-08T22:54:35+08:00",
-      "last_run_at": "2026-09-08T22:55:22+08:00",
       "summary": "qr-v2-gold-independent-mechanism-scout-001-revision-002 — nominated exactly one independent outcome-blind family, `CALENDAR_CHANNEL_BREAKOUT_LONG_CASH_V1`, and froze its complete machine-readable causal/accounting/untouched-evaluation contract. Bound Principle Context and authori"
     },
     {
@@ -387,7 +363,6 @@
       "started_at": "2026-09-08T21:56:27+08:00",
       "completed_at": "2026-09-08T22:24:56+08:00",
       "heartbeat_at": "2026-09-08T22:24:41+08:00",
-      "last_run_at": "2026-09-08T22:24:56+08:00",
       "summary": "Deployed exact merged main as unified zhlearn release 82c7bf6c… and produced exactly one immutable 140,000-path no-network FOCuS calibration through ailearn mTLS. The truthful formal verdict is NOT_SUPPORTED (DETECTABILITY_FAILED), so this candidate’s capture/evaluation path is s"
     },
     {
@@ -402,7 +377,6 @@
       "started_at": "2026-09-08T21:38:41+08:00",
       "completed_at": "2026-09-08T21:46:41+08:00",
       "heartbeat_at": "2026-09-08T21:46:19+08:00",
-      "last_run_at": "2026-09-08T21:46:41+08:00",
       "summary": "PASS with zero findings. Independently verified the complete bound Principle Context, immutable candidate/bundle/manifest, accepted cutover ancestry, preserved direct 140,000-path authenticated/idempotent no-network effect, exact calibration and phase-member digests, fail-closed "
     },
     {
@@ -417,7 +391,6 @@
       "started_at": "2026-09-08T19:13:48+08:00",
       "completed_at": "2026-09-08T20:36:40+08:00",
       "heartbeat_at": "2026-09-08T20:36:34+08:00",
-      "last_run_at": "2026-09-08T20:36:40+08:00",
       "summary": "PASS with zero findings. Independently reproduced the authenticated UI operation/report and exact Gold/BOCOM mTLS idempotent result/report paths; verified live zhlearn authority, ingress, schedules, fail-closed reads, prior-runtime shutdown, source preservation, and exact source/"
     },
     {
@@ -432,7 +405,6 @@
       "started_at": "2026-09-08T19:08:16+08:00",
       "completed_at": "2026-09-08T19:11:48+08:00",
       "heartbeat_at": "2026-09-08T19:11:28+08:00",
-      "last_run_at": "2026-09-08T19:11:48+08:00",
       "summary": "PRINCIPLE_CONTEXT_CONFLICT: all bound authority files and hashes match, but the Handoff's mandatory raw-byte admission rule is internally unsatisfiable: it requires a line beginning `- Product authorization:*** while also requiring byte equality to the sole Product authorization "
     },
     {
@@ -447,7 +419,6 @@
       "started_at": "2026-09-08T18:54:29+08:00",
       "completed_at": "2026-09-08T19:08:24+08:00",
       "heartbeat_at": "2026-09-08T19:07:33+08:00",
-      "last_run_at": "2026-09-08T19:08:24+08:00",
       "summary": "SUPERSEDED_BY_GOAL / PRINCIPLE_CONTEXT_STALE. Honored the Owner’s stop instruction, preserved the non-promotable candidate and additive Result, and performed no further test, build, review, deployment, callback, or live zhlearn mutation. Current Goal and Product authorization rev"
     },
     {
@@ -462,7 +433,6 @@
       "started_at": "2026-09-08T18:54:29+08:00",
       "completed_at": "2026-09-08T19:07:22+08:00",
       "heartbeat_at": "2026-09-08T19:06:35+08:00",
-      "last_run_at": "2026-09-08T19:07:22+08:00",
       "summary": "PASS with zero findings for the truthful VALIDATION_NOT_SUPPORTED_ROLLED_BACK / NOT_SUPPORTED Result; this does not pass the caller-to-readable-report effect. Independently reproduced bound admission and identities, verified 65/65 evidence entries, confirmed the HTTP 404 report i"
     },
     {
@@ -477,7 +447,6 @@
       "started_at": "2026-09-08T18:51:39+08:00",
       "completed_at": "2026-09-08T18:58:52+08:00",
       "heartbeat_at": "2026-09-08T18:58:31+08:00",
-      "last_run_at": "2026-09-08T18:58:52+08:00",
       "summary": "PASS with zero findings for the implementation's truthful PRINCIPLE_CONTEXT_CONFLICT / BLOCKED terminal Result only; the requested BOCOM caller-to-result effect remains unobserved. Independent execution reproduced Handoff raw-byte counts 1/2/1 and the zero-count assertion failure"
     },
     {
@@ -492,7 +461,6 @@
       "started_at": "2026-09-08T18:50:20+08:00",
       "completed_at": "2026-09-08T18:53:33+08:00",
       "heartbeat_at": "2026-09-08T18:52:39+08:00",
-      "last_run_at": "2026-09-08T18:53:33+08:00",
       "summary": "PRINCIPLE_CONTEXT_CONFLICT: the bound Handoff and all named authority digests match, but its mandatory whole-file raw-byte check is internally unsatisfiable—the full path occurs once while the two forbidden abbreviated byte strings occur 3 and 2 times. Preserved additive Result/e"
     },
     {
@@ -507,8 +475,7 @@
       "started_at": "2026-09-08T18:47:11+08:00",
       "completed_at": "2026-09-08T18:52:38+08:00",
       "heartbeat_at": "2026-09-08T18:52:26+08:00",
-      "last_run_at": "2026-09-08T18:52:38+08:00",
-      "summary": "PASS with zero findings for the implementation's truthful PRINCIPLE_CONTEXT_STALE / BLOCKED terminal result only; the requested BOCOM caller-to-result effect remains unobserved. Independently reproduced the immutable candidate and full bound context, verified `/home....md` is mis"
+      "summary": "PASS with zero findings for the implementation's truthful PRINCIPLE_CONTEXT_STALE / BLOCKED terminal result only; the requested BOCOM caller-to-result effect remains unobserved. Independently reproduced the immutable candidate and full bound context, verified [private reference] "
     },
     {
       "id": "t_f2a3e4ea",
@@ -522,8 +489,7 @@
       "started_at": "2026-09-08T18:47:12+08:00",
       "completed_at": "2026-09-08T18:49:55+08:00",
       "heartbeat_at": "2026-09-08T18:49:20+08:00",
-      "last_run_at": "2026-09-08T18:49:55+08:00",
-      "summary": "PRINCIPLE_CONTEXT_STALE: no implementation started because the Handoff binds Product authorization to missing literal path `/home....md`; all other named Principle/Goal/Validation/Execution digests matched. Preserved an additive Result, made no source or live zhlearn changes, and"
+      "summary": "PRINCIPLE_CONTEXT_STALE: no implementation started because the Handoff binds Product authorization to missing literal path [private reference]; all other named Principle/Goal/Validation/Execution digests matched. Preserved an additive Result, made no source or live zhlearn change"
     },
     {
       "id": "t_318749eb",
@@ -537,7 +503,6 @@
       "started_at": "2026-09-08T18:25:28+08:00",
       "completed_at": "2026-09-08T18:32:12+08:00",
       "heartbeat_at": "2026-09-08T18:31:51+08:00",
-      "last_run_at": "2026-09-08T18:32:12+08:00",
       "summary": "Completed the read-only FOCuS/zhlearn fit assessment. Current main does not expose FOCuS through production; the Result maps reusable admission, worker, dataset, result, report, and ailearn-readback capabilities, identifies their exact semantic mismatches, and recommends only the"
     },
     {
@@ -552,7 +517,6 @@
       "started_at": "2026-09-08T17:28:50+08:00",
       "completed_at": "2026-09-08T17:42:52+08:00",
       "heartbeat_at": "2026-09-08T17:42:21+08:00",
-      "last_run_at": "2026-09-08T17:42:52+08:00",
       "summary": "PASS with zero findings for the independent pre-merge gate. Verified PR #257 is open, cleanly mergeable, unmerged, and exactly the previously approved eight-file patch on unchanged main; focused tests passed 41 with the accepted sealed-fixture replay skipped, Python 3.12 compile "
     },
     {
@@ -567,7 +531,6 @@
       "started_at": "2026-09-08T14:34:47+08:00",
       "completed_at": "2026-09-08T17:04:50+08:00",
       "heartbeat_at": "2026-09-08T17:04:37+08:00",
-      "last_run_at": "2026-09-08T17:04:50+08:00",
       "summary": "PASS with zero findings. Independently verified revised candidate 40f0660 on its exact base/scope, reproduced both REVIEW-002 corrections plus controls on feng-learn under the offline guard, reran the full focused suite and Ruff successfully, and verified the sealed full-suite/ev"
     },
     {
@@ -582,7 +545,6 @@
       "started_at": "2026-09-08T14:36:13+08:00",
       "completed_at": "2026-09-08T14:50:54+08:00",
       "heartbeat_at": "2026-09-08T14:50:50+08:00",
-      "last_run_at": "2026-09-08T14:50:54+08:00",
       "summary": "PASS with zero findings for the implementation's truthful VALIDATION_BLOCKED_ROLLED_BACK / BLOCKED result; this does not pass the unobserved Gold/BOCOM caller-to-result effect. Independently verified the complete bound context, all 104 sealed evidence entries, reviewed input iden"
     },
     {
@@ -597,8 +559,7 @@
       "started_at": "2026-09-08T14:29:53+08:00",
       "completed_at": "2026-09-08T14:31:57+08:00",
       "heartbeat_at": "2026-09-08T14:31:04+08:00",
-      "last_run_at": "2026-09-08T14:31:57+08:00",
-      "summary": "PRINCIPLE_CONTEXT_STALE: no implementation started because Handoff line 12 binds Product authorization to missing literal path `/home....md`; substituting the matching OPERATING-CONTEXT digest would violate path+digest identity verification. Sealed RESULT.md records the complete "
+      "summary": "PRINCIPLE_CONTEXT_STALE: no implementation started because Handoff line 12 binds Product authorization to missing literal path [private reference]; substituting the matching OPERATING-CONTEXT digest would violate path+digest identity verification. Sealed RESULT.md records the com"
     },
     {
       "id": "t_89352ea8",
@@ -612,7 +573,6 @@
       "started_at": "2026-09-08T14:11:15+08:00",
       "completed_at": "2026-09-08T14:30:40+08:00",
       "heartbeat_at": "2026-09-08T14:30:39+08:00",
-      "last_run_at": "2026-09-08T14:30:40+08:00",
       "summary": "PASS with zero findings. Independent Review reproduced the decisive 502→200 disposable provider path and all required denial/rollback checks, verified all 20 sealed manifest entries plus helper syntax and immutable hashes, and confirmed current zhlearn firewall/Compose preimages "
     },
     {
@@ -627,7 +587,6 @@
       "started_at": "2026-09-08T14:16:18+08:00",
       "completed_at": "2026-09-08T14:26:26+08:00",
       "heartbeat_at": "2026-09-08T14:25:39+08:00",
-      "last_run_at": "2026-09-08T14:26:26+08:00",
       "summary": "PASS with zero findings. Independent review reproduced the 27-entry sealed manifest, exact candidate/Result hashes and immutable topology; replayed the stored official SGE HTML bytes byte-for-byte; and independently rejected 11 critical malformed/ambiguous cases under the stricte"
     },
     {
@@ -642,7 +601,6 @@
       "started_at": "2026-09-08T13:53:46+08:00",
       "completed_at": "2026-09-08T14:14:44+08:00",
       "heartbeat_at": "2026-09-08T14:14:43+08:00",
-      "last_run_at": "2026-09-08T14:14:44+08:00",
       "summary": "PASS with zero findings for the implementation's truthful VALIDATION_FAILED_ROLLED_BACK / NOT_SUPPORTED classification; this does not pass the unobserved Gold/BOCOM caller-to-result effect. Independent review reproduced the complete bound context, exact reviewed firewall/applicat"
     },
     {
@@ -657,7 +615,6 @@
       "started_at": "2026-09-08T13:54:47+08:00",
       "completed_at": "2026-09-08T14:01:16+08:00",
       "heartbeat_at": "2026-09-08T14:01:11+08:00",
-      "last_run_at": "2026-09-08T14:01:16+08:00",
       "summary": "PASS with zero findings. Wrote and sealed an additive Review receipt with the full Product authorization identity and complete bound context; checksum verification passed, and the candidate Result, manifest, and prior PASS Review retained their exact hashes. The Owner callback co"
     },
     {
@@ -672,7 +629,6 @@
       "started_at": "2026-09-08T13:22:51+08:00",
       "completed_at": "2026-09-08T13:42:32+08:00",
       "heartbeat_at": "2026-09-08T13:42:27+08:00",
-      "last_run_at": "2026-09-08T13:42:32+08:00",
       "summary": "PASS with zero findings. Candidate revision 2 closes F1 by recording the exact Product authorization path and hash, preserves the reviewed candidate/evidence byte-for-byte, passes the 7-entry reseal and archived 15-entry checksum sets, and a fresh stored-byte parser execution rep"
     },
     {
@@ -687,7 +643,6 @@
       "started_at": "2026-09-08T12:52:19+08:00",
       "completed_at": "2026-09-08T13:26:39+08:00",
       "heartbeat_at": "2026-09-08T13:26:34+08:00",
-      "last_run_at": "2026-09-08T13:26:39+08:00",
       "summary": "PASS with zero findings. Fresh execution of canonical candidate-002 (`b66b0146…`) closed the prior IPv4/IPv6 direct-host bypass and reproduced the full bounded matrix, exact apply/rollback, manifest integrity, cleanup, and no-live-effect read-back; this approves only the immutabl"
     },
     {
@@ -702,7 +657,6 @@
       "started_at": "2026-09-08T12:39:11+08:00",
       "completed_at": "2026-09-08T12:53:25+08:00",
       "heartbeat_at": "2026-09-08T12:53:08+08:00",
-      "last_run_at": "2026-09-08T12:53:25+08:00",
       "summary": "PASS with zero findings for the implementation's truthful VALIDATION_FAILED_ROLLED_BACK classification; this does not pass the unobserved Gold/BOCOM end-to-end effect. Independent review reproduced all identities and 33 evidence checks, verified the exact 502/upstream-refusal tra"
     },
     {
@@ -717,7 +671,6 @@
       "started_at": "2026-09-08T12:20:42+08:00",
       "completed_at": "2026-09-08T12:38:31+08:00",
       "heartbeat_at": "2026-09-08T12:37:43+08:00",
-      "last_run_at": "2026-09-08T12:38:31+08:00",
       "summary": "PASS with zero findings for the implementation's `VALIDATION_FAILED_ROLLED_BACK` terminal classification; this does not pass the unobserved end-to-end Gold/BOCOM effect. Independent transcript and live read-backs confirm the requested-but-unmaterialized loopback publication, corr"
     },
     {
@@ -732,7 +685,6 @@
       "started_at": "2026-09-08T10:51:03+08:00",
       "completed_at": "2026-09-08T11:07:25+08:00",
       "heartbeat_at": "2026-09-08T11:07:04+08:00",
-      "last_run_at": "2026-09-08T11:07:25+08:00",
       "summary": "PASS with zero findings. Fresh re-Review closed F1 through exact thin-runtime pre-cutover execution, wrapper success/fail-closed probes, 8 focused tests, fresh image builds/config inspection, and pinned report-edge identity read-back; F2 and the receipt-reseal defect are closed a"
     },
     {
@@ -747,7 +699,6 @@
       "started_at": "2026-09-08T08:38:08+08:00",
       "completed_at": "2026-09-08T09:15:49+08:00",
       "heartbeat_at": "2026-09-08T09:15:36+08:00",
-      "last_run_at": "2026-09-08T09:15:49+08:00",
       "summary": "PASS with zero findings. Independent re-review artifact `15932ae2…` verifies the complete sealed ledger/topology and exact d2de3f51/fabbc0f2 reconstruction, closes F1/F2 at the Compose/Nginx contract, and freshly reproduces the 4/44/10/5 gates, auth matrix, offline guard, compile"
     },
     {
@@ -762,7 +713,6 @@
       "started_at": "2026-09-08T08:34:13+08:00",
       "completed_at": "2026-09-08T08:36:11+08:00",
       "heartbeat_at": "2026-09-08T08:35:38+08:00",
-      "last_run_at": "2026-09-08T08:36:11+08:00",
       "summary": "PARENT_NOT_ACCEPTED: verified the parent card and its full evidence ledger, but the parent ended CORRECTION_TEST_FAILED with no candidate commit and no independent Review PASS. The required admission gate therefore failed closed; no integration, live preimage probe, build, deploy"
     },
     {
@@ -777,7 +727,6 @@
       "started_at": "2026-09-08T08:25:45+08:00",
       "completed_at": "2026-09-08T08:34:10+08:00",
       "heartbeat_at": "2026-09-08T08:33:29+08:00",
-      "last_run_at": "2026-09-08T08:34:10+08:00",
       "summary": "INTEGRATED_NOT_ACTIVATED. Applied the reviewed six-path shutdown-flush recovery to exact base and created local commit 793f6c8a3902b3164bbd6279199f8a688629bc41 with accepted tree b7b9fc0770ff55a28e557c4f435f9a4c27370d59. Focused 118/118, bounded regressions 36/36, Ruff, diff chec"
     },
     {
@@ -792,7 +741,6 @@
       "started_at": "2026-09-08T08:04:01+08:00",
       "completed_at": "2026-09-08T08:33:50+08:00",
       "heartbeat_at": "2026-09-08T08:32:52+08:00",
-      "last_run_at": "2026-09-08T08:33:50+08:00",
       "summary": "CORRECTION_TEST_FAILED: verified all immutable inputs, reproduced correction-006 (2 failed / 2 passed), and produced a four-path sealed-.pth authority correction whose focused authority matrix passed 20 tests. The broader Round 4 gate then failed deterministically; after sealing "
     },
     {
@@ -807,7 +755,6 @@
       "started_at": "2026-09-08T08:20:56+08:00",
       "completed_at": "2026-09-08T08:29:58+08:00",
       "heartbeat_at": "2026-09-08T08:29:22+08:00",
-      "last_run_at": "2026-09-08T08:29:58+08:00",
       "summary": "PASS with zero findings. Independent Review reproduced all governing/predecessor/candidate identities and ledgers, immutable topology, exact accepted source/verifier copies, two fresh all-pass offline receipts, and the sealed LOCAL_PREFLIGHT_BLOCKED/no-effects classification; Rev"
     },
     {
@@ -822,7 +769,6 @@
       "started_at": "2026-09-08T08:19:52+08:00",
       "completed_at": "2026-09-08T08:23:30+08:00",
       "heartbeat_at": "2026-09-08T08:22:40+08:00",
-      "last_run_at": "2026-09-08T08:23:30+08:00",
       "summary": "PREIMAGE_MISMATCH. Refused source mutation because the immutable Handoff's patch token (63 characters) and third unrelated-dirty-file token (56 characters) do not equal the observed 64-character SHA-256 identities. The release checkout remains at the original HEAD/tree with exact"
     },
     {
@@ -837,7 +783,6 @@
       "started_at": "2026-09-08T08:04:54+08:00",
       "completed_at": "2026-09-08T08:19:13+08:00",
       "heartbeat_at": "2026-09-08T08:18:23+08:00",
-      "last_run_at": "2026-09-08T08:19:13+08:00",
       "summary": "PASS with zero findings. Independent Review reproduced all governing/predecessor/candidate identities and ledgers, immutable topology, exact source-diff replay, and two fresh byte-identical all-pass offline verifier runs covering normalization, confinement, race, descriptor, sche"
     },
     {
@@ -852,7 +797,6 @@
       "started_at": "2026-09-08T07:27:05+08:00",
       "completed_at": "2026-09-08T08:17:31+08:00",
       "heartbeat_at": "2026-09-08T08:16:53+08:00",
-      "last_run_at": "2026-09-08T08:17:31+08:00",
       "summary": "PASS with zero findings. Independent re-review reproduced candidate tree b7b9fc0770ff55a28e557c4f435f9a4c27370d59 from the exact base and sealed patch, verified F1 closure across removed/unmatched/disabled/moved/rebound routes and exact canonical T17 identity, reran 118 focused p"
     },
     {
@@ -867,7 +811,6 @@
       "started_at": "2026-09-08T07:39:57+08:00",
       "completed_at": "2026-09-08T08:02:22+08:00",
       "heartbeat_at": "2026-09-08T08:01:22+08:00",
-      "last_run_at": "2026-09-08T08:02:22+08:00",
       "summary": "PASS with zero findings. Re-review artifact `9fe92257…` independently reproduces all governing/predecessor/candidate identities and ledgers, verifies the prior finding is closed by four exact normalization tuple oracles and a distinct target-directory binding mutation, and reprod"
     },
     {
@@ -882,7 +825,6 @@
       "started_at": "2026-09-08T07:24:19+08:00",
       "completed_at": "2026-09-08T07:37:14+08:00",
       "heartbeat_at": "2026-09-08T07:36:57+08:00",
-      "last_run_at": "2026-09-08T07:37:14+08:00",
       "summary": "PASS with zero findings. Independent Review `665e9793…` reproduced all nine governing/predecessor identities, both predecessor ledgers, the 14-entry candidate ledger and immutable topology, exact source diff, and two byte-identical fresh six-class offline replays; it verified the"
     },
     {
@@ -897,7 +839,6 @@
       "started_at": "2026-09-08T07:12:16+08:00",
       "completed_at": "2026-09-08T07:25:31+08:00",
       "heartbeat_at": "2026-09-08T07:25:27+08:00",
-      "last_run_at": "2026-09-08T07:25:31+08:00",
       "summary": "RECOVERY_DECISION_REQUIRED. Diagnosed the shutdown-flush failure as a stale MessageEvent persistence schema plus missing Profile-aware route/session resolution; one legacy record is AMBIGUOUS_FAIL_CLOSED and the exact current-route record is RECOVERABLE_EXACT_CANONICAL_SESSION bu"
     },
     {
@@ -912,7 +853,6 @@
       "started_at": "2026-09-08T07:08:26+08:00",
       "completed_at": "2026-09-08T07:23:15+08:00",
       "heartbeat_at": "2026-09-08T07:23:10+08:00",
-      "last_run_at": "2026-09-08T07:23:15+08:00",
       "summary": "PASS with zero findings. Independent Review `ad991ee9…` reproduced all eight governing/predecessor identities, all three evidence ledgers, immutable candidate topology, exact source diff, and two byte-identical fresh offline verifier runs covering all 14 closed gates; the sealed "
     },
     {
@@ -927,7 +867,6 @@
       "started_at": "2026-09-08T06:54:01+08:00",
       "completed_at": "2026-09-08T07:06:36+08:00",
       "heartbeat_at": "2026-09-08T07:06:01+08:00",
-      "last_run_at": "2026-09-08T07:06:36+08:00",
       "summary": "PASS with zero findings. Independent Review `456c9d8c…` reproduced the governing/predecessor identities, accepted and candidate ledgers, immutable topology, and two byte-identical fresh offline verifier runs; the sealed evidence supports only `LOCAL_PREFLIGHT_BLOCKED` with PREFLI"
     },
     {
@@ -942,7 +881,6 @@
       "started_at": "2026-09-08T06:24:03+08:00",
       "completed_at": "2026-09-08T06:52:10+08:00",
       "heartbeat_at": "2026-09-08T06:51:55+08:00",
-      "last_run_at": "2026-09-08T06:52:10+08:00",
       "summary": "PASS with zero findings. Independent re-Review `dd512465…` reproduces all governing identities, revision ledger/topology and source-copy equality; four fresh-copy offline verifier executions pass all prior gates, including deterministic `PARENT_DIRECTORY_EXCHANGE` rejection, with"
     },
     {
@@ -957,7 +895,6 @@
       "started_at": "2026-09-08T06:06:53+08:00",
       "completed_at": "2026-09-08T06:22:49+08:00",
       "heartbeat_at": "2026-09-08T06:22:03+08:00",
-      "last_run_at": "2026-09-08T06:22:49+08:00",
       "summary": "PASS with zero findings. Independent Review `2b9c8106…` reproduced all seven governing/predecessor identities, the 17-file immutable candidate topology and 16-entry ledger, the exact closed metadata receipt, strict-reader failure mapping, two byte-identical offline verifier passe"
     },
     {
@@ -972,7 +909,6 @@
       "started_at": "2026-09-08T01:45:43+08:00",
       "completed_at": "2026-09-08T01:59:00+08:00",
       "heartbeat_at": "2026-09-08T01:58:17+08:00",
-      "last_run_at": "2026-09-08T01:59:00+08:00",
       "summary": "PASS with zero findings. Independent Review `4f8f32ec…` reproduced all bound identities and checksum ledgers, exact 12-name allowlist behavior, two byte-identical offline verifier passes covering 15 inherited and 11 filename mutations plus seven-phase capture tests, the closed LO"
     },
     {
@@ -987,7 +923,6 @@
       "started_at": "2026-09-08T01:47:44+08:00",
       "completed_at": "2026-09-08T01:49:05+08:00",
       "heartbeat_at": "2026-09-08T01:48:53+08:00",
-      "last_run_at": "2026-09-08T01:49:05+08:00",
       "summary": "CHECKPOINTED_FOR_HOST_SHUTDOWN: immutable Handoff/correction-006 identities and the 0444 preserved patch were verified and sealed by 01:48:55 CST. With fewer than two minutes before the 01:50 hard fence, no repo reconstruction, remote run, source edit, test, or production effect "
     },
     {
@@ -1002,7 +937,6 @@
       "started_at": "2026-09-08T01:00:09+08:00",
       "completed_at": "2026-09-08T01:46:09+08:00",
       "heartbeat_at": "2026-09-08T01:45:22+08:00",
-      "last_run_at": "2026-09-08T01:46:09+08:00",
       "summary": "PASS. Independently verified the additive immutable rework closes the Docker `Config.Env` schema defect and preserves all other contracts: 16/16 tests, 14 independent wire controls, 15/15 manifest entries, exact topology, patch checks, no-apply boundaries, and exact Owner callbac"
     },
     {
@@ -1017,7 +951,6 @@
       "started_at": "2026-09-08T01:34:58+08:00",
       "completed_at": "2026-09-08T01:42:41+08:00",
       "heartbeat_at": "2026-09-08T01:42:35+08:00",
-      "last_run_at": "2026-09-08T01:42:41+08:00",
       "summary": "CORRECTION_TEST_FAILED: exact inputs and staged tree 5f242cfa were verified, but the first remote pre-candidate owner-selection gate returned 2 failed / 2 passed because the correction rejected the sealed external packaging root as outside the formal venv's sysconfig roots. Per t"
     },
     {
@@ -1032,7 +965,6 @@
       "started_at": "2026-09-08T01:26:37+08:00",
       "completed_at": "2026-09-08T01:41:55+08:00",
       "heartbeat_at": "2026-09-08T01:40:56+08:00",
-      "last_run_at": "2026-09-08T01:41:55+08:00",
       "summary": "PASS with zero findings. Independent Review `c6706d5a…` reproduced all bound identities and ledgers, reran the 15 offline fail-closed mutations, recomputed eight terminal outcomes and the no-HTTP source surface, and verified the immutable 14-file candidate; the disclosed ledger-g"
     },
     {
@@ -1047,7 +979,6 @@
       "started_at": "2026-09-08T01:24:02+08:00",
       "completed_at": "2026-09-08T01:32:54+08:00",
       "heartbeat_at": "2026-09-08T01:32:51+08:00",
-      "last_run_at": "2026-09-08T01:32:54+08:00",
       "summary": "CORRECTION_TEST_FAILED: immutable correction-004 identities and a two-root reproducer passed, proving parent packaging==26.2 while both clean -S workers lacked packaging. The first remote pre-candidate focused gate returned 1 failed / 1 passed because the proposed RECORD-owner se"
     },
     {
@@ -1062,7 +993,6 @@
       "started_at": "2026-09-08T01:15:03+08:00",
       "completed_at": "2026-09-08T01:31:51+08:00",
       "heartbeat_at": "2026-09-08T01:31:10+08:00",
-      "last_run_at": "2026-09-08T01:31:51+08:00",
       "summary": "DIAGNOSIS_READY_FOR_OWNER. Reproduced the review-only REVISE defect twice in isolated temporary databases, selected the smallest fail-closed same-card lifecycle prevention, and classified all three live dirty files as exact intended local activation postimages. The 10-file candid"
     },
     {
@@ -1077,7 +1007,6 @@
       "started_at": "2026-09-08T01:12:14+08:00",
       "completed_at": "2026-09-08T01:25:36+08:00",
       "heartbeat_at": "2026-09-08T01:24:59+08:00",
-      "last_run_at": "2026-09-08T01:25:36+08:00",
       "summary": "PASS with zero findings. Independent Review `daa2fe0c…` reproduced the exact Handoff and four frozen input identities, all 12 prior-ledger and 10 candidate-ledger entries, the private allowlist hash, closed schemas, offline exception collapse, and immutable 0555/0444 topology; th"
     },
     {
@@ -1092,7 +1021,6 @@
       "started_at": "2026-09-08T00:57:41+08:00",
       "completed_at": "2026-09-08T01:09:02+08:00",
       "heartbeat_at": "2026-09-08T01:09:02+08:00",
-      "last_run_at": "2026-09-08T01:09:02+08:00",
       "summary": "PASS with zero findings. Independent Review `15621dfd…` reproduced the exact Owner Handoff and reviewed-package identities, the 29-entry candidate and 12-entry public ledgers, all 18 copied package hashes/modes, fixed one-invocation/no-argument surfaces, canonical three-node `NET"
     },
     {
@@ -1107,7 +1035,6 @@
       "started_at": "2026-09-08T00:40:23+08:00",
       "completed_at": "2026-09-08T00:56:30+08:00",
       "heartbeat_at": "2026-09-08T00:55:48+08:00",
-      "last_run_at": "2026-09-08T00:56:30+08:00",
       "summary": "PASS with zero findings. Independent Review `274fa352…` reproduced the exact candidate identities, 29-entry ledger, 30-file immutable topology, all 14 input bindings, two fresh 17/17 + 20/20 offline attempts, and detection of an additional nested-encoding-specific mutation; no ru"
     },
     {
@@ -1122,7 +1049,6 @@
       "started_at": "2026-09-08T00:38:16+08:00",
       "completed_at": "2026-09-08T00:42:38+08:00",
       "heartbeat_at": "2026-09-08T00:41:40+08:00",
-      "last_run_at": "2026-09-08T00:42:38+08:00",
       "summary": "Published the distinct offline candidate as IMMUTABLE_PACKAGE_READY_FOR_REVIEW. All 11 source-manifested files remain byte-identical and the source stayed unchanged; the promoted candidate passed manifest, exact-inventory, topology, single-link, immutable-mode, and non-writabilit"
     },
     {
@@ -1137,7 +1063,6 @@
       "started_at": "2026-09-08T00:19:31+08:00",
       "completed_at": "2026-09-08T00:33:05+08:00",
       "heartbeat_at": "2026-09-08T00:32:25+08:00",
-      "last_run_at": "2026-09-08T00:33:05+08:00",
       "summary": "CORRECTION_TEST_FAILED: additive candidate 4d328a530181a167c292fc251d4e5edce96fbaa6 structurally validates SQLite migration authority and passed identity, syntax, lint, path, Gitleaks, offline-guard and no-mutation gates, but the mandatory focused gate returned 3 failed / 41 pass"
     },
     {
@@ -1152,7 +1077,6 @@
       "started_at": "2026-09-08T00:19:30+08:00",
       "completed_at": "2026-09-08T00:27:29+08:00",
       "heartbeat_at": "2026-09-08T00:26:29+08:00",
-      "last_run_at": "2026-09-08T00:27:29+08:00",
       "summary": "PASS with zero findings. Independent Review `6ce4ce84…` reproduces the sealed candidate identities, both old/new checksum ledgers, six exact preserved files, 24-position/5-fetch/103,745-byte accounting, and exact 0444/0555 single-link topology with 13/13 paths non-writable on an "
     },
     {
@@ -1167,7 +1091,6 @@
       "started_at": "2026-09-08T00:12:16+08:00",
       "completed_at": "2026-09-08T00:16:45+08:00",
       "heartbeat_at": "2026-09-08T00:16:45+08:00",
-      "last_run_at": "2026-09-08T00:16:45+08:00",
       "summary": "Contained the flearn Jupyter credential exposure under standing private-operations authority: rotated the token on-host, recreated only the quiescent Jupyter container, and verified the replacement is healthy, loopback-only, and uses the new credential while the old container is "
     },
     {
@@ -1182,7 +1105,6 @@
       "started_at": "2026-09-07T23:54:24+08:00",
       "completed_at": "2026-09-08T00:12:13+08:00",
       "heartbeat_at": "2026-09-08T00:11:21+08:00",
-      "last_run_at": "2026-09-08T00:12:13+08:00",
       "summary": "CORRECTION_TEST_FAILED: additive candidate 7ffd556193c322f63c78cf42f66a28190e3d1a55 passed identity/parity, syntax, lint, path, Gitleaks and offline-guard checks, but the mandatory focused gate returned 13 failed / 21 passed because its exact SQLite schema SQL fingerprint rejects"
     },
     {
@@ -1197,7 +1119,6 @@
       "started_at": "2026-09-07T23:39:05+08:00",
       "completed_at": "2026-09-08T00:02:03+08:00",
       "heartbeat_at": "2026-09-08T00:01:57+08:00",
-      "last_run_at": "2026-09-08T00:02:03+08:00",
       "summary": "PASS with zero findings. Sealed Review `99981194…` independently reproduces exact current-main and P0 identities, 14/14 candidate evidence hashes, all repository/cluster metrics, the 25/30-path overlap sets, surviving-risk rationale, and `NO_ADMISSIBLE_SECOND_SLICE_NOW`; no imple"
     },
     {
@@ -1212,7 +1133,6 @@
       "started_at": "2026-09-07T23:48:33+08:00",
       "completed_at": "2026-09-07T23:59:24+08:00",
       "heartbeat_at": "2026-09-07T23:59:14+08:00",
-      "last_run_at": "2026-09-07T23:59:24+08:00",
       "summary": "PASS with zero findings. Sealed Review `aea57183…` independently verifies candidate manifest `ca31329a…`, all eight active-script dispositions, the five-fetch fixed sequence, 1,105,553 correction bytes, cumulative 12/12 fetch exhaustion, immutable topology, and the exact bounded "
     },
     {
@@ -1227,7 +1147,6 @@
       "started_at": "2026-09-07T23:13:16+08:00",
       "completed_at": "2026-09-07T23:52:05+08:00",
       "heartbeat_at": "2026-09-07T23:51:25+08:00",
-      "last_run_at": "2026-09-07T23:52:05+08:00",
       "summary": "FORMAL_VERIFICATION_FAILED: exact candidate cbe6ba5cd07d2ea4d977fe287f69a83ad0611066 was reconstructed cleanly on feng-learn/flearn, but the admissible focused gate returned 12 failed / 17 passed. Fresh-ledger initialization and BOCOM/Gold identity defects are deterministic; seal"
     },
     {
@@ -1242,7 +1161,6 @@
       "started_at": "2026-09-07T23:27:25+08:00",
       "completed_at": "2026-09-07T23:42:10+08:00",
       "heartbeat_at": "2026-09-07T23:41:23+08:00",
-      "last_run_at": "2026-09-07T23:42:10+08:00",
       "summary": "PASS with zero findings. Sealed Review `07b21e0e…` independently verifies the exact candidate manifest `5ad83557…`, all 28 bindings and immutable topology, exact integrated HEAD/tree and preserved dirty bytes, complete-cgroup/admission fencing, two-defect source/canary binding, a"
     },
     {
@@ -1257,7 +1175,6 @@
       "started_at": "2026-09-07T23:21:23+08:00",
       "completed_at": "2026-09-07T23:30:27+08:00",
       "heartbeat_at": "2026-09-07T23:30:18+08:00",
-      "last_run_at": "2026-09-07T23:30:27+08:00",
       "summary": "PASS with zero findings. Sealed Review `04afc4a0…` independently verifies candidate manifest `b42c43e1…`, all 12 entries/topology, exact exit-66 transcript, copied public report `58525c32…`, one-attempt/no-retry semantics, and the terminal `CONTENT_TYPE_REJECTED` closed negative "
     },
     {
@@ -1272,7 +1189,6 @@
       "started_at": "2026-09-07T22:32:58+08:00",
       "completed_at": "2026-09-07T23:20:54+08:00",
       "heartbeat_at": "2026-09-07T23:20:07+08:00",
-      "last_run_at": "2026-09-07T23:20:54+08:00",
       "summary": "PASS with zero findings. Sealed Review `aa2ecfc266ff9848687cca6b6b55ba042e7d880daa6d3b33aae8d2851a68e158` independently verifies exact candidate `265da3ee8216a9a481b7b312a4ab250a7bdc5817`, atomic normalized ToolCall ID repair, idle-consumer warning ownership, 98 candidate evidenc"
     },
     {
@@ -1287,7 +1203,6 @@
       "started_at": "2026-09-07T22:57:26+08:00",
       "completed_at": "2026-09-07T23:17:39+08:00",
       "heartbeat_at": "2026-09-07T23:17:31+08:00",
-      "last_run_at": "2026-09-07T23:17:39+08:00",
       "summary": "PASS with zero findings. Sealed Review `3c7bd2ae…` independently verifies candidate manifest `8702da5a…`, all 21 entries/topology, 15/15 adversarial tests, exact frozen request/state-machine/redaction semantics, and additive preservation of revision 007 without restricted-raw or "
     },
     {
@@ -1302,7 +1217,6 @@
       "started_at": "2026-09-07T22:49:26+08:00",
       "completed_at": "2026-09-07T22:55:01+08:00",
       "heartbeat_at": "2026-09-07T22:54:47+08:00",
-      "last_run_at": "2026-09-07T22:55:01+08:00",
       "summary": "REVISE with one High provenance finding: candidate manifest `14b43edf…` cannot fully reproduce because the only redactor source lived in an archived scratch workspace and is missing, with no sealed command/transcript to independently prove one request and zero value leakage. The "
     },
     {
@@ -1317,7 +1231,6 @@
       "started_at": "2026-09-07T22:08:43+08:00",
       "completed_at": "2026-09-07T22:27:47+08:00",
       "heartbeat_at": "2026-09-07T22:27:18+08:00",
-      "last_run_at": "2026-09-07T22:27:47+08:00",
       "summary": "PASS with zero findings. Sealed Review `954c1dd3…` independently verifies the candidate manifest/topology, the deterministic D+10 historical-backfill contradiction, the missing non-empty SGE envelope, pinned exact-main interfaces, eight-file/Report-Operator seam separation, chron"
     },
     {
@@ -1332,7 +1245,6 @@
       "started_at": "2026-09-07T22:03:59+08:00",
       "completed_at": "2026-09-07T22:26:49+08:00",
       "heartbeat_at": "2026-09-07T22:26:41+08:00",
-      "last_run_at": "2026-09-07T22:26:49+08:00",
       "summary": "PASS with one non-blocking Low count correction. Sealed Review `92d423f7b5cb41fec1e0aeee9dad16d36f7f0210436c7d00e2284aa8da1475e2` verifies candidate manifest `11a20f5ac8fdc6fd5eeddb4af2ecd54cfb35d4db5e9373665c69443239bf441e`, reproduces the normalized `ToolCall.call_id` mutation "
     },
     {
@@ -1347,7 +1259,6 @@
       "started_at": "2026-09-07T21:17:50+08:00",
       "completed_at": "2026-09-07T22:24:55+08:00",
       "heartbeat_at": "2026-09-07T22:24:47+08:00",
-      "last_run_at": "2026-09-07T22:24:55+08:00",
       "summary": "PASS with zero findings. Sealed Review `7b956b26…` independently verifies exact candidate `93ccbd82…` / tree `1ee74cdf…`, all 174 root and 165 embedded evidence entries, 22 zero-exit commands, 25 Git inventory bindings, the fresh complete gate matrix, and closure of both prior HI"
     },
     {
@@ -1362,7 +1273,6 @@
       "started_at": "2026-09-07T21:39:17+08:00",
       "completed_at": "2026-09-07T22:16:11+08:00",
       "heartbeat_at": "2026-09-07T22:15:13+08:00",
-      "last_run_at": "2026-09-07T22:16:11+08:00",
       "summary": "PASS with zero findings. Sealed re-Review `aef71816521de57a76a0ee358655c15573dee228b5826cb70056674ec9e55c0f` independently verifies corrected candidate `8fd01c0ba808b2b37127901c8e5357a9151d680c0b088aaf7a95a36fd2c37f73`: F1 now fails closed on every non-main cgroup PID with owner-"
     }
   ]

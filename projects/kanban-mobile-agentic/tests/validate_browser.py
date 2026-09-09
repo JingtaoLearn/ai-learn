@@ -68,6 +68,8 @@ def main() -> None:
         assert page.locator("[role=tab]").count() == 4
         assert page.locator(".status-button").count() == 7
         assert page.locator("#results-meta").inner_text() == "89 shown · 410 board records"
+        assert "Asia/Shanghai" in page.locator("#snapshot-time").inner_text()
+        assert "Times shown in Asia/Shanghai" in page.locator("#footer-note").inner_text()
         assert_no_overflow(page, "390x844 initial")
         if args.screenshots:
             page.screenshot(path=OUTPUT / "mobile-390x844.png", full_page=False)
@@ -97,6 +99,10 @@ def main() -> None:
             "Completed",
             "Heartbeat",
         ], f"Unexpected detail labels: {detail_labels}"
+        detail_values = page.locator("#detail-grid dd").all_text_contents()
+        for value in detail_values[4:]:
+            if value != "Not recorded":
+                assert "Asia/Shanghai" in value, f"Timestamp missing explicit timezone: {value}"
         if args.screenshots:
             page.screenshot(path=OUTPUT / "mobile-detail-390x844.png", full_page=False)
         page.keyboard.press("Escape")

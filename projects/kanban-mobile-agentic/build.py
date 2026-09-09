@@ -16,8 +16,9 @@ DEFAULT_SNAPSHOT = ROOT / "data" / "board-snapshot.json"
 DEFAULT_TEMPLATE = ROOT / "src" / "index.template.html"
 DEFAULT_OUTPUT = ROOT / "preview.html"
 SCHEMA = "kanban-mobile-snapshot/v1"
+DISPLAY_TIMEZONE = "Asia/Shanghai"
 STATUS_ORDER = ("running", "review", "ready", "todo", "blocked", "done", "archived")
-TASK_FIELDS = (
+PUBLIC_TASK_FIELDS = (
     "id",
     "title",
     "board",
@@ -29,6 +30,7 @@ TASK_FIELDS = (
     "completed_at",
     "heartbeat_at",
 )
+FIXTURE_TASK_FIELDS = PUBLIC_TASK_FIELDS + ("board_name", "summary")
 FORBIDDEN_KEYS = {
     "body",
     "workspace_path",
@@ -46,7 +48,15 @@ ABSOLUTE_PATH = re.compile(
     r"(?<![\w.])/(?:home|tmp|var|etc|opt|srv|root|Users)(?:/[^\s,;:)\]}`]+)+"
 )
 BRANCH_NAME = re.compile(
-    r"\b(?:feat|fix|chore|refactor|release|hotfix)/[A-Za-z0-9._/-]+\b",
+    r"(?<![\w.-])(?:"
+    r"(?:feat|fix|chore|refactor|release|hotfix|origin)/[A-Za-z0-9._/-]+"
+    r"|current-main|exact-main|non-main|main"
+    r")(?![\w.-])",
+    re.IGNORECASE,
+)
+REPOSITORY_PATH = re.compile(
+    r"(?<![\w.-])(?:projects|expected-postimages|src|tests|vm|\.github)/"
+    r"[^\s,;:)\]}`]+",
     re.IGNORECASE,
 )
 URL = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -57,6 +67,7 @@ def sanitize_text(value: Any) -> str:
     """Remove path-, branch-, and URL-shaped values from display text."""
     text = "" if value is None else str(value)
     text = ABSOLUTE_PATH.sub("[redacted path]", text)
+    text = REPOSITORY_PATH.sub("[redacted path]", text)
     text = BRANCH_NAME.sub("[redacted branch]", text)
     text = URL.sub("[link]", text)
     return WHITESPACE.sub(" ", text).strip()
@@ -67,6 +78,8 @@ def validate_fixture(data: dict[str, Any]) -> None:
         raise ValueError(f"Expected schema {SCHEMA!r}")
     if not isinstance(data.get("generated_at"), str) or not data["generated_at"]:
         raise ValueError("generated_at must be a non-empty string")
+    if data.get("timezone") != DISPLAY_TIMEZONE:
+        raise ValueError(f"timezone must be {DISPLAY_TIMEZONE!r}")
     if not isinstance(data.get("boards"), list) or not data["boards"]:
         raise ValueError("boards must be a non-empty list")
     if not isinstance(data.get("tasks"), list):
@@ -91,11 +104,10 @@ def validate_fixture(data: dict[str, Any]) -> None:
 
     listed: dict[str, Counter[str]] = {slug: Counter() for slug in board_slugs}
     task_ids: set[str] = set()
-    required = set(TASK_FIELDS) | {"summary"}
-    allowed_input = required | {"board_name", "last_run_at"}
+    required = set(FIXTURE_TASK_FIELDS)
     for task in data["tasks"]:
         keys = set(task)
-        if not required.issubset(keys) or not keys.issubset(allowed_input):
+        if keys != required:
             raise ValueError(f"Unexpected task contract for {task.get('id', '<unknown>')}: {sorted(keys)}")
         task_id = task["id"]
         if task_id in task_ids:
@@ -127,7 +139,7 @@ def build_public_snapshot(data: dict[str, Any]) -> dict[str, Any]:
     ]
     tasks = []
     for source in data["tasks"]:
-        task = {field: source[field] for field in TASK_FIELDS}
+        task = {field: source[field] for field in PUBLIC_TASK_FIELDS}
         for field in ("id", "title", "board", "status", "assignee"):
             task[field] = sanitize_text(task[field])
         task["summary"] = sanitize_text(source["summary"])
@@ -136,7 +148,7 @@ def build_public_snapshot(data: dict[str, Any]) -> dict[str, Any]:
     public = {
         "schema": data["schema"],
         "generated_at": data["generated_at"],
-        "timezone": sanitize_text(data.get("timezone", "")),
+        "timezone": DISPLAY_TIMEZONE,
         "boards": boards,
         "tasks": tasks,
         "totals": {

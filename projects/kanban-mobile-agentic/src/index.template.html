@@ -750,6 +750,7 @@
       ];
       const statusMap = new Map(statuses.map((status) => [status.id, status]));
       const boardMap = new Map(snapshot.boards.map((board) => [board.slug, board]));
+      const displayTimeZone = "Asia/Shanghai";
       const state = { board: "all", statuses: new Set(), query: "" };
       const elements = {
         boards: document.getElementById("board-switcher"),
@@ -809,17 +810,20 @@
         if (!value) return "Not recorded";
         const date = new Date(value);
         if (Number.isNaN(date.valueOf())) return value;
-        return new Intl.DateTimeFormat(undefined, includeTime ? {
+        const formatted = new Intl.DateTimeFormat("en-US", includeTime ? {
           month: "short",
           day: "numeric",
           year: "numeric",
           hour: "2-digit",
-          minute: "2-digit"
+          minute: "2-digit",
+          timeZone: displayTimeZone
         } : {
           month: "short",
           day: "numeric",
-          year: "numeric"
+          year: "numeric",
+          timeZone: displayTimeZone
         }).format(date);
+        return `${formatted} · ${displayTimeZone}`;
       }
 
       function relativeTime(value) {
@@ -981,7 +985,7 @@
 
       document.getElementById("snapshot-time").textContent = `Snapshot updated ${formatDate(snapshot.generated_at)}`;
       document.getElementById("snapshot-disclosure").textContent = `Frozen snapshot · ${snapshot.totals.listed_tasks} listed tasks · no live connection`;
-      document.getElementById("footer-note").textContent = `${snapshot.totals.listed_tasks} listed task cards from ${snapshot.totals.board_records} total board records. Read-only by design.`;
+      document.getElementById("footer-note").textContent = `${snapshot.totals.listed_tasks} listed task cards from ${snapshot.totals.board_records} total board records. Times shown in ${displayTimeZone}. Read-only by design.`;
       render();
     })();
   </script>

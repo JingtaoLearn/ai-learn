@@ -43,6 +43,7 @@ ALLOWED_TASK_KEYS = {
     "heartbeat_at",
     "summary",
 }
+FIXTURE_TASK_KEYS = ALLOWED_TASK_KEYS | {"board_name"}
 REQUIRED_IDS = {
     "app",
     "board-switcher",
@@ -56,6 +57,15 @@ REQUIRED_IDS = {
 }
 REQUIRED_STATUSES = {"running", "review", "ready", "todo", "blocked", "done", "archived"}
 PATH_PATTERN = re.compile(r"(?:/home/|/tmp/|/var/|/etc/|/opt/|/srv/|/root/|[A-Za-z]:\\\\Users\\\\)")
+FORBIDDEN_REFERENCE = re.compile(
+    r"(?:"
+    r"/home/|/tmp/|/var/|/etc/|/opt/|/srv/|/root/|[A-Za-z]:\\\\Users\\\\"
+    r"|(?<![\w.-])(?:projects|expected-postimages|src|tests|vm|\.github)/"
+    r"|(?<![\w.-])(?:feat|fix|chore|refactor|release|hotfix|origin)/"
+    r"|(?<![\w.-])(?:current-main|exact-main|non-main|main)(?![\w.-])"
+    r")",
+    re.IGNORECASE,
+)
 NETWORK_OR_MUTATION = re.compile(
     r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(|\bmethod\s*:\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
     re.IGNORECASE,
@@ -128,6 +138,9 @@ def extract_snapshot(document: str) -> dict:
 def main() -> None:
     builder = load_builder()
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert len(fixture["tasks"]) == 89
+    assert all(set(task) == FIXTURE_TASK_KEYS for task in fixture["tasks"])
+    assert fixture["timezone"] == "Asia/Shanghai"
 
     with tempfile.TemporaryDirectory() as directory:
         rebuilt_path = Path(directory) / "preview.html"
@@ -169,6 +182,23 @@ def main() -> None:
 
     public_text = json.dumps(snapshot, ensure_ascii=False)
     assert not PATH_PATTERN.search(public_text), "Local filesystem path leaked into public data"
+    assert not FORBIDDEN_REFERENCE.search(public_text), "Repository path or branch reference leaked into public data"
+
+    regression_fixture = json.loads(json.dumps(fixture))
+    regression_fixture["tasks"][0]["title"] = "Inspect projects/private on origin/main"
+    regression_fixture["tasks"][0]["summary"] = (
+        "Compare current-main, exact-main, non-main, feat/private, src/module, "
+        "tests/check, vm/service, .github/workflow, and /home/private/report.md"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        regression_path = Path(directory) / "preview.html"
+        regression_source_path = Path(directory) / "fixture.json"
+        regression_source_path.write_text(json.dumps(regression_fixture), encoding="utf-8")
+        builder.build(regression_source_path, TEMPLATE, regression_path)
+        regression_snapshot = extract_snapshot(regression_path.read_text(encoding="utf-8"))
+    regression_text = json.dumps(regression_snapshot, ensure_ascii=False)
+    assert not FORBIDDEN_REFERENCE.search(regression_text), "Synthetic forbidden reference survived output build"
+    assert "origin/main" not in regression_text, "Observed branch leak regression survived output build"
     javascript = "\n".join(parser.scripts)
     assert not NETWORK_OR_MUTATION.search(javascript), "Network or mutation API found"
     assert "innerHTML" not in javascript, "Avoid unsanitized HTML insertion"
@@ -178,6 +208,7 @@ def main() -> None:
     assert "max-width: 1180px" in committed
     assert "snapshot updated" in committed.lower()
     assert "frozen snapshot" in committed.lower()
+    assert "Asia/Shanghai" in committed
 
     node = shutil.which("node")
     if node:
