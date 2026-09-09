@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import subprocess
 import threading
 import time
@@ -9,6 +10,8 @@ import pytest
 
 from quant_platform.study_remote import (
     SignedStudyClient,
+    StudyDispatcher,
+    StudyPostgresStore,
     StudyTransportError,
     StudyWorkerServer,
     WorkerJobStore,
@@ -19,6 +22,74 @@ from quant_platform.study_remote import (
 IMAGE = "sha256:" + "1" * 64
 COMMIT = "2" * 40
 TREE = "3" * 40
+
+
+class _AuthoritativeStore(StudyPostgresStore):
+    def __init__(self):
+        self.rows = {}
+        self.fail_unavailable_calls = 0
+
+    def admit(self, request, endpoint):
+        row = self.rows.get(request["job_id"])
+        if row is None:
+            row = {
+                "study_id": request["job_id"],
+                "worker_endpoint": endpoint,
+                "status": "ACCEPTED",
+                "latest_progress": None,
+                "final_result": None,
+                "failure": None,
+            }
+            self.rows[request["job_id"]] = row
+            return dict(row), True
+        return dict(row), False
+
+    def mark_dispatched(self, study_id, remote):
+        return self._record_remote(study_id, remote, dispatch=True)
+
+    def observe(self, study_id, remote):
+        return self._record_remote(study_id, remote, dispatch=False)
+
+    def _record_remote(self, study_id, remote, *, dispatch):
+        row = self.rows[study_id]
+        status = remote["status"]
+        row["status"] = "DISPATCHED" if dispatch and status == "ACCEPTED" else status
+        row["latest_progress"] = remote.get("progress")
+        row["final_result"] = remote.get("result") if status == "SUCCEEDED" else None
+        row["failure"] = remote.get("failure") if status == "FAILED" else None
+        return dict(row)
+
+    def fail_unavailable(self, study_id, message):
+        self.fail_unavailable_calls += 1
+        row = self.rows[study_id]
+        row["status"] = "FAILED"
+        row["failure"] = {
+            "code": "FENG_UNAVAILABLE",
+            "message": message,
+            "local_compute_attempted": False,
+        }
+        return dict(row)
+
+    def get(self, study_id):
+        row = self.rows.get(study_id)
+        return None if row is None else dict(row)
+
+
+class _LoseFirstAcceptedResponse(SignedStudyClient):
+    def __init__(self, client):
+        self.client = client
+        self.endpoint = client.endpoint
+        self.submit_calls = 0
+
+    def submit(self, request):
+        self.submit_calls += 1
+        response = self.client.submit(request)
+        if self.submit_calls == 1:
+            raise StudyTransportError("simulated response loss")
+        return response
+
+    def read(self, job_id):
+        return self.client.read(job_id)
 
 
 def _keypair(root: Path, name: str = "control-private") -> Path:
@@ -121,3 +192,75 @@ def test_wrong_signing_identity_is_rejected_without_dispatch(tmp_path: Path):
         server.server_close()
         thread.join(timeout=2)
     assert list(state_root.iterdir()) == []
+
+
+def test_accept_then_response_loss_converges_same_authoritative_row(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    state_root = tmp_path / "state"
+    worker_store = WorkerJobStore(state_root, IMAGE)
+    server = StudyWorkerServer(
+        ("127.0.0.1", 0), worker_store, private_key.with_suffix(".pub.pem")
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = _LoseFirstAcceptedResponse(
+        SignedStudyClient(f"http://127.0.0.1:{server.server_port}", private_key)
+    )
+    authoritative_store = _AuthoritativeStore()
+    dispatcher = StudyDispatcher(authoritative_store, client)
+    request = freeze_synthetic_request(
+        iterations=100_000,
+        seed=29,
+        checkpoint_count=5,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+    try:
+        observed = dispatcher.submit(request)
+        deadline = time.monotonic() + 10
+        while observed["authoritative"]["status"] not in {"SUCCEEDED", "FAILED"}:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+            observed = dispatcher.read(request["job_id"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert observed["authoritative"]["status"] == "SUCCEEDED"
+    assert observed["authoritative"]["final_result"]["conclusion"] == "SYNTHETIC_MINIMUM_FOUND"
+    assert observed["local_compute_attempted"] is False
+    assert authoritative_store.fail_unavailable_calls == 0
+    assert len(authoritative_store.rows) == 1
+    assert client.submit_calls == 1
+    assert [path.name for path in state_root.iterdir()] == [f"{request['job_id']}.json"]
+
+
+def test_connection_refusal_remains_explicit_no_fallback_failure(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    authoritative_store = _AuthoritativeStore()
+    dispatcher = StudyDispatcher(
+        authoritative_store,
+        SignedStudyClient(f"http://127.0.0.1:{port}", private_key, timeout_seconds=0.1),
+    )
+    request = freeze_synthetic_request(
+        iterations=10,
+        seed=1,
+        checkpoint_count=1,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+
+    observed = dispatcher.submit(request)
+
+    assert observed["authoritative"]["status"] == "FAILED"
+    assert observed["authoritative"]["failure"]["code"] == "FENG_UNAVAILABLE"
+    assert observed["authoritative"]["failure"]["local_compute_attempted"] is False
+    assert observed["local_compute_attempted"] is False
+    assert authoritative_store.fail_unavailable_calls == 1
+    assert len(authoritative_store.rows) == 1

@@ -51,7 +51,9 @@ class StudyIdempotencyConflict(StudyRemoteError):
 
 
 class StudyTransportError(StudyRemoteError):
-    pass
+    def __init__(self, message: str, *, acceptance_ambiguous: bool = True):
+        super().__init__(message)
+        self.acceptance_ambiguous = acceptance_ambiguous
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -603,7 +605,13 @@ class SignedStudyClient:
             payload = exc.read(MAX_RESPONSE_BYTES + 1)
             status = exc.code
         except (OSError, urllib.error.URLError) as exc:
-            raise StudyTransportError(f"Feng worker is unavailable: {type(exc).__name__}") from exc
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            raise StudyTransportError(
+                f"Feng worker is unavailable: {type(exc).__name__}",
+                acceptance_ambiguous=(
+                    method == "POST" and not isinstance(reason, ConnectionRefusedError)
+                ),
+            ) from exc
         elapsed_ms = (time.monotonic() - started) * 1000
         if len(payload) > MAX_RESPONSE_BYTES:
             raise StudyTransportError("Feng worker response exceeds its bounded size")
@@ -613,7 +621,10 @@ class SignedStudyClient:
             raise StudyTransportError("Feng worker returned invalid JSON") from exc
         if status >= 400:
             code = value.get("error", {}).get("code", "REMOTE_ERROR")
-            raise StudyTransportError(f"Feng worker rejected request: {status} {code}")
+            raise StudyTransportError(
+                f"Feng worker rejected request: {status} {code}",
+                acceptance_ambiguous=(method == "POST" and status >= 500),
+            )
         return RemoteResponse(status, value, elapsed_ms)
 
     def submit(self, request: Mapping[str, Any]) -> RemoteResponse:
@@ -904,22 +915,63 @@ class StudyDispatcher:
         self.store.admit(frozen, self.client.endpoint)
         try:
             response = self.client.submit(frozen)
-            remote = response.value.get("job")
-            if not isinstance(remote, dict) or remote.get("job_id") != frozen["job_id"]:
-                raise StudyTransportError("Feng worker returned the wrong job identity")
-            authoritative = self.store.mark_dispatched(frozen["job_id"], remote)
-            return {
-                "authoritative": authoritative,
-                "remote": remote,
-                "idempotent_replay": response.value.get("idempotent_replay") is True,
-                "dispatch_elapsed_ms": response.elapsed_ms,
-            }
+            return self._record_submit_response(frozen["job_id"], response)
         except StudyTransportError as exc:
+            if exc.acceptance_ambiguous:
+                return self._reconcile_ambiguous_submit(frozen, exc)
             return {
                 "authoritative": self.store.fail_unavailable(frozen["job_id"], str(exc)),
                 "remote": None,
                 "idempotent_replay": False,
                 "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
+            }
+
+    def _record_submit_response(
+        self, study_id: str, response: RemoteResponse
+    ) -> dict[str, Any]:
+        remote = response.value.get("job")
+        if not isinstance(remote, dict) or remote.get("job_id") != study_id:
+            raise StudyTransportError("Feng worker returned the wrong job identity")
+        return {
+            "authoritative": self.store.mark_dispatched(study_id, remote),
+            "remote": remote,
+            "idempotent_replay": response.value.get("idempotent_replay") is True,
+            "dispatch_elapsed_ms": response.elapsed_ms,
+            "local_compute_attempted": False,
+        }
+
+    def _reconcile_ambiguous_submit(
+        self, request: Mapping[str, Any], initial_error: StudyTransportError
+    ) -> dict[str, Any]:
+        study_id = str(request["job_id"])
+        try:
+            response = self.client.read(study_id)
+            remote = response.value.get("job")
+            if not isinstance(remote, dict) or remote.get("job_id") != study_id:
+                raise StudyTransportError("Feng worker returned the wrong job identity")
+            return {
+                "authoritative": self.store.mark_dispatched(study_id, remote),
+                "remote": remote,
+                "idempotent_replay": False,
+                "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
+            }
+        except StudyTransportError:
+            pass
+
+        try:
+            return self._record_submit_response(study_id, self.client.submit(request))
+        except StudyTransportError:
+            authoritative = self.store.get(study_id)
+            if authoritative is None:
+                raise StudyRemoteError("authoritative Study row disappeared") from initial_error
+            return {
+                "authoritative": authoritative,
+                "remote": None,
+                "idempotent_replay": False,
+                "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
             }
 
     def read(self, study_id: str) -> dict[str, Any]:
@@ -932,6 +984,7 @@ class StudyDispatcher:
             "authoritative": authoritative,
             "remote": remote,
             "read_elapsed_ms": response.elapsed_ms,
+            "local_compute_attempted": False,
         }
 
 
