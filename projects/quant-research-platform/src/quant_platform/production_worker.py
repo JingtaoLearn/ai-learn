@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import tempfile
@@ -8,10 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .production_contract import canonical_json_bytes
 from .production_jobs import (
-    FormalComputation,
-    JobComputation,
+    ProductionComputation,
     ProductionInput,
     ProductionJobs,
     ProviderClient,
@@ -89,87 +86,13 @@ class ProductionWorker:
             )
             self._write_generation(
                 target,
-                {
-                    "identity.json": canonical_json_bytes(
-                        {"kind": value.kind, **dict(value.identity)}
-                    ),
-                    "raw.bin": value.payload,
-                },
+                self.jobs.input_payloads(value),
             )
-        identity = json.loads((target / "identity.json").read_bytes())
-        kind = identity.pop("kind", "provider-get")
-        if kind == "provider-get" and "method" not in identity:
-            identity["method"] = "GET"
-        return ProductionInput(kind, identity, (target / "raw.bin").read_bytes())
-
-    @staticmethod
-    def _computation_payloads(
-        value: JobComputation | FormalComputation,
-    ) -> dict[str, bytes]:
-        if isinstance(value, FormalComputation):
-            identity = {
-                "kind": "formal",
-                "job_id": value.job_id,
-                "production_manifest_sha256": value.production_manifest_sha256,
-                "operation": value.operation,
-                "authority_sha256": value.authority_sha256,
-                "experiment_id": value.experiment_id,
-                "attempt_id": value.attempt_id,
-                "files": sorted(value.files),
-            }
-            return {"identity.json": canonical_json_bytes(identity), **dict(value.files)}
-        identity = {
-            "kind": "daily",
-            "job_id": value.job_id,
-            "model_id": value.model_id,
-            "production_manifest_sha256": value.production_manifest_sha256,
-            "report_uuid": value.report_uuid,
-            "provider_url": value.provider_url,
-            "raw_name": value.raw_name,
-            "experiment_id": value.experiment_id,
-            "attempt_id": value.attempt_id,
-        }
-        return {
-            "identity.json": canonical_json_bytes(identity),
-            "raw.bin": value.raw_bytes,
-            "normalized.json": value.normalized_bytes,
-            "action.json": canonical_json_bytes(value.action),
-            "report.html": value.report_html,
-            "notification.txt": value.notification_bytes,
-        }
-
-    @staticmethod
-    def _load_computation(target: Path) -> JobComputation | FormalComputation:
-        identity = json.loads((target / "identity.json").read_bytes())
-        if identity.get("kind") == "formal":
-            return FormalComputation(
-                job_id=identity["job_id"],
-                production_manifest_sha256=identity["production_manifest_sha256"],
-                operation=identity["operation"],
-                authority_sha256=identity["authority_sha256"],
-                files={name: (target / name).read_bytes() for name in identity["files"]},
-                experiment_id=identity["experiment_id"],
-                attempt_id=identity["attempt_id"],
-            )
-        return JobComputation(
-            identity["job_id"],
-            identity["model_id"],
-            identity["production_manifest_sha256"],
-            identity["report_uuid"],
-            identity["provider_url"],
-            identity["raw_name"],
-            (target / "raw.bin").read_bytes(),
-            (target / "normalized.json").read_bytes(),
-            json.loads((target / "action.json").read_bytes()),
-            (target / "report.html").read_bytes(),
-            (target / "notification.txt").read_bytes(),
-            identity["experiment_id"],
-            identity["attempt_id"],
-        )
+        return self.jobs.read_input(target)
 
     def _computation(
         self, row: Mapping[str, Any], value: ProductionInput
-    ) -> JobComputation | FormalComputation:
+    ) -> ProductionComputation:
         target = self._stage_root(row) / "computation"
         if not target.exists():
             computed = self.jobs.compute_input(
@@ -178,8 +101,8 @@ class ProductionWorker:
                 self._scheduled(row),
                 request_id=row["request_id"],
             )
-            self._write_generation(target, self._computation_payloads(computed))
-        return self._load_computation(target)
+            self._write_generation(target, self.jobs.computation_payloads(computed))
+        return self.jobs.read_computation(target)
 
     def run_once(self) -> dict[str, Any] | None:
         row = self.store.claim(self.owner, now=self.clock())

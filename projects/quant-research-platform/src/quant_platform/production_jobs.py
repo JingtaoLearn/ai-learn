@@ -4,8 +4,11 @@ import hashlib
 import html
 import json
 import math
+import os
+import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .production_contract import canonical_json_bytes
@@ -84,6 +87,163 @@ class FormalComputation:
     files: Mapping[str, bytes]
     experiment_id: str
     attempt_id: str
+
+
+ProductionComputation = JobComputation | FormalComputation
+
+
+_INPUT_MEMBERS = frozenset({"identity.json", "raw.bin"})
+_DAILY_COMPUTATION_MEMBERS = frozenset(
+    {
+        "identity.json",
+        "raw.bin",
+        "normalized.json",
+        "action.json",
+        "report.html",
+        "notification.txt",
+    }
+)
+_FORMAL_RESULT_MEMBERS = frozenset(
+    {
+        "calibration.json",
+        "03-CALIBRATION_CLAIMED.json",
+        "04-CALIBRATION_SEALED.json",
+    }
+)
+_FORMAL_COMPUTATION_MEMBERS = frozenset({"identity.json", *_FORMAL_RESULT_MEMBERS})
+
+
+def _stat_fingerprint(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_gid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _safe_member_name(name: object) -> bool:
+    return (
+        isinstance(name, str)
+        and name not in {"", ".", ".."}
+        and "/" not in name
+        and "\\" not in name
+        and Path(name).name == name
+    )
+
+
+def _read_fd(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := os.read(fd, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _open_staged_member(
+    directory_fd: int, name: str, label: str
+) -> tuple[int, tuple[int, ...]]:
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        member_fd = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        raise ProductionJobError(f"staged {label} member is unsafe") from exc
+    try:
+        before = os.fstat(member_fd)
+        path_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_mode & 0o222
+            or _stat_fingerprint(before) != _stat_fingerprint(path_before)
+        ):
+            raise ProductionJobError(f"staged {label} member is unsafe")
+        return member_fd, _stat_fingerprint(before)
+    except OSError as exc:
+        os.close(member_fd)
+        raise ProductionJobError(f"staged {label} member is unsafe") from exc
+    except BaseException:
+        os.close(member_fd)
+        raise
+
+
+def _read_staged_members(
+    target: Path, allowed_shapes: frozenset[frozenset[str]], label: str
+) -> dict[str, bytes]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(target, flags)
+    except OSError as exc:
+        raise ProductionJobError(f"staged {label} directory is unsafe") from exc
+    members: dict[str, tuple[int, tuple[int, ...]]] = {}
+    try:
+        before = os.fstat(directory_fd)
+        names = os.listdir(directory_fd)
+        shape = frozenset(names)
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or len(names) != len(shape)
+            or any(not _safe_member_name(name) for name in names)
+            or shape not in allowed_shapes
+        ):
+            raise ProductionJobError(f"staged {label} member set is invalid")
+        ordered_names = ["identity.json", *sorted(shape - {"identity.json"})]
+        for name in ordered_names:
+            members[name] = _open_staged_member(directory_fd, name, label)
+        for name, (member_fd, fingerprint) in members.items():
+            if (
+                _stat_fingerprint(os.fstat(member_fd)) != fingerprint
+                or _stat_fingerprint(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                != fingerprint
+            ):
+                raise ProductionJobError(f"staged {label} member changed during read")
+        payloads = {name: _read_fd(member_fd) for name, (member_fd, _) in members.items()}
+        for name, (member_fd, _) in members.items():
+            os.lseek(member_fd, 0, os.SEEK_SET)
+            if _read_fd(member_fd) != payloads[name]:
+                raise ProductionJobError(f"staged {label} member changed during read")
+        for name, (member_fd, fingerprint) in members.items():
+            if (
+                _stat_fingerprint(os.fstat(member_fd)) != fingerprint
+                or _stat_fingerprint(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                != fingerprint
+            ):
+                raise ProductionJobError(f"staged {label} member changed during read")
+        after = os.fstat(directory_fd)
+        target_after = os.stat(target, follow_symlinks=False)
+        if (
+            frozenset(os.listdir(directory_fd)) != shape
+            or _stat_fingerprint(before) != _stat_fingerprint(after)
+            or _stat_fingerprint(before) != _stat_fingerprint(target_after)
+        ):
+            raise ProductionJobError(f"staged {label} directory changed during read")
+        return payloads
+    except OSError as exc:
+        raise ProductionJobError(f"staged {label} directory is unsafe") from exc
+    finally:
+        for member_fd, _ in members.values():
+            os.close(member_fd)
+        os.close(directory_fd)
+
+
+def _staged_identity(payload: bytes, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionJobError(f"staged {label} identity is invalid") from exc
+    if not isinstance(value, dict):
+        raise ProductionJobError(f"staged {label} identity is invalid")
+    return value
 
 
 class ProductionJob(Protocol):
@@ -299,7 +459,7 @@ def next_weekday(value: date) -> date:
 
 
 class ProductionJobs:
-    """Small job interface with provider and model details hidden in adapters."""
+    """Production computation interface, including its durable staging representation."""
 
     def __init__(self, jobs: Sequence[ProductionJob | NoNetworkProductionJob]):
         self._jobs: dict[str, Any] = {job.job_id: job for job in jobs}
@@ -337,6 +497,34 @@ class ProductionJobs:
             "provider-get", {"method": "GET", "provider_url": url}, raw
         )
 
+    @staticmethod
+    def input_payloads(value: ProductionInput) -> dict[str, bytes]:
+        return {
+            "identity.json": canonical_json_bytes(
+                {"kind": value.kind, **dict(value.identity)}
+            ),
+            "raw.bin": value.payload,
+        }
+
+    @classmethod
+    def read_input(cls, target: Path) -> ProductionInput:
+        payloads = _read_staged_members(
+            target, frozenset({_INPUT_MEMBERS}), "production input"
+        )
+        identity_bytes = payloads["identity.json"]
+        identity = _staged_identity(identity_bytes, "production input")
+        legacy_identity = "kind" not in identity or (
+            identity.get("kind", "provider-get") == "provider-get" and "method" not in identity
+        )
+        kind = identity.pop("kind", "provider-get")
+        if kind == "provider-get" and "method" not in identity:
+            identity["method"] = "GET"
+        value = ProductionInput(kind, identity, payloads["raw.bin"])
+        expected = cls.input_payloads(value)
+        if not legacy_identity and payloads != expected:
+            raise ProductionJobError("staged production input read-back differs")
+        return value
+
     def compute(
         self,
         job_id: str,
@@ -373,3 +561,90 @@ class ProductionJobs:
         if not isinstance(provider_url, str):
             raise ProductionJobError("provider input URL is invalid")
         return self.compute(job_id, value.payload, provider_url, scheduled_for)
+
+    @staticmethod
+    def computation_payloads(value: ProductionComputation) -> dict[str, bytes]:
+        if isinstance(value, FormalComputation):
+            identity = {
+                "kind": "formal",
+                "job_id": value.job_id,
+                "production_manifest_sha256": value.production_manifest_sha256,
+                "operation": value.operation,
+                "authority_sha256": value.authority_sha256,
+                "experiment_id": value.experiment_id,
+                "attempt_id": value.attempt_id,
+                "files": sorted(value.files),
+            }
+            return {"identity.json": canonical_json_bytes(identity), **dict(value.files)}
+        identity = {
+            "kind": "daily",
+            "job_id": value.job_id,
+            "model_id": value.model_id,
+            "production_manifest_sha256": value.production_manifest_sha256,
+            "report_uuid": value.report_uuid,
+            "provider_url": value.provider_url,
+            "raw_name": value.raw_name,
+            "experiment_id": value.experiment_id,
+            "attempt_id": value.attempt_id,
+        }
+        return {
+            "identity.json": canonical_json_bytes(identity),
+            "raw.bin": value.raw_bytes,
+            "normalized.json": value.normalized_bytes,
+            "action.json": canonical_json_bytes(value.action),
+            "report.html": value.report_html,
+            "notification.txt": value.notification_bytes,
+        }
+
+    @classmethod
+    def read_computation(cls, target: Path) -> ProductionComputation:
+        payloads = _read_staged_members(
+            target,
+            frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS}),
+            "production computation",
+        )
+        identity = _staged_identity(payloads["identity.json"], "production computation")
+        if identity.get("kind") == "formal":
+            if (
+                frozenset(payloads) != _FORMAL_COMPUTATION_MEMBERS
+                or identity.get("files") != sorted(_FORMAL_RESULT_MEMBERS)
+            ):
+                raise ProductionJobError(
+                    "staged production computation member set is invalid"
+                )
+            value: ProductionComputation = FormalComputation(
+                job_id=identity["job_id"],
+                production_manifest_sha256=identity["production_manifest_sha256"],
+                operation=identity["operation"],
+                authority_sha256=identity["authority_sha256"],
+                files={name: payloads[name] for name in identity["files"]},
+                experiment_id=identity["experiment_id"],
+                attempt_id=identity["attempt_id"],
+            )
+        else:
+            if (
+                identity.get("kind") != "daily"
+                or frozenset(payloads) != _DAILY_COMPUTATION_MEMBERS
+            ):
+                raise ProductionJobError(
+                    "staged production computation member set is invalid"
+                )
+            value = JobComputation(
+                identity["job_id"],
+                identity["model_id"],
+                identity["production_manifest_sha256"],
+                identity["report_uuid"],
+                identity["provider_url"],
+                identity["raw_name"],
+                payloads["raw.bin"],
+                payloads["normalized.json"],
+                json.loads(payloads["action.json"]),
+                payloads["report.html"],
+                payloads["notification.txt"],
+                identity["experiment_id"],
+                identity["attempt_id"],
+            )
+        expected = cls.computation_payloads(value)
+        if payloads != expected:
+            raise ProductionJobError("staged production computation read-back differs")
+        return value
