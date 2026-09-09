@@ -10,9 +10,12 @@ from typing import Any, Callable, Mapping
 from .production_jobs import (
     ProductionComputation,
     ProductionInput,
+    ProductionJobError,
     ProductionJobs,
     ProviderClient,
+    staged_package_identity,
 )
+from .production_package_authority import PackageIdentityAuthorityClient
 from .production_result import ProductionResultStore
 from .production_store import ProductionStore
 
@@ -30,6 +33,7 @@ class ProductionWorker:
         jobs: ProductionJobs,
         provider: ProviderClient,
         results: ProductionResultStore,
+        package_identity_authority: PackageIdentityAuthorityClient,
         *,
         work_root: Path | str,
         owner: str,
@@ -40,6 +44,7 @@ class ProductionWorker:
         self.jobs = jobs
         self.provider = provider
         self.results = results
+        self.package_identity_authority = package_identity_authority
         self.work_root = Path(work_root).absolute()
         self.owner = owner
         self.clock = clock
@@ -55,11 +60,22 @@ class ProductionWorker:
     def _stage_root(self, row: Mapping[str, Any]) -> Path:
         return self.work_root / row["production_run_id"]
 
-    def _write_generation(self, target: Path, payloads: Mapping[str, bytes]) -> None:
+    def _seal_generation(self, target: Path) -> str:
+        try:
+            relative = target.relative_to(self.work_root)
+        except ValueError as exc:
+            raise ProductionJobError("staged generation path is outside the work root") from exc
+        if len(relative.parts) != 2:
+            raise ProductionJobError("staged generation path is invalid")
+        return self.package_identity_authority.seal(relative.parts[0], relative.parts[1])
+
+    def _write_generation(self, target: Path, payloads: Mapping[str, bytes]) -> str:
         if target.exists():
-            return
-        self.work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            return self._seal_generation(target)
+        payloads = dict(payloads)
+        package_identity = staged_package_identity(payloads)
+        self.work_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
         try:
             for name, payload in payloads.items():
@@ -67,9 +83,13 @@ class ProductionWorker:
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
-                (staging / name).chmod(0o444)
-            staging.chmod(0o555)
+                (staging / name).chmod(0o440)
+            staging.chmod(0o550)
             os.rename(staging, target)
+            retained = self._seal_generation(target)
+            if retained != package_identity:
+                raise ProductionJobError("package authority attested a different generation")
+            return retained
         finally:
             if staging.exists():
                 staging.chmod(0o700)
@@ -84,11 +104,13 @@ class ProductionWorker:
                 self._scheduled(row),
                 request_id=row["request_id"],
             )
-            self._write_generation(
+            package_identity = self._write_generation(
                 target,
                 self.jobs.input_payloads(value),
             )
-        return self.jobs.read_input(target)
+        else:
+            package_identity = self._seal_generation(target)
+        return self.jobs.read_input(target, expected_package_identity=package_identity)
 
     def _computation(
         self, row: Mapping[str, Any], value: ProductionInput
@@ -101,8 +123,14 @@ class ProductionWorker:
                 self._scheduled(row),
                 request_id=row["request_id"],
             )
-            self._write_generation(target, self.jobs.computation_payloads(computed))
-        return self.jobs.read_computation(target)
+            package_identity = self._write_generation(
+                target, self.jobs.computation_payloads(computed)
+            )
+        else:
+            package_identity = self._seal_generation(target)
+        return self.jobs.read_computation(
+            target, expected_package_identity=package_identity
+        )
 
     def run_once(self) -> dict[str, Any] | None:
         row = self.store.claim(self.owner, now=self.clock())

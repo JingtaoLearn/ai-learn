@@ -16,6 +16,7 @@ from .production_contract import ProductionRelease
 from .production_focus import FocusCalibrationProductionJob
 from .production_gold import GoldProductionJob
 from .production_jobs import ProductionJobs
+from .production_package_authority import HttpPackageIdentityAuthorityClient
 from .production_result import ProductionResultError, ProductionResultStore
 from .production_service import AdmissionPolicy, ProductionAdmissionError, ProductionService
 from .production_store import IdempotencyConflict, ProductionStore, ScheduledFireConflict
@@ -151,6 +152,7 @@ def _required_path(name: str) -> Path:
 
 def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
     state_root = _required_path("QR_PRODUCTION_STATE_ROOT")
+    work_root = _required_path("QR_PRODUCTION_WORK_ROOT")
     release_path = _required_path("QR_PRODUCTION_RELEASE_MANIFEST")
     authorities = _required_path("QR_PRODUCTION_AUTHORITIES_ROOT")
     release = ProductionRelease.from_mapping(json.loads(release_path.read_bytes()))
@@ -173,12 +175,16 @@ def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
     )
     service = ProductionService(store, policy)
     jobs = ProductionJobs([bocom, gold, focus])
+    package_identity_authority = HttpPackageIdentityAuthorityClient(
+        os.environ.get("QR_PACKAGE_IDENTITY_AUTHORITY_URL", "")
+    )
     worker = ProductionWorker(
         store,
         jobs,
         _ProxyOnlyProvider(os.environ.get("HTTPS_PROXY", "")),
         results,
-        work_root=state_root / "work",
+        package_identity_authority,
+        work_root=work_root,
         owner=f"production-worker:{os.getpid()}",
     )
     identity = os.environ.get("QR_VERIFIED_CLIENT_IDENTITY", "")

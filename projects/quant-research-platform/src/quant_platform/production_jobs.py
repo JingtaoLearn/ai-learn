@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
-from .production_contract import canonical_json_bytes
+from .production_contract import SHA256, canonical_json_bytes
 
 
 class ProductionJobError(RuntimeError):
@@ -111,6 +111,7 @@ _FORMAL_RESULT_MEMBERS = frozenset(
     }
 )
 _FORMAL_COMPUTATION_MEMBERS = frozenset({"identity.json", *_FORMAL_RESULT_MEMBERS})
+_STAGED_PACKAGE_IDENTITY_DOMAIN = b"quantresearch-production-staged-package/v1\0"
 
 
 def _stat_fingerprint(value: os.stat_result) -> tuple[int, ...]:
@@ -144,8 +145,25 @@ def _read_fd(fd: int) -> bytes:
     return b"".join(chunks)
 
 
+def staged_package_identity(payloads: Mapping[str, bytes]) -> str:
+    """Return the content identity that must be retained outside a staged package."""
+
+    if not payloads or any(
+        not _safe_member_name(name) or type(payload) is not bytes
+        for name, payload in payloads.items()
+    ):
+        raise ProductionJobError("staged package identity input is invalid")
+    inventory = {
+        name: {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        for name, payload in payloads.items()
+    }
+    return hashlib.sha256(
+        _STAGED_PACKAGE_IDENTITY_DOMAIN + canonical_json_bytes(inventory)
+    ).hexdigest()
+
+
 def _open_staged_member(
-    directory_fd: int, name: str, label: str
+    directory_fd: int, name: str, label: str, expected_fingerprint: tuple[int, ...]
 ) -> tuple[int, tuple[int, ...]]:
     flags = os.O_RDONLY | os.O_NONBLOCK
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -156,14 +174,17 @@ def _open_staged_member(
     try:
         before = os.fstat(member_fd)
         path_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        fingerprint = _stat_fingerprint(before)
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
             or before.st_mode & 0o222
-            or _stat_fingerprint(before) != _stat_fingerprint(path_before)
+            or fingerprint != _stat_fingerprint(path_before)
         ):
             raise ProductionJobError(f"staged {label} member is unsafe")
-        return member_fd, _stat_fingerprint(before)
+        if fingerprint != expected_fingerprint:
+            raise ProductionJobError(f"staged {label} member changed during read")
+        return member_fd, fingerprint
     except OSError as exc:
         os.close(member_fd)
         raise ProductionJobError(f"staged {label} member is unsafe") from exc
@@ -173,8 +194,16 @@ def _open_staged_member(
 
 
 def _read_staged_members(
-    target: Path, allowed_shapes: frozenset[frozenset[str]], label: str
+    target: Path,
+    allowed_shapes: frozenset[frozenset[str]],
+    label: str,
+    expected_package_identity: str | None,
 ) -> dict[str, bytes]:
+    if expected_package_identity is not None and (
+        not isinstance(expected_package_identity, str)
+        or SHA256.fullmatch(expected_package_identity) is None
+    ):
+        raise ProductionJobError(f"staged {label} package identity is invalid")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -194,8 +223,20 @@ def _read_staged_members(
         ):
             raise ProductionJobError(f"staged {label} member set is invalid")
         ordered_names = ["identity.json", *sorted(shape - {"identity.json"})]
+        expected_stats = {
+            name: os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            for name in ordered_names
+        }
+        # The directory is sealed after every member; its ctime is the package-wide baseline.
+        if any(value.st_ctime_ns > before.st_ctime_ns for value in expected_stats.values()):
+            raise ProductionJobError(f"staged {label} member changed during read")
+        expected_fingerprints = {
+            name: _stat_fingerprint(value) for name, value in expected_stats.items()
+        }
         for name in ordered_names:
-            members[name] = _open_staged_member(directory_fd, name, label)
+            members[name] = _open_staged_member(
+                directory_fd, name, label, expected_fingerprints[name]
+            )
         for name, (member_fd, fingerprint) in members.items():
             if (
                 _stat_fingerprint(os.fstat(member_fd)) != fingerprint
@@ -227,6 +268,11 @@ def _read_staged_members(
             or _stat_fingerprint(before) != _stat_fingerprint(target_after)
         ):
             raise ProductionJobError(f"staged {label} directory changed during read")
+        if (
+            expected_package_identity is not None
+            and staged_package_identity(payloads) != expected_package_identity
+        ):
+            raise ProductionJobError(f"staged {label} package identity mismatch")
         return payloads
     except OSError as exc:
         raise ProductionJobError(f"staged {label} directory is unsafe") from exc
@@ -234,6 +280,18 @@ def _read_staged_members(
         for member_fd, _ in members.values():
             os.close(member_fd)
         os.close(directory_fd)
+
+
+def inspect_staged_package(target: Path, *, label: str) -> str:
+    """Read one sealed package safely and derive its identity for the external authority."""
+
+    if label == "production input":
+        allowed_shapes = frozenset({_INPUT_MEMBERS})
+    elif label == "production computation":
+        allowed_shapes = frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS})
+    else:
+        raise ProductionJobError("staged package label is invalid")
+    return staged_package_identity(_read_staged_members(target, allowed_shapes, label, None))
 
 
 def _staged_identity(payload: bytes, label: str) -> dict[str, Any]:
@@ -507,9 +565,12 @@ class ProductionJobs:
         }
 
     @classmethod
-    def read_input(cls, target: Path) -> ProductionInput:
+    def read_input(cls, target: Path, *, expected_package_identity: str) -> ProductionInput:
         payloads = _read_staged_members(
-            target, frozenset({_INPUT_MEMBERS}), "production input"
+            target,
+            frozenset({_INPUT_MEMBERS}),
+            "production input",
+            expected_package_identity,
         )
         identity_bytes = payloads["identity.json"]
         identity = _staged_identity(identity_bytes, "production input")
@@ -597,11 +658,14 @@ class ProductionJobs:
         }
 
     @classmethod
-    def read_computation(cls, target: Path) -> ProductionComputation:
+    def read_computation(
+        cls, target: Path, *, expected_package_identity: str
+    ) -> ProductionComputation:
         payloads = _read_staged_members(
             target,
             frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS}),
             "production computation",
+            expected_package_identity,
         )
         identity = _staged_identity(payloads["identity.json"], "production computation")
         if identity.get("kind") == "formal":

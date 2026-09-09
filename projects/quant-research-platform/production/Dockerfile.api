@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN groupadd --gid 10001 quantresearch \
-    && useradd --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin quantresearch
+    && groupadd --gid 11001 production-package-readers \
+    && useradd --no-create-home --uid 10001 --gid 10001 --groups 11001 --shell /usr/sbin/nologin quantresearch
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-wqy-zenhei=0.9.45-8 \

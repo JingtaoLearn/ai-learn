@@ -20,6 +20,7 @@ from quant_platform.production_contract import (
 from quant_platform.production_focus import FocusCalibrationProductionJob
 from quant_platform.production_gold import GoldProductionJob
 from quant_platform.production_jobs import ProductionJobs
+from quant_platform.production_package_authority import FilesystemPackageIdentityAuthority
 from quant_platform.production_result import ProductionResultError, ProductionResultStore
 from quant_platform.production_service import AdmissionPolicy, ProductionService
 from quant_platform.production_store import ProductionStore
@@ -77,12 +78,14 @@ def runtime(tmp_path, *, crash=lambda _point: None, clock=None):
     service = ProductionService(store, policy, clock=clock)
     jobs = ProductionJobs([bocom, gold])
     provider = FixtureProvider()
+    work_root = tmp_path / "work"
     worker = ProductionWorker(
         store,
         jobs,
         provider,
         results,
-        work_root=tmp_path / "work",
+        FilesystemPackageIdentityAuthority(work_root, tmp_path / "package-identities"),
+        work_root=work_root,
         owner="worker-1",
         clock=clock,
         crash=crash,
@@ -263,12 +266,14 @@ def test_focus_operation_traverses_authenticated_idempotent_client_path_without_
     )
     provider = FixtureProvider()
     provider.calls = 0
+    work_root = tmp_path / "work"
     worker = ProductionWorker(
         store,
         ProductionJobs([job]),
         provider,
         results,
-        work_root=tmp_path / "work",
+        FilesystemPackageIdentityAuthority(work_root, tmp_path / "package-identities"),
+        work_root=work_root,
         owner="focus-worker",
     )
     api = TestClient(create_production_app(service, results, verified_client_identity=IDENTITY))

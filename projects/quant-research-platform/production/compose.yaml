@@ -63,7 +63,7 @@ services:
   production-api:
     image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
     pull_policy: never
-    user: "10001:10001"
+    user: "10001:11001"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -78,6 +78,8 @@ services:
       NO_PROXY: 127.0.0.1,localhost,report-edge
       MPLCONFIGDIR: /tmp/matplotlib
       QR_PRODUCTION_STATE_ROOT: /run/quantresearch/state
+      QR_PRODUCTION_WORK_ROOT: /run/quantresearch/work
+      QR_PACKAGE_IDENTITY_AUTHORITY_URL: http://package-identity-authority:8091
       QR_PRODUCTION_RELEASE_MANIFEST: /etc/quantresearch/authorities/release.json
       QR_PRODUCTION_AUTHORITIES_ROOT: /etc/quantresearch/authorities
       QR_VERIFIED_CLIENT_IDENTITY: ${QR_VERIFIED_CLIENT_IDENTITY:?set reviewed certificate subject}
@@ -90,6 +92,11 @@ services:
       - /tmp:size=128m,mode=1777
       - /run/quantresearch:size=16m,mode=0700,uid=10001,gid=10001
     volumes:
+      - type: bind
+        source: /var/lib/quantresearch-production/staging
+        target: /run/quantresearch/work
+        read_only: false
+        bind: {create_host_path: false}
       - type: bind
         source: /var/lib/quantresearch-production/residual
         target: /var/lib/quantresearch/residual
@@ -116,16 +123,55 @@ services:
         read_only: true
         bind: {create_host_path: false}
     expose: ["8090"]
-    networks: [api_internal, provider_proxy_internal]
+    networks: [api_internal, provider_proxy_internal, package_identity_internal]
     depends_on:
       schema-migrate: {condition: service_completed_successfully}
       provider-egress-proxy: {condition: service_healthy}
+      package-identity-authority: {condition: service_healthy}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=2).read()"]
       interval: 30s
       timeout: 3s
       retries: 3
     logging: {driver: local, options: {max-size: 20m, max-file: "5"}}
+
+  package-identity-authority:
+    image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
+    pull_policy: never
+    entrypoint: ["python", "-m", "quant_platform.production_package_authority"]
+    user: "10002:11001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 0.25
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: on-failure:5
+    environment:
+      MPLCONFIGDIR: /tmp/matplotlib
+      QR_PRODUCTION_WORK_ROOT: /run/quantresearch/work
+      QR_PACKAGE_IDENTITY_ROOT: /var/lib/quantresearch/package-identities
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    volumes:
+      - type: bind
+        source: /var/lib/quantresearch-production/staging
+        target: /run/quantresearch/work
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/quantresearch-production/package-identities
+        target: /var/lib/quantresearch/package-identities
+        read_only: false
+        bind: {create_host_path: false}
+    expose: ["8091"]
+    networks: [package_identity_internal]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health/live', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging: {driver: local, options: {max-size: 10m, max-file: "3"}}
 
   platform-ui:
     image: ${PRODUCTION_API_IMAGE:?set reviewed digest-only production API image}
@@ -262,6 +308,7 @@ networks:
   api_internal: {driver: bridge, internal: true, attachable: false}
   provider_proxy_internal: {driver: bridge, internal: true, attachable: false}
   provider_egress: {driver: bridge, internal: false, attachable: false}
+  package_identity_internal: {driver: bridge, internal: true, attachable: false}
 
 volumes:
   postgres_data:
