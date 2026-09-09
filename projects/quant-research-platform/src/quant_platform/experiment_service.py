@@ -9,7 +9,7 @@ import sqlite3
 import stat
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .attempt_report import REPORT_OPERATOR_ID, verify_report_operator_bundle
 from .catalog import Catalog
@@ -1505,6 +1505,7 @@ class ExperimentService:
         result_path: str,
         result_digest: str,
         logs: str = "",
+        postgres_publication: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(result_path, str) or not result_path:
             raise ValueError("result_path must be non-empty")
@@ -1558,6 +1559,18 @@ class ExperimentService:
                     attempt_id,
                 ),
             )
+            if self.catalog._postgres is not None:
+                if postgres_publication is None:
+                    raise InvalidAttemptTransition(
+                        "PostgreSQL Attempt completion requires closed evidence publication"
+                    )
+                self.catalog._postgres.publish_attempt_completion(
+                    connection,
+                    attempt_id=attempt_id,
+                    result_digest=result_digest,
+                    publication=postgres_publication,
+                    occurred_at=finished_at,
+                )
         return self.attempt_detail(attempt_id)
 
     def finish_failure(self, attempt_id: str, logs: str) -> dict[str, Any]:

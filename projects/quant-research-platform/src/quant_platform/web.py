@@ -873,6 +873,12 @@ def _verified_run_payloads(
 
 
 def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
+    if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+        from .full_persistence import FullPostgresPersistence
+
+        return FullPostgresPersistence.from_environment().attempt_report(
+            attempt["attempt_id"]
+        )
     latest = settings.state_root / "attempt-reports" / attempt["attempt_id"] / "latest.json"
     if latest.exists() or latest.is_symlink():
         return read_latest_report(settings.state_root, attempt["attempt_id"])["html"]
@@ -2060,14 +2066,24 @@ def create_app(
         report_artifact_id = None
         integrity_label = "Canonical report unavailable"
         qualification_label = "Qualification not evaluated"
-        try:
-            canonical = await run_in_threadpool(
-                read_latest_report,
-                settings.state_root,
-                attempt_id,
+        if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+            from .full_persistence import FullPostgresPersistence
+
+            report_artifact_id = FullPostgresPersistence.from_environment().current_report_identity(
+                attempt_id
             )
-        except (AttemptReportError, OSError, ValueError):
             canonical = None
+            if report_artifact_id is not None:
+                integrity_label = "Report artifact integrity verified"
+        else:
+            try:
+                canonical = await run_in_threadpool(
+                    read_latest_report,
+                    settings.state_root,
+                    attempt_id,
+                )
+            except (AttemptReportError, OSError, ValueError):
+                canonical = None
         if canonical is not None:
             report_artifact_id = canonical["manifest"]["report_artifact_id"]
             integrity_label = "Report artifact integrity verified"
@@ -2136,16 +2152,26 @@ def create_app(
         ):
             return HTMLResponse("Report content requires a same-site sandbox frame.", status_code=403)
         try:
-            payload = await run_in_threadpool(
-                read_report_artifact,
-                settings.state_root,
-                attempt_id,
-                report_artifact_id,
-            )
+            if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+                from .full_persistence import FullPostgresPersistence
+
+                html = await run_in_threadpool(
+                    FullPostgresPersistence.from_environment().report_artifact,
+                    attempt_id,
+                    report_artifact_id,
+                )
+            else:
+                payload = await run_in_threadpool(
+                    read_report_artifact,
+                    settings.state_root,
+                    attempt_id,
+                    report_artifact_id,
+                )
+                html = payload["html"]
         except (AttemptReportError, OSError, ValueError):
             return HTMLResponse("Report not found.", status_code=404)
         return Response(
-            payload["html"],
+            html,
             media_type="text/html",
             headers={
                 "Content-Security-Policy": (

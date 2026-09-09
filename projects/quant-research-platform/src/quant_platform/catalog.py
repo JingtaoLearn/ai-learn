@@ -268,6 +268,11 @@ class Catalog:
     def __init__(self, state_root: Path | str):
         self.state_root = Path(state_root).absolute()
         self.database_path = self.state_root / "catalog.sqlite3"
+        self._postgres = None
+        if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+            from .full_persistence import FullPostgresPersistence
+
+            self._postgres = FullPostgresPersistence.from_environment()
 
     def _validate_state_root(self) -> None:
         candidate = self.state_root
@@ -298,7 +303,9 @@ class Catalog:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self) -> Any:
+        if self._postgres is not None:
+            return self._postgres.catalog_connection()
         connection = sqlite3.connect(
             self.database_path,
             timeout=30,
@@ -323,6 +330,23 @@ class Catalog:
             connection.close()
 
     def apply_migrations(self, migrations: Iterable[CatalogMigration]) -> None:
+        if self._postgres is not None:
+            connection = self.connect()
+            try:
+                versions = {
+                    row["version"]
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations"
+                    ).fetchall()
+                }
+            finally:
+                connection.close()
+            required = {migration.version for migration in migrations}
+            if not required.issubset(versions):
+                raise CatalogVersionError(
+                    "PostgreSQL catalog is missing required migration identities"
+                )
+            return
         ordered = sorted(migrations, key=lambda migration: migration.version)
         if not ordered:
             return
@@ -372,6 +396,9 @@ class Catalog:
                 connection.close()
 
     def initialize(self, *, include_operators: bool = True) -> Catalog:
+        if self._postgres is not None:
+            self._postgres.verify_schema()
+            return self
         with self._initialization_lock():
             connection = self.connect()
             try:
