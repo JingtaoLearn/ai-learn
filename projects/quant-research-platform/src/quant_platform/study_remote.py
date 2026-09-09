@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import ssl
 import stat
 import subprocess
 import tempfile
@@ -805,13 +806,36 @@ class RemoteResponse:
 
 
 class SignedStudyClient:
-    def __init__(self, endpoint: str, private_key: Path | str, *, timeout_seconds: float = 5):
+    def __init__(
+        self,
+        endpoint: str,
+        private_key: Path | str,
+        *,
+        timeout_seconds: float = 5,
+        tls_ca_file: Path | str | None = None,
+    ):
         parsed = urlsplit(endpoint)
-        if parsed.scheme != "http" or not parsed.netloc or parsed.path or parsed.query or parsed.fragment:
-            raise StudyValidationError("worker endpoint must be an HTTP origin without a path")
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise StudyValidationError("worker endpoint must be an HTTP(S) origin without a path")
+        if parsed.scheme == "http" and tls_ca_file is not None:
+            raise StudyValidationError("a TLS CA file requires an HTTPS worker endpoint")
         self.endpoint = endpoint.rstrip("/")
         self.private_key = Path(private_key)
         self.timeout_seconds = timeout_seconds
+        try:
+            self.ssl_context = (
+                ssl.create_default_context(cafile=str(tls_ca_file))
+                if parsed.scheme == "https"
+                else None
+            )
+        except (OSError, ssl.SSLError) as exc:
+            raise StudyAuthenticationError("worker TLS trust is unavailable") from exc
 
     def _request(
         self,
@@ -833,7 +857,9 @@ class SignedStudyClient:
             )
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_seconds, context=self.ssl_context
+            ) as response:
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
                 status = response.status
         except urllib.error.HTTPError as exc:
@@ -1653,7 +1679,14 @@ def _execute_command(args: argparse.Namespace) -> int:
         source_tree=args.source_tree,
         worker_image=args.worker_image,
     )
-    dispatcher = StudyDispatcher(store, SignedStudyClient(args.endpoint, Path(args.private_key)))
+    dispatcher = StudyDispatcher(
+        store,
+        SignedStudyClient(
+            args.endpoint,
+            Path(args.private_key),
+            tls_ca_file=Path(args.tls_ca_file) if args.tls_ca_file else None,
+        ),
+    )
     submission = dispatcher.submit(request)
     probes: list[dict[str, Any]] = []
     reads: list[float] = []
@@ -1705,6 +1738,7 @@ def _parser() -> argparse.ArgumentParser:
     execute = commands.add_parser("execute")
     execute.add_argument("--endpoint", required=True)
     execute.add_argument("--private-key", required=True)
+    execute.add_argument("--tls-ca-file")
     execute.add_argument("--iterations", required=True, type=int)
     execute.add_argument("--seed", required=True, type=int)
     execute.add_argument("--checkpoint-count", type=int, default=8)
