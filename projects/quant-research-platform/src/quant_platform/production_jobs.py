@@ -144,7 +144,9 @@ def _read_fd(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _read_staged_member(directory_fd: int, name: str, label: str) -> bytes:
+def _open_staged_member(
+    directory_fd: int, name: str, label: str
+) -> tuple[int, tuple[int, ...]]:
     flags = os.O_RDONLY | os.O_NONBLOCK
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -153,28 +155,21 @@ def _read_staged_member(directory_fd: int, name: str, label: str) -> bytes:
         raise ProductionJobError(f"staged {label} member is unsafe") from exc
     try:
         before = os.fstat(member_fd)
+        path_before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
             or before.st_mode & 0o222
+            or _stat_fingerprint(before) != _stat_fingerprint(path_before)
         ):
             raise ProductionJobError(f"staged {label} member is unsafe")
-        first = _read_fd(member_fd)
-        os.lseek(member_fd, 0, os.SEEK_SET)
-        second = _read_fd(member_fd)
-        after = os.fstat(member_fd)
-        path_after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if (
-            first != second
-            or _stat_fingerprint(before) != _stat_fingerprint(after)
-            or _stat_fingerprint(before) != _stat_fingerprint(path_after)
-        ):
-            raise ProductionJobError(f"staged {label} member changed during read")
-        return first
+        return member_fd, _stat_fingerprint(before)
     except OSError as exc:
-        raise ProductionJobError(f"staged {label} member is unsafe") from exc
-    finally:
         os.close(member_fd)
+        raise ProductionJobError(f"staged {label} member is unsafe") from exc
+    except BaseException:
+        os.close(member_fd)
+        raise
 
 
 def _read_staged_members(
@@ -186,6 +181,7 @@ def _read_staged_members(
         directory_fd = os.open(target, flags)
     except OSError as exc:
         raise ProductionJobError(f"staged {label} directory is unsafe") from exc
+    members: dict[str, tuple[int, tuple[int, ...]]] = {}
     try:
         before = os.fstat(directory_fd)
         names = os.listdir(directory_fd)
@@ -197,9 +193,32 @@ def _read_staged_members(
             or shape not in allowed_shapes
         ):
             raise ProductionJobError(f"staged {label} member set is invalid")
-        payloads = {
-            name: _read_staged_member(directory_fd, name, label) for name in sorted(shape)
-        }
+        ordered_names = ["identity.json", *sorted(shape - {"identity.json"})]
+        for name in ordered_names:
+            members[name] = _open_staged_member(directory_fd, name, label)
+        for name, (member_fd, fingerprint) in members.items():
+            if (
+                _stat_fingerprint(os.fstat(member_fd)) != fingerprint
+                or _stat_fingerprint(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                != fingerprint
+            ):
+                raise ProductionJobError(f"staged {label} member changed during read")
+        payloads = {name: _read_fd(member_fd) for name, (member_fd, _) in members.items()}
+        for name, (member_fd, _) in members.items():
+            os.lseek(member_fd, 0, os.SEEK_SET)
+            if _read_fd(member_fd) != payloads[name]:
+                raise ProductionJobError(f"staged {label} member changed during read")
+        for name, (member_fd, fingerprint) in members.items():
+            if (
+                _stat_fingerprint(os.fstat(member_fd)) != fingerprint
+                or _stat_fingerprint(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                != fingerprint
+            ):
+                raise ProductionJobError(f"staged {label} member changed during read")
         after = os.fstat(directory_fd)
         target_after = os.stat(target, follow_symlinks=False)
         if (
@@ -212,6 +231,8 @@ def _read_staged_members(
     except OSError as exc:
         raise ProductionJobError(f"staged {label} directory is unsafe") from exc
     finally:
+        for member_fd, _ in members.values():
+            os.close(member_fd)
         os.close(directory_fd)
 
 

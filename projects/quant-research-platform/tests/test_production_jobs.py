@@ -359,3 +359,68 @@ def test_staged_reconstruction_rejects_bytes_mutated_between_reads(
     with pytest.raises(ProductionJobError, match="changed during read"):
         ProductionJobs.read_input(target)
     assert mutated is True
+
+
+def test_staged_input_rejects_identity_mutated_while_raw_is_read(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "input"
+    payloads = ProductionJobs.input_payloads(
+        ProductionInput(
+            "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
+        )
+    )
+    seal(target, payloads)
+    identity = target / "identity.json"
+    raw_inode = (target / "raw.bin").stat().st_ino
+    original_read = os.read
+    mutated = False
+
+    def mutate_identity_when_raw_is_read(fd, count):
+        nonlocal mutated
+        chunk = original_read(fd, count)
+        if not mutated and os.fstat(fd).st_ino == raw_inode:
+            mutated = True
+            identity.chmod(0o644)
+            identity.write_bytes(
+                canonical_json_bytes(
+                    {
+                        "kind": "provider-get",
+                        "method": "GET",
+                        "provider_url": "fixture://changed",
+                    }
+                )
+            )
+            identity.chmod(0o444)
+        return chunk
+
+    monkeypatch.setattr(production_jobs.os, "read", mutate_identity_when_raw_is_read)
+    with pytest.raises(ProductionJobError, match="changed during read"):
+        ProductionJobs.read_input(target)
+    assert mutated is True
+
+
+def test_staged_computation_rejects_member_mutated_while_another_is_read(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "formal"
+    seal(target, ProductionJobs.computation_payloads(formal_computation()))
+    claimed = target / "03-CALIBRATION_CLAIMED.json"
+    sealed_inode = (target / "04-CALIBRATION_SEALED.json").stat().st_ino
+    original_read = os.read
+    mutated = False
+
+    def mutate_claimed_when_sealed_is_read(fd, count):
+        nonlocal mutated
+        chunk = original_read(fd, count)
+        if not mutated and os.fstat(fd).st_ino == sealed_inode:
+            mutated = True
+            claimed.chmod(0o644)
+            claimed.write_bytes(b"changed-claimed")
+            claimed.chmod(0o444)
+        return chunk
+
+    monkeypatch.setattr(production_jobs.os, "read", mutate_claimed_when_sealed_is_read)
+    with pytest.raises(ProductionJobError, match="changed during read"):
+        ProductionJobs.read_computation(target)
+    assert mutated is True
