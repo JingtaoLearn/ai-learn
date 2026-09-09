@@ -92,6 +92,29 @@ class _LoseFirstAcceptedResponse(SignedStudyClient):
         return self.client.read(job_id)
 
 
+class _HideInitialAcceptedJob(SignedStudyClient):
+    def __init__(self, client):
+        self.client = client
+        self.endpoint = client.endpoint
+        self.submit_calls = 0
+        self.read_calls = 0
+
+    def submit(self, request):
+        self.submit_calls += 1
+        if self.submit_calls == 1:
+            self.client.submit(request)
+            raise StudyTransportError("simulated accepted response loss")
+        if self.submit_calls == 2:
+            raise StudyTransportError("simulated unresolved replay")
+        return self.client.submit(request)
+
+    def read(self, job_id):
+        self.read_calls += 1
+        if self.read_calls == 1:
+            raise StudyTransportError("simulated unresolved immediate read")
+        return self.client.read(job_id)
+
+
 def _keypair(root: Path, name: str = "control-private") -> Path:
     private_key = root / f"{name}.pem"
     public_key = root / f"{name}.pub.pem"
@@ -264,3 +287,68 @@ def test_connection_refusal_remains_explicit_no_fallback_failure(tmp_path: Path)
     assert observed["local_compute_attempted"] is False
     assert authoritative_store.fail_unavailable_calls == 1
     assert len(authoritative_store.rows) == 1
+
+
+def test_prior_acceptance_ambiguity_survives_later_connection_refusal(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    state_root = tmp_path / "state"
+    worker_store = WorkerJobStore(state_root, IMAGE)
+    server = StudyWorkerServer(
+        ("127.0.0.1", 0), worker_store, private_key.with_suffix(".pub.pem")
+    )
+    port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    underlying_client = SignedStudyClient(f"http://127.0.0.1:{port}", private_key)
+    client = _HideInitialAcceptedJob(underlying_client)
+    authoritative_store = _AuthoritativeStore()
+    dispatcher = StudyDispatcher(authoritative_store, client)
+    request = freeze_synthetic_request(
+        iterations=100_000,
+        seed=37,
+        checkpoint_count=5,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+
+    first = dispatcher.submit(request)
+    deadline = time.monotonic() + 10
+    while True:
+        remote_before_retry = underlying_client.read(request["job_id"]).value["job"]
+        if remote_before_retry["status"] in {"SUCCEEDED", "FAILED"}:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+    retry = dispatcher.submit(request)
+
+    server = StudyWorkerServer(
+        ("127.0.0.1", port), worker_store, private_key.with_suffix(".pub.pem")
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        converged = dispatcher.read(request["job_id"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert first["authoritative"]["status"] == "ACCEPTED"
+    assert first["remote"] is None
+    assert remote_before_retry["status"] == "SUCCEEDED"
+    assert retry["authoritative"]["status"] == "ACCEPTED"
+    assert retry["authoritative"]["failure"] is None
+    assert retry["remote"] is None
+    assert retry["local_compute_attempted"] is False
+    assert converged["authoritative"]["status"] == "SUCCEEDED"
+    assert converged["authoritative"]["final_result"] == remote_before_retry["result"]
+    assert converged["local_compute_attempted"] is False
+    assert authoritative_store.fail_unavailable_calls == 0
+    assert len(authoritative_store.rows) == 1
+    assert client.submit_calls == 3
+    assert [path.name for path in state_root.iterdir()] == [f"{request['job_id']}.json"]

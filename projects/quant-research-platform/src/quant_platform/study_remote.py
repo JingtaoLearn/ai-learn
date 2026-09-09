@@ -912,13 +912,24 @@ class StudyDispatcher:
 
     def submit(self, request: Mapping[str, Any]) -> dict[str, Any]:
         frozen = validate_request(request)
-        self.store.admit(frozen, self.client.endpoint)
+        _, created = self.store.admit(frozen, self.client.endpoint)
         try:
             response = self.client.submit(frozen)
             return self._record_submit_response(frozen["job_id"], response)
         except StudyTransportError as exc:
             if exc.acceptance_ambiguous:
                 return self._reconcile_ambiguous_submit(frozen, exc)
+            if not created:
+                authoritative = self.store.get(frozen["job_id"])
+                if authoritative is None:
+                    raise StudyRemoteError("authoritative Study row disappeared") from exc
+                return {
+                    "authoritative": authoritative,
+                    "remote": None,
+                    "idempotent_replay": False,
+                    "dispatch_elapsed_ms": None,
+                    "local_compute_attempted": False,
+                }
             return {
                 "authoritative": self.store.fail_unavailable(frozen["job_id"], str(exc)),
                 "remote": None,
