@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from quant_platform.production_client import ClientTLS, ProductionClientUnknown
+import quant_platform.production_schedule_client as schedule_client
+from quant_platform.production_client import ClientTLS, ProductionClientError, ProductionClientUnknown
 from quant_platform.production_schedule_client import (
     DELIVERY,
     JOBS,
@@ -82,6 +83,8 @@ class FakeClient:
         }
 
     def fetch_verified_file(self, _manifest, name):
+        if name == "report.html":
+            return b"<html>verified report</html>"
         assert name == "notification.txt"
         return b"verified production notification"
 
@@ -150,6 +153,23 @@ def test_schedule_record_drift_and_unknown_outcome_fail_closed(tmp_path: Path) -
 def test_cli_rejects_unknown_job() -> None:
     with pytest.raises(SystemExit):
         _parser().parse_args(["--job-id", "unknown"])
+
+
+def test_cli_failure_is_nonzero_without_fabricated_action(monkeypatch, capsys) -> None:
+    def fail(*_args, **_kwargs):
+        raise ProductionClientError("injected admission failure")
+
+    monkeypatch.setattr(schedule_client, "run_job", fail)
+
+    status = schedule_client.main(
+        ["--job-id", "297c11cad0dc", "--scheduled-for", "2026-03-09T00:40:00Z"]
+    )
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert "production client failed closed" in captured.err
+    assert not any(action in captured.err for action in ("BUY", "SELL", "HOLD", "WAIT"))
 
 
 def test_reviewed_cutover_config_matches_the_executable_mapping() -> None:

@@ -128,6 +128,36 @@ def test_unavailable_api_is_unknown_with_identical_body_key_and_no_fallback() ->
     assert all("flearn" not in call[1] for call in transport.calls)
 
 
+def test_transient_capacity_retries_bounded_identical_admission() -> None:
+    value = request()
+
+    class CapacityTransport:
+        def __init__(self, request_value):
+            self.success = SuccessTransport(request_value)
+            self.posts = self.success.posts
+            self.result_id = self.success.result_id
+            self.capacity_responses = 0
+
+        def request(self, method, path, *, headers, body):
+            if method == "POST" and self.capacity_responses == 0:
+                self.posts.append((path, dict(headers), body))
+                self.capacity_responses += 1
+                return 429, {}, b'{"ok":false,"error":{"code":"CAPACITY_UNAVAILABLE"}}'
+            return self.success.request(method, path, headers=headers, body=body)
+
+    delays = []
+    transport = CapacityTransport(value)
+    client = ProductionClient(transport, transport_attempts=3, sleep=delays.append)
+
+    result = client.submit_and_wait(value)
+
+    assert result["result_id"] == transport.result_id
+    assert delays == [1, 1]
+    assert len(transport.posts) == 2
+    assert {call[1]["Idempotency-Key"] for call in transport.posts} == {value.request_id}
+    assert {call[2] for call in transport.posts} == {value.canonical_body}
+
+
 def test_client_rejects_tampered_result_identity() -> None:
     value = request()
     transport = SuccessTransport(value)

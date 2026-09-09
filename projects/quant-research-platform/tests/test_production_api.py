@@ -65,14 +65,17 @@ def runtime(tmp_path, *, crash=lambda _point: None, clock=None):
     store = ProductionStore(tmp_path / "state")
     store.initialize()
     results = ProductionResultStore(tmp_path / "result")
-    policy = AdmissionPolicy({"297c11cad0dc": MANIFEST}, release())
-    service = ProductionService(store, policy, clock=clock)
-    jobs = ProductionJobs(
-        [
-            BocomProductionJob(FIXTURES / "bocom-model-manifest.json"),
-            GoldProductionJob(FIXTURES / "gold-model-manifest.json"),
-        ]
+    bocom = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    gold = GoldProductionJob(FIXTURES / "gold-model-manifest.json")
+    policy = AdmissionPolicy(
+        {
+            bocom.job_id: bocom.production_manifest_sha256,
+            gold.job_id: gold.production_manifest_sha256,
+        },
+        release(),
     )
+    service = ProductionService(store, policy, clock=clock)
+    jobs = ProductionJobs([bocom, gold])
     provider = FixtureProvider()
     worker = ProductionWorker(
         store,
@@ -128,15 +131,85 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
         headers={VERIFIED_CLIENT_HEADER: IDENTITY},
     )
     assert notification.status_code == 200
-    assert notification.content == (
-        "交通银行 WAIT · 2026-01-22 · report 8991e9a8-1caa-41f5-b76b-6368259db5b4"
-    ).encode()
+    text = notification.content.decode("utf-8")
+    assert len(notification.content) > 300
+    assert all(
+        marker in text
+        for marker in (
+            "交通银行生产信号｜市场日期：2026-01-22",
+            "完成收盘",
+            "日涨跌",
+            "仓位：当前",
+            "动作：WAIT",
+            "斜率：上一",
+            "下一完整收盘买入边界",
+            "执行时点",
+            "automatic_ordering=false",
+        )
+    )
     denied = client.get(
         f"/api/v1/production/results/{terminal['result_id']}/files/action.json",
         headers={VERIFIED_CLIENT_HEADER: IDENTITY},
     )
     assert denied.status_code == 404
     assert store.get_run(terminal["production_run_id"])["result_id"] == terminal["result_id"]
+
+
+def test_capacity_overlap_retries_both_jobs_and_replay_has_no_duplicate_result(tmp_path) -> None:
+    store, _, _, provider, worker, api = runtime(tmp_path)
+    bocom_request = request()
+    gold_request = ProductionRequest.build(
+        job_id=GoldProductionJob.job_id,
+        scheduled_for=FIRE,
+        production_manifest_sha256=GoldProductionJob.production_manifest_sha256,
+    )
+    first = api.post(
+        "/api/v1/production/runs",
+        content=bocom_request.canonical_body,
+        headers=headers(bocom_request),
+    )
+    assert first.status_code == 202
+
+    class ASGITransport:
+        def __init__(self):
+            self.post_statuses = []
+
+        def request(self, method, path, *, headers, body):
+            response = api.request(
+                method,
+                path,
+                headers=dict(headers) | {VERIFIED_CLIENT_HEADER: IDENTITY},
+                content=body,
+            )
+            if method == "POST":
+                self.post_statuses.append(response.status_code)
+            return response.status_code, dict(response.headers), response.content
+
+    terminal = []
+
+    def advance_worker(_delay):
+        completed = worker.run_once()
+        if completed is not None:
+            terminal.append(completed)
+
+    transport = ASGITransport()
+    client = ProductionClient(transport, transport_attempts=3, sleep=advance_worker)
+    gold_result = client.submit_and_wait(gold_request)
+    bocom_result = client.submit_and_wait(bocom_request)
+    gold_notification = client.fetch_verified_file(gold_result, "notification.txt").decode("utf-8")
+    bocom_notification = client.fetch_verified_file(bocom_result, "notification.txt").decode("utf-8")
+
+    assert transport.post_statuses == [429, 202, 200]
+    assert [item["request_id"] for item in terminal] == [
+        bocom_request.request_id,
+        gold_request.request_id,
+    ]
+    assert provider.calls == 2
+    assert bocom_result["result_id"] == terminal[0]["result_id"]
+    stored = store.get_request(bocom_request.request_id)
+    assert stored is not None and stored["result_id"] == bocom_result["result_id"]
+    assert "黄金生产信号" in gold_notification and len(gold_notification.encode()) > 300
+    assert "交通银行生产信号" in bocom_notification and len(bocom_notification.encode()) > 300
 
 
 def test_identity_boundary_rejects_browser_auth_and_unverified_calls(tmp_path) -> None:

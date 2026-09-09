@@ -4,7 +4,7 @@ import json
 import math
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -123,6 +123,54 @@ class BocomProductionJob:
             raise ProductionJobError("Yahoo BOCOM history is insufficient")
         return ordered
 
+    @staticmethod
+    def render_notification(action: Mapping[str, Any]) -> bytes:
+        positions = {0: "空仓（0%）", 1: "持有（100%）"}
+        action_labels = {"WAIT": "等待", "BUY": "买入", "HOLD": "继续持有", "SELL": "卖出"}
+        current_state = int(action["state_before_next"])
+        target_state = int(action["target_state"])
+        if current_state not in positions or target_state not in positions:
+            raise ProductionJobError("BOCOM notification position is invalid")
+        action_name = str(action["action"])
+        if action_name not in action_labels:
+            raise ProductionJobError("BOCOM notification action is invalid")
+        scenarios = action["next_completed_close_scenarios"]
+        if target_state == 0:
+            boundary_name = "买入"
+            boundary = float(scenarios["buy_threshold_equivalent_raw_close"])
+            threshold = BocomProductionJob.config.buy_threshold_pct_per_day
+        else:
+            boundary_name = "卖出"
+            boundary = float(scenarios["sell_threshold_equivalent_raw_close"])
+            threshold = BocomProductionJob.config.sell_threshold_pct_per_day
+        lines = [
+            f"交通银行生产信号｜市场日期：{action['latest_market_date']}",
+            (
+                f"完成收盘：{float(action['latest_close']):.3f} 元/股；"
+                f"日涨跌：{float(action['daily_change_pct']):+.2f}%"
+            ),
+            (
+                f"仓位：当前{positions[current_state]} → 目标{positions[target_state]}；"
+                f"动作：{action_name}（{action_labels[action_name]}）"
+            ),
+            (
+                f"斜率：上一 {float(action['previous_slope_pct']):+.4f}%/日 → "
+                f"当前 {float(action['next_slope_pct']):+.4f}%/日"
+            ),
+            (
+                f"下一完整收盘{boundary_name}边界：{boundary:.3f} 元/股"
+                f"（斜率 {threshold:+.3f}%/日；假设无公司行动的原始收盘价）"
+            ),
+            (
+                f"如本次动作为 BUY/SELL，执行时点：{action['next_session_date_estimate']} "
+                "下一交易日开盘；"
+                "仅人工决策，不会自动下单（automatic_ordering=false）"
+            ),
+            "成本假设：买入 8 bps；卖出 13 bps",
+            f"报告：{action['report_uuid']}",
+        ]
+        return ("\n".join(lines) + "\n").encode("utf-8")
+
     def compute(
         self, raw: bytes, provider_url: str, scheduled_for: datetime
     ) -> JobComputation:
@@ -184,9 +232,7 @@ class BocomProductionJob:
             model_id=self.model_id,
             costs="buy_cost_bps=8; sell_cost_bps=13",
         )
-        notification = (
-            f"交通银行 {action['action']} · {action['latest_market_date']} · report {self.report_uuid}"
-        ).encode("utf-8")
+        notification = self.render_notification(action)
         return JobComputation(
             self.job_id,
             self.model_id,
