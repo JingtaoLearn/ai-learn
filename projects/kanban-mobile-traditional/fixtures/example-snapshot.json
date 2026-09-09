@@ -1,0 +1,147 @@
+{
+  "schema": "kanban-mobile-snapshot/v1",
+  "generated_at": "2026-09-09T10:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "boards": [
+    {
+      "slug": "default",
+      "name": "Default",
+      "counts": {
+        "done": 1
+      }
+    },
+    {
+      "slug": "agentic-workflow",
+      "name": "Agentic Workflow",
+      "counts": {
+        "running": 1,
+        "blocked": 1,
+        "done": 1
+      }
+    },
+    {
+      "slug": "quant-research-platform",
+      "name": "Quant Research Platform",
+      "counts": {
+        "review": 1,
+        "ready": 1,
+        "todo": 1,
+        "done": 1
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t_demo001",
+      "title": "Build mobile read-only board",
+      "board": "agentic-workflow",
+      "board_name": "Agentic Workflow",
+      "status": "running",
+      "assignee": "implementation-agent",
+      "priority": 100,
+      "created_at": "2026-09-09T09:00:00+08:00",
+      "started_at": "2026-09-09T09:02:00+08:00",
+      "completed_at": null,
+      "heartbeat_at": "2026-09-09T09:58:00+08:00",
+      "summary": ""
+    },
+    {
+      "id": "t_demo002",
+      "title": "Review sanitized snapshot contract",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "review",
+      "assignee": "reviewer-agent",
+      "priority": 90,
+      "created_at": "2026-09-09T08:30:00+08:00",
+      "started_at": "2026-09-09T08:45:00+08:00",
+      "completed_at": null,
+      "heartbeat_at": "2026-09-09T09:55:00+08:00",
+      "summary": ""
+    },
+    {
+      "id": "t_demo003",
+      "title": "Prepare next bounded experiment",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "ready",
+      "assignee": "experiment-agent",
+      "priority": 70,
+      "created_at": "2026-09-09T08:00:00+08:00",
+      "started_at": null,
+      "completed_at": null,
+      "heartbeat_at": null,
+      "summary": ""
+    },
+    {
+      "id": "t_demo004",
+      "title": "Wait for accepted input",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "todo",
+      "assignee": "research-agent",
+      "priority": 60,
+      "created_at": "2026-09-09T07:50:00+08:00",
+      "started_at": null,
+      "completed_at": null,
+      "heartbeat_at": null,
+      "summary": ""
+    },
+    {
+      "id": "t_demo005",
+      "title": "Resolve access boundary",
+      "board": "agentic-workflow",
+      "board_name": "Agentic Workflow",
+      "status": "blocked",
+      "assignee": "workflow-assistant",
+      "priority": 80,
+      "created_at": "2026-09-09T07:30:00+08:00",
+      "started_at": "2026-09-09T07:35:00+08:00",
+      "completed_at": null,
+      "heartbeat_at": "2026-09-09T07:40:00+08:00",
+      "summary": ""
+    },
+    {
+      "id": "t_demo006",
+      "title": "Validate visible result",
+      "board": "agentic-workflow",
+      "board_name": "Agentic Workflow",
+      "status": "done",
+      "assignee": "reviewer-agent",
+      "priority": 50,
+      "created_at": "2026-09-09T06:00:00+08:00",
+      "started_at": "2026-09-09T06:10:00+08:00",
+      "completed_at": "2026-09-09T06:40:00+08:00",
+      "heartbeat_at": "2026-09-09T06:39:00+08:00",
+      "summary": ""
+    },
+    {
+      "id": "t_demo007",
+      "title": "Publish decision report",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "done",
+      "assignee": "implementation-agent",
+      "priority": 40,
+      "created_at": "2026-09-08T18:00:00+08:00",
+      "started_at": "2026-09-08T18:10:00+08:00",
+      "completed_at": "2026-09-08T18:40:00+08:00",
+      "heartbeat_at": "2026-09-08T18:39:00+08:00",
+      "summary": ""
+    },
+    {
+      "id": "t_demo008",
+      "title": "Archive superseded exploration",
+      "board": "default",
+      "board_name": "Default",
+      "status": "done",
+      "assignee": "workflow-assistant",
+      "priority": 10,
+      "created_at": "2026-09-08T10:00:00+08:00",
+      "started_at": "2026-09-08T10:05:00+08:00",
+      "completed_at": "2026-09-08T10:20:00+08:00",
+      "heartbeat_at": "2026-09-08T10:19:00+08:00",
+      "summary": ""
+    }
+  ]
+}
