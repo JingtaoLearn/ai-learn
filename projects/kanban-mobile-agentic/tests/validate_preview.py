@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import html.parser
 import importlib.util
 import json
@@ -14,9 +15,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "data" / "board-snapshot.json"
+EXAMPLE_FIXTURE = ROOT / "data" / "example-board-snapshot.json"
 TEMPLATE = ROOT / "src" / "index.template.html"
-PREVIEW = ROOT / "preview.html"
 FORBIDDEN_KEYS = {
     "body",
     "workspace_path",
@@ -135,28 +135,43 @@ def extract_snapshot(document: str) -> dict:
     return json.loads(match.group(1))
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshot", type=Path, default=EXAMPLE_FIXTURE)
+    parser.add_argument(
+        "--preview",
+        type=Path,
+        help="Validate an existing built preview as well as a fresh temporary rebuild",
+    )
+    parser.add_argument("--expect-listed-tasks", type=int)
+    parser.add_argument("--expect-board-records", type=int)
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     builder = load_builder()
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert len(fixture["tasks"]) == 89
+    fixture = json.loads(args.snapshot.read_text(encoding="utf-8"))
     assert all(set(task) == FIXTURE_TASK_KEYS for task in fixture["tasks"])
     assert fixture["timezone"] == "Asia/Shanghai"
 
     with tempfile.TemporaryDirectory() as directory:
         rebuilt_path = Path(directory) / "preview.html"
-        expected = builder.build(FIXTURE, TEMPLATE, rebuilt_path)
+        expected = builder.build(args.snapshot, TEMPLATE, rebuilt_path)
         rebuilt = rebuilt_path.read_text(encoding="utf-8")
 
-    committed = PREVIEW.read_text(encoding="utf-8")
-    assert rebuilt == committed, "preview.html is stale; run python3 build.py"
+    document = rebuilt
+    if args.preview:
+        document = args.preview.read_text(encoding="utf-8")
+        assert rebuilt == document, "Preview is stale for the selected snapshot"
 
     parser = StructureParser()
-    parser.feed(committed)
+    parser.feed(document)
     assert parser.has_main and parser.has_dialog and parser.has_viewport
     assert REQUIRED_IDS.issubset(parser.ids), f"Missing IDs: {sorted(REQUIRED_IDS - parser.ids)}"
     assert parser.scripts, "Missing executable JavaScript"
 
-    snapshot = extract_snapshot(committed)
+    snapshot = extract_snapshot(document)
     assert snapshot == expected
     assert not (set(walk_keys(snapshot)) & FORBIDDEN_KEYS)
     assert all(set(task) == ALLOWED_TASK_KEYS for task in snapshot["tasks"])
@@ -164,6 +179,10 @@ def main() -> None:
     assert snapshot["totals"]["board_records"] == sum(
         sum(board["counts"].values()) for board in fixture["boards"]
     )
+    if args.expect_listed_tasks is not None:
+        assert snapshot["totals"]["listed_tasks"] == args.expect_listed_tasks
+    if args.expect_board_records is not None:
+        assert snapshot["totals"]["board_records"] == args.expect_board_records
     assert [board["slug"] for board in snapshot["boards"]] == [
         board["slug"] for board in fixture["boards"]
     ]
@@ -202,13 +221,13 @@ def main() -> None:
     javascript = "\n".join(parser.scripts)
     assert not NETWORK_OR_MUTATION.search(javascript), "Network or mutation API found"
     assert "innerHTML" not in javascript, "Avoid unsanitized HTML insertion"
-    assert REQUIRED_STATUSES.issubset(set(re.findall(r'\b(?:running|review|ready|todo|blocked|done|archived)\b', committed)))
-    assert "min-height: 44px" in committed
-    assert "overflow-x: hidden" in committed
-    assert "max-width: 1180px" in committed
-    assert "snapshot updated" in committed.lower()
-    assert "frozen snapshot" in committed.lower()
-    assert "Asia/Shanghai" in committed
+    assert REQUIRED_STATUSES.issubset(set(re.findall(r'\b(?:running|review|ready|todo|blocked|done|archived)\b', document)))
+    assert "min-height: 44px" in document
+    assert "overflow-x: hidden" in document
+    assert "max-width: 1180px" in document
+    assert "snapshot updated" in document.lower()
+    assert "frozen snapshot" in document.lower()
+    assert "Asia/Shanghai" in document
 
     node = shutil.which("node")
     if node:

@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_SNAPSHOT = ROOT / "data" / "board-snapshot.json"
+DEFAULT_SNAPSHOT = ROOT / "data" / "example-board-snapshot.json"
 DEFAULT_TEMPLATE = ROOT / "src" / "index.template.html"
-DEFAULT_OUTPUT = ROOT / "preview.html"
+DEFAULT_OUTPUT = ROOT / ".private" / "preview.html"
 SCHEMA = "kanban-mobile-snapshot/v1"
 DISPLAY_TIMEZONE = "Asia/Shanghai"
 STATUS_ORDER = ("running", "review", "ready", "todo", "blocked", "done", "archived")
