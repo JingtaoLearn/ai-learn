@@ -226,6 +226,11 @@ def test_expired_post_claim_refusal_preserves_accepted_feng_work(
     assert converged["authoritative"]["final_result"] == remote_terminal["result"]
     assert len(list(worker_store.root.iterdir())) == 1
     assert converged["local_compute_attempted"] is False
+    storage_shape = store.storage_shape(request["job_id"])
+    assert storage_shape["study_rows"] == 1
+    assert storage_shape["attempt_rows"] == 0
+    assert storage_shape["experiment_rows"] == 0
+    assert storage_shape["per_iteration_event_rows"] == 0
     print(
         canonical_json_bytes(
             {
@@ -240,6 +245,7 @@ def test_expired_post_claim_refusal_preserves_accepted_feng_work(
                 "feng_terminal": remote_terminal,
                 "converged_postgresql": converged["authoritative"],
                 "worker_document_count": len(list(worker_store.root.iterdir())),
+                "storage_shape": storage_shape,
                 "local_compute_attempted": converged["local_compute_attempted"],
             }
         ).decode("utf-8")
@@ -299,6 +305,11 @@ def test_inflight_post_accepted_after_expiry_survives_reclaimed_refusal(tmp_path
     assert converged["authoritative"]["final_result"] == remote_terminal["result"]
     assert len(list(worker_store.root.iterdir())) == 1
     assert converged["local_compute_attempted"] is False
+    storage_shape = store.storage_shape(request["job_id"])
+    assert storage_shape["study_rows"] == 1
+    assert storage_shape["attempt_rows"] == 0
+    assert storage_shape["experiment_rows"] == 0
+    assert storage_shape["per_iteration_event_rows"] == 0
     print(
         canonical_json_bytes(
             {
@@ -309,6 +320,7 @@ def test_inflight_post_accepted_after_expiry_survives_reclaimed_refusal(tmp_path
                 "feng_terminal": remote_terminal,
                 "converged_postgresql": converged["authoritative"],
                 "worker_document_count": len(list(worker_store.root.iterdir())),
+                "storage_shape": storage_shape,
                 "local_compute_attempted": converged["local_compute_attempted"],
             }
         ).decode("utf-8")
