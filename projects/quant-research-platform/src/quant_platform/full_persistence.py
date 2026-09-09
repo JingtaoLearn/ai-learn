@@ -429,7 +429,6 @@ IMMUTABLE_TABLES = (
     ("qr", "validation_invocations"),
     ("qr_catalog", "schema_migrations"),
     ("qr_catalog", "templates"),
-    ("qr_catalog", "replay_tokens"),
     ("qr_catalog", "dataset_catalog"),
     ("qr_catalog", "parameter_study_events"),
     ("qr_catalog", "parameter_study_actions"),
@@ -644,6 +643,10 @@ def install_full_schema(
                     f'"{schema}"."{table}" FOR EACH ROW EXECUTE FUNCTION qr.reject_change()'
                 )
             connection.execute(
+                'DROP TRIGGER IF EXISTS "replay_tokens_immutable" '
+                "ON qr_catalog.replay_tokens"
+            )
+            connection.execute(
                 "DROP TRIGGER IF EXISTS parameter_studies_identity_immutable "
                 "ON qr_catalog.parameter_studies"
             )
@@ -689,6 +692,12 @@ def install_full_schema(
                 connection.execute(
                     f'REVOKE UPDATE, DELETE ON "{schema}"."{table}" FROM "{runtime_user}"'
                 )
+            connection.execute(
+                f'REVOKE UPDATE ON qr_catalog.replay_tokens FROM "{runtime_user}"'
+            )
+            connection.execute(
+                f'GRANT DELETE ON qr_catalog.replay_tokens TO "{runtime_user}"'
+            )
             for view in ("operators", "operator_versions", "operator_latest"):
                 connection.execute(
                     f'REVOKE INSERT, UPDATE, DELETE ON qr_catalog."{view}" FROM "{runtime_user}"'
