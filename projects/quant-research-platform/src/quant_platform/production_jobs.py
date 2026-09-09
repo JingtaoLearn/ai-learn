@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .production_contract import canonical_json_bytes
@@ -84,6 +85,9 @@ class FormalComputation:
     files: Mapping[str, bytes]
     experiment_id: str
     attempt_id: str
+
+
+ProductionComputation = JobComputation | FormalComputation
 
 
 class ProductionJob(Protocol):
@@ -299,7 +303,7 @@ def next_weekday(value: date) -> date:
 
 
 class ProductionJobs:
-    """Small job interface with provider and model details hidden in adapters."""
+    """Production computation interface, including its durable staging representation."""
 
     def __init__(self, jobs: Sequence[ProductionJob | NoNetworkProductionJob]):
         self._jobs: dict[str, Any] = {job.job_id: job for job in jobs}
@@ -337,6 +341,35 @@ class ProductionJobs:
             "provider-get", {"method": "GET", "provider_url": url}, raw
         )
 
+    @staticmethod
+    def input_payloads(value: ProductionInput) -> dict[str, bytes]:
+        return {
+            "identity.json": canonical_json_bytes(
+                {"kind": value.kind, **dict(value.identity)}
+            ),
+            "raw.bin": value.payload,
+        }
+
+    @classmethod
+    def read_input(cls, target: Path) -> ProductionInput:
+        identity_bytes = (target / "identity.json").read_bytes()
+        identity = json.loads(identity_bytes)
+        legacy_identity = "kind" not in identity or (
+            identity.get("kind", "provider-get") == "provider-get" and "method" not in identity
+        )
+        kind = identity.pop("kind", "provider-get")
+        if kind == "provider-get" and "method" not in identity:
+            identity["method"] = "GET"
+        value = ProductionInput(kind, identity, (target / "raw.bin").read_bytes())
+        expected = cls.input_payloads(value)
+        if set(path.name for path in target.iterdir()) != set(expected):
+            raise ProductionJobError("staged production input member set is invalid")
+        if not legacy_identity and any(
+            (target / name).read_bytes() != payload for name, payload in expected.items()
+        ):
+            raise ProductionJobError("staged production input read-back differs")
+        return value
+
     def compute(
         self,
         job_id: str,
@@ -373,3 +406,73 @@ class ProductionJobs:
         if not isinstance(provider_url, str):
             raise ProductionJobError("provider input URL is invalid")
         return self.compute(job_id, value.payload, provider_url, scheduled_for)
+
+    @staticmethod
+    def computation_payloads(value: ProductionComputation) -> dict[str, bytes]:
+        if isinstance(value, FormalComputation):
+            identity = {
+                "kind": "formal",
+                "job_id": value.job_id,
+                "production_manifest_sha256": value.production_manifest_sha256,
+                "operation": value.operation,
+                "authority_sha256": value.authority_sha256,
+                "experiment_id": value.experiment_id,
+                "attempt_id": value.attempt_id,
+                "files": sorted(value.files),
+            }
+            return {"identity.json": canonical_json_bytes(identity), **dict(value.files)}
+        identity = {
+            "kind": "daily",
+            "job_id": value.job_id,
+            "model_id": value.model_id,
+            "production_manifest_sha256": value.production_manifest_sha256,
+            "report_uuid": value.report_uuid,
+            "provider_url": value.provider_url,
+            "raw_name": value.raw_name,
+            "experiment_id": value.experiment_id,
+            "attempt_id": value.attempt_id,
+        }
+        return {
+            "identity.json": canonical_json_bytes(identity),
+            "raw.bin": value.raw_bytes,
+            "normalized.json": value.normalized_bytes,
+            "action.json": canonical_json_bytes(value.action),
+            "report.html": value.report_html,
+            "notification.txt": value.notification_bytes,
+        }
+
+    @classmethod
+    def read_computation(cls, target: Path) -> ProductionComputation:
+        identity = json.loads((target / "identity.json").read_bytes())
+        if identity.get("kind") == "formal":
+            value: ProductionComputation = FormalComputation(
+                job_id=identity["job_id"],
+                production_manifest_sha256=identity["production_manifest_sha256"],
+                operation=identity["operation"],
+                authority_sha256=identity["authority_sha256"],
+                files={name: (target / name).read_bytes() for name in identity["files"]},
+                experiment_id=identity["experiment_id"],
+                attempt_id=identity["attempt_id"],
+            )
+        else:
+            value = JobComputation(
+                identity["job_id"],
+                identity["model_id"],
+                identity["production_manifest_sha256"],
+                identity["report_uuid"],
+                identity["provider_url"],
+                identity["raw_name"],
+                (target / "raw.bin").read_bytes(),
+                (target / "normalized.json").read_bytes(),
+                json.loads((target / "action.json").read_bytes()),
+                (target / "report.html").read_bytes(),
+                (target / "notification.txt").read_bytes(),
+                identity["experiment_id"],
+                identity["attempt_id"],
+            )
+        expected = cls.computation_payloads(value)
+        if set(path.name for path in target.iterdir()) != set(expected):
+            raise ProductionJobError("staged production computation member set is invalid")
+        if any((target / name).read_bytes() != payload for name, payload in expected.items()):
+            raise ProductionJobError("staged production computation read-back differs")
+        return value
