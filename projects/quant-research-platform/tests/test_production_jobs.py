@@ -306,6 +306,79 @@ def test_staged_reconstruction_rejects_member_mutated_before_its_first_open(
     assert mutated is True
 
 
+@pytest.mark.parametrize(
+    ("stage", "member"),
+    [
+        ("input", "raw.bin"),
+        ("daily", "action.json"),
+        ("daily", "notification.txt"),
+        ("daily", "normalized.json"),
+        ("daily", "raw.bin"),
+        ("daily", "report.html"),
+        ("formal", "03-CALIBRATION_CLAIMED.json"),
+        ("formal", "04-CALIBRATION_SEALED.json"),
+        ("formal", "calibration.json"),
+    ],
+)
+def test_staged_reconstruction_rejects_member_mutated_during_baseline_acquisition(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, stage: str, member: str
+) -> None:
+    target = tmp_path / stage
+    if stage == "input":
+        payloads = ProductionJobs.input_payloads(
+            ProductionInput(
+                "provider-get", {"method": "GET", "provider_url": "fixture://old"}, b"old"
+            )
+        )
+        read = ProductionJobs.read_input
+    elif stage == "daily":
+        computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        )
+        payloads = ProductionJobs.computation_payloads(computation)
+        read = ProductionJobs.read_computation
+    else:
+        payloads = ProductionJobs.computation_payloads(formal_computation())
+        read = ProductionJobs.read_computation
+    seal(target, payloads)
+    original_stat = os.stat
+    identity_baselined = False
+    mutated = False
+
+    def mutate_member_before_baseline(path, *args, **kwargs):
+        nonlocal identity_baselined, mutated
+        name = os.fspath(path)
+        if name == "identity.json":
+            result = original_stat(path, *args, **kwargs)
+            identity_baselined = True
+            return result
+        if identity_baselined and name == member and not mutated:
+            mutated = True
+            member_path = target / member
+            old_payload = member_path.read_bytes()
+            if member == "action.json":
+                changed_action = json.loads(old_payload)
+                assert changed_action["action"] == "WAIT"
+                changed_action["action"] = "HOLD"
+                new_payload = canonical_json_bytes(changed_action)
+            else:
+                new_payload = bytes([old_payload[0] ^ 1]) + old_payload[1:]
+            assert len(new_payload) == len(old_payload)
+            assert new_payload != old_payload
+            member_path.chmod(0o644)
+            member_path.write_bytes(new_payload)
+            member_path.chmod(0o444)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(production_jobs.os, "stat", mutate_member_before_baseline)
+    with pytest.raises(ProductionJobError, match="changed during read"):
+        read(target)
+    assert identity_baselined is True
+    assert mutated is True
+
+
 @pytest.mark.parametrize("stage", ["input", "formal"])
 def test_staged_reconstruction_rejects_symlinked_members(tmp_path, stage) -> None:
     outside = tmp_path / "outside"

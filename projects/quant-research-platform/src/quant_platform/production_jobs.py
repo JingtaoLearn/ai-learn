@@ -197,11 +197,15 @@ def _read_staged_members(
         ):
             raise ProductionJobError(f"staged {label} member set is invalid")
         ordered_names = ["identity.json", *sorted(shape - {"identity.json"})]
-        expected_fingerprints = {
-            name: _stat_fingerprint(
-                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            )
+        expected_stats = {
+            name: os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             for name in ordered_names
+        }
+        # The directory is sealed after every member; its ctime is the package-wide baseline.
+        if any(value.st_ctime_ns > before.st_ctime_ns for value in expected_stats.values()):
+            raise ProductionJobError(f"staged {label} member changed during read")
+        expected_fingerprints = {
+            name: _stat_fingerprint(value) for name, value in expected_stats.items()
         }
         for name in ordered_names:
             members[name] = _open_staged_member(
