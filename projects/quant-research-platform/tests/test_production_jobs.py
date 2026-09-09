@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,21 +20,24 @@ from quant_platform.production_jobs import (
     ProductionJobError,
     ProductionJobs,
     identity_canonical_bytes,
+    staged_package_identity,
 )
 from quant_platform import production_jobs
+from quant_platform.production_worker import ProductionWorker
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
 SCHEDULED = datetime(2026, 3, 9, 0, 40, tzinfo=UTC)
 
 
-def seal(directory: Path, payloads: dict[str, bytes]) -> None:
+def seal(directory: Path, payloads: dict[str, bytes]) -> str:
     directory.mkdir()
     for name, payload in payloads.items():
         member = directory / name
         member.write_bytes(payload)
         member.chmod(0o444)
     directory.chmod(0o555)
+    return staged_package_identity(payloads)
 
 
 def formal_computation() -> FormalComputation:
@@ -225,8 +229,11 @@ def test_staged_reconstruction_preserves_regular_input_daily_and_formal_bytes(tm
         "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
     )
     input_dir = tmp_path / "input"
-    seal(input_dir, ProductionJobs.input_payloads(production_input))
-    assert ProductionJobs.read_input(input_dir) == production_input
+    input_identity = seal(input_dir, ProductionJobs.input_payloads(production_input))
+    assert (
+        ProductionJobs.read_input(input_dir, expected_package_identity=input_identity)
+        == production_input
+    )
 
     daily = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
         (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
@@ -234,13 +241,95 @@ def test_staged_reconstruction_preserves_regular_input_daily_and_formal_bytes(tm
         SCHEDULED,
     )
     daily_dir = tmp_path / "daily"
-    seal(daily_dir, ProductionJobs.computation_payloads(daily))
-    assert ProductionJobs.read_computation(daily_dir) == daily
+    daily_identity = seal(daily_dir, ProductionJobs.computation_payloads(daily))
+    assert (
+        ProductionJobs.read_computation(daily_dir, expected_package_identity=daily_identity)
+        == daily
+    )
 
     formal = formal_computation()
     formal_dir = tmp_path / "formal"
-    seal(formal_dir, ProductionJobs.computation_payloads(formal))
-    assert ProductionJobs.read_computation(formal_dir) == formal
+    formal_identity = seal(formal_dir, ProductionJobs.computation_payloads(formal))
+    assert (
+        ProductionJobs.read_computation(formal_dir, expected_package_identity=formal_identity)
+        == formal
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "member"),
+    [
+        ("input", "raw.bin"),
+        ("daily", "action.json"),
+        ("daily", "notification.txt"),
+        ("daily", "normalized.json"),
+        ("daily", "raw.bin"),
+        ("daily", "report.html"),
+        ("formal", "03-CALIBRATION_CLAIMED.json"),
+        ("formal", "04-CALIBRATION_SEALED.json"),
+        ("formal", "calibration.json"),
+    ],
+)
+def test_actual_producer_external_identity_rejects_post_seal_mutation_and_reseal(
+    tmp_path, stage: str, member: str
+) -> None:
+    target = tmp_path / "work" / "run" / stage
+    if stage == "input":
+        payloads = ProductionJobs.input_payloads(
+            ProductionInput(
+                "provider-get", {"method": "GET", "provider_url": "fixture://old"}, b"old"
+            )
+        )
+        read = ProductionJobs.read_input
+    elif stage == "daily":
+        computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        )
+        payloads = ProductionJobs.computation_payloads(computation)
+        read = ProductionJobs.read_computation
+    else:
+        payloads = ProductionJobs.computation_payloads(formal_computation())
+        read = ProductionJobs.read_computation
+
+    worker = object.__new__(ProductionWorker)
+    worker.work_root = tmp_path / "work"
+    package_identity = worker._write_generation(target, payloads)
+    identity_bytes = (target / "identity.json").read_bytes()
+    external_identity_path = worker._generation_identity_path(target)
+    external_identity_bytes = external_identity_path.read_bytes()
+
+    member_path = target / member
+    old_payload = member_path.read_bytes()
+    if member == "action.json":
+        changed_action = json.loads(old_payload)
+        assert changed_action["action"] == "WAIT"
+        changed_action["action"] = "HOLD"
+        new_payload = canonical_json_bytes(changed_action)
+    else:
+        new_payload = bytes([old_payload[0] ^ 1]) + old_payload[1:]
+    assert len(new_payload) == len(old_payload)
+    assert new_payload != old_payload
+
+    target.chmod(0o755)
+    member_path.chmod(0o644)
+    member_path.write_bytes(new_payload)
+    member_path.chmod(0o444)
+    target.chmod(0o555)
+
+    assert (target / "identity.json").read_bytes() == identity_bytes
+    assert external_identity_path.read_bytes() == external_identity_bytes
+    assert worker._read_generation_identity(target) == package_identity
+    changed_payloads = dict(payloads)
+    changed_payloads[member] = new_payload
+    assert worker._write_generation(target, changed_payloads) == package_identity
+    with pytest.raises(ProductionJobError, match="package identity mismatch"):
+        read(target, expected_package_identity=package_identity)
+    target.chmod(0o700)
+    shutil.rmtree(target)
+    with pytest.raises(ProductionJobError, match="conflicts with generation"):
+        worker._write_generation(target, changed_payloads)
 
 
 @pytest.mark.parametrize(
@@ -279,7 +368,7 @@ def test_staged_reconstruction_rejects_member_mutated_before_its_first_open(
     else:
         payloads = ProductionJobs.computation_payloads(formal_computation())
         read = ProductionJobs.read_computation
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
     original_open = os.open
     identity_opened = False
     mutated = False
@@ -301,7 +390,7 @@ def test_staged_reconstruction_rejects_member_mutated_before_its_first_open(
 
     monkeypatch.setattr(production_jobs.os, "open", mutate_member_before_open)
     with pytest.raises(ProductionJobError, match="changed during read"):
-        read(target)
+        read(target, expected_package_identity=package_identity)
     assert identity_opened is True
     assert mutated is True
 
@@ -342,7 +431,7 @@ def test_staged_reconstruction_rejects_member_mutated_during_baseline_acquisitio
     else:
         payloads = ProductionJobs.computation_payloads(formal_computation())
         read = ProductionJobs.read_computation
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
     original_stat = os.stat
     identity_baselined = False
     mutated = False
@@ -374,7 +463,7 @@ def test_staged_reconstruction_rejects_member_mutated_during_baseline_acquisitio
 
     monkeypatch.setattr(production_jobs.os, "stat", mutate_member_before_baseline)
     with pytest.raises(ProductionJobError, match="changed during read"):
-        read(target)
+        read(target, expected_package_identity=package_identity)
     assert identity_baselined is True
     assert mutated is True
 
@@ -390,7 +479,7 @@ def test_staged_reconstruction_rejects_symlinked_members(tmp_path, stage) -> Non
                 "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
             )
         )
-        seal(target, payloads)
+        package_identity = seal(target, payloads)
         target.chmod(0o755)
         (target / "raw.bin").unlink()
         (target / "raw.bin").symlink_to(outside)
@@ -398,7 +487,7 @@ def test_staged_reconstruction_rejects_symlinked_members(tmp_path, stage) -> Non
         read = ProductionJobs.read_input
     else:
         payloads = ProductionJobs.computation_payloads(formal_computation())
-        seal(target, payloads)
+        package_identity = seal(target, payloads)
         target.chmod(0o755)
         for name in formal_computation().files:
             (target / name).unlink()
@@ -407,7 +496,7 @@ def test_staged_reconstruction_rejects_symlinked_members(tmp_path, stage) -> Non
         read = ProductionJobs.read_computation
 
     with pytest.raises(ProductionJobError, match="unsafe"):
-        read(target)
+        read(target, expected_package_identity=package_identity)
 
 
 def test_staged_reconstruction_rejects_unsafe_formal_name_before_lookup(tmp_path) -> None:
@@ -416,10 +505,12 @@ def test_staged_reconstruction_rejects_unsafe_formal_name_before_lookup(tmp_path
     identity = json.loads(payloads["identity.json"])
     identity["files"] = ["../outside", *identity["files"][1:]]
     payloads["identity.json"] = canonical_json_bytes(identity)
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
 
     with pytest.raises(ProductionJobError, match="member set"):
-        ProductionJobs.read_computation(target)
+        ProductionJobs.read_computation(
+            target, expected_package_identity=package_identity
+        )
 
 
 def test_staged_reconstruction_rejects_hard_link_alias(tmp_path) -> None:
@@ -439,7 +530,12 @@ def test_staged_reconstruction_rejects_hard_link_alias(tmp_path) -> None:
     target.chmod(0o555)
 
     with pytest.raises(ProductionJobError, match="unsafe"):
-        ProductionJobs.read_input(target)
+        ProductionJobs.read_input(
+            target,
+            expected_package_identity=staged_package_identity(
+                {"identity.json": identity, "raw.bin": b"raw"}
+            ),
+        )
 
 
 @pytest.mark.parametrize("member_kind", ["fifo", "writable"])
@@ -452,7 +548,7 @@ def test_staged_reconstruction_rejects_non_regular_or_writable_member(
             "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
         )
     )
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
     target.chmod(0o755)
     raw = target / "raw.bin"
     if member_kind == "fifo":
@@ -463,7 +559,7 @@ def test_staged_reconstruction_rejects_non_regular_or_writable_member(
     target.chmod(0o555)
 
     with pytest.raises(ProductionJobError, match="unsafe"):
-        ProductionJobs.read_input(target)
+        ProductionJobs.read_input(target, expected_package_identity=package_identity)
 
 
 def test_staged_reconstruction_rejects_bytes_mutated_between_reads(
@@ -475,7 +571,7 @@ def test_staged_reconstruction_rejects_bytes_mutated_between_reads(
             "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
         )
     )
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
     raw = target / "raw.bin"
     raw_inode = raw.stat().st_ino
     original_read = os.read
@@ -493,7 +589,7 @@ def test_staged_reconstruction_rejects_bytes_mutated_between_reads(
 
     monkeypatch.setattr(production_jobs.os, "read", mutate_after_first_read)
     with pytest.raises(ProductionJobError, match="changed during read"):
-        ProductionJobs.read_input(target)
+        ProductionJobs.read_input(target, expected_package_identity=package_identity)
     assert mutated is True
 
 
@@ -506,7 +602,7 @@ def test_staged_input_rejects_identity_mutated_while_raw_is_read(
             "provider-get", {"method": "GET", "provider_url": "fixture://input"}, b"raw"
         )
     )
-    seal(target, payloads)
+    package_identity = seal(target, payloads)
     identity = target / "identity.json"
     raw_inode = (target / "raw.bin").stat().st_ino
     original_read = os.read
@@ -532,7 +628,7 @@ def test_staged_input_rejects_identity_mutated_while_raw_is_read(
 
     monkeypatch.setattr(production_jobs.os, "read", mutate_identity_when_raw_is_read)
     with pytest.raises(ProductionJobError, match="changed during read"):
-        ProductionJobs.read_input(target)
+        ProductionJobs.read_input(target, expected_package_identity=package_identity)
     assert mutated is True
 
 
@@ -540,7 +636,9 @@ def test_staged_computation_rejects_member_mutated_while_another_is_read(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "formal"
-    seal(target, ProductionJobs.computation_payloads(formal_computation()))
+    package_identity = seal(
+        target, ProductionJobs.computation_payloads(formal_computation())
+    )
     claimed = target / "03-CALIBRATION_CLAIMED.json"
     sealed_inode = (target / "04-CALIBRATION_SEALED.json").stat().st_ino
     original_read = os.read
@@ -558,5 +656,7 @@ def test_staged_computation_rejects_member_mutated_while_another_is_read(
 
     monkeypatch.setattr(production_jobs.os, "read", mutate_claimed_when_sealed_is_read)
     with pytest.raises(ProductionJobError, match="changed during read"):
-        ProductionJobs.read_computation(target)
+        ProductionJobs.read_computation(
+            target, expected_package_identity=package_identity
+        )
     assert mutated is True
