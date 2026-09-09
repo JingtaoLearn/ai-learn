@@ -121,6 +121,11 @@ class ProductionResultStore:
         self.root = Path(root).absolute()
         self.results_root = self.root / "results"
         self.publication_root = self.root / "publication"
+        self._postgres = None
+        if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+            from .full_persistence import FullPostgresPersistence
+
+            self._postgres = FullPostgresPersistence.from_environment()
 
     def _prepare(self) -> None:
         self.results_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -201,6 +206,11 @@ class ProductionResultStore:
         }
 
     def verify(self, result_id: str) -> dict[str, Any]:
+        if self._postgres is not None:
+            try:
+                return self._postgres.production_result(result_id)["manifest"]
+            except (ValueError, RuntimeError) as exc:
+                raise ProductionResultError(str(exc)) from exc
         if not isinstance(result_id, str) or SHA256.fullmatch(result_id) is None:
             raise ProductionResultError("result_id must be lowercase SHA-256")
         target = self.results_root / result_id
@@ -253,6 +263,15 @@ class ProductionResultStore:
     def read_client_file(self, result_id: str, name: str) -> bytes:
         if name not in CLIENT_RESULT_FILES:
             raise ProductionResultError("result member is not available to the client")
+        if self._postgres is not None:
+            try:
+                result = self._postgres.production_result(result_id)
+            except (ValueError, RuntimeError) as exc:
+                raise ProductionResultError(str(exc)) from exc
+            manifest = result["manifest"]
+            if name not in manifest["files"]:
+                raise ProductionResultError("result member is not available for this result class")
+            return result["members"][name]
         manifest = self.verify(result_id)
         if name not in manifest["files"]:
             raise ProductionResultError("result member is not available for this result class")
@@ -312,13 +331,15 @@ class ProductionResultStore:
     def publish(
         self, row: Mapping[str, Any], computation: JobComputation | FormalComputation
     ) -> dict[str, Any]:
-        self._prepare()
         payloads = self._artifact_payloads(computation)
         if any(len(payload) > MAX_RESULT_MEMBER_BYTES for payload in payloads.values()):
             raise ProductionResultError("result member exceeds the size limit")
         core = self._manifest_core(row, computation, payloads)
         result_id = hashlib.sha256(canonical_json_bytes(core)).hexdigest()
         manifest = core | {"result_id": result_id}
+        if self._postgres is not None:
+            return self._postgres.publish_production_result(manifest, payloads)
+        self._prepare()
         target = self.results_root / result_id
         if not target.exists():
             staging = Path(tempfile.mkdtemp(prefix=f".{result_id}.", dir=self.results_root))

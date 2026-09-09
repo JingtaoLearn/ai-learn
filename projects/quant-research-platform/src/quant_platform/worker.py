@@ -24,7 +24,7 @@ class SerialAttemptWorker:
         self,
         service: ExperimentService,
         *,
-        executor: Callable[[dict[str, Any]], dict[str, str]],
+        executor: Callable[[dict[str, Any]], dict[str, Any]],
     ):
         self.service = service
         self.executor = executor
@@ -40,6 +40,7 @@ class SerialAttemptWorker:
                 result_path=result["result_path"],
                 result_digest=result["result_digest"],
                 logs=result.get("logs", ""),
+                postgres_publication=result.get("_postgres_publication"),
             )
         except Exception as exc:
             logs = f"{type(exc).__name__}: {exc}"
