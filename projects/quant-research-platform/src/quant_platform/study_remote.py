@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -23,13 +24,14 @@ from urllib.parse import urlsplit
 
 PROTOCOL = "quantresearch-study-worker/v1"
 JOB_TYPE = "deterministic-synthetic-search-v1"
-SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v1"
+SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v2"
 MAX_BODY_BYTES = 16_384
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_ITERATIONS = 100_000_000
 MAX_CHECKPOINTS = 20
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED"})
 
@@ -644,7 +646,9 @@ CREATE TABLE IF NOT EXISTS qr_study.schema_identity (
     installed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 INSERT INTO qr_study.schema_identity(singleton, identity)
-VALUES (true, '{SCHEMA_IDENTITY}') ON CONFLICT (singleton) DO NOTHING;
+VALUES (true, '{SCHEMA_IDENTITY}')
+ON CONFLICT (singleton) DO UPDATE SET identity=EXCLUDED.identity
+WHERE qr_study.schema_identity.identity='quantresearch-lightweight-study-postgresql-v1';
 CREATE TABLE IF NOT EXISTS qr_study.jobs (
     study_id text PRIMARY KEY CHECK (study_id ~ '^[0-9a-f]{{64}}$'),
     request_digest text NOT NULL CHECK (request_digest ~ '^[0-9a-f]{{64}}$'),
@@ -655,16 +659,32 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
     source_tree text NOT NULL CHECK (source_tree ~ '^[0-9a-f]{{40}}$'),
     status text NOT NULL CHECK (status IN ('ACCEPTED','DISPATCHED','RUNNING','SUCCEEDED','FAILED')),
     acceptance_ambiguous boolean NOT NULL DEFAULT false,
+    dispatch_claim_id text CHECK (dispatch_claim_id ~ '^[0-9a-f]{{32}}$'),
+    dispatch_claim_expires_at timestamptz,
     latest_progress jsonb,
     final_result jsonb,
     failure jsonb,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((dispatch_claim_id IS NULL) = (dispatch_claim_expires_at IS NULL)),
     CHECK ((status = 'SUCCEEDED') = (final_result IS NOT NULL)),
     CHECK ((status = 'FAILED') = (failure IS NOT NULL))
 );
 ALTER TABLE qr_study.jobs
     ADD COLUMN IF NOT EXISTS acceptance_ambiguous boolean NOT NULL DEFAULT false;
+ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_id text;
+ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_expires_at timestamptz;
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='valid_study_dispatch_claim'
+          AND conrelid='qr_study.jobs'::regclass
+    ) THEN
+        ALTER TABLE qr_study.jobs ADD CONSTRAINT valid_study_dispatch_claim CHECK (
+            (dispatch_claim_id IS NULL AND dispatch_claim_expires_at IS NULL) OR
+            (dispatch_claim_id ~ '^[0-9a-f]{{32}}$' AND dispatch_claim_expires_at IS NOT NULL)
+        );
+    END IF;
+END $$;
 CREATE OR REPLACE FUNCTION qr_study.reject_terminal_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'terminal Study rows are immutable'; END $$;
 DROP TRIGGER IF EXISTS immutable_terminal_study_update ON qr_study.jobs;
@@ -816,32 +836,85 @@ class StudyPostgresStore:
             ).fetchone()
             return None if row is None else self._normalized(row)
 
-    def mark_dispatched(self, study_id: str, remote: Mapping[str, Any]) -> dict[str, Any]:
-        return self._record_remote(study_id, remote, dispatch=True)
+    def mark_dispatched(
+        self, study_id: str, remote: Mapping[str, Any], dispatch_claim_id: str
+    ) -> dict[str, Any]:
+        self._validate_dispatch_claim(dispatch_claim_id)
+        return self._record_remote(
+            study_id, remote, dispatch=True, dispatch_claim_id=dispatch_claim_id
+        )
 
     def observe(self, study_id: str, remote: Mapping[str, Any]) -> dict[str, Any]:
         return self._record_remote(study_id, remote, dispatch=False)
 
-    def mark_acceptance_ambiguous(self, study_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _validate_dispatch_claim(dispatch_claim_id: str) -> None:
+        if HEX_32.fullmatch(dispatch_claim_id) is None:
+            raise StudyValidationError("dispatch claim identity is invalid")
+
+    def begin_dispatch(
+        self, study_id: str, dispatch_claim_id: str, *, lease_seconds: int
+    ) -> tuple[dict[str, Any], bool]:
+        self._validate_dispatch_claim(dispatch_claim_id)
+        if type(lease_seconds) is not int or not 1 <= lease_seconds <= 300:
+            raise StudyValidationError("dispatch claim lease must be between 1 and 300 seconds")
         with self.config.connect() as connection:
             current = connection.execute(
                 "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE", (study_id,)
             ).fetchone()
             if current is None:
                 raise StudyRemoteError("authoritative Study row disappeared")
-            if current["status"] in TERMINAL_STATES or current["acceptance_ambiguous"]:
+            if current["status"] in TERMINAL_STATES:
+                return self._normalized(current), False
+            row = connection.execute(
+                """
+                UPDATE qr_study.jobs SET dispatch_claim_id=%s,
+                    dispatch_claim_expires_at=clock_timestamp() + (%s * interval '1 second'),
+                    updated_at=clock_timestamp()
+                WHERE study_id=%s AND (
+                    dispatch_claim_id IS NULL OR dispatch_claim_id=%s OR
+                    dispatch_claim_expires_at <= clock_timestamp()
+                ) RETURNING *
+                """,
+                (dispatch_claim_id, lease_seconds, study_id, dispatch_claim_id),
+            ).fetchone()
+            if row is None:
+                return self._normalized(current), False
+            return self._normalized(row), True
+
+    def mark_acceptance_ambiguous(
+        self, study_id: str, dispatch_claim_id: str
+    ) -> dict[str, Any]:
+        self._validate_dispatch_claim(dispatch_claim_id)
+        with self.config.connect() as connection:
+            current = connection.execute(
+                "SELECT * FROM qr_study.jobs WHERE study_id=%s FOR UPDATE", (study_id,)
+            ).fetchone()
+            if current is None:
+                raise StudyRemoteError("authoritative Study row disappeared")
+            if current["status"] in TERMINAL_STATES:
                 return self._normalized(current)
             row = connection.execute(
                 """
-                UPDATE qr_study.jobs SET acceptance_ambiguous=true,
+                UPDATE qr_study.jobs SET
+                    acceptance_ambiguous=(acceptance_ambiguous OR status='ACCEPTED'),
+                    dispatch_claim_id=CASE WHEN dispatch_claim_id=%s THEN NULL
+                                           ELSE dispatch_claim_id END,
+                    dispatch_claim_expires_at=CASE WHEN dispatch_claim_id=%s THEN NULL
+                                                   ELSE dispatch_claim_expires_at END,
                     updated_at=clock_timestamp() WHERE study_id=%s RETURNING *
                 """,
-                (study_id,),
+                (dispatch_claim_id, dispatch_claim_id, study_id),
             ).fetchone()
             return self._normalized(row)
 
     def _record_remote(
-        self, study_id: str, remote: Mapping[str, Any], *, dispatch: bool
+        self,
+        study_id: str,
+        remote: Mapping[str, Any],
+        *,
+        dispatch: bool,
+        dispatch_claim_id: str | None = None,
     ) -> dict[str, Any]:
         status = remote.get("status")
         if status not in {"ACCEPTED", "RUNNING", "SUCCEEDED", "FAILED"}:
@@ -865,7 +938,12 @@ class StudyPostgresStore:
             row = connection.execute(
                 """
                 UPDATE qr_study.jobs SET status=%s, latest_progress=%s,
-                    final_result=%s, failure=%s, updated_at=clock_timestamp()
+                    final_result=%s, failure=%s, acceptance_ambiguous=false,
+                    dispatch_claim_id=CASE WHEN dispatch_claim_id=%s THEN NULL
+                                           ELSE dispatch_claim_id END,
+                    dispatch_claim_expires_at=CASE WHEN dispatch_claim_id=%s THEN NULL
+                                                   ELSE dispatch_claim_expires_at END,
+                    updated_at=clock_timestamp()
                 WHERE study_id=%s RETURNING *
                 """,
                 (
@@ -873,12 +951,17 @@ class StudyPostgresStore:
                     _jsonb(progress) if progress is not None else None,
                     _jsonb(result) if result is not None else None,
                     _jsonb(failure) if failure is not None else None,
+                    dispatch_claim_id,
+                    dispatch_claim_id,
                     study_id,
                 ),
             ).fetchone()
             return self._normalized(row)
 
-    def fail_unavailable(self, study_id: str, message: str) -> dict[str, Any]:
+    def fail_unavailable(
+        self, study_id: str, dispatch_claim_id: str, message: str
+    ) -> dict[str, Any]:
+        self._validate_dispatch_claim(dispatch_claim_id)
         failure = {
             "code": "FENG_UNAVAILABLE",
             "message": message,
@@ -892,14 +975,26 @@ class StudyPostgresStore:
                 raise StudyRemoteError("authoritative Study row disappeared")
             if current["status"] in TERMINAL_STATES:
                 return self._normalized(current)
-            if current["acceptance_ambiguous"]:
+            if current["dispatch_claim_id"] != dispatch_claim_id:
                 return self._normalized(current)
+            if current["acceptance_ambiguous"] or current["status"] != "ACCEPTED":
+                row = connection.execute(
+                    """
+                    UPDATE qr_study.jobs SET dispatch_claim_id=NULL,
+                        dispatch_claim_expires_at=NULL, updated_at=clock_timestamp()
+                    WHERE study_id=%s AND dispatch_claim_id=%s RETURNING *
+                    """,
+                    (study_id, dispatch_claim_id),
+                ).fetchone()
+                return self._normalized(row)
             row = connection.execute(
                 """
                 UPDATE qr_study.jobs SET status='FAILED', failure=%s,
-                    updated_at=clock_timestamp() WHERE study_id=%s RETURNING *
+                    dispatch_claim_id=NULL, dispatch_claim_expires_at=NULL,
+                    updated_at=clock_timestamp()
+                WHERE study_id=%s AND dispatch_claim_id=%s RETURNING *
                 """,
-                (_jsonb(failure), study_id),
+                (_jsonb(failure), study_id, dispatch_claim_id),
             ).fetchone()
             return self._normalized(row)
 
@@ -932,34 +1027,37 @@ class StudyPostgresStore:
 
 
 class StudyDispatcher:
+    DISPATCH_LEASE_SECONDS: int = 30
+
     def __init__(self, store: StudyPostgresStore, client: SignedStudyClient):
         self.store = store
         self.client = client
 
     def submit(self, request: Mapping[str, Any]) -> dict[str, Any]:
         frozen = validate_request(request)
-        _, created = self.store.admit(frozen, self.client.endpoint)
-        if not created:
-            self.store.mark_acceptance_ambiguous(frozen["job_id"])
+        self.store.admit(frozen, self.client.endpoint)
+        dispatch_claim_id = secrets.token_hex(16)
+        authoritative, acquired = self.store.begin_dispatch(
+            frozen["job_id"], dispatch_claim_id, lease_seconds=self.DISPATCH_LEASE_SECONDS
+        )
+        if not acquired:
+            return {
+                "authoritative": authoritative,
+                "remote": None,
+                "idempotent_replay": False,
+                "dispatch_elapsed_ms": None,
+                "local_compute_attempted": False,
+            }
         try:
             response = self.client.submit(frozen)
-            return self._record_submit_response(frozen["job_id"], response)
+            return self._record_submit_response(frozen["job_id"], dispatch_claim_id, response)
         except StudyTransportError as exc:
             if exc.acceptance_ambiguous:
-                return self._reconcile_ambiguous_submit(frozen, exc)
-            if not created:
-                authoritative = self.store.get(frozen["job_id"])
-                if authoritative is None:
-                    raise StudyRemoteError("authoritative Study row disappeared") from exc
-                return {
-                    "authoritative": authoritative,
-                    "remote": None,
-                    "idempotent_replay": False,
-                    "dispatch_elapsed_ms": None,
-                    "local_compute_attempted": False,
-                }
+                return self._reconcile_ambiguous_submit(frozen, dispatch_claim_id, exc)
             return {
-                "authoritative": self.store.fail_unavailable(frozen["job_id"], str(exc)),
+                "authoritative": self.store.fail_unavailable(
+                    frozen["job_id"], dispatch_claim_id, str(exc)
+                ),
                 "remote": None,
                 "idempotent_replay": False,
                 "dispatch_elapsed_ms": None,
@@ -967,13 +1065,13 @@ class StudyDispatcher:
             }
 
     def _record_submit_response(
-        self, study_id: str, response: RemoteResponse
+        self, study_id: str, dispatch_claim_id: str, response: RemoteResponse
     ) -> dict[str, Any]:
         remote = response.value.get("job")
         if not isinstance(remote, dict) or remote.get("job_id") != study_id:
             raise StudyTransportError("Feng worker returned the wrong job identity")
         return {
-            "authoritative": self.store.mark_dispatched(study_id, remote),
+            "authoritative": self.store.mark_dispatched(study_id, remote, dispatch_claim_id),
             "remote": remote,
             "idempotent_replay": response.value.get("idempotent_replay") is True,
             "dispatch_elapsed_ms": response.elapsed_ms,
@@ -981,17 +1079,22 @@ class StudyDispatcher:
         }
 
     def _reconcile_ambiguous_submit(
-        self, request: Mapping[str, Any], initial_error: StudyTransportError
+        self,
+        request: Mapping[str, Any],
+        dispatch_claim_id: str,
+        initial_error: StudyTransportError,
     ) -> dict[str, Any]:
         study_id = str(request["job_id"])
-        self.store.mark_acceptance_ambiguous(study_id)
+        self.store.mark_acceptance_ambiguous(study_id, dispatch_claim_id)
         try:
             response = self.client.read(study_id)
             remote = response.value.get("job")
             if not isinstance(remote, dict) or remote.get("job_id") != study_id:
                 raise StudyTransportError("Feng worker returned the wrong job identity")
             return {
-                "authoritative": self.store.mark_dispatched(study_id, remote),
+                "authoritative": self.store.mark_dispatched(
+                    study_id, remote, dispatch_claim_id
+                ),
                 "remote": remote,
                 "idempotent_replay": False,
                 "dispatch_elapsed_ms": None,
@@ -1001,7 +1104,9 @@ class StudyDispatcher:
             pass
 
         try:
-            return self._record_submit_response(study_id, self.client.submit(request))
+            return self._record_submit_response(
+                study_id, dispatch_claim_id, self.client.submit(request)
+            )
         except StudyTransportError:
             authoritative = self.store.get(study_id)
             if authoritative is None:

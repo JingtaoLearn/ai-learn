@@ -37,6 +37,8 @@ class _AuthoritativeStore(StudyPostgresStore):
                 "worker_endpoint": endpoint,
                 "status": "ACCEPTED",
                 "acceptance_ambiguous": False,
+                "dispatch_claim_id": None,
+                "dispatch_claim_expires_at": None,
                 "latest_progress": None,
                 "final_result": None,
                 "failure": None,
@@ -45,30 +47,47 @@ class _AuthoritativeStore(StudyPostgresStore):
             return dict(row), True
         return dict(row), False
 
-    def mark_dispatched(self, study_id, remote):
-        return self._record_remote(study_id, remote, dispatch=True)
+    def begin_dispatch(self, study_id, dispatch_claim_id, *, lease_seconds):
+        row = self.rows[study_id]
+        if row["status"] in {"SUCCEEDED", "FAILED"}:
+            return dict(row), False
+        row["dispatch_claim_id"] = dispatch_claim_id
+        row["dispatch_claim_expires_at"] = lease_seconds
+        return dict(row), True
+
+    def mark_dispatched(self, study_id, remote, dispatch_claim_id):
+        return self._record_remote(
+            study_id, remote, dispatch=True, dispatch_claim_id=dispatch_claim_id
+        )
 
     def observe(self, study_id, remote):
         return self._record_remote(study_id, remote, dispatch=False)
 
-    def mark_acceptance_ambiguous(self, study_id):
+    def mark_acceptance_ambiguous(self, study_id, dispatch_claim_id):
         row = self.rows[study_id]
         row["acceptance_ambiguous"] = True
+        if row["dispatch_claim_id"] == dispatch_claim_id:
+            row["dispatch_claim_id"] = None
+            row["dispatch_claim_expires_at"] = None
         return dict(row)
 
-    def _record_remote(self, study_id, remote, *, dispatch):
+    def _record_remote(self, study_id, remote, *, dispatch, dispatch_claim_id=None):
         row = self.rows[study_id]
         status = remote["status"]
         row["status"] = "DISPATCHED" if dispatch and status == "ACCEPTED" else status
         row["latest_progress"] = remote.get("progress")
         row["final_result"] = remote.get("result") if status == "SUCCEEDED" else None
         row["failure"] = remote.get("failure") if status == "FAILED" else None
+        row["acceptance_ambiguous"] = False
+        if row["dispatch_claim_id"] == dispatch_claim_id:
+            row["dispatch_claim_id"] = None
+            row["dispatch_claim_expires_at"] = None
         return dict(row)
 
-    def fail_unavailable(self, study_id, message):
+    def fail_unavailable(self, study_id, dispatch_claim_id, message):
         self.fail_unavailable_calls += 1
         row = self.rows[study_id]
-        if row["acceptance_ambiguous"]:
+        if row["dispatch_claim_id"] != dispatch_claim_id or row["acceptance_ambiguous"]:
             return dict(row)
         row["status"] = "FAILED"
         row["failure"] = {
@@ -76,6 +95,8 @@ class _AuthoritativeStore(StudyPostgresStore):
             "message": message,
             "local_compute_attempted": False,
         }
+        row["dispatch_claim_id"] = None
+        row["dispatch_claim_expires_at"] = None
         return dict(row)
 
     def get(self, study_id):
@@ -357,7 +378,7 @@ def test_prior_acceptance_ambiguity_survives_later_connection_refusal(tmp_path: 
     assert converged["authoritative"]["status"] == "SUCCEEDED"
     assert converged["authoritative"]["final_result"] == remote_before_retry["result"]
     assert converged["local_compute_attempted"] is False
-    assert authoritative_store.fail_unavailable_calls == 0
+    assert authoritative_store.fail_unavailable_calls == 1
     assert len(authoritative_store.rows) == 1
     assert client.submit_calls == 3
     assert [path.name for path in state_root.iterdir()] == [f"{request['job_id']}.json"]
