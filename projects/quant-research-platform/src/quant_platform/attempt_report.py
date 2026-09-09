@@ -1795,6 +1795,32 @@ def validate_latest_pointer_transition(
         raise AttemptReportError("latest pointer publication transition is invalid")
 
 
+def build_latest_pointer(
+    manifest: Mapping[str, Any], *, prior: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Build and validate the next canonical report pointer for any persistence adapter."""
+
+    checked = validate_report_manifest(manifest)
+    checked_prior = _validate_pointer_record(prior) if prior is not None else None
+    core = {
+        "schema_id": LATEST_POINTER_SCHEMA_ID,
+        "schema_version": 1,
+        "attempt_id": checked["attempt_id"],
+        "report_artifact_id": checked["report_artifact_id"],
+        "report_manifest_sha256": _sha256(_canonical_file(checked)),
+        "report_document_sha256": checked["report_document_sha256"],
+        "operator_content_digest": checked["operator_content_digest"],
+        "sequence": 1 if checked_prior is None else checked_prior["sequence"] + 1,
+        "previous_pointer_id": None if checked_prior is None else checked_prior["pointer_id"],
+    }
+    pointer = _validate_pointer_record(
+        core | {"pointer_id": _identity(DOMAIN_POINTER, core)}
+    )
+    if checked_prior is not None:
+        validate_latest_pointer_transition(checked_prior, pointer)
+    return pointer
+
+
 def read_latest_report(
     state_root: Path | str,
     attempt_id: str,
@@ -1907,21 +1933,7 @@ def publish_report_artifact(
                 attempt_id,
                 attachment_registry=attachment_registry,
             )["pointer"]
-        core = {
-            "schema_id": LATEST_POINTER_SCHEMA_ID,
-            "schema_version": 1,
-            "attempt_id": attempt_id,
-            "report_artifact_id": artifact_id,
-            "report_manifest_sha256": _sha256(_canonical_file(artifact["manifest"])),
-            "report_document_sha256": artifact["manifest"]["report_document_sha256"],
-            "operator_content_digest": artifact["manifest"]["operator_content_digest"],
-            "sequence": 1 if prior is None else prior["sequence"] + 1,
-            "previous_pointer_id": None if prior is None else prior["pointer_id"],
-        }
-        pointer = core | {"pointer_id": _identity(DOMAIN_POINTER, core)}
-        _validate_pointer_record(pointer)
-        if prior is not None:
-            validate_latest_pointer_transition(prior, pointer)
+        pointer = build_latest_pointer(artifact["manifest"], prior=prior)
         descriptor_fd, temporary_name = tempfile.mkstemp(prefix=".latest-", dir=attempt_root)
         temporary = Path(temporary_name)
         try:
@@ -1948,8 +1960,7 @@ def publish_report_artifact(
     return {"artifact_id": artifact_id, "pointer_id": pointer["pointer_id"], "sequence": pointer["sequence"]}
 
 
-def publish_attempt_report(
-    state_root: Path | str,
+def prepare_attempt_report(
     run_dir: Path | str,
     audit_path: Path | str,
     operator: Mapping[str, Any],
@@ -1981,11 +1992,58 @@ def publish_attempt_report(
         operator.get("effective_parameters", {}),
         attachment_registry=registry,
     )
+    document_bytes = _canonical_file(document)
+    manifest = _build_report_manifest(
+        descriptor["attempt_id"],
+        descriptor["bundle_id"],
+        _field_map(document)["operator_content_digest"]["raw"],
+        document_bytes,
+        report_html,
+        document["document_id"],
+    )
+    return {
+        "descriptor": descriptor,
+        "evidence": payloads,
+        "audit": audit,
+        "attachment_registry": registry,
+        "report": {
+            "manifest": manifest,
+            "document": document,
+            "html": report_html,
+        },
+    }
+
+
+def publish_attempt_report(
+    state_root: Path | str,
+    run_dir: Path | str,
+    audit_path: Path | str,
+    operator: Mapping[str, Any],
+    *,
+    total_return_attachment: Mapping[str, Any] | None = None,
+    matched_exposure_attachment: Mapping[str, Any] | None = None,
+    study_terminal_attachment: Mapping[str, Any] | None = None,
+    attachment_registry: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    prepared = prepare_attempt_report(
+        run_dir,
+        audit_path,
+        operator,
+        total_return_attachment=total_return_attachment,
+        matched_exposure_attachment=matched_exposure_attachment,
+        study_terminal_attachment=study_terminal_attachment,
+        attachment_registry=attachment_registry,
+    )
+    report = prepared["report"]
     result = publish_report_artifact(
         state_root,
-        descriptor,
-        document,
-        report_html,
-        attachment_registry=registry,
+        prepared["descriptor"],
+        report["document"],
+        report["html"],
+        attachment_registry=prepared["attachment_registry"],
     )
-    return {**result, "bundle_id": descriptor["bundle_id"], "document_id": document["document_id"]}
+    return {
+        **result,
+        "bundle_id": prepared["descriptor"]["bundle_id"],
+        "document_id": report["document"]["document_id"],
+    }

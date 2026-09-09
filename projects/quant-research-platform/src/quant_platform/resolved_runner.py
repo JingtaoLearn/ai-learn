@@ -5,10 +5,15 @@ import json
 import os
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
-from .attempt_report import REPORT_OPERATOR_ID, publish_attempt_report
+from .attempt_report import (
+    REPORT_OPERATOR_ID,
+    prepare_attempt_report,
+    publish_attempt_report,
+)
 from .catalog import Catalog
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService
@@ -185,13 +190,26 @@ class ResolvedAttemptExecutor:
                     f"resolved operator digest mismatch for {operator['operator_id']}"
                 )
 
-    def _verify_study_dataset_for_launch(self, resolved: dict[str, Any]) -> None:
+    @contextmanager
+    def _execution_state(self, resolved: dict[str, Any]) -> Iterator[Path]:
+        if self.catalog._postgres is None:
+            yield self.catalog.state_root
+            return
+        dataset = resolved["dataset"]
+        with self.catalog._postgres.materialize_dataset_snapshot(
+            dataset["instrument"], dataset["snapshot_id"]
+        ) as snapshot:
+            yield snapshot.parents[2]
+
+    def _verify_study_dataset_for_launch(
+        self, resolved: dict[str, Any], *, state_root: Path | None = None
+    ) -> None:
         dataset = resolved["dataset"]
         lineage = dataset.get("lineage")
         if not isinstance(lineage, dict) or lineage.get("kind") != "derived_view":
             return
         dataset_path = (
-            self.catalog.state_root
+            (state_root or self.catalog.state_root)
             / "datasets"
             / dataset["instrument"]
             / dataset["snapshot_id"]
@@ -275,6 +293,14 @@ class ResolvedAttemptExecutor:
         report = attempt["resolved"]["operators"]["report"]
         if report["operator_id"] != REPORT_OPERATOR_ID:
             return None
+        if self.catalog._postgres is not None:
+            prepared = prepare_attempt_report(run_path, audit_path, report)
+            return {
+                "artifact_id": prepared["report"]["manifest"]["report_artifact_id"],
+                "bundle_id": prepared["descriptor"]["bundle_id"],
+                "document_id": prepared["report"]["document"]["document_id"],
+                "_postgres_publication": prepared,
+            }
         return publish_attempt_report(
             self.catalog.state_root,
             run_path,
@@ -282,7 +308,7 @@ class ResolvedAttemptExecutor:
             report,
         )
 
-    def __call__(self, attempt: dict[str, Any]) -> dict[str, str]:
+    def __call__(self, attempt: dict[str, Any]) -> dict[str, Any]:
         resolved = attempt["resolved"]
         self._verify_execution_identity(attempt)
         self._verify_resolution(resolved)
@@ -299,11 +325,6 @@ class ResolvedAttemptExecutor:
         }
         if custom_slots:
             return self._run_composed(attempt, custom_slots)
-        legacy = build_legacy_config(
-            resolved,
-            state_root=self.catalog.state_root,
-            output_root=self.output_root,
-        )
         work_root = self.catalog.state_root / "work"
         work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor, config_name = tempfile.mkstemp(
@@ -311,19 +332,27 @@ class ResolvedAttemptExecutor:
         )
         config_path = Path(config_name)
         try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(canonical_json_bytes(legacy))
-                stream.flush()
-                os.fsync(stream.fileno())
-            self._verify_study_dataset_for_launch(resolved)
-            run = run_strategy_config(config_path, project_root=self.project_root)
+            with self._execution_state(resolved) as execution_root:
+                legacy = build_legacy_config(
+                    resolved,
+                    state_root=execution_root,
+                    output_root=self.output_root,
+                )
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(canonical_json_bytes(legacy))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                self._verify_study_dataset_for_launch(
+                    resolved, state_root=execution_root
+                )
+                run = run_strategy_config(config_path, project_root=self.project_root)
         finally:
             config_path.unlink(missing_ok=True)
         run_path = Path(run["path"])
         result_digest = _result_digest(run_path)
         audit_path = self._publish_audit(attempt, run, result_digest)
         report = self._publish_canonical_report(attempt, run_path, audit_path)
-        return {
+        completed: dict[str, Any] = {
             "result_path": str(run_path),
             "result_digest": result_digest,
             "logs": (
@@ -335,10 +364,13 @@ class ResolvedAttemptExecutor:
                 )
             ),
         }
+        if report is not None and "_postgres_publication" in report:
+            completed["_postgres_publication"] = report["_postgres_publication"]
+        return completed
 
     def _run_composed(
         self, attempt: dict[str, Any], custom_slots: set[str]
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         if self.runner_image is None:
             raise ResolvedExecutionError(
                 "a pinned runner image is required for custom composition"
@@ -529,7 +561,7 @@ class ResolvedAttemptExecutor:
         run = result | {"path": str(run_path)}
         audit_path = self._publish_audit(attempt, run, result_digest)
         report = self._publish_canonical_report(attempt, run_path, audit_path)
-        return {
+        completed: dict[str, Any] = {
             "result_path": str(run_path),
             "result_digest": result_digest,
             "logs": (
@@ -541,3 +573,6 @@ class ResolvedAttemptExecutor:
                 )
             ),
         }
+        if report is not None and "_postgres_publication" in report:
+            completed["_postgres_publication"] = report["_postgres_publication"]
+        return completed

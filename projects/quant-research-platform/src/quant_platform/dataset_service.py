@@ -1185,6 +1185,86 @@ class DatasetService:
             raise DatasetResolutionError("latest snapshot metadata conflicts with dataset catalog")
         return manifest, frame
 
+    def _snapshot_lineage(self, instrument: str, snapshot_id: str) -> dict[str, Any]:
+        if self.catalog._postgres is not None:
+            return self.catalog._postgres.dataset_snapshot_lineage(instrument, snapshot_id)
+        return snapshot_update_lineage(self.catalog.state_root, instrument, snapshot_id)
+
+    def _reconcile_update(
+        self,
+        fetched_bars: pd.DataFrame,
+        expected_sessions: list[str],
+        item: DatasetCatalogItem,
+        start: str,
+        end: str,
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any], pd.DataFrame, dict[str, Any]]:
+        if self.catalog._postgres is None:
+            update = reconcile_daily_history(
+                fetched_bars,
+                expected_sessions,
+                self.catalog.state_root,
+                item.metadata,
+                start,
+                end,
+                **kwargs,
+            )
+            verified = _verify_snapshot(
+                Path(str(update["path"])),
+                str(update["snapshot_id"]),
+                include_frame=True,
+            )
+            if not isinstance(verified, tuple):
+                raise DatasetResolutionError("snapshot verifier did not return repaired market data")
+            manifest, frame = verified
+            lineage = snapshot_update_lineage(
+                self.catalog.state_root, item.instrument, manifest["snapshot_id"]
+            )
+            return dict(update), manifest, frame, lineage
+
+        with self.catalog._postgres.materialize_dataset_update_state(
+            item.instrument
+        ) as (workspace, prior_snapshot_id):
+            expected_prior = kwargs.get("expected_prior_snapshot_id", prior_snapshot_id)
+            if expected_prior != prior_snapshot_id:
+                raise ConcurrentUpdateError("dataset current generation changed before reconciliation")
+            kwargs["expected_prior_snapshot_id"] = prior_snapshot_id
+            update = reconcile_daily_history(
+                fetched_bars,
+                expected_sessions,
+                workspace,
+                item.metadata,
+                start,
+                end,
+                **kwargs,
+            )
+            verified = _verify_snapshot(
+                Path(str(update["path"])),
+                str(update["snapshot_id"]),
+                include_frame=True,
+            )
+            if not isinstance(verified, tuple):
+                raise DatasetResolutionError("snapshot verifier did not return repaired market data")
+            manifest, frame = verified
+            publication = self.catalog._postgres.publish_dataset_update(
+                instrument=item.instrument,
+                snapshot_path=Path(str(update["path"])),
+                update_path=Path(str(update["update_path"])),
+                expected_prior_snapshot_id=prior_snapshot_id,
+            )
+        with self.catalog._postgres.materialize_dataset_snapshot(
+            item.instrument, manifest["snapshot_id"]
+        ) as readback:
+            checked = _verify_snapshot(
+                readback, manifest["snapshot_id"], include_frame=True, require_name=False
+            )
+        if not isinstance(checked, tuple) or checked[0] != manifest:
+            raise DatasetResolutionError("PostgreSQL dataset read-back differs from publication")
+        update = dict(update)
+        update["path"] = f"postgresql:dataset-snapshot:{manifest['snapshot_id']}"
+        update["update_path"] = f"postgresql:dataset-update:{publication['update_id']}"
+        return update, checked[0], checked[1], publication["lineage"]
+
     def _calendar(self, item: DatasetCatalogItem) -> SessionSource:
         try:
             return self.calendars[item.calendar]
@@ -1430,6 +1510,7 @@ class DatasetService:
             previous = latest[1] if latest else None
             selected_prior_snapshot_id = manifest["snapshot_id"] if manifest else None
             if manifest is not None:
+                assert isinstance(selected_prior_snapshot_id, str)
                 if manifest["schema_version"] in {3, 5}:
                     raise DatasetResolutionError(
                         "UPDATE_PRIOR_IS_DERIVED_VIEW: latest snapshot is not an update root"
@@ -1439,11 +1520,7 @@ class DatasetService:
                         "UPDATE_PRIOR_IS_DERIVED_VIEW: unsupported prior root"
                     )
                 try:
-                    snapshot_update_lineage(
-                        self.catalog.state_root,
-                        item.instrument,
-                        selected_prior_snapshot_id,
-                    )
+                    self._snapshot_lineage(item.instrument, selected_prior_snapshot_id)
                 except (DatasetValidationError, OSError, RuntimeError) as exc:
                     raise DatasetResolutionError(
                         f"dataset update lineage failed verification: {exc}"
@@ -1528,11 +1605,10 @@ class DatasetService:
                 "policy_version": POLICY_VERSION,
             }
             try:
-                update = reconcile_daily_history(
+                update, manifest, repaired, lineage = self._reconcile_update(
                     fetched_frame,
                     expected_sessions,
-                    self.catalog.state_root,
-                    item.metadata,
+                    item,
                     start,
                     end,
                     source_identity=fetched.source_identity,
@@ -1547,15 +1623,6 @@ class DatasetService:
                 raise DatasetResolutionError("CONCURRENT_UPDATE: second generation drift") from exc
             except DatasetValidationError as exc:
                 raise DatasetResolutionError(str(exc)) from exc
-
-            verified = _verify_snapshot(
-                Path(str(update["path"])),
-                str(update["snapshot_id"]),
-                include_frame=True,
-            )
-            if not isinstance(verified, tuple):
-                raise DatasetResolutionError("snapshot verifier did not return repaired market data")
-            manifest, repaired = verified
             repaired_dates = set(repaired["Date"].dt.strftime("%Y-%m-%d"))
             remaining = [value for value in expected_sessions if value not in repaired_dates]
             if remaining:
@@ -1563,11 +1630,6 @@ class DatasetService:
                     "PROVIDER_INCOMPLETE: repaired snapshot remains incomplete: "
                     + ", ".join(remaining)
                 )
-            lineage = snapshot_update_lineage(
-                self.catalog.state_root,
-                item.instrument,
-                manifest["snapshot_id"],
-            )
             return {
                 "dataset_id": item.dataset_id,
                 "name": item.name,
@@ -1630,6 +1692,7 @@ class DatasetService:
             session for session in expected_sessions if session not in available_dates
         ]
         update: dict[str, Any] | None = None
+        lineage: dict[str, Any] | None = None
         if missing:
             try:
                 source = self.sources[item.provider]
@@ -1692,26 +1755,15 @@ class DatasetService:
                     f"provider response contains non-{item.calendar} sessions: "
                     + ", ".join(unexpected)
                 )
-            update = reconcile_daily_history(
+            update, manifest, frame, lineage = self._reconcile_update(
                 fetched_frame,
                 expected_sessions,
-                self.catalog.state_root,
-                item.metadata,
+                item,
                 start,
                 end,
                 source_identity=fetched.source_identity,
                 expected_sessions_source=calendar.source_identity,
             )
-            verified = _verify_snapshot(
-                Path(str(update["path"])),
-                str(update["snapshot_id"]),
-                include_frame=True,
-            )
-            if not isinstance(verified, tuple):
-                raise DatasetResolutionError(
-                    "snapshot verifier did not return repaired market data"
-                )
-            manifest, frame = verified
             repaired_dates = set(frame["Date"].dt.strftime("%Y-%m-%d"))
             remaining = [
                 session for session in expected_sessions if session not in repaired_dates
@@ -1722,15 +1774,13 @@ class DatasetService:
                 )
         assert manifest is not None
         try:
-            lineage = snapshot_update_lineage(
-                self.catalog.state_root,
-                item.instrument,
-                manifest["snapshot_id"],
-            )
+            if update is None:
+                lineage = self._snapshot_lineage(item.instrument, manifest["snapshot_id"])
         except (DatasetValidationError, OSError, RuntimeError) as exc:
             raise DatasetResolutionError(
                 f"dataset update lineage failed verification: {exc}"
             ) from exc
+        assert lineage is not None
         return {
             "dataset_id": item.dataset_id,
             "name": item.name,

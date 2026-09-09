@@ -96,6 +96,11 @@ services:
         read_only: true
         bind: {create_host_path: false}
       - type: bind
+        source: /var/lib/quantresearch-production/runtime-residual
+        target: /var/lib/quantresearch/residual/runtime
+        read_only: false
+        bind: {create_host_path: false}
+      - type: bind
         source: /etc/quantresearch-production/authorities
         target: /etc/quantresearch/authorities
         read_only: true
@@ -158,6 +163,11 @@ services:
         source: /var/lib/quantresearch-production/residual
         target: /var/lib/quantresearch/residual
         read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/quantresearch-production/runtime-residual
+        target: /var/lib/quantresearch/residual/runtime
+        read_only: false
         bind: {create_host_path: false}
       - type: bind
         source: /etc/quantresearch-production/secrets/ui/allowed-emails.txt

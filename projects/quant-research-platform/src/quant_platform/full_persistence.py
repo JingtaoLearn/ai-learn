@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import tempfile
@@ -26,7 +27,7 @@ from .postgres_persistence import (
 )
 from .schemas import canonical_json_bytes
 
-FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v1"
+FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v2"
 MIGRATION_MANIFEST_SCHEMA = "quantresearch-full-migration-manifest/v1"
 PARITY_RECEIPT_SCHEMA = "quantresearch-full-migration-parity/v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -97,62 +98,95 @@ CREATE TABLE IF NOT EXISTS qr_catalog.dataset_catalog (
     created_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_studies (
-    study_id text PRIMARY KEY, preview_digest text NOT NULL UNIQUE,
-    request_digest text NOT NULL, frozen_plan_json text NOT NULL,
-    operational_metadata_json text NOT NULL, phase text NOT NULL,
-    control_status text NOT NULL, selection_outcome text NOT NULL,
-    holdout_outcome text NOT NULL, created_at text NOT NULL, updated_at text NOT NULL
+    study_id text PRIMARY KEY CHECK (study_id ~ '^[0-9a-f]{64}$'),
+    preview_digest text NOT NULL UNIQUE CHECK (preview_digest ~ '^[0-9a-f]{64}$'),
+    request_digest text NOT NULL CHECK (request_digest ~ '^[0-9a-f]{64}$'),
+    frozen_plan_json text NOT NULL CHECK (jsonb_typeof(frozen_plan_json::jsonb) = 'object'),
+    operational_metadata_json text NOT NULL CHECK (
+        jsonb_typeof(operational_metadata_json::jsonb) = 'object'
+    ),
+    phase text NOT NULL CHECK (phase IN (
+        'FROZEN', 'VALIDATING_SELECTION_PROCESS', 'SELECTING_FINAL_CANDIDATE',
+        'HOLDOUT_READY', 'HOLDOUT_RUNNING', 'COMPLETED'
+    )),
+    control_status text NOT NULL CHECK (
+        control_status IN ('ACTIVE', 'PAUSED', 'CANCELLED', 'FAILED')
+    ),
+    selection_outcome text NOT NULL CHECK (
+        selection_outcome IN ('NOT_DETERMINED', 'CHAMPION_SELECTED', 'NO_ELIGIBLE_CANDIDATE')
+    ),
+    holdout_outcome text NOT NULL CHECK (holdout_outcome IN ('NOT_RUN', 'PASSED', 'FAILED')),
+    created_at text NOT NULL, updated_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_events (
-    study_id text NOT NULL, sequence bigint NOT NULL, event_type text NOT NULL,
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    sequence bigint NOT NULL CHECK (sequence > 0), event_type text NOT NULL,
     occurred_at text NOT NULL, payload_json text NOT NULL,
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_actions (
     action_id text PRIMARY KEY, operation text NOT NULL, study_id text NOT NULL,
-    request_digest text NOT NULL, response_json text NOT NULL, created_at text NOT NULL
+    request_digest text NOT NULL, response_json text NOT NULL, created_at text NOT NULL,
+    FOREIGN KEY (study_id) REFERENCES qr_catalog.parameter_studies(study_id)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_history_metadata (
     singleton bigint PRIMARY KEY, pre_ledger_history_complete bigint NOT NULL,
     pre_ledger_experiment_count bigint NOT NULL, assessed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_ledger (
-    study_id text NOT NULL, sequence bigint NOT NULL,
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    sequence bigint NOT NULL CHECK (sequence > 0),
     holdout_identity_digest text NOT NULL, event_type text NOT NULL,
     occurred_at text NOT NULL, payload_json text NOT NULL,
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_evidence (
-    study_id text NOT NULL, sequence bigint NOT NULL, evidence_type text NOT NULL,
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    sequence bigint NOT NULL CHECK (sequence > 0), evidence_type text NOT NULL,
     candidate_digest text, payload_json text NOT NULL, occurred_at text NOT NULL,
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_trials (
-    study_id text NOT NULL, candidate_digest text NOT NULL,
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
     configuration_json text NOT NULL, first_search_round text NOT NULL,
     proposal_sequence bigint NOT NULL, classification text NOT NULL,
     created_at text NOT NULL, PRIMARY KEY (study_id, candidate_digest)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_bindings (
-    binding_id text PRIMARY KEY, study_id text NOT NULL, search_round text NOT NULL,
-    candidate_digest text NOT NULL, role text NOT NULL, fold_sequence bigint NOT NULL,
-    fold_window_json text NOT NULL, task_json text NOT NULL, task_digest text NOT NULL,
-    dataset_snapshot_id text NOT NULL, experiment_id text NOT NULL,
-    submitted_attempt_id text NOT NULL, attempt_id text NOT NULL, state text NOT NULL,
+    binding_id text PRIMARY KEY CHECK (binding_id ~ '^[0-9a-f]{64}$'),
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    search_round text NOT NULL,
+    candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
+    role text NOT NULL CHECK (role IN ('INNER_SCORE', 'OUTER_AUDIT', 'TERMINAL_HOLDOUT')),
+    fold_sequence bigint NOT NULL CHECK (fold_sequence >= 1),
+    fold_window_json text NOT NULL CHECK (jsonb_typeof(fold_window_json::jsonb) = 'object'),
+    task_json text NOT NULL CHECK (jsonb_typeof(task_json::jsonb) = 'object'),
+    task_digest text NOT NULL CHECK (task_digest ~ '^[0-9a-f]{64}$'),
+    dataset_snapshot_id text NOT NULL CHECK (dataset_snapshot_id ~ '^[0-9a-f]{64}$'),
+    experiment_id text NOT NULL REFERENCES qr_catalog.experiments(experiment_id),
+    submitted_attempt_id text NOT NULL REFERENCES qr_catalog.attempts(attempt_id),
+    attempt_id text NOT NULL REFERENCES qr_catalog.attempts(attempt_id),
+    state text NOT NULL CHECK (state IN ('SUBMITTED', 'VERIFIED', 'FAILED', 'CONTESTED')),
     metric_document_json text, created_at text NOT NULL, updated_at text NOT NULL,
+    FOREIGN KEY (study_id, candidate_digest)
+        REFERENCES qr_catalog.parameter_study_trials(study_id, candidate_digest),
     UNIQUE (study_id, search_round, candidate_digest, role, fold_sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_attempt_candidate_claims (
-    attempt_id text PRIMARY KEY, candidate_digest text NOT NULL,
+    attempt_id text PRIMARY KEY REFERENCES qr_catalog.attempts(attempt_id),
+    candidate_digest text NOT NULL,
     configuration_json text NOT NULL, claimed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_claims (
-    study_id text PRIMARY KEY, holdout_identity_digest text NOT NULL,
+    study_id text PRIMARY KEY REFERENCES qr_catalog.parameter_studies(study_id),
+    holdout_identity_digest text NOT NULL,
     candidate_digest text NOT NULL, binding_id text NOT NULL UNIQUE,
     effect_action_id text NOT NULL UNIQUE, claimed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_suggestion_journal (
-    study_id text NOT NULL, search_round text NOT NULL, sequence bigint NOT NULL,
+    study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
+    search_round text NOT NULL, sequence bigint NOT NULL CHECK (sequence > 0),
     event_type text NOT NULL, candidate_digest text NOT NULL, event_json text NOT NULL,
     occurred_at text NOT NULL, PRIMARY KEY (study_id, search_round, sequence)
 );
@@ -549,6 +583,27 @@ def install_full_schema(
                     f'"{schema}"."{table}" FOR EACH ROW EXECUTE FUNCTION qr.reject_change()'
                 )
             connection.execute(
+                "DROP TRIGGER IF EXISTS parameter_studies_identity_immutable "
+                "ON qr_catalog.parameter_studies"
+            )
+            connection.execute(
+                "CREATE TRIGGER parameter_studies_identity_immutable BEFORE UPDATE OF "
+                "study_id, preview_digest, request_digest, frozen_plan_json, "
+                "operational_metadata_json, created_at ON qr_catalog.parameter_studies "
+                "FOR EACH ROW EXECUTE FUNCTION qr.reject_change()"
+            )
+            connection.execute(
+                "DROP TRIGGER IF EXISTS parameter_study_bindings_identity_immutable "
+                "ON qr_catalog.parameter_study_bindings"
+            )
+            connection.execute(
+                "CREATE TRIGGER parameter_study_bindings_identity_immutable BEFORE UPDATE OF "
+                "binding_id, study_id, search_round, candidate_digest, role, fold_sequence, "
+                "fold_window_json, task_json, task_digest, dataset_snapshot_id, experiment_id, "
+                "submitted_attempt_id, created_at ON qr_catalog.parameter_study_bindings "
+                "FOR EACH ROW EXECUTE FUNCTION qr.reject_change()"
+            )
+            connection.execute(
                 "DROP TRIGGER IF EXISTS production_terminal_immutable ON qr.production_requests"
             )
             connection.execute(
@@ -699,8 +754,9 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
     def production_connection(self) -> PostgresCompatConnection:
         return PostgresCompatConnection(self.config, search_path="qr")
 
-    def publish_artifact_set(
-        self,
+    @staticmethod
+    def _publish_artifact_set_in_transaction(
+        connection: psycopg.Connection[Any] | PostgresCompatConnection,
         *,
         kind: str,
         members: Mapping[str, tuple[str, bytes]],
@@ -721,41 +777,51 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             )
         manifest = {"schema_version": 1, "kind": kind, "members": ordered}
         artifact_set_id = _sha256_bytes(canonical_json_bytes(manifest))
+        for ordinal, member in enumerate(ordered):
+            payload = members[member["logical_name"]][1]
+            connection.execute(
+                "INSERT INTO qr.artifacts(artifact_sha256, byte_size, media_type, payload) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (artifact_sha256) DO NOTHING",
+                (member["artifact_sha256"], len(payload), member["media_type"], payload),
+            )
+            stored = connection.execute(
+                "SELECT byte_size, media_type, payload FROM qr.artifacts WHERE artifact_sha256=%s",
+                (member["artifact_sha256"],),
+            ).fetchone()
+            if stored is None or bytes(stored["payload"]) != payload:
+                raise PersistenceConflict("artifact digest collision or byte mismatch")
+        connection.execute(
+            "INSERT INTO qr.artifact_sets(artifact_set_id, kind, schema_version, canonical_manifest) "
+            "VALUES (%s, %s, 1, %s) ON CONFLICT (artifact_set_id) DO NOTHING",
+            (artifact_set_id, kind, Jsonb(manifest)),
+        )
+        for ordinal, member in enumerate(ordered):
+            connection.execute(
+                "INSERT INTO qr.artifact_set_members(artifact_set_id, logical_name, artifact_sha256, ordinal) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (artifact_set_id, logical_name) DO NOTHING",
+                (artifact_set_id, member["logical_name"], member["artifact_sha256"], ordinal),
+            )
+        actual = connection.execute(
+            "SELECT logical_name, artifact_sha256 FROM qr.artifact_set_members "
+            "WHERE artifact_set_id=%s ORDER BY ordinal",
+            (artifact_set_id,),
+        ).fetchall()
+        expected = [(item["logical_name"], item["artifact_sha256"]) for item in ordered]
+        if [(row["logical_name"], row["artifact_sha256"].strip()) for row in actual] != expected:
+            raise PersistenceConflict("artifact set membership conflicts")
+        return artifact_set_id
+
+    def publish_artifact_set(
+        self,
+        *,
+        kind: str,
+        members: Mapping[str, tuple[str, bytes]],
+    ) -> str:
         with self.config.connect() as connection:
             with connection.transaction():
-                for ordinal, member in enumerate(ordered):
-                    payload = members[member["logical_name"]][1]
-                    connection.execute(
-                        "INSERT INTO qr.artifacts(artifact_sha256, byte_size, media_type, payload) "
-                        "VALUES (%s, %s, %s, %s) ON CONFLICT (artifact_sha256) DO NOTHING",
-                        (member["artifact_sha256"], len(payload), member["media_type"], payload),
-                    )
-                    stored = connection.execute(
-                        "SELECT byte_size, media_type, payload FROM qr.artifacts WHERE artifact_sha256=%s",
-                        (member["artifact_sha256"],),
-                    ).fetchone()
-                    if stored is None or bytes(stored["payload"]) != payload:
-                        raise PersistenceConflict("artifact digest collision or byte mismatch")
-                connection.execute(
-                    "INSERT INTO qr.artifact_sets(artifact_set_id, kind, schema_version, canonical_manifest) "
-                    "VALUES (%s, %s, 1, %s) ON CONFLICT (artifact_set_id) DO NOTHING",
-                    (artifact_set_id, kind, Jsonb(manifest)),
+                return self._publish_artifact_set_in_transaction(
+                    connection, kind=kind, members=members
                 )
-                for ordinal, member in enumerate(ordered):
-                    connection.execute(
-                        "INSERT INTO qr.artifact_set_members(artifact_set_id, logical_name, artifact_sha256, ordinal) "
-                        "VALUES (%s, %s, %s, %s) ON CONFLICT (artifact_set_id, logical_name) DO NOTHING",
-                        (artifact_set_id, member["logical_name"], member["artifact_sha256"], ordinal),
-                    )
-                actual = connection.execute(
-                    "SELECT logical_name, artifact_sha256 FROM qr.artifact_set_members "
-                    "WHERE artifact_set_id=%s ORDER BY ordinal",
-                    (artifact_set_id,),
-                ).fetchall()
-                expected = [(item["logical_name"], item["artifact_sha256"]) for item in ordered]
-                if [(row["logical_name"], row["artifact_sha256"].strip()) for row in actual] != expected:
-                    raise PersistenceConflict("artifact set membership conflicts")
-        return artifact_set_id
 
     def read_artifact_set(self, artifact_set_id: str) -> dict[str, bytes]:
         if SHA256.fullmatch(artifact_set_id) is None:
@@ -804,6 +870,128 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 (attempt_id,),
             ).fetchone()
         return None if row is None else row["report_artifact_id"].strip()
+
+    def publish_attempt_completion(
+        self,
+        connection: Any,
+        *,
+        attempt_id: str,
+        result_digest: str,
+        publication: Mapping[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        """Publish one completed Attempt package and canonical report in its catalog transaction."""
+
+        if SHA256.fullmatch(attempt_id) is None or SHA256.fullmatch(result_digest) is None:
+            raise ValueError("Attempt completion identities must be lowercase SHA-256")
+        descriptor = publication.get("descriptor")
+        evidence = publication.get("evidence")
+        report = publication.get("report")
+        if not isinstance(descriptor, Mapping) or not isinstance(evidence, Mapping):
+            raise ValueError("Attempt completion evidence is incomplete")
+        if descriptor.get("attempt_id") != attempt_id or descriptor.get("core_result_digest") != result_digest:
+            raise PersistenceConflict("Attempt evidence identity conflicts with completion")
+        evidence_members = {
+            **{
+                name: (_media_type(name), bytes(payload))
+                for name, payload in evidence.items()
+            },
+            "attempt-audit.json": (
+                "application/json",
+                canonical_json_bytes(publication["audit"]) + b"\n",
+            ),
+            "bundle.json": ("application/json", canonical_json_bytes(descriptor) + b"\n"),
+        }
+        evidence_set_id = self._publish_artifact_set_in_transaction(
+            connection, kind="ATTEMPT_EVIDENCE", members=evidence_members
+        )
+        connection.execute(
+            "INSERT INTO qr.attempt_evidence_packages(attempt_id, artifact_set_id, result_digest, "
+            "state, canonical, imported_path) VALUES (%s,%s,%s,'SUCCEEDED',true,%s) "
+            "ON CONFLICT (attempt_id) DO NOTHING",
+            (attempt_id, evidence_set_id, result_digest, f"postgresql:attempt:{attempt_id}"),
+        )
+        stored_evidence = connection.execute(
+            "SELECT artifact_set_id, result_digest, state, canonical "
+            "FROM qr.attempt_evidence_packages WHERE attempt_id=%s",
+            (attempt_id,),
+        ).fetchone()
+        if stored_evidence is None or (
+            stored_evidence["artifact_set_id"].strip(),
+            stored_evidence["result_digest"].strip(),
+            stored_evidence["state"],
+            stored_evidence["canonical"],
+        ) != (evidence_set_id, result_digest, "SUCCEEDED", True):
+            raise PersistenceConflict("Attempt evidence publication conflicts")
+
+        result: dict[str, Any] = {"artifact_set_id": evidence_set_id}
+        if report is not None:
+            if not isinstance(report, Mapping):
+                raise ValueError("Attempt report publication is invalid")
+            from .attempt_report import build_latest_pointer, validate_report_manifest
+
+            manifest = validate_report_manifest(report["manifest"])
+            if manifest["attempt_id"] != attempt_id:
+                raise PersistenceConflict("Attempt report identity conflicts with completion")
+            report_members = {
+                "report-document.json": (
+                    "application/json",
+                    canonical_json_bytes(report["document"]) + b"\n",
+                ),
+                "report.html": ("text/html", bytes(report["html"])),
+                "report-manifest.json": (
+                    "application/json",
+                    canonical_json_bytes(manifest) + b"\n",
+                ),
+            }
+            report_set_id = self._publish_artifact_set_in_transaction(
+                connection, kind="ATTEMPT_REPORT", members=report_members
+            )
+            report_id = manifest["report_artifact_id"]
+            connection.execute(
+                "INSERT INTO qr.report_artifacts(report_artifact_id, attempt_id, artifact_set_id) "
+                "VALUES (%s,%s,%s) ON CONFLICT (report_artifact_id) DO NOTHING",
+                (report_id, attempt_id, report_set_id),
+            )
+            stored_report = connection.execute(
+                "SELECT attempt_id, artifact_set_id FROM qr.report_artifacts "
+                "WHERE report_artifact_id=%s",
+                (report_id,),
+            ).fetchone()
+            if stored_report is None or (
+                stored_report["attempt_id"],
+                stored_report["artifact_set_id"].strip(),
+            ) != (attempt_id, report_set_id):
+                raise PersistenceConflict("Attempt report artifact identity conflicts")
+            current = connection.execute(
+                "SELECT c.report_artifact_id, c.sequence, e.pointer "
+                "FROM qr.report_current c JOIN qr.report_pointer_events e "
+                "ON e.attempt_id=c.attempt_id AND e.sequence=c.sequence "
+                "WHERE c.attempt_id=%s",
+                (attempt_id,),
+            ).fetchone()
+            if current is None or current["report_artifact_id"].strip() != report_id:
+                prior = None if current is None else current["pointer"]
+                pointer = build_latest_pointer(manifest, prior=prior)
+                connection.execute(
+                    "INSERT INTO qr.report_pointer_events(attempt_id, sequence, report_artifact_id, pointer) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (attempt_id, pointer["sequence"], report_id, Jsonb(pointer)),
+                )
+                connection.execute(
+                    "INSERT INTO qr.report_current(attempt_id, report_artifact_id, sequence) "
+                    "VALUES (%s,%s,%s) ON CONFLICT (attempt_id) DO UPDATE SET "
+                    "report_artifact_id=EXCLUDED.report_artifact_id, sequence=EXCLUDED.sequence",
+                    (attempt_id, report_id, pointer["sequence"]),
+                )
+            result["report_artifact_id"] = report_id
+        connection.execute(
+            "INSERT INTO qr.attempt_events(attempt_id, sequence, event_type, payload, occurred_at) "
+            "VALUES (%s, COALESCE((SELECT max(sequence)+1 FROM qr.attempt_events WHERE attempt_id=%s),1), "
+            "'SUCCEEDED', %s, %s::timestamptz)",
+            (attempt_id, attempt_id, Jsonb({"status": "SUCCEEDED", "result_digest": result_digest}), occurred_at),
+        )
+        return result
 
     def report_artifact(self, attempt_id: str, report_artifact_id: str) -> bytes:
         with self.config.connect() as connection:
@@ -884,6 +1072,314 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 (instrument,),
             ).fetchone()
         return None if row is None else row["snapshot_id"].strip()
+
+    def dataset_snapshot_lineage(self, instrument: str, snapshot_id: str) -> dict[str, Any]:
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT document FROM qr.dataset_lineage_claims "
+                "WHERE instrument=%s AND snapshot_id=%s",
+                (instrument, snapshot_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown dataset lineage: {instrument}@{snapshot_id}")
+        document = row["document"]
+        if (
+            not isinstance(document, dict)
+            or document.get("instrument") != instrument
+            or document.get("snapshot_id") != snapshot_id
+            or not isinstance(document.get("lineage"), dict)
+        ):
+            raise PersistenceUnavailableError("stored dataset lineage is invalid")
+        return document["lineage"]
+
+    @contextmanager
+    def materialize_dataset_update_state(
+        self, instrument: str
+    ) -> Iterator[tuple[Path, str | None]]:
+        """Provide a transient legacy-shaped workspace, never a runtime authority."""
+
+        current = self.dataset_current_snapshot(instrument)
+        with tempfile.TemporaryDirectory(prefix="quant-dataset-update-") as temporary:
+            root = Path(temporary)
+            if current is not None:
+                with self.materialize_dataset_snapshot(instrument, current) as source:
+                    target = root / "datasets" / instrument / current
+                    target.parent.mkdir(parents=True, mode=0o755)
+                    shutil.copytree(source, target)
+                pointer = target.parent / "latest.json"
+                pointer.write_bytes(
+                    canonical_json_bytes({"snapshot_id": current, "path": current}) + b"\n"
+                )
+                lineage_relative = (
+                    f"platform/snapshot-lineage/{instrument}/{current}/lineage.json"
+                )
+                with self.config.connect() as connection:
+                    row = connection.execute(
+                        "SELECT a.payload FROM qr.source_files f JOIN qr.artifacts a "
+                        "ON a.artifact_sha256=f.artifact_sha256 WHERE f.relative_path=%s",
+                        (lineage_relative,),
+                    ).fetchone()
+                if row is not None:
+                    lineage_path = root / "snapshot-lineage" / instrument / current / "lineage.json"
+                    lineage_path.parent.mkdir(parents=True, mode=0o755)
+                    lineage_path.write_bytes(bytes(row["payload"]))
+                    lineage_path.chmod(0o444)
+                    lineage_path.parent.chmod(0o555)
+            yield root, current
+
+    @staticmethod
+    def _runtime_residual(payload: bytes) -> tuple[str, str]:
+        residual_root = os.environ.get("QUANT_RESIDUAL_ROOT")
+        if not residual_root:
+            raise PersistenceUnavailableError("QUANT_RESIDUAL_ROOT is required")
+        root = Path(residual_root).absolute()
+        try:
+            metadata = os.stat(root, follow_symlinks=False)
+        except OSError as exc:
+            raise PersistenceUnavailableError("residual root is unavailable") from exc
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise PersistenceUnavailableError("residual root is unsafe")
+        digest = _sha256_bytes(payload)
+        relative = f"runtime/{digest[:2]}/{digest}"
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.exists():
+            stored, _ = _read_regular(target)
+            if stored != payload:
+                raise PersistenceConflict("runtime residual digest path conflicts")
+        else:
+            with target.open("xb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            target.chmod(0o444)
+        stored, _ = _read_regular(target)
+        if stored != payload:
+            raise PersistenceUnavailableError("runtime residual read-back mismatch")
+        return digest, relative
+
+    @staticmethod
+    def _insert_runtime_file(
+        connection: Any,
+        *,
+        relative_path: str,
+        file_class: str,
+        payload: bytes,
+        residual_sha256: str | None = None,
+    ) -> str:
+        digest = _sha256_bytes(payload)
+        artifact_sha256 = None if residual_sha256 is not None else digest
+        if artifact_sha256 is not None:
+            connection.execute(
+                "INSERT INTO qr.artifacts(artifact_sha256, byte_size, media_type, payload) "
+                "VALUES (%s,%s,%s,%s) ON CONFLICT (artifact_sha256) DO NOTHING",
+                (artifact_sha256, len(payload), _media_type(relative_path), payload),
+            )
+        connection.execute(
+            "INSERT INTO qr.source_files(relative_path, file_class, mode, byte_size, sha256, "
+            "artifact_sha256, residual_sha256, classification) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (relative_path) DO NOTHING",
+            (
+                relative_path,
+                file_class,
+                0o444,
+                len(payload),
+                digest,
+                artifact_sha256,
+                residual_sha256,
+                "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
+            ),
+        )
+        stored = connection.execute(
+            "SELECT file_class, byte_size, sha256, artifact_sha256, residual_sha256, classification "
+            "FROM qr.source_files "
+            "WHERE relative_path=%s",
+            (relative_path,),
+        ).fetchone()
+        expected = (
+            file_class,
+            len(payload),
+            digest,
+            artifact_sha256,
+            residual_sha256,
+            "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
+        )
+        actual = None if stored is None else (
+            stored["file_class"],
+            stored["byte_size"],
+            stored["sha256"].strip(),
+            None if stored["artifact_sha256"] is None else stored["artifact_sha256"].strip(),
+            None if stored["residual_sha256"] is None else stored["residual_sha256"].strip(),
+            stored["classification"],
+        )
+        if actual != expected:
+            raise PersistenceConflict("runtime file identity conflicts")
+        return digest
+
+    def publish_dataset_update(
+        self,
+        *,
+        instrument: str,
+        snapshot_path: Path,
+        update_path: Path,
+        expected_prior_snapshot_id: str | None,
+    ) -> dict[str, Any]:
+        """Commit one verified Dataset Snapshot/update/lineage graph to PostgreSQL."""
+
+        from .dataset_lineage import load_update_record, snapshot_update_lineage
+        from .datasets import _verify_snapshot
+
+        verified = _verify_snapshot(
+            snapshot_path, snapshot_path.name, include_frame=False, require_name=True
+        )
+        if not isinstance(verified, dict) or verified["metadata"]["instrument"] != instrument:
+            raise ValueError("dataset snapshot publication identity is invalid")
+        update = load_update_record(update_path.parents[3], instrument, update_path.parent.name)
+        if update["result_snapshot_id"] != verified["snapshot_id"]:
+            raise ValueError("dataset update does not bind the snapshot")
+        lineage = snapshot_update_lineage(
+            update_path.parents[3], instrument, verified["snapshot_id"]
+        )
+        lineage_path = (
+            update_path.parents[3]
+            / "snapshot-lineage"
+            / instrument
+            / verified["snapshot_id"]
+            / "lineage.json"
+        )
+        snapshot_members = {
+            path.name: _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0]
+            for path in snapshot_path.iterdir()
+            if path.name != "data.parquet"
+        }
+        parquet, _ = _read_regular(snapshot_path / "data.parquet")
+        parquet_sha256, residual_key = self._runtime_residual(parquet)
+        update_members = {
+            path.name: (_media_type(path.name), _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0])
+            for path in update_path.parent.iterdir()
+        }
+        lineage_payload, _ = _read_regular(lineage_path, maximum=MAX_BYTEA_ARTIFACT)
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (instrument,)
+                    )
+                    current = connection.execute(
+                        "SELECT snapshot_id FROM qr.dataset_current WHERE instrument=%s",
+                        (instrument,),
+                    ).fetchone()
+                    current_id = None if current is None else current["snapshot_id"].strip()
+                    if current_id != expected_prior_snapshot_id:
+                        from .updates import ConcurrentUpdateError
+
+                        raise ConcurrentUpdateError("dataset current generation changed")
+                    connection.execute(
+                        "INSERT INTO qr.residual_artifacts(artifact_sha256, byte_size, media_type, "
+                        "residual_class, residual_key) VALUES (%s,%s,'application/octet-stream',"
+                        "'DATASET_PARQUET',%s) ON CONFLICT (artifact_sha256) DO NOTHING",
+                        (parquet_sha256, len(parquet), residual_key),
+                    )
+                    stored_residual = connection.execute(
+                        "SELECT byte_size, residual_class, residual_key FROM qr.residual_artifacts "
+                        "WHERE artifact_sha256=%s",
+                        (parquet_sha256,),
+                    ).fetchone()
+                    if stored_residual is None or (
+                        stored_residual["byte_size"],
+                        stored_residual["residual_class"],
+                        stored_residual["residual_key"],
+                    ) != (len(parquet), "DATASET_PARQUET", residual_key):
+                        raise PersistenceConflict("dataset residual registry conflicts")
+                    prefix = f"platform/datasets/{instrument}/{verified['snapshot_id']}"
+                    self._insert_runtime_file(
+                        connection,
+                        relative_path=f"{prefix}/data.parquet",
+                        file_class="DATASET_PARQUET",
+                        payload=parquet,
+                        residual_sha256=parquet_sha256,
+                    )
+                    for name, payload in snapshot_members.items():
+                        self._insert_runtime_file(
+                            connection,
+                            relative_path=f"{prefix}/{name}",
+                            file_class="DATASET_METADATA",
+                            payload=payload,
+                        )
+                    lineage_sha256 = self._insert_runtime_file(
+                        connection,
+                        relative_path=(
+                            f"platform/snapshot-lineage/{instrument}/"
+                            f"{verified['snapshot_id']}/lineage.json"
+                        ),
+                        file_class="DATASET_LINEAGE",
+                        payload=lineage_payload,
+                    )
+                    update_set_id = self._publish_artifact_set_in_transaction(
+                        connection, kind="DATASET_UPDATE", members=update_members
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.dataset_snapshots(snapshot_id, instrument, schema_version, "
+                        "canonical_sha256, parquet_sha256, manifest_sha256, "
+                        "parquet_artifact_sha256, manifest) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT (snapshot_id) DO NOTHING",
+                        (
+                            verified["snapshot_id"], instrument, verified["schema_version"],
+                            verified["canonical_sha256"], verified["parquet_sha256"],
+                            _sha256_bytes(snapshot_members["manifest.json"]), parquet_sha256,
+                            Jsonb(verified),
+                        ),
+                    )
+                    stored_snapshot = connection.execute(
+                        "SELECT instrument, canonical_sha256, parquet_sha256, manifest "
+                        "FROM qr.dataset_snapshots WHERE snapshot_id=%s",
+                        (verified["snapshot_id"],),
+                    ).fetchone()
+                    if stored_snapshot is None or (
+                        stored_snapshot["instrument"],
+                        stored_snapshot["canonical_sha256"].strip(),
+                        stored_snapshot["parquet_sha256"].strip(),
+                        stored_snapshot["manifest"],
+                    ) != (
+                        instrument,
+                        verified["canonical_sha256"],
+                        verified["parquet_sha256"],
+                        verified,
+                    ):
+                        raise PersistenceConflict("dataset snapshot identity conflicts")
+                    connection.execute(
+                        "INSERT INTO qr.dataset_updates(update_id, instrument, snapshot_id, "
+                        "artifact_set_id, document) VALUES (%s,%s,%s,%s,%s) "
+                        "ON CONFLICT (update_id) DO NOTHING",
+                        (
+                            update["update_id"], instrument, verified["snapshot_id"],
+                            update_set_id, Jsonb(update),
+                        ),
+                    )
+                    lineage_document = _strict_json(lineage_payload, "dataset lineage")
+                    if lineage_document.get("lineage") != lineage:
+                        raise PersistenceConflict("dataset lineage bytes conflict")
+                    connection.execute(
+                        "INSERT INTO qr.dataset_lineage_claims(instrument, snapshot_id, "
+                        "artifact_sha256, document) VALUES (%s,%s,%s,%s) "
+                        "ON CONFLICT (instrument, snapshot_id) DO NOTHING",
+                        (instrument, verified["snapshot_id"], lineage_sha256, Jsonb(lineage_document)),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.dataset_current(instrument, snapshot_id, generation) "
+                        "VALUES (%s,%s,1) ON CONFLICT (instrument) DO UPDATE SET "
+                        "snapshot_id=EXCLUDED.snapshot_id, generation=qr.dataset_current.generation+1",
+                        (instrument, verified["snapshot_id"]),
+                    )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("dataset publication failed") from exc
+        if self.dataset_current_snapshot(instrument) != verified["snapshot_id"]:
+            raise PersistenceUnavailableError("dataset current read-back mismatch")
+        return {
+            "snapshot_id": verified["snapshot_id"],
+            "update_id": update["update_id"],
+            "lineage": self.dataset_snapshot_lineage(instrument, verified["snapshot_id"]),
+        }
 
     @contextmanager
     def materialize_dataset_snapshot(
