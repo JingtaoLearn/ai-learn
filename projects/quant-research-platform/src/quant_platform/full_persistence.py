@@ -27,7 +27,7 @@ from .postgres_persistence import (
 )
 from .schemas import canonical_json_bytes
 
-FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v2"
+FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v3"
 MIGRATION_MANIFEST_SCHEMA = "quantresearch-full-migration-manifest/v1"
 PARITY_RECEIPT_SCHEMA = "quantresearch-full-migration-parity/v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -125,32 +125,76 @@ CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_events (
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_actions (
-    action_id text PRIMARY KEY, operation text NOT NULL, study_id text NOT NULL,
-    request_digest text NOT NULL, response_json text NOT NULL, created_at text NOT NULL,
-    FOREIGN KEY (study_id) REFERENCES qr_catalog.parameter_studies(study_id)
+    action_id text PRIMARY KEY CHECK (
+        action_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+    ),
+    operation text NOT NULL CHECK (operation IN (
+        'SUBMIT', 'CONTROL_PAUSE', 'CONTROL_RESUME', 'CONTROL_CANCEL',
+        'COORDINATOR_LEASE', 'EXECUTION_IDENTITY_DRIFT',
+        'EFFECT_INTENT', 'EFFECT_DISPATCH_AUTHORIZATION', 'EFFECT_RECEIPT'
+    )),
+    study_id text NOT NULL CHECK (study_id ~ '^[0-9a-f]{64}$'),
+    request_digest text NOT NULL CHECK (request_digest ~ '^[0-9a-f]{64}$'),
+    response_json text NOT NULL CHECK (jsonb_typeof(response_json::jsonb) = 'object'),
+    created_at text NOT NULL,
+    FOREIGN KEY (study_id) REFERENCES qr_catalog.parameter_studies(study_id),
+    CHECK (
+        (operation IN ('SUBMIT', 'CONTROL_PAUSE', 'CONTROL_RESUME', 'CONTROL_CANCEL')
+            AND action_id !~ '^study-internal:')
+        OR (operation = 'COORDINATOR_LEASE'
+            AND action_id ~ ('^study-internal:lease:' || study_id || ':[1-9][0-9]*$'))
+        OR (operation = 'EXECUTION_IDENTITY_DRIFT'
+            AND action_id = 'study-internal:drift:' || study_id)
+        OR (operation = 'EFFECT_INTENT'
+            AND action_id ~ '^study-internal:effect:[0-9a-f]{64}$')
+        OR (operation = 'EFFECT_DISPATCH_AUTHORIZATION'
+            AND action_id ~ '^study-internal:dispatch:[0-9a-f]{64}:[1-9][0-9]*$')
+        OR (operation = 'EFFECT_RECEIPT'
+            AND action_id ~ '^study-internal:receipt:[0-9a-f]{64}$')
+    )
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_history_metadata (
-    singleton bigint PRIMARY KEY, pre_ledger_history_complete bigint NOT NULL,
-    pre_ledger_experiment_count bigint NOT NULL, assessed_at text NOT NULL
+    singleton bigint PRIMARY KEY CHECK (singleton = 1),
+    pre_ledger_history_complete bigint NOT NULL CHECK (
+        pre_ledger_history_complete IN (0, 1)
+    ),
+    pre_ledger_experiment_count bigint NOT NULL CHECK (pre_ledger_experiment_count >= 0),
+    assessed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_ledger (
     study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
     sequence bigint NOT NULL CHECK (sequence > 0),
-    holdout_identity_digest text NOT NULL, event_type text NOT NULL,
+    holdout_identity_digest text NOT NULL CHECK (
+        holdout_identity_digest ~ '^[0-9a-f]{64}$'
+    ),
+    event_type text NOT NULL CHECK (event_type IN ('GRANTED', 'ACCESSED', 'EXPOSURE_RECORDED')),
     occurred_at text NOT NULL, payload_json text NOT NULL,
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_evidence (
     study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
-    sequence bigint NOT NULL CHECK (sequence > 0), evidence_type text NOT NULL,
-    candidate_digest text, payload_json text NOT NULL, occurred_at text NOT NULL,
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    evidence_type text NOT NULL CHECK (evidence_type IN (
+        'METRIC_DOCUMENT_VERIFIED', 'CANDIDATE_EVALUATED',
+        'OUTER_SELECTION_RECORDED', 'CHAMPION_FROZEN',
+        'HOLDOUT_OUTCOME_RECORDED', 'EVIDENCE_CONTESTED'
+    )),
+    candidate_digest text CHECK (
+        candidate_digest IS NULL OR candidate_digest ~ '^[0-9a-f]{64}$'
+    ),
+    payload_json text NOT NULL CHECK (jsonb_typeof(payload_json::jsonb) = 'object'),
+    occurred_at text NOT NULL,
     PRIMARY KEY (study_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_trials (
     study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
     candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
-    configuration_json text NOT NULL, first_search_round text NOT NULL,
-    proposal_sequence bigint NOT NULL, classification text NOT NULL,
+    configuration_json text NOT NULL CHECK (
+        jsonb_typeof(configuration_json::jsonb) = 'object'
+    ),
+    first_search_round text NOT NULL,
+    proposal_sequence bigint NOT NULL CHECK (proposal_sequence >= 0),
+    classification text NOT NULL CHECK (classification IN ('IN_RANGE', 'BASELINE_ONLY')),
     created_at text NOT NULL, PRIMARY KEY (study_id, candidate_digest)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_bindings (
@@ -168,26 +212,43 @@ CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_bindings (
     submitted_attempt_id text NOT NULL REFERENCES qr_catalog.attempts(attempt_id),
     attempt_id text NOT NULL REFERENCES qr_catalog.attempts(attempt_id),
     state text NOT NULL CHECK (state IN ('SUBMITTED', 'VERIFIED', 'FAILED', 'CONTESTED')),
-    metric_document_json text, created_at text NOT NULL, updated_at text NOT NULL,
+    metric_document_json text CHECK (
+        metric_document_json IS NULL OR jsonb_typeof(metric_document_json::jsonb) = 'object'
+    ),
+    created_at text NOT NULL, updated_at text NOT NULL,
     FOREIGN KEY (study_id, candidate_digest)
         REFERENCES qr_catalog.parameter_study_trials(study_id, candidate_digest),
     UNIQUE (study_id, search_round, candidate_digest, role, fold_sequence)
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_attempt_candidate_claims (
     attempt_id text PRIMARY KEY REFERENCES qr_catalog.attempts(attempt_id),
-    candidate_digest text NOT NULL,
-    configuration_json text NOT NULL, claimed_at text NOT NULL
+    candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
+    configuration_json text NOT NULL CHECK (
+        jsonb_typeof(configuration_json::jsonb) = 'object'
+    ),
+    claimed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_holdout_claims (
     study_id text PRIMARY KEY REFERENCES qr_catalog.parameter_studies(study_id),
-    holdout_identity_digest text NOT NULL,
-    candidate_digest text NOT NULL, binding_id text NOT NULL UNIQUE,
-    effect_action_id text NOT NULL UNIQUE, claimed_at text NOT NULL
+    holdout_identity_digest text NOT NULL CHECK (
+        holdout_identity_digest ~ '^[0-9a-f]{64}$'
+    ),
+    candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
+    binding_id text NOT NULL UNIQUE CHECK (binding_id ~ '^[0-9a-f]{64}$'),
+    effect_action_id text NOT NULL UNIQUE CHECK (
+        effect_action_id ~ '^study-internal:effect:[0-9a-f]{64}$'
+    ),
+    claimed_at text NOT NULL
 );
 CREATE TABLE IF NOT EXISTS qr_catalog.parameter_study_suggestion_journal (
     study_id text NOT NULL REFERENCES qr_catalog.parameter_studies(study_id),
-    search_round text NOT NULL, sequence bigint NOT NULL CHECK (sequence > 0),
-    event_type text NOT NULL, candidate_digest text NOT NULL, event_json text NOT NULL,
+    search_round text NOT NULL CHECK (length(search_round) BETWEEN 1 AND 128),
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    event_type text NOT NULL CHECK (event_type IN (
+        'SUGGESTION_RECORDED', 'DUPLICATE_SUGGESTION', 'INNER_EVALUATION_RECORDED'
+    )),
+    candidate_digest text NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
+    event_json text NOT NULL CHECK (jsonb_typeof(event_json::jsonb) = 'object'),
     occurred_at text NOT NULL, PRIMARY KEY (study_id, search_round, sequence)
 );
 CREATE INDEX IF NOT EXISTS catalog_attempts_status_created
