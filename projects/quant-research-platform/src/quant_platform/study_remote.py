@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 PROTOCOL = "quantresearch-study-worker/v1"
 JOB_TYPE = "deterministic-synthetic-search-v1"
-SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v2"
+SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v3"
 MAX_BODY_BYTES = 16_384
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_ITERATIONS = 100_000_000
@@ -591,13 +591,24 @@ class SignedStudyClient:
         self.private_key = Path(private_key)
         self.timeout_seconds = timeout_seconds
 
-    def _request(self, method: str, path: str, body: bytes = b"") -> RemoteResponse:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: bytes = b"",
+        *,
+        on_post_start: Callable[[], bool] | None = None,
+    ) -> RemoteResponse:
         headers = signed_headers(self.private_key, method, path, body)
         if body:
             headers["content-type"] = "application/json"
         request = urllib.request.Request(
             f"{self.endpoint}{path}", data=body if method == "POST" else None, headers=headers, method=method
         )
+        if on_post_start is not None and not on_post_start():
+            raise StudyTransportError(
+                "Study dispatch claim expired before POST", acceptance_ambiguous=False
+            )
         started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
@@ -629,8 +640,18 @@ class SignedStudyClient:
             )
         return RemoteResponse(status, value, elapsed_ms)
 
-    def submit(self, request: Mapping[str, Any]) -> RemoteResponse:
-        return self._request("POST", "/v1/studies", canonical_json_bytes(request))
+    def submit(
+        self,
+        request: Mapping[str, Any],
+        *,
+        on_post_start: Callable[[], bool] | None = None,
+    ) -> RemoteResponse:
+        return self._request(
+            "POST",
+            "/v1/studies",
+            canonical_json_bytes(request),
+            on_post_start=on_post_start,
+        )
 
     def read(self, job_id: str) -> RemoteResponse:
         if HEX_64.fullmatch(job_id) is None:
@@ -648,7 +669,10 @@ CREATE TABLE IF NOT EXISTS qr_study.schema_identity (
 INSERT INTO qr_study.schema_identity(singleton, identity)
 VALUES (true, '{SCHEMA_IDENTITY}')
 ON CONFLICT (singleton) DO UPDATE SET identity=EXCLUDED.identity
-WHERE qr_study.schema_identity.identity='quantresearch-lightweight-study-postgresql-v1';
+WHERE qr_study.schema_identity.identity IN (
+    'quantresearch-lightweight-study-postgresql-v1',
+    'quantresearch-lightweight-study-postgresql-v2'
+);
 CREATE TABLE IF NOT EXISTS qr_study.jobs (
     study_id text PRIMARY KEY CHECK (study_id ~ '^[0-9a-f]{{64}}$'),
     request_digest text NOT NULL CHECK (request_digest ~ '^[0-9a-f]{{64}}$'),
@@ -661,12 +685,14 @@ CREATE TABLE IF NOT EXISTS qr_study.jobs (
     acceptance_ambiguous boolean NOT NULL DEFAULT false,
     dispatch_claim_id text CHECK (dispatch_claim_id ~ '^[0-9a-f]{{32}}$'),
     dispatch_claim_expires_at timestamptz,
+    dispatch_post_started boolean NOT NULL DEFAULT false,
     latest_progress jsonb,
     final_result jsonb,
     failure jsonb,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     CHECK ((dispatch_claim_id IS NULL) = (dispatch_claim_expires_at IS NULL)),
+    CHECK (NOT dispatch_post_started OR dispatch_claim_id IS NOT NULL),
     CHECK ((status = 'SUCCEEDED') = (final_result IS NOT NULL)),
     CHECK ((status = 'FAILED') = (failure IS NOT NULL))
 );
@@ -674,6 +700,8 @@ ALTER TABLE qr_study.jobs
     ADD COLUMN IF NOT EXISTS acceptance_ambiguous boolean NOT NULL DEFAULT false;
 ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_id text;
 ALTER TABLE qr_study.jobs ADD COLUMN IF NOT EXISTS dispatch_claim_expires_at timestamptz;
+ALTER TABLE qr_study.jobs
+    ADD COLUMN IF NOT EXISTS dispatch_post_started boolean NOT NULL DEFAULT false;
 DO $$ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname='valid_study_dispatch_claim'
@@ -682,6 +710,16 @@ DO $$ BEGIN
         ALTER TABLE qr_study.jobs ADD CONSTRAINT valid_study_dispatch_claim CHECK (
             (dispatch_claim_id IS NULL AND dispatch_claim_expires_at IS NULL) OR
             (dispatch_claim_id ~ '^[0-9a-f]{{32}}$' AND dispatch_claim_expires_at IS NOT NULL)
+        );
+    END IF;
+END $$;
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='valid_study_dispatch_post_started'
+          AND conrelid='qr_study.jobs'::regclass
+    ) THEN
+        ALTER TABLE qr_study.jobs ADD CONSTRAINT valid_study_dispatch_post_started CHECK (
+            NOT dispatch_post_started OR dispatch_claim_id IS NOT NULL
         );
     END IF;
 END $$;
@@ -868,9 +906,11 @@ class StudyPostgresStore:
                 return self._normalized(current), False
             row = connection.execute(
                 """
-                UPDATE qr_study.jobs SET dispatch_claim_id=%s,
+                UPDATE qr_study.jobs SET
+                    acceptance_ambiguous=(acceptance_ambiguous OR dispatch_post_started),
+                    dispatch_claim_id=%s,
                     dispatch_claim_expires_at=clock_timestamp() + (%s * interval '1 second'),
-                    updated_at=clock_timestamp()
+                    dispatch_post_started=false, updated_at=clock_timestamp()
                 WHERE study_id=%s AND (
                     dispatch_claim_id IS NULL OR dispatch_claim_id=%s OR
                     dispatch_claim_expires_at <= clock_timestamp()
@@ -881,6 +921,22 @@ class StudyPostgresStore:
             if row is None:
                 return self._normalized(current), False
             return self._normalized(row), True
+
+    def mark_post_started(self, study_id: str, dispatch_claim_id: str) -> bool:
+        self._validate_dispatch_claim(dispatch_claim_id)
+        with self.config.connect() as connection:
+            row = connection.execute(
+                """
+                UPDATE qr_study.jobs SET dispatch_post_started=true,
+                    updated_at=clock_timestamp()
+                WHERE study_id=%s AND status='ACCEPTED'
+                  AND dispatch_claim_id=%s
+                  AND dispatch_claim_expires_at > clock_timestamp()
+                RETURNING study_id
+                """,
+                (study_id, dispatch_claim_id),
+            ).fetchone()
+            return row is not None
 
     def mark_acceptance_ambiguous(
         self, study_id: str, dispatch_claim_id: str
@@ -897,14 +953,25 @@ class StudyPostgresStore:
             row = connection.execute(
                 """
                 UPDATE qr_study.jobs SET
-                    acceptance_ambiguous=(acceptance_ambiguous OR status='ACCEPTED'),
+                    acceptance_ambiguous=(
+                        acceptance_ambiguous OR
+                        (status='ACCEPTED' AND dispatch_claim_id=%s AND dispatch_post_started)
+                    ),
                     dispatch_claim_id=CASE WHEN dispatch_claim_id=%s THEN NULL
                                            ELSE dispatch_claim_id END,
                     dispatch_claim_expires_at=CASE WHEN dispatch_claim_id=%s THEN NULL
                                                    ELSE dispatch_claim_expires_at END,
+                    dispatch_post_started=CASE WHEN dispatch_claim_id=%s THEN false
+                                               ELSE dispatch_post_started END,
                     updated_at=clock_timestamp() WHERE study_id=%s RETURNING *
                 """,
-                (dispatch_claim_id, dispatch_claim_id, study_id),
+                (
+                    dispatch_claim_id,
+                    dispatch_claim_id,
+                    dispatch_claim_id,
+                    dispatch_claim_id,
+                    study_id,
+                ),
             ).fetchone()
             return self._normalized(row)
 
@@ -939,11 +1006,8 @@ class StudyPostgresStore:
                 """
                 UPDATE qr_study.jobs SET status=%s, latest_progress=%s,
                     final_result=%s, failure=%s, acceptance_ambiguous=false,
-                    dispatch_claim_id=CASE WHEN dispatch_claim_id=%s THEN NULL
-                                           ELSE dispatch_claim_id END,
-                    dispatch_claim_expires_at=CASE WHEN dispatch_claim_id=%s THEN NULL
-                                                   ELSE dispatch_claim_expires_at END,
-                    updated_at=clock_timestamp()
+                    dispatch_claim_id=NULL, dispatch_claim_expires_at=NULL,
+                    dispatch_post_started=false, updated_at=clock_timestamp()
                 WHERE study_id=%s RETURNING *
                 """,
                 (
@@ -951,8 +1015,6 @@ class StudyPostgresStore:
                     _jsonb(progress) if progress is not None else None,
                     _jsonb(result) if result is not None else None,
                     _jsonb(failure) if failure is not None else None,
-                    dispatch_claim_id,
-                    dispatch_claim_id,
                     study_id,
                 ),
             ).fetchone()
@@ -981,7 +1043,8 @@ class StudyPostgresStore:
                 row = connection.execute(
                     """
                     UPDATE qr_study.jobs SET dispatch_claim_id=NULL,
-                        dispatch_claim_expires_at=NULL, updated_at=clock_timestamp()
+                        dispatch_claim_expires_at=NULL, dispatch_post_started=false,
+                        updated_at=clock_timestamp()
                     WHERE study_id=%s AND dispatch_claim_id=%s RETURNING *
                     """,
                     (study_id, dispatch_claim_id),
@@ -991,7 +1054,7 @@ class StudyPostgresStore:
                 """
                 UPDATE qr_study.jobs SET status='FAILED', failure=%s,
                     dispatch_claim_id=NULL, dispatch_claim_expires_at=NULL,
-                    updated_at=clock_timestamp()
+                    dispatch_post_started=false, updated_at=clock_timestamp()
                 WHERE study_id=%s AND dispatch_claim_id=%s RETURNING *
                 """,
                 (_jsonb(failure), study_id, dispatch_claim_id),
@@ -1049,7 +1112,12 @@ class StudyDispatcher:
                 "local_compute_attempted": False,
             }
         try:
-            response = self.client.submit(frozen)
+            response = self.client.submit(
+                frozen,
+                on_post_start=lambda: self.store.mark_post_started(
+                    frozen["job_id"], dispatch_claim_id
+                ),
+            )
             return self._record_submit_response(frozen["job_id"], dispatch_claim_id, response)
         except StudyTransportError as exc:
             if exc.acceptance_ambiguous:

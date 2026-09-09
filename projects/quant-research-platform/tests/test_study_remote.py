@@ -39,6 +39,7 @@ class _AuthoritativeStore(StudyPostgresStore):
                 "acceptance_ambiguous": False,
                 "dispatch_claim_id": None,
                 "dispatch_claim_expires_at": None,
+                "dispatch_post_started": False,
                 "latest_progress": None,
                 "final_result": None,
                 "failure": None,
@@ -51,9 +52,18 @@ class _AuthoritativeStore(StudyPostgresStore):
         row = self.rows[study_id]
         if row["status"] in {"SUCCEEDED", "FAILED"}:
             return dict(row), False
+        row["acceptance_ambiguous"] |= row["dispatch_post_started"]
         row["dispatch_claim_id"] = dispatch_claim_id
         row["dispatch_claim_expires_at"] = lease_seconds
+        row["dispatch_post_started"] = False
         return dict(row), True
+
+    def mark_post_started(self, study_id, dispatch_claim_id):
+        row = self.rows[study_id]
+        if row["dispatch_claim_id"] != dispatch_claim_id or row["status"] != "ACCEPTED":
+            return False
+        row["dispatch_post_started"] = True
+        return True
 
     def mark_dispatched(self, study_id, remote, dispatch_claim_id):
         return self._record_remote(
@@ -65,10 +75,13 @@ class _AuthoritativeStore(StudyPostgresStore):
 
     def mark_acceptance_ambiguous(self, study_id, dispatch_claim_id):
         row = self.rows[study_id]
-        row["acceptance_ambiguous"] = True
+        row["acceptance_ambiguous"] |= (
+            row["dispatch_claim_id"] == dispatch_claim_id and row["dispatch_post_started"]
+        )
         if row["dispatch_claim_id"] == dispatch_claim_id:
             row["dispatch_claim_id"] = None
             row["dispatch_claim_expires_at"] = None
+            row["dispatch_post_started"] = False
         return dict(row)
 
     def _record_remote(self, study_id, remote, *, dispatch, dispatch_claim_id=None):
@@ -79,15 +92,20 @@ class _AuthoritativeStore(StudyPostgresStore):
         row["final_result"] = remote.get("result") if status == "SUCCEEDED" else None
         row["failure"] = remote.get("failure") if status == "FAILED" else None
         row["acceptance_ambiguous"] = False
-        if row["dispatch_claim_id"] == dispatch_claim_id:
-            row["dispatch_claim_id"] = None
-            row["dispatch_claim_expires_at"] = None
+        row["dispatch_claim_id"] = None
+        row["dispatch_claim_expires_at"] = None
+        row["dispatch_post_started"] = False
         return dict(row)
 
     def fail_unavailable(self, study_id, dispatch_claim_id, message):
         self.fail_unavailable_calls += 1
         row = self.rows[study_id]
-        if row["dispatch_claim_id"] != dispatch_claim_id or row["acceptance_ambiguous"]:
+        if row["dispatch_claim_id"] != dispatch_claim_id:
+            return dict(row)
+        if row["acceptance_ambiguous"]:
+            row["dispatch_claim_id"] = None
+            row["dispatch_claim_expires_at"] = None
+            row["dispatch_post_started"] = False
             return dict(row)
         row["status"] = "FAILED"
         row["failure"] = {
@@ -97,6 +115,7 @@ class _AuthoritativeStore(StudyPostgresStore):
         }
         row["dispatch_claim_id"] = None
         row["dispatch_claim_expires_at"] = None
+        row["dispatch_post_started"] = False
         return dict(row)
 
     def get(self, study_id):
@@ -110,9 +129,9 @@ class _LoseFirstAcceptedResponse(SignedStudyClient):
         self.endpoint = client.endpoint
         self.submit_calls = 0
 
-    def submit(self, request):
+    def submit(self, request, *, on_post_start=None):
         self.submit_calls += 1
-        response = self.client.submit(request)
+        response = self.client.submit(request, on_post_start=on_post_start)
         if self.submit_calls == 1:
             raise StudyTransportError("simulated response loss")
         return response
@@ -128,14 +147,14 @@ class _HideInitialAcceptedJob(SignedStudyClient):
         self.submit_calls = 0
         self.read_calls = 0
 
-    def submit(self, request):
+    def submit(self, request, *, on_post_start=None):
         self.submit_calls += 1
         if self.submit_calls == 1:
-            self.client.submit(request)
+            self.client.submit(request, on_post_start=on_post_start)
             raise StudyTransportError("simulated accepted response loss")
         if self.submit_calls == 2:
             raise StudyTransportError("simulated unresolved replay")
-        return self.client.submit(request)
+        return self.client.submit(request, on_post_start=on_post_start)
 
     def read(self, job_id):
         self.read_calls += 1

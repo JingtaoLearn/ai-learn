@@ -11,9 +11,11 @@ from pathlib import Path
 import pytest
 
 from quant_platform.study_remote import (
+    SCHEMA_IDENTITY,
     SignedStudyClient,
     StudyDispatcher,
     StudyPostgresStore,
+    StudyRemoteError,
     StudyTransportError,
     StudyValidationError,
     StudyWorkerServer,
@@ -65,10 +67,10 @@ class _PauseBeforePost(SignedStudyClient):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def submit(self, request):
+    def submit(self, request, *, on_post_start=None):
         self.entered.set()
         assert self.release.wait(timeout=10)
-        return self.client.submit(request)
+        return self.client.submit(request, on_post_start=on_post_start)
 
     def read(self, job_id):
         return self.client.read(job_id)
@@ -83,10 +85,10 @@ class _PauseAfterAcceptedResponse(SignedStudyClient):
         self.accepted = threading.Event()
         self.release = threading.Event()
 
-    def submit(self, request):
+    def submit(self, request, *, on_post_start=None):
         self.submit_calls += 1
         if self.submit_calls == 1:
-            self.client.submit(request)
+            self.client.submit(request, on_post_start=on_post_start)
             self.accepted.set()
             assert self.release.wait(timeout=10)
             raise StudyTransportError("simulated accepted response loss")
@@ -97,6 +99,62 @@ class _PauseAfterAcceptedResponse(SignedStudyClient):
         raise StudyTransportError("simulated unresolved immediate read")
 
 
+class _PauseAfterResponse(SignedStudyClient):
+    def __init__(self, client: SignedStudyClient, *, lose_response: bool):
+        self.client = client
+        self.endpoint = client.endpoint
+        self.lose_response = lose_response
+        self.accepted = threading.Event()
+        self.release = threading.Event()
+
+    def submit(self, request, *, on_post_start=None):
+        response = self.client.submit(request, on_post_start=on_post_start)
+        self.accepted.set()
+        assert self.release.wait(timeout=10)
+        if self.lose_response:
+            raise StudyTransportError("simulated accepted response loss")
+        return response
+
+    def read(self, job_id):
+        return self.client.read(job_id)
+
+
+class _GateBeforeAcceptanceStore(WorkerJobStore):
+    def __init__(self, root: Path, worker_image: str):
+        super().__init__(root, worker_image)
+        self.request_in_handler = threading.Event()
+        self.release_acceptance = threading.Event()
+
+    def submit(self, request):
+        self.request_in_handler.set()
+        assert self.release_acceptance.wait(timeout=10)
+        return super().submit(request)
+
+
+def _start_server(store: WorkerJobStore, public_key: Path, port: int = 0):
+    server = StudyWorkerServer(("127.0.0.1", port), store, public_key)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _stop_accepting(server: StudyWorkerServer, thread: threading.Thread) -> None:
+    server.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    server.socket.close()
+
+
+def _wait_terminal(store: WorkerJobStore, study_id: str) -> dict[str, object]:
+    deadline = time.monotonic() + 10
+    while True:
+        state = store.status(study_id)
+        if state is not None and state["status"] in {"SUCCEEDED", "FAILED"}:
+            return state
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
 def _request(*, seed: int):
     return freeze_synthetic_request(
         iterations=100_000,
@@ -105,6 +163,155 @@ def _request(*, seed: int):
         source_commit=COMMIT,
         source_tree=TREE,
         worker_image=IMAGE,
+    )
+
+
+@pytest.mark.parametrize("lose_response", [False, True])
+def test_expired_post_claim_refusal_preserves_accepted_feng_work(
+    tmp_path: Path, lose_response: bool
+):
+    store = StudyPostgresStore.from_environment()
+    store.initialize()
+    private_key = _keypair(tmp_path)
+    worker_store = WorkerJobStore(tmp_path / "worker-state", IMAGE)
+    server, server_thread = _start_server(worker_store, private_key.with_suffix(".pub.pem"))
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    paused = _PauseAfterResponse(
+        SignedStudyClient(endpoint, private_key, timeout_seconds=2),
+        lose_response=lose_response,
+    )
+    first = StudyDispatcher(store, paused)
+    first.DISPATCH_LEASE_SECONDS = 1
+    competing = StudyDispatcher(
+        store, SignedStudyClient(endpoint, private_key, timeout_seconds=0.2)
+    )
+    request = _request(seed=int.from_bytes(os.urandom(4), "big"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(first.submit, request)
+        assert paused.accepted.wait(timeout=10)
+        after_acceptance = store.get(request["job_id"])
+        time.sleep(1.1)
+        _stop_accepting(server, server_thread)
+        refused = competing.submit(request)
+        after_refusal = store.get(request["job_id"])
+        paused.release.set()
+        first_result = first_future.result(timeout=10)
+
+    remote_terminal = _wait_terminal(worker_store, request["job_id"])
+    server.server_close()
+    rebound, rebound_thread = _start_server(
+        worker_store, private_key.with_suffix(".pub.pem"), int(endpoint.rsplit(":", 1)[1])
+    )
+    try:
+        converged = StudyDispatcher(
+            store, SignedStudyClient(endpoint, private_key, timeout_seconds=0.5)
+        ).read(request["job_id"])
+    finally:
+        rebound.shutdown()
+        rebound.server_close()
+        rebound_thread.join(timeout=2)
+
+    assert after_acceptance is not None
+    assert after_acceptance["status"] == "ACCEPTED"
+    assert after_acceptance["dispatch_post_started"] is True
+    assert after_refusal is not None
+    assert after_refusal["status"] == "ACCEPTED"
+    assert after_refusal["failure"] is None
+    assert after_refusal["acceptance_ambiguous"] is True
+    assert refused["authoritative"]["status"] == "ACCEPTED"
+    assert first_result["authoritative"]["status"] in {"ACCEPTED", "DISPATCHED", "SUCCEEDED"}
+    assert remote_terminal["status"] == "SUCCEEDED"
+    assert converged["authoritative"]["status"] == "SUCCEEDED"
+    assert converged["authoritative"]["final_result"] == remote_terminal["result"]
+    assert len(list(worker_store.root.iterdir())) == 1
+    assert converged["local_compute_attempted"] is False
+    print(
+        canonical_json_bytes(
+            {
+                "scenario": (
+                    "accepted_response_loss_after_expiry"
+                    if lose_response
+                    else "accepted_delayed_response_after_expiry"
+                ),
+                "after_acceptance": after_acceptance,
+                "after_reclaimed_refusal": after_refusal,
+                "first_result": first_result["authoritative"],
+                "feng_terminal": remote_terminal,
+                "converged_postgresql": converged["authoritative"],
+                "worker_document_count": len(list(worker_store.root.iterdir())),
+                "local_compute_attempted": converged["local_compute_attempted"],
+            }
+        ).decode("utf-8")
+    )
+
+
+def test_inflight_post_accepted_after_expiry_survives_reclaimed_refusal(tmp_path: Path):
+    store = StudyPostgresStore.from_environment()
+    store.initialize()
+    private_key = _keypair(tmp_path)
+    worker_store = _GateBeforeAcceptanceStore(tmp_path / "worker-state", IMAGE)
+    server, server_thread = _start_server(worker_store, private_key.with_suffix(".pub.pem"))
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    first = StudyDispatcher(store, SignedStudyClient(endpoint, private_key, timeout_seconds=5))
+    first.DISPATCH_LEASE_SECONDS = 1
+    competing = StudyDispatcher(
+        store, SignedStudyClient(endpoint, private_key, timeout_seconds=0.2)
+    )
+    request = _request(seed=int.from_bytes(os.urandom(4), "big"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(first.submit, request)
+        assert worker_store.request_in_handler.wait(timeout=10)
+        in_flight = store.get(request["job_id"])
+        time.sleep(1.1)
+        _stop_accepting(server, server_thread)
+        refused = competing.submit(request)
+        after_refusal = store.get(request["job_id"])
+        worker_store.release_acceptance.set()
+        first_result = first_future.result(timeout=10)
+
+    remote_terminal = _wait_terminal(worker_store, request["job_id"])
+    server.server_close()
+    rebound, rebound_thread = _start_server(
+        worker_store, private_key.with_suffix(".pub.pem"), int(endpoint.rsplit(":", 1)[1])
+    )
+    try:
+        converged = StudyDispatcher(
+            store, SignedStudyClient(endpoint, private_key, timeout_seconds=0.5)
+        ).read(request["job_id"])
+    finally:
+        rebound.shutdown()
+        rebound.server_close()
+        rebound_thread.join(timeout=2)
+
+    assert in_flight is not None
+    assert in_flight["status"] == "ACCEPTED"
+    assert in_flight["dispatch_post_started"] is True
+    assert after_refusal is not None
+    assert after_refusal["status"] == "ACCEPTED"
+    assert after_refusal["failure"] is None
+    assert after_refusal["acceptance_ambiguous"] is True
+    assert refused["authoritative"]["status"] == "ACCEPTED"
+    assert first_result["authoritative"]["status"] in {"DISPATCHED", "SUCCEEDED"}
+    assert remote_terminal["status"] == "SUCCEEDED"
+    assert converged["authoritative"]["status"] == "SUCCEEDED"
+    assert converged["authoritative"]["final_result"] == remote_terminal["result"]
+    assert len(list(worker_store.root.iterdir())) == 1
+    assert converged["local_compute_attempted"] is False
+    print(
+        canonical_json_bytes(
+            {
+                "scenario": "signed_post_in_flight_acceptance_after_expiry",
+                "in_flight_before_expiry": in_flight,
+                "after_reclaimed_refusal": after_refusal,
+                "first_result": first_result["authoritative"],
+                "feng_terminal": remote_terminal,
+                "converged_postgresql": converged["authoritative"],
+                "worker_document_count": len(list(worker_store.root.iterdir())),
+                "local_compute_attempted": converged["local_compute_attempted"],
+            }
+        ).decode("utf-8")
     )
 
 
@@ -312,6 +519,60 @@ def test_refusal_and_abandoned_pre_acceptance_claims_resolve(tmp_path: Path):
                     for request in (fresh_request, before_claim, after_claim)
                 ],
                 "local_compute_attempted": fresh["local_compute_attempted"],
+            }
+        ).decode("utf-8")
+    )
+
+
+def test_v2_schema_migration_replay_and_foreign_identity_rejection():
+    store = StudyPostgresStore.from_environment()
+    store.initialize()
+    with store.config.connect() as connection:
+        connection.execute(
+            "ALTER TABLE qr_study.jobs DROP CONSTRAINT valid_study_dispatch_post_started"
+        )
+        connection.execute("ALTER TABLE qr_study.jobs DROP COLUMN dispatch_post_started")
+        connection.execute(
+            "UPDATE qr_study.schema_identity SET identity=%s WHERE singleton",
+            ("quantresearch-lightweight-study-postgresql-v2",),
+        )
+
+    store.initialize()
+    store.initialize()
+    with store.config.connect() as connection:
+        identity = connection.execute(
+            "SELECT identity FROM qr_study.schema_identity WHERE singleton"
+        ).fetchone()["identity"]
+        column = connection.execute(
+            """
+            SELECT is_nullable, column_default FROM information_schema.columns
+            WHERE table_schema='qr_study' AND table_name='jobs'
+              AND column_name='dispatch_post_started'
+            """
+        ).fetchone()
+        connection.execute(
+            "UPDATE qr_study.schema_identity SET identity='foreign-study-schema' WHERE singleton"
+        )
+    try:
+        with pytest.raises(StudyRemoteError, match="schema identity conflicts"):
+            store.initialize()
+    finally:
+        with store.config.connect() as connection:
+            connection.execute(
+                "UPDATE qr_study.schema_identity SET identity=%s WHERE singleton",
+                ("quantresearch-lightweight-study-postgresql-v2",),
+            )
+        store.initialize()
+
+    assert identity == SCHEMA_IDENTITY
+    assert column == {"is_nullable": "NO", "column_default": "false"}
+    print(
+        canonical_json_bytes(
+            {
+                "scenario": "v2_schema_migration_replay_and_identity_mismatch",
+                "migrated_identity": identity,
+                "dispatch_post_started_column": column,
+                "foreign_identity_rejected": True,
             }
         ).decode("utf-8")
     )
