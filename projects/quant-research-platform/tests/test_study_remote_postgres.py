@@ -73,17 +73,21 @@ class _PauseBeforePost(SignedStudyClient):
         return self.client.read(job_id)
 
 
-class _HideAcceptedResponse(SignedStudyClient):
+class _PauseAfterAcceptedResponse(SignedStudyClient):
     def __init__(self, client: SignedStudyClient):
         self.client = client
         self.endpoint = client.endpoint
         self.submit_calls = 0
         self.read_calls = 0
+        self.accepted = threading.Event()
+        self.release = threading.Event()
 
     def submit(self, request):
         self.submit_calls += 1
         if self.submit_calls == 1:
             self.client.submit(request)
+            self.accepted.set()
+            assert self.release.wait(timeout=10)
             raise StudyTransportError("simulated accepted response loss")
         raise StudyTransportError("simulated unresolved replay")
 
@@ -118,16 +122,19 @@ def test_concurrent_caller_cannot_erase_durable_acceptance_ambiguity(tmp_path: P
     endpoint = f"http://127.0.0.1:{port}"
     creator_client = _PauseBeforePost(SignedStudyClient(endpoint, private_key, timeout_seconds=0.2))
     creator = StudyDispatcher(store, creator_client)
-    later = StudyDispatcher(
-        store,
-        _HideAcceptedResponse(SignedStudyClient(endpoint, private_key, timeout_seconds=0.2)),
+    later_client = _PauseAfterAcceptedResponse(
+        SignedStudyClient(endpoint, private_key, timeout_seconds=0.2)
     )
+    later = StudyDispatcher(store, later_client)
     request = _request(seed=seed)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         creator_result = pool.submit(creator.submit, request)
         assert creator_client.entered.wait(timeout=10)
-        later_result = later.submit(request)
+        later_future = pool.submit(later.submit, request)
+        assert later_client.accepted.wait(timeout=10)
+        authoritative_after_acceptance = store.get(request["job_id"])
+        assert not later_future.done()
         deadline = time.monotonic() + 10
         while True:
             remote = SignedStudyClient(endpoint, private_key).read(request["job_id"]).value["job"]
@@ -140,8 +147,14 @@ def test_concurrent_caller_cannot_erase_durable_acceptance_ambiguity(tmp_path: P
         server_thread.join(timeout=2)
         creator_client.release.set()
         refused_result = creator_result.result(timeout=10)
+        authoritative_after_refusal = store.get(request["job_id"])
+        assert not later_future.done()
+        later_client.release.set()
+        later_result = later_future.result(timeout=10)
 
-    authoritative_after_refusal = store.get(request["job_id"])
+    assert authoritative_after_acceptance is not None
+    assert authoritative_after_acceptance["status"] == "ACCEPTED"
+    assert authoritative_after_acceptance["acceptance_ambiguous"] is True
     assert authoritative_after_refusal is not None
     server = StudyWorkerServer(
         ("127.0.0.1", port), worker_store, private_key.with_suffix(".pub.pem")

@@ -939,6 +939,8 @@ class StudyDispatcher:
     def submit(self, request: Mapping[str, Any]) -> dict[str, Any]:
         frozen = validate_request(request)
         _, created = self.store.admit(frozen, self.client.endpoint)
+        if not created:
+            self.store.mark_acceptance_ambiguous(frozen["job_id"])
         try:
             response = self.client.submit(frozen)
             return self._record_submit_response(frozen["job_id"], response)
