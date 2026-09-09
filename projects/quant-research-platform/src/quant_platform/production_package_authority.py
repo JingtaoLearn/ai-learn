@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import stat
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -43,6 +46,34 @@ def _identity_fingerprint(value: os.stat_result) -> tuple[int, ...]:
         value.st_mtime_ns,
         value.st_ctime_ns,
     )
+
+
+def _rename_noreplace(source: Path, target: Path) -> None:
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:
+        raise OSError(
+            errno.ENOSYS,
+            "atomic no-replace rename is unavailable",
+            str(target),
+        )
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(target),
+        1,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(target))
 
 
 class FilesystemPackageIdentityAuthority:
@@ -135,30 +166,32 @@ class FilesystemPackageIdentityAuthority:
                 or stat.S_IMODE(parent.st_mode) != 0o700
             ):
                 raise PackageIdentityAuthorityError("package identity namespace is unsafe")
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{identity_path.name}.",
+                dir=identity_path.parent,
+            )
+            temporary = Path(temporary_name)
             try:
-                descriptor = os.open(
-                    identity_path,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    0o400,
-                )
-            except FileExistsError:
-                retained = self._read_identity(identity_path)
-                if retained != observed:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(observed.encode("ascii") + b"\n")
+                    stream.flush()
+                    os.fchmod(stream.fileno(), 0o400)
+                    os.fsync(stream.fileno())
+                try:
+                    _rename_noreplace(temporary, identity_path)
+                except FileExistsError:
+                    retained = self._read_identity(identity_path)
+                    if retained != observed:
+                        raise PackageIdentityAuthorityError(
+                            "retained package identity conflicts with staged generation"
+                        )
+                    return retained
+                except OSError as exc:
                     raise PackageIdentityAuthorityError(
-                        "retained package identity conflicts with staged generation"
-                    )
-                return retained
-            except OSError as exc:
-                raise PackageIdentityAuthorityError("package identity cannot be retained") from exc
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(observed.encode("ascii") + b"\n")
-                stream.flush()
-                os.fchmod(stream.fileno(), 0o400)
-                os.fsync(stream.fileno())
+                        "package identity cannot be retained"
+                    ) from exc
+            finally:
+                temporary.unlink(missing_ok=True)
             parent_descriptor = os.open(
                 identity_path.parent,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),

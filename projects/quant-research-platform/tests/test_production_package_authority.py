@@ -8,6 +8,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+import quant_platform.production_package_authority as authority_module
 from quant_platform.production_jobs import ProductionInput, ProductionJobs
 from quant_platform.production_package_authority import (
     FilesystemPackageIdentityAuthority,
@@ -63,6 +64,46 @@ def test_authority_create_once_replay_and_conflict_are_observable(tmp_path: Path
     with pytest.raises(PackageIdentityAuthorityError, match="conflicts"):
         authority.seal(RUN_ID, "acquisition")
     assert identity_path.read_text() == retained + "\n"
+
+
+def test_authority_interruption_before_atomic_publication_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_root = tmp_path / "work"
+    identity_root = tmp_path / "identities"
+    target = _stage_input(work_root)
+    authority = FilesystemPackageIdentityAuthority(work_root, identity_root)
+    identity_path = identity_root / RUN_ID / "acquisition.sha256"
+
+    def interrupt_before_publication(source: Path, destination: Path) -> None:
+        assert source.read_bytes().endswith(b"\n")
+        assert stat.S_IMODE(source.stat().st_mode) == 0o400
+        assert not destination.exists()
+        raise SystemExit(91)
+
+    monkeypatch.setattr(authority_module, "_rename_noreplace", interrupt_before_publication)
+    with pytest.raises(SystemExit, match="91"):
+        authority.seal(RUN_ID, "acquisition")
+    assert not identity_path.exists()
+
+    monkeypatch.undo()
+    retained = FilesystemPackageIdentityAuthority(work_root, identity_root).seal(
+        RUN_ID, "acquisition"
+    )
+    assert FilesystemPackageIdentityAuthority(work_root, identity_root).seal(
+        RUN_ID, "acquisition"
+    ) == retained
+
+    target.chmod(0o750)
+    raw = target / "raw.bin"
+    raw.chmod(0o640)
+    raw.write_bytes(b"new")
+    raw.chmod(0o440)
+    target.chmod(0o550)
+    with pytest.raises(PackageIdentityAuthorityError, match="conflicts"):
+        FilesystemPackageIdentityAuthority(work_root, identity_root).seal(
+            RUN_ID, "acquisition"
+        )
 
 
 def test_authority_http_interface_has_no_identity_selection_or_reset_operation(tmp_path: Path) -> None:
