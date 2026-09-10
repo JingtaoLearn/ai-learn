@@ -987,9 +987,22 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
     ) -> dict[str, Any]:
         """Publish one explicit XNYS/MSFT Snapshot and generation-checked pointer."""
 
-        from .msft_trend_study import REQUIRED_RECORD_FIELDS, validate_snapshot
+        from .msft_trend_study import (
+            PROXY_LABEL,
+            PROXY_REQUIRED_RECORD_FIELDS,
+            PROXY_SNAPSHOT_SCHEMA,
+            REQUIRED_RECORD_FIELDS,
+            validate_proxy_snapshot,
+            validate_snapshot,
+        )
 
-        frozen = validate_snapshot(snapshot)
+        is_proxy = snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA
+        frozen = validate_proxy_snapshot(snapshot) if is_proxy else validate_snapshot(snapshot)
+        record_fields = PROXY_REQUIRED_RECORD_FIELDS if is_proxy else REQUIRED_RECORD_FIELDS
+        dataset_id = "MSFT-YAHOO-ADJUSTED-OHLC-PROXY" if is_proxy else "MSFT-XNYS-TOTAL-RETURN"
+        artifact_kind = "MSFT_YAHOO_ADJUSTED_OHLC_PROXY" if is_proxy else "XNYS_MSFT_SNAPSHOT"
+        adjustment = PROXY_LABEL if is_proxy else "split-adjusted-dividend-unadjusted"
+        pointer_instrument = "MSFT:YAHOO_ADJUSTED_OHLC_PROXY" if is_proxy else "MSFT"
         if (
             not idempotency_key
             or len(idempotency_key) > 128
@@ -1001,7 +1014,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         existing = self.dataset_ingress_receipt(idempotency_key, request_digest)
         if existing is not None:
             return existing
-        frame = pd.DataFrame(frozen["records"])[list(REQUIRED_RECORD_FIELDS)]
+        frame = pd.DataFrame(frozen["records"])[list(record_fields)]
         parquet_buffer = io.BytesIO()
         frame.to_parquet(parquet_buffer, index=False)
         parquet = parquet_buffer.getvalue()
@@ -1022,6 +1035,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             "snapshot_id": frozen["snapshot_id"],
             "source_identity_sha256": frozen["source_identity_sha256"],
             "request_digest": request_digest,
+            "classification": adjustment,
         }
         lineage_payload = canonical_json_bytes(lineage) + b"\n"
         try:
@@ -1041,17 +1055,19 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                             raise PersistenceConflict("dataset ingress idempotency key conflicts")
                         return dict(action["response"])
                     connection.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended('MSFT', 0))"
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (pointer_instrument,),
                     )
                     current = connection.execute(
-                        "SELECT snapshot_id, generation FROM qr.dataset_current WHERE instrument='MSFT'"
+                        "SELECT snapshot_id, generation FROM qr.dataset_current WHERE instrument=%s",
+                        (pointer_instrument,),
                     ).fetchone()
                     generation = 0 if current is None else int(current["generation"])
                     if generation != expected_generation:
                         raise PersistenceConflict("dataset current generation changed")
                     artifact_set_id = self._publish_artifact_set_in_transaction(
                         connection,
-                        kind="XNYS_MSFT_SNAPSHOT",
+                        kind=artifact_kind,
                         members={
                             "manifest.json": ("application/json", manifest_payload),
                             "snapshot.json": ("application/json", snapshot_payload),
@@ -1067,10 +1083,19 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     connection.execute(
                         "INSERT INTO qr_catalog.dataset_catalog(dataset_id,name,instrument,provider,"
                         "market,currency,adjustment,calendar,default_start,created_at) VALUES "
-                        "('MSFT-XNYS-TOTAL-RETURN','Microsoft (MSFT)','MSFT','yahoo-chart-api',"
-                        "'XNYS','USD','split-adjusted-dividend-unadjusted','XNYS',%s,%s) "
+                        "(%s,%s,'MSFT','yahoo-chart-api','XNYS','USD',%s,'XNYS',%s,%s) "
                         "ON CONFLICT (dataset_id) DO NOTHING",
-                        (frozen["data_start"], frozen["sealed_at"]),
+                        (
+                            dataset_id,
+                            (
+                                "Microsoft (MSFT) Yahoo adjusted OHLC proxy — unqualified/non-confirmatory"
+                                if is_proxy
+                                else "Microsoft (MSFT)"
+                            ),
+                            adjustment,
+                            frozen["data_start"],
+                            frozen["sealed_at"],
+                        ),
                     )
                     connection.execute(
                         "INSERT INTO qr.dataset_snapshots(snapshot_id,instrument,schema_version,"
@@ -1107,12 +1132,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     new_generation = generation + 1
                     connection.execute(
                         "INSERT INTO qr.dataset_current(instrument,snapshot_id,generation) "
-                        "VALUES ('MSFT',%s,%s) ON CONFLICT (instrument) DO UPDATE SET "
+                        "VALUES (%s,%s,%s) ON CONFLICT (instrument) DO UPDATE SET "
                         "snapshot_id=EXCLUDED.snapshot_id,generation=EXCLUDED.generation",
-                        (frozen["snapshot_id"], new_generation),
+                        (pointer_instrument, frozen["snapshot_id"], new_generation),
                     )
                     response = {
-                        "dataset_id": "MSFT-XNYS-TOTAL-RETURN",
+                        "dataset_id": dataset_id,
+                        "classification": adjustment,
                         "snapshot_id": frozen["snapshot_id"],
                         "schema_version": 6,
                         "record_count": frozen["record_count"],
@@ -1149,10 +1175,18 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         if row is None:
             raise ValueError("unknown MSFT Snapshot")
         members = self.read_artifact_set(row["artifact_set_id"].strip())
-        from .msft_trend_study import validate_snapshot
+        from .msft_trend_study import (
+            PROXY_SNAPSHOT_SCHEMA,
+            validate_proxy_snapshot,
+            validate_snapshot,
+        )
 
         snapshot = _strict_json(members["snapshot.json"], "MSFT Snapshot")
-        return validate_snapshot(snapshot)
+        return (
+            validate_proxy_snapshot(snapshot)
+            if snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA
+            else validate_snapshot(snapshot)
+        )
 
     def publish_msft_study_report(
         self,
@@ -1163,9 +1197,12 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
     ) -> dict[str, Any]:
         if SHA256.fullmatch(study_id) is None:
             raise ValueError("study_id must be lowercase SHA-256")
-        from .msft_trend_study import build_report_pointer, chinese_report
+        from .msft_trend_study import PROXY_RESULT_SCHEMA, build_report_pointer, chinese_report
 
-        document, html = chinese_report(result, provenance)
+        effective_provenance = dict(provenance)
+        if result.get("schema") == PROXY_RESULT_SCHEMA:
+            effective_provenance["study_id"] = study_id
+        document, html = chinese_report(result, effective_provenance)
         report_id = document["report_artifact_id"]
         members = {
             "report-document.json": (
@@ -1242,7 +1279,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             "study_id": study_id,
             "report_artifact_id": report_id,
             "sequence": int(row["sequence"]),
-            "canonical_url": f"https://quant.ai.jingtao.fun/studies/{study_id}/report",
+            "canonical_url": f"https://127.0.0.1:8443/api/v1/studies/{study_id}/report",
             "document": document,
             "html": members["report.html"],
         }

@@ -25,9 +25,13 @@ from urllib.parse import urlsplit
 
 from .msft_trend_study import (
     MARKET_JOB_TYPE,
+    PROXY_LABEL,
+    PROXY_RESULT_SCHEMA,
+    PROXY_SNAPSHOT_SCHEMA,
     VERDICT_PRECEDENCE,
     MsftStudyValidationError,
     run_study,
+    validate_proxy_snapshot,
     validate_snapshot,
 )
 from .study_training_kernel import (
@@ -390,7 +394,11 @@ class _MarketWorkerJob:
             raise StudyValidationError("MSFT market Study uses exactly three bounded checkpoints")
         _validate_source_identity(source_commit, source_tree, worker_image)
         try:
-            frozen_snapshot = validate_snapshot(snapshot)
+            frozen_snapshot = (
+                validate_proxy_snapshot(snapshot)
+                if snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA
+                else validate_snapshot(snapshot)
+            )
         except MsftStudyValidationError as exc:
             raise StudyValidationError(str(exc)) from exc
         frozen = {
@@ -444,32 +452,54 @@ class _MarketWorkerJob:
         try:
             evidence = run_study(request["snapshot"], checkpoint=on_checkpoint)
         except MsftStudyValidationError as exc:
-            evidence = {
-                "schema": "quantresearch-msft-study-result/v1",
-                "kernel": "quant_platform.msft_trend_study@1.0.0",
-                "snapshot_id": request["snapshot"]["snapshot_id"],
-                "trial_count": 0,
-                "family_winners": [],
-                "selection": None,
-                "final": None,
-                "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
-                "conclusion": "INCONCLUSIVE_DATA_OR_EXECUTION",
-                "verdict_precedence": list(VERDICT_PRECEDENCE),
-                "reason": str(exc),
-                "per_trial_attempt_rows": 0,
-                "terminal_exit_fabricated": False,
-                "final_evaluation_counts": {
-                    "primary_candidate": 0,
-                    "neighbors": 0,
-                    "alternatives": 0,
-                    "reselection": 0,
-                },
-            }
+            if request["snapshot"].get("schema") == PROXY_SNAPSHOT_SCHEMA:
+                evidence = {
+                    "schema": PROXY_RESULT_SCHEMA,
+                    "classification": PROXY_LABEL,
+                    "snapshot_id": request["snapshot"]["snapshot_id"],
+                    "candidate_count": 0,
+                    "verdict": "NON_CONFIRMATORY_PROXY_EXECUTION_FAILED",
+                    "conclusion": PROXY_LABEL,
+                    "reason": str(exc),
+                    "per_trial_attempt_rows": 0,
+                    "separate_corporate_action_postings": 0,
+                    "local_fallback": False,
+                    "final_created": False,
+                    "final_window_queried": False,
+                }
+            else:
+                evidence = {
+                    "schema": "quantresearch-msft-study-result/v1",
+                    "kernel": "quant_platform.msft_trend_study@1.0.0",
+                    "snapshot_id": request["snapshot"]["snapshot_id"],
+                    "trial_count": 0,
+                    "family_winners": [],
+                    "selection": None,
+                    "final": None,
+                    "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
+                    "conclusion": "INCONCLUSIVE_DATA_OR_EXECUTION",
+                    "verdict_precedence": list(VERDICT_PRECEDENCE),
+                    "reason": str(exc),
+                    "per_trial_attempt_rows": 0,
+                    "terminal_exit_fabricated": False,
+                    "final_evaluation_counts": {
+                        "primary_candidate": 0,
+                        "neighbors": 0,
+                        "alternatives": 0,
+                        "reselection": 0,
+                    },
+                }
         return _WorkerJobResult(
             progress={
-                "completed_candidates": evidence["trial_count"],
+                "completed_candidates": evidence.get(
+                    "trial_count", evidence.get("candidate_count", 0)
+                ),
                 "total_candidates": 15,
-                "checkpoint_sequence": 3 if evidence["trial_count"] == 15 else 0,
+                "checkpoint_sequence": (
+                    3
+                    if evidence.get("trial_count", evidence.get("candidate_count", 0)) == 15
+                    else 0
+                ),
             },
             evidence=evidence,
         )

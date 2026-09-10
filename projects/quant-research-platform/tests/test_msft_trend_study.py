@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import subprocess
 import threading
@@ -12,16 +13,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from quant_platform.dataset_service import (
+    MSFT_PROXY_LABEL,
     MSFT_YAHOO_BASIS_UNQUALIFIED,
     DatasetResolutionError,
     MsftDatasetIngress,
+    msft_adjusted_ohlc_proxy_snapshot_from_yahoo,
     msft_snapshot_from_yahoo,
 )
 from quant_platform.msft_trend_study import (
+    PROXY_RESULT_SCHEMA,
     SNAPSHOT_BASIS_CONTRACT,
     VERDICT_PRECEDENCE,
     MsftStudyValidationError,
     build_report_pointer,
+    build_proxy_snapshot,
     build_snapshot,
     candidates,
     chinese_report,
@@ -125,6 +130,129 @@ def test_yahoo_basis_is_fail_closed_before_provider_access_or_relabeling() -> No
             sealed_at=SEALED,
         )
     assert provider.calls == 0
+
+
+def _proxy_yahoo_payload(dates: list[str]) -> bytes:
+    timestamps = [int(pd.Timestamp(f"{date}T14:30:00Z").timestamp()) for date in dates]
+    raw_close = [100.0 + index for index in range(len(dates))]
+    return json.dumps(
+        {
+            "chart": {
+                "error": None,
+                "result": [
+                    {
+                        "meta": {
+                            "symbol": "MSFT",
+                            "currency": "USD",
+                            "dataGranularity": "1d",
+                            "exchangeTimezoneName": "America/New_York",
+                        },
+                        "timestamp": timestamps,
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [value - 1.0 for value in raw_close],
+                                    "high": [value + 2.0 for value in raw_close],
+                                    "low": [value - 2.0 for value in raw_close],
+                                    "close": raw_close,
+                                }
+                            ],
+                            "adjclose": [
+                                {"adjclose": [value * 0.8 for value in raw_close]}
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def test_proxy_parser_applies_one_factor_to_ohlc_and_rejects_2025_before_publication() -> None:
+    payload = _proxy_yahoo_payload(["2022-02-01", "2024-12-31"])
+    snapshot = msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
+        payload,
+        request_url="https://query1.finance.yahoo.com/frozen-proxy",
+        sealed_at=SEALED,
+    )
+
+    assert snapshot["classification"] == MSFT_PROXY_LABEL
+    assert snapshot["data_start"] == "2022-02-01"
+    assert snapshot["data_end"] == "2024-12-31"
+    assert snapshot["source_identity"]["response_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert snapshot["source_identity"]["separate_corporate_action_postings"] == 0
+    row = snapshot["records"][0]
+    assert row["adjustment_factor"] == pytest.approx(0.8)
+    assert row["open"] == pytest.approx(row["raw_open"] * 0.8)
+    assert row["high"] == pytest.approx(row["raw_high"] * 0.8)
+    assert row["low"] == pytest.approx(row["raw_low"] * 0.8)
+    assert row["close"] == pytest.approx(row["raw_close"] * 0.8)
+
+    with pytest.raises(DatasetResolutionError, match="outside the frozen range"):
+        msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
+            _proxy_yahoo_payload(["2022-02-01", "2025-01-02"]),
+            request_url="https://query1.finance.yahoo.com/frozen-proxy",
+            sealed_at=SEALED,
+        )
+
+
+def _proxy_snapshot():
+    records = []
+    for index, session in enumerate(pd.bdate_range("2022-02-01", "2024-12-31")):
+        raw_close = 100.0 * math.exp(index * 0.0007) * (1.0 + 0.04 * math.sin(index / 19.0))
+        raw_open = raw_close * (1.0 + 0.002 * math.sin(index / 7.0))
+        factor = 0.8
+        records.append(
+            {
+                "session_date": str(session.date()),
+                "raw_open": raw_open,
+                "raw_high": max(raw_open, raw_close) * 1.01,
+                "raw_low": min(raw_open, raw_close) * 0.99,
+                "raw_close": raw_close,
+                "adjustment_factor": factor,
+                "open": raw_open * factor,
+                "high": max(raw_open, raw_close) * 1.01 * factor,
+                "low": min(raw_open, raw_close) * 0.99 * factor,
+                "close": raw_close * factor,
+                "source_record_identity": _identity(str(session.date())),
+                "record_sealed_at": SEALED,
+            }
+        )
+    return build_proxy_snapshot(
+        records,
+        source_identity={
+            "provider": "synthetic-proxy-fixture",
+            "classification": MSFT_PROXY_LABEL,
+            "separate_corporate_action_postings": 0,
+        },
+        sealed_at=SEALED,
+    )
+
+
+def test_proxy_study_stops_after_validation_and_renders_required_chinese_warning() -> None:
+    snapshot = _proxy_snapshot()
+    result = run_study(snapshot)
+
+    assert result["schema"] == PROXY_RESULT_SCHEMA
+    assert result["classification"] == MSFT_PROXY_LABEL
+    assert result["candidate_family_counts"] == {"SMA_CROSS": 8, "BREAKOUT_TRAILING": 6, "OLS": 1}
+    assert result["data_end"] == "2024-12-31"
+    assert result["final_created"] is False
+    assert result["final_window_queried"] is False
+    assert "final" not in result
+    assert result["selection"] is None or result["selection"]["validation_baseline_10bp"]
+    assert all(item["train_metrics"] and item["validation_metrics"] for item in result["family_winners"])
+
+    document, html = chinese_report(
+        result,
+        {"study_id": "a" * 64, "source_commit": COMMIT, "source_tree": TREE, "worker_image": IMAGE},
+    )
+    warning = "探索性代理结果，不是最终评估，不代表真实可成交收益或生产信号"
+    assert document["first_line"] == warning
+    assert document["classification"] == MSFT_PROXY_LABEL
+    assert warning.encode() in html
+    assert MSFT_PROXY_LABEL.encode() in html
 
 
 def test_t_minus_one_open_t_ledger_cost_cash_dividend_split_and_terminal_open() -> None:

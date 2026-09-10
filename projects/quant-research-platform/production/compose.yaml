@@ -88,6 +88,17 @@ services:
       QUANT_POSTGRES_USER: qr_runtime
       QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
       QUANT_RESIDUAL_ROOT: /var/lib/quantresearch/residual
+      QR_LIGHTWEIGHT_STUDY_ENABLED: "true"
+      QR_STUDY_WORKER_ENDPOINT: ${QR_STUDY_WORKER_ENDPOINT:?set reviewed Feng worker origin}
+      QR_STUDY_SIGNING_PRIVATE_KEY: /run/secrets/study-signing-private.pem
+      QR_STUDY_TLS_CA_FILE: /run/secrets/study-worker-tls.crt
+      QR_STUDY_SOURCE_COMMIT: ${QR_STUDY_SOURCE_COMMIT:?set worker source commit}
+      QR_STUDY_SOURCE_TREE: ${QR_STUDY_SOURCE_TREE:?set worker source tree}
+      QR_STUDY_WORKER_IMAGE: ${QR_STUDY_WORKER_IMAGE:?set worker image digest}
+      QR_STUDY_POSTGRES_HOST: postgres
+      QR_STUDY_POSTGRES_DATABASE: quantresearch
+      QR_STUDY_POSTGRES_USER: qr_runtime
+      QR_STUDY_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
     tmpfs:
       - /tmp:size=128m,mode=1777
       - /run/quantresearch:size=16m,mode=0700,uid=10001,gid=10001
@@ -120,6 +131,16 @@ services:
       - type: bind
         source: /etc/quantresearch-production/secrets/postgres-runtime
         target: /run/secrets/postgres-runtime
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/study-signing-private.pem
+        target: /run/secrets/study-signing-private.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/study-worker-tls.crt
+        target: /run/secrets/study-worker-tls.crt
         read_only: true
         bind: {create_host_path: false}
     expose: ["8090"]

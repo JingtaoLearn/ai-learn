@@ -11,8 +11,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .dataset_service import DatasetResolutionError, MsftDatasetIngress
+from .dataset_service import DatasetResolutionError, MsftAdjustedOhlcProxyIngress
 from .full_persistence import FullPostgresPersistence, PersistenceConflict
+from .lightweight_study import LightweightStudyService
 from .production_bocom import BocomProductionJob
 from .production_contract import ProductionRelease
 from .production_focus import FocusCalibrationProductionJob
@@ -23,6 +24,7 @@ from .production_result import ProductionResultError, ProductionResultStore
 from .production_service import AdmissionPolicy, ProductionAdmissionError, ProductionService
 from .production_store import IdempotencyConflict, ProductionStore, ScheduledFireConflict
 from .production_worker import ProductionWorker
+from .study_remote import StudyRemoteError
 
 
 MAX_BODY_BYTES = 16_384
@@ -51,7 +53,8 @@ def create_production_app(
     results: ProductionResultStore,
     *,
     verified_client_identity: str,
-    msft_ingress: MsftDatasetIngress | None = None,
+    msft_ingress: MsftAdjustedOhlcProxyIngress | None = None,
+    studies: LightweightStudyService | None = None,
 ) -> FastAPI:
     if not verified_client_identity or "," in verified_client_identity:
         raise ValueError("verified client identity is invalid")
@@ -147,6 +150,67 @@ def create_production_app(
             return _error(409, "MSFT_INGRESS_CONFLICT", str(exc))
         return _response(201, {"ok": True, "snapshot": receipt})
 
+    @app.get("/api/v1/datasets/msft/snapshots/{snapshot_id}")
+    async def msft_snapshot(snapshot_id: str):
+        if studies is None or studies.platform is None:
+            return _error(503, "MSFT_SNAPSHOT_UNAVAILABLE", "MSFT Snapshot authority is unavailable")
+        try:
+            value = await run_in_threadpool(studies.platform.msft_snapshot, snapshot_id)
+        except ValueError as exc:
+            return _error(404, "MSFT_SNAPSHOT_NOT_FOUND", str(exc))
+        return _response(200, {"ok": True, "snapshot": value})
+
+    @app.post("/api/v1/studies/msft")
+    async def create_msft_study(request: Request):
+        if studies is None:
+            return _error(503, "MSFT_STUDY_UNAVAILABLE", "MSFT Study service is unavailable")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+            return _error(422, "CONTENT_TYPE_REJECTED", "Content-Type must be application/json")
+        body = await request.body()
+        if not body or len(body) > MAX_BODY_BYTES:
+            return _error(422, "BODY_SIZE_REJECTED", "request body size is invalid")
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict) or set(value) != {"action_id", "snapshot_id"}:
+                raise StudyRemoteError("MSFT Study body fields are invalid")
+            study = await run_in_threadpool(
+                studies.submit_msft,
+                action_id=value["action_id"],
+                snapshot_id=value["snapshot_id"],
+            )
+        except (json.JSONDecodeError, StudyRemoteError, ValueError) as exc:
+            return _error(422, "MSFT_STUDY_REJECTED", str(exc))
+        return _response(201, {"ok": True, "study": study})
+
+    @app.get("/api/v1/studies/{study_id}")
+    async def msft_study(study_id: str):
+        if studies is None:
+            return _error(503, "MSFT_STUDY_UNAVAILABLE", "MSFT Study service is unavailable")
+        try:
+            value = await run_in_threadpool(studies.detail, study_id)
+        except (StudyRemoteError, ValueError) as exc:
+            return _error(404, "MSFT_STUDY_NOT_FOUND", str(exc))
+        return _response(200, {"ok": True, "study": value})
+
+    @app.get("/api/v1/studies/{study_id}/report")
+    async def msft_study_report(study_id: str):
+        if studies is None:
+            return _error(503, "MSFT_STUDY_UNAVAILABLE", "MSFT Study service is unavailable")
+        try:
+            value = await run_in_threadpool(studies.report, study_id)
+        except (StudyRemoteError, ValueError) as exc:
+            return _error(404, "MSFT_STUDY_REPORT_NOT_FOUND", str(exc))
+        return Response(
+            value["html"],
+            status_code=200,
+            media_type="text/html",
+            headers={
+                "X-QuantResearch-Report-Artifact": value["report_artifact_id"],
+                "X-QuantResearch-Report-Sequence": str(value["sequence"]),
+                "X-QuantResearch-Classification": value["document"].get("classification", ""),
+            },
+        )
+
     return app
 
 
@@ -216,12 +280,15 @@ def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
         owner=f"production-worker:{os.getpid()}",
     )
     identity = os.environ.get("QR_VERIFIED_CLIENT_IDENTITY", "")
-    ingress = MsftDatasetIngress(provider, FullPostgresPersistence.from_environment())
+    persistence = FullPostgresPersistence.from_environment()
+    ingress = MsftAdjustedOhlcProxyIngress(provider, persistence)
+    studies = LightweightStudyService.from_environment()
     return create_production_app(
         service,
         results,
         verified_client_identity=identity,
         msft_ingress=ingress,
+        studies=studies,
     ), worker
 
 

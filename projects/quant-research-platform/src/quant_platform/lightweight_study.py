@@ -126,7 +126,7 @@ class LightweightStudyService:
         detail = self.detail(study_id)
         if detail["status"] != "SUCCEEDED" or detail["result"] is None:
             raise StudyRemoteError("MSFT Study report is unavailable before successful read-back")
-        if detail["kind"] != "MSFT_MARKET" or self.platform is None:
+        if not detail["kind"].startswith("MSFT_") or self.platform is None:
             raise StudyRemoteError("canonical report is available only for the MSFT market Study")
         return self.platform.publish_msft_study_report(
             study_id=study_id,
@@ -136,6 +136,7 @@ class LightweightStudyService:
                 "source_tree": detail["source_tree"],
                 "worker_image": detail["worker_image"],
                 "snapshot_id": detail["snapshot_id"],
+                "classification": detail["classification"],
             },
         )
 
@@ -144,6 +145,14 @@ class LightweightStudyService:
         request = row["frozen_request"]
         market = request.get("job_type") == "xnys-msft-trend-study-v1"
         spec = request.get("training_spec")
+        market_snapshot = request.get("snapshot") if market else None
+        classification = (
+            market_snapshot.get("classification")
+            if isinstance(market_snapshot, dict)
+            else "IMMUTABLE_XNYS_TOTAL_RETURN_SNAPSHOT"
+            if market
+            else "SYNTHETIC_NON_MARKET"
+        )
         return {
             "study_id": row["study_id"],
             "status": row["status"],
@@ -153,9 +162,16 @@ class LightweightStudyService:
             "worker_image": row["worker_image"],
             "source_commit": row["source_commit"],
             "source_tree": row["source_tree"],
-            "kind": "MSFT_MARKET" if market else "SYNTHETIC_TRAINING",
+            "kind": (
+                "MSFT_YAHOO_ADJUSTED_OHLC_PROXY"
+                if market and isinstance(market_snapshot, dict) and market_snapshot.get("classification")
+                else "MSFT_MARKET"
+                if market
+                else "SYNTHETIC_TRAINING"
+            ),
+            "classification": classification,
             "objective": (
-                {"data_classification": "IMMUTABLE_XNYS_TOTAL_RETURN_SNAPSHOT"}
+                {"data_classification": classification}
                 if market
                 else spec["objective"]
             ),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import html as html_module
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -14,6 +16,9 @@ from .schemas import canonical_json_bytes
 MARKET_JOB_TYPE = "xnys-msft-trend-study-v1"
 SNAPSHOT_SCHEMA = "quantresearch-xnys-total-return-snapshot/v1"
 KERNEL_IDENTITY = "quant_platform.msft_trend_study@1.0.0"
+PROXY_LABEL = "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY"
+PROXY_SNAPSHOT_SCHEMA = "quantresearch-msft-yahoo-adjusted-ohlc-proxy-snapshot/v1"
+PROXY_RESULT_SCHEMA = "quantresearch-msft-yahoo-adjusted-ohlc-proxy-study-result/v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 VERDICT_PRECEDENCE = (
     "INVALID_OR_CONTAMINATED",
@@ -35,6 +40,20 @@ REQUIRED_RECORD_FIELDS = (
     "close",
     "split_factor",
     "cash_dividend",
+    "source_record_identity",
+    "record_sealed_at",
+)
+PROXY_REQUIRED_RECORD_FIELDS = (
+    "session_date",
+    "raw_open",
+    "raw_high",
+    "raw_low",
+    "raw_close",
+    "adjustment_factor",
+    "open",
+    "high",
+    "low",
+    "close",
     "source_record_identity",
     "record_sealed_at",
 )
@@ -242,6 +261,143 @@ def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
     )
     if dict(value) != rebuilt:
         raise MsftStudyValidationError("Snapshot identity or metadata does not match its records")
+    return rebuilt
+
+
+def normalize_proxy_snapshot_records(
+    records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)) or not records:
+        raise MsftStudyValidationError("Proxy Snapshot records must be a non-empty array")
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(records):
+        if not isinstance(item, Mapping) or set(item) != set(PROXY_REQUIRED_RECORD_FIELDS):
+            raise MsftStudyValidationError(f"Proxy Snapshot record {index} fields are invalid")
+        source_identity = item["source_record_identity"]
+        if not isinstance(source_identity, str) or SHA256.fullmatch(source_identity) is None:
+            raise MsftStudyValidationError("source_record_identity must be lowercase SHA-256")
+        row = {
+            "session_date": _date(item["session_date"], "session_date"),
+            **{
+                name: _finite_number(item[name], name, positive=True)
+                for name in (
+                    "raw_open",
+                    "raw_high",
+                    "raw_low",
+                    "raw_close",
+                    "adjustment_factor",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                )
+            },
+            "source_record_identity": source_identity,
+            "record_sealed_at": _time(item["record_sealed_at"], "record_sealed_at"),
+        }
+        factor = row["adjustment_factor"]
+        for raw_name, adjusted_name in (
+            ("raw_open", "open"),
+            ("raw_high", "high"),
+            ("raw_low", "low"),
+            ("raw_close", "close"),
+        ):
+            expected = row[raw_name] * factor
+            if not math.isclose(row[adjusted_name], expected, rel_tol=1e-12, abs_tol=1e-12):
+                raise MsftStudyValidationError("Proxy adjusted OHLC does not match the frozen row rule")
+        normalized.append(row)
+    dates = [row["session_date"] for row in normalized]
+    if dates != sorted(dates) or len(dates) != len(set(dates)):
+        raise MsftStudyValidationError("Proxy Snapshot sessions must be unique and increasing")
+    if dates[0] < "2022-02-01" or dates[-1] > "2024-12-31":
+        raise MsftStudyValidationError("Proxy Snapshot contains an observation outside the frozen range")
+    return normalized
+
+
+def build_proxy_snapshot(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    source_identity: Mapping[str, Any],
+    sealed_at: str,
+) -> dict[str, Any]:
+    normalized = normalize_proxy_snapshot_records(records)
+    sealed = _time(sealed_at, "sealed_at")
+    if any(row["record_sealed_at"] > sealed for row in normalized):
+        raise MsftStudyValidationError("record seal cannot be later than Proxy Snapshot seal")
+    if not isinstance(source_identity, Mapping):
+        raise MsftStudyValidationError("source_identity must be an object")
+    source = dict(source_identity)
+    if (
+        source.get("classification") != PROXY_LABEL
+        or source.get("separate_corporate_action_postings") != 0
+    ):
+        raise MsftStudyValidationError("Proxy source classification or action-posting receipt is invalid")
+    try:
+        source_digest = hashlib.sha256(canonical_json_bytes(source)).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise MsftStudyValidationError("source_identity must be finite canonical JSON") from exc
+    core = {
+        "schema": PROXY_SNAPSHOT_SCHEMA,
+        "classification": PROXY_LABEL,
+        "instrument": "MSFT",
+        "market": "XNYS",
+        "currency": "USD",
+        "price_semantics": "adjusted-close-factor-times-raw-ohlc-return-exposure-proxy",
+        "corporate_action_semantics": "no-separate-split-or-dividend-postings",
+        "account_semantics": "normalized-wealth-and-long-cash-exposure",
+        "source_identity": source,
+        "source_identity_sha256": source_digest,
+        "sealed_at": sealed,
+        "record_count": len(normalized),
+        "data_start": normalized[0]["session_date"],
+        "data_end": normalized[-1]["session_date"],
+        "required_fields": list(PROXY_REQUIRED_RECORD_FIELDS),
+        "null_counts": {field: 0 for field in PROXY_REQUIRED_RECORD_FIELDS},
+        "records_sha256": hashlib.sha256(canonical_json_bytes(normalized)).hexdigest(),
+    }
+    return {
+        **core,
+        "snapshot_id": hashlib.sha256(
+            b"quantresearch-msft-yahoo-adjusted-ohlc-proxy-snapshot/v1\0"
+            + canonical_json_bytes(core)
+        ).hexdigest(),
+        "records": normalized,
+    }
+
+
+def validate_proxy_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise MsftStudyValidationError("Proxy Snapshot must be an object")
+    expected = {
+        "schema",
+        "classification",
+        "instrument",
+        "market",
+        "currency",
+        "price_semantics",
+        "corporate_action_semantics",
+        "account_semantics",
+        "source_identity",
+        "source_identity_sha256",
+        "sealed_at",
+        "record_count",
+        "data_start",
+        "data_end",
+        "required_fields",
+        "null_counts",
+        "records_sha256",
+        "snapshot_id",
+        "records",
+    }
+    if set(value) != expected:
+        raise MsftStudyValidationError("Proxy Snapshot fields are invalid")
+    rebuilt = build_proxy_snapshot(
+        value["records"], source_identity=value["source_identity"], sealed_at=value["sealed_at"]
+    )
+    if dict(value) != rebuilt:
+        raise MsftStudyValidationError(
+            "Proxy Snapshot identity or metadata does not match its records"
+        )
     return rebuilt
 
 
@@ -612,11 +768,278 @@ def _neighbors(selected: Mapping[str, Any], population: Sequence[Mapping[str, An
     return neighbors
 
 
+def proxy_replay(
+    rows: Sequence[Mapping[str, Any]],
+    signals: Sequence[int],
+    *,
+    start: str,
+    end: str,
+    one_way_bps: int,
+) -> Replay:
+    """Replay normalized long/cash exposure without a share or cash-ledger claim."""
+
+    period, positions = _period_rows(rows, signals, start, end)
+    if len(signals) != len(rows) or one_way_bps not in {10, 25}:
+        raise MsftStudyValidationError("proxy replay inputs do not match the frozen contract")
+    wealth = 1.0
+    exposure = 0
+    previous_open: float | None = None
+    open_wealth: list[float] = []
+    close_wealth: list[float] = []
+    interval_returns: list[float] = []
+    ledger: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    total_cost = 0.0
+    total_notional = 0.0
+    completed_round_trips = 0
+    for index, (row, target) in enumerate(zip(period, positions, strict=True)):
+        adjusted_open = float(row["open"])
+        if previous_open is not None and exposure:
+            wealth *= adjusted_open / previous_open
+        before_cost = wealth
+        side = None
+        cost = 0.0
+        if target != exposure:
+            side = "BUY" if target else "SELL"
+            cost = wealth * one_way_bps / 10_000.0
+            wealth -= cost
+            total_cost += cost
+            total_notional += before_cost
+            if side == "SELL":
+                completed_round_trips += 1
+            exposure = target
+            events.append(
+                {
+                    "validation_index": index,
+                    "session_date": row["session_date"],
+                    "side": side,
+                    "raw_open": float(row["raw_open"]),
+                    "raw_close": float(row["raw_close"]),
+                    "adjusted_open": adjusted_open,
+                    "cost_rate_bps": one_way_bps,
+                }
+            )
+        if open_wealth:
+            interval_returns.append(wealth / open_wealth[-1] - 1.0)
+        open_wealth.append(wealth)
+        marked = wealth * (float(row["close"]) / adjusted_open) if exposure else wealth
+        close_wealth.append(marked)
+        ledger.append(
+            {
+                "validation_index": index,
+                "session_date": row["session_date"],
+                "signal_information_through": "t-1",
+                "fill_timing": "open-t",
+                "side": side,
+                "exposure": exposure,
+                "raw_open": float(row["raw_open"]),
+                "raw_close": float(row["raw_close"]),
+                "adjusted_open": adjusted_open,
+                "adjusted_close": float(row["close"]),
+                "normalized_open_wealth": wealth,
+                "normalized_close_mark": marked,
+                "cost": cost,
+            }
+        )
+        previous_open = adjusted_open
+    terminal_wealth = close_wealth[-1]
+    elapsed_days = max(
+        1,
+        (
+            datetime.strptime(period[-1]["session_date"], "%Y-%m-%d")
+            - datetime.strptime(period[0]["session_date"], "%Y-%m-%d")
+        ).days,
+    )
+    returns = np.asarray(interval_returns, dtype=float)
+    metric_null_reasons: dict[str, str] = {}
+    mean = float(np.mean(returns)) if len(returns) else 0.0
+    if len(returns) > 1:
+        standard_deviation = float(np.std(returns, ddof=1))
+        volatility: float | None = standard_deviation * math.sqrt(252.0)
+        if standard_deviation > 0:
+            sharpe: float | None = mean / standard_deviation * math.sqrt(252.0)
+        else:
+            sharpe = None
+            metric_null_reasons["sharpe"] = "ZERO_SAMPLE_STANDARD_DEVIATION"
+    else:
+        volatility = None
+        sharpe = None
+        metric_null_reasons["volatility"] = "INSUFFICIENT_OPEN_TO_OPEN_INTERVALS"
+        metric_null_reasons["sharpe"] = "INSUFFICIENT_OPEN_TO_OPEN_INTERVALS"
+    downside = np.minimum(returns, 0.0)
+    downside_deviation = float(np.sqrt(np.mean(np.square(downside)))) if len(downside) else 0.0
+    if downside_deviation > 0:
+        sortino: float | None = mean / downside_deviation * math.sqrt(252.0)
+    else:
+        sortino = None
+        metric_null_reasons["sortino"] = "ZERO_DOWNSIDE_DEVIATION"
+    path = np.asarray([1.0, *open_wealth, terminal_wealth])
+    drawdown = 1.0 - path / np.maximum.accumulate(path)
+    maximum_drawdown = float(max(0.0, np.max(drawdown)))
+    annualized_return = terminal_wealth ** (365.0 / elapsed_days) - 1.0
+    if maximum_drawdown > 0:
+        calmar: float | None = annualized_return / maximum_drawdown
+    else:
+        calmar = None
+        metric_null_reasons["calmar"] = "ZERO_MAXIMUM_DRAWDOWN"
+    metrics = {
+        "account_semantics": "normalized-wealth-and-long-cash-exposure",
+        "period_start": period[0]["session_date"],
+        "period_end": period[-1]["session_date"],
+        "initial_wealth": 1.0,
+        "final_wealth": terminal_wealth,
+        "cumulative_return": terminal_wealth - 1.0,
+        "annualized_return": annualized_return,
+        "volatility": volatility,
+        "sharpe": sharpe,
+        "sortino": sortino,
+        "maximum_drawdown": maximum_drawdown,
+        "calmar": calmar,
+        "average_exposure": float(np.mean(positions)),
+        "turnover": total_notional,
+        "total_cost": total_cost,
+        "completed_round_trips": completed_round_trips,
+        "interval_return_count": len(interval_returns),
+        "interval_return_basis": "adjusted-open-to-next-adjusted-open;normalized-exposure",
+        "metric_null_reasons": metric_null_reasons,
+        "terminal_position": {
+            "exposure": exposure,
+            "marked_at": "final-complete-session-adjusted-close",
+            "fabricated_exit": False,
+        },
+    }
+    return Replay(metrics=metrics, ledger=ledger, trades=events, interval_returns=interval_returns)
+
+
+def run_proxy_study(
+    snapshot: Mapping[str, Any],
+    *,
+    checkpoint: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    frozen = validate_proxy_snapshot(snapshot)
+    rows = frozen["records"]
+    if rows[-1]["session_date"] < PHASES["VALIDATION"][1]:
+        raise MsftStudyValidationError("Proxy Snapshot does not contain the complete VALIDATION period")
+    population = candidates()
+    train_results: list[tuple[dict[str, Any], Replay]] = []
+    for index, candidate in enumerate(population, 1):
+        trained = proxy_replay(
+            rows,
+            _signals(rows, candidate),
+            start=PHASES["TRAIN"][0],
+            end=PHASES["TRAIN"][1],
+            one_way_bps=10,
+        )
+        train_results.append((candidate, trained))
+        if checkpoint is not None and index in {5, 10, 15}:
+            checkpoint(
+                {"completed_candidates": index, "total_candidates": 15, "checkpoint_sequence": index // 5},
+                {"sequence": index // 5, "completed_candidates": index},
+            )
+    family_winners = [
+        max(
+            (item for item in train_results if item[0]["family"] == family),
+            key=lambda item: _rank(item[1].metrics),
+        )
+        for family in ("SMA_CROSS", "BREAKOUT_TRAILING", "OLS_SLOPE_HYSTERESIS")
+    ]
+    validation_rows: list[dict[str, Any]] = []
+    passing: list[tuple[dict[str, Any], Replay]] = []
+    for candidate, train in family_winners:
+        signals = _signals(rows, candidate)
+        validation = proxy_replay(
+            rows,
+            signals,
+            start=PHASES["VALIDATION"][0],
+            end=PHASES["VALIDATION"][1],
+            one_way_bps=10,
+        )
+        matched = _matched_exposure(
+            rows,
+            PHASES["VALIDATION"][0],
+            PHASES["VALIDATION"][1],
+            validation.metrics["average_exposure"],
+        )
+        neighbor_results = [
+            proxy_replay(
+                rows,
+                _signals(rows, neighbor),
+                start=PHASES["VALIDATION"][0],
+                end=PHASES["VALIDATION"][1],
+                one_way_bps=10,
+            )
+            for neighbor in _neighbors(candidate, population)
+        ]
+        neighbor_sharpes = [item.metrics["sharpe"] for item in neighbor_results]
+        stable = (
+            bool(neighbor_results)
+            and all(value is not None for value in neighbor_sharpes)
+            and sum(item.metrics["cumulative_return"] > 0 for item in neighbor_results)
+            / len(neighbor_results)
+            >= 0.5
+            and float(np.median(neighbor_sharpes)) >= 0.0
+        )
+        passed = _validation_pass(validation.metrics, matched) and stable
+        validation_rows.append(
+            {
+                "family": candidate["family"],
+                "candidate_id": _candidate_id(candidate),
+                "rule": candidate,
+                "train_metrics": train.metrics,
+                "validation_metrics": validation.metrics,
+                "validation_neighbor_count": len(neighbor_results),
+                "validation_stability_passed": stable,
+                "passed": passed,
+            }
+        )
+        if passed:
+            passing.append((candidate, validation))
+    selected_pair = max(passing, key=lambda item: _rank(item[1].metrics)) if passing else None
+    selected = None
+    if selected_pair is not None:
+        candidate, validation = selected_pair
+        stress = proxy_replay(
+            rows,
+            _signals(rows, candidate),
+            start=PHASES["VALIDATION"][0],
+            end=PHASES["VALIDATION"][1],
+            one_way_bps=25,
+        )
+        selected = {
+            "candidate_id": _candidate_id(candidate),
+            "rule": candidate,
+            "validation_baseline_10bp": validation.metrics,
+            "validation_stress_25bp": stress.metrics,
+            "validation_buy_sell_index_and_raw_prices": validation.trades,
+        }
+    return {
+        "schema": PROXY_RESULT_SCHEMA,
+        "classification": PROXY_LABEL,
+        "kernel": KERNEL_IDENTITY,
+        "snapshot_id": frozen["snapshot_id"],
+        "data_start": frozen["data_start"],
+        "data_end": frozen["data_end"],
+        "candidate_count": 15,
+        "candidate_family_counts": {"SMA_CROSS": 8, "BREAKOUT_TRAILING": 6, "OLS": 1},
+        "family_winners": validation_rows,
+        "selection": selected,
+        "verdict": "NON_CONFIRMATORY_PROXY_SELECTED" if selected else "NON_CONFIRMATORY_PROXY_NO_SELECTION",
+        "conclusion": PROXY_LABEL,
+        "per_trial_attempt_rows": 0,
+        "separate_corporate_action_postings": 0,
+        "local_fallback": False,
+        "final_created": False,
+        "final_window_queried": False,
+    }
+
+
 def run_study(
     snapshot: Mapping[str, Any],
     *,
     checkpoint: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    if snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA:
+        return run_proxy_study(snapshot, checkpoint=checkpoint)
     frozen = validate_snapshot(snapshot)
     rows = frozen["records"]
     final_end = rows[-1]["session_date"]
@@ -861,6 +1284,80 @@ def run_study(
 
 
 def chinese_report(result: Mapping[str, Any], provenance: Mapping[str, Any]) -> tuple[dict[str, Any], bytes]:
+    if result.get("schema") == PROXY_RESULT_SCHEMA:
+        if (
+            result.get("classification") != PROXY_LABEL
+            or result.get("candidate_count") != 15
+            or not isinstance(result.get("data_end"), str)
+            or result.get("data_end") > "2024-12-31"
+            or result.get("final_created") is not False
+            or result.get("final_window_queried") is not False
+            or result.get("separate_corporate_action_postings") != 0
+        ):
+            raise MsftStudyValidationError("Proxy Study result cannot be rendered")
+        first_line = "探索性代理结果，不是最终评估，不代表真实可成交收益或生产信号"
+        document = {
+            "schema": "quantresearch-msft-yahoo-adjusted-ohlc-proxy-report/v1",
+            "classification": PROXY_LABEL,
+            "language": "zh-CN",
+            "first_line": first_line,
+            "title": "微软（MSFT）Yahoo 调整 OHLC 探索性代理研究",
+            "verdict": result["verdict"],
+            "data_range": {"start": result["data_start"], "end": result["data_end"]},
+            "source_transform": (
+                "Yahoo chart；逐行 factor=adjclose/raw_close；调整 O/H/L/C=原始 O/H/L/C×factor；"
+                "不单独记账拆股或股息"
+            ),
+            "candidate_count": 15,
+            "candidate_family_counts": result["candidate_family_counts"],
+            "train_and_validation": result["family_winners"],
+            "selection": result["selection"],
+            "costs": {"baseline_one_way_bps": 10, "stress_one_way_bps": 25},
+            "account_semantics": "normalized-wealth-and-long-cash-exposure",
+            "final_created": False,
+            "final_window_queried": False,
+            "research_only": True,
+            "not_a_trade_recommendation": True,
+            "provenance": dict(provenance),
+            "limitations": [
+                "该代理未经来源口径资格确认，不能确认最终策略。",
+                "这是收益/暴露代理，不是原始股份现金账本。",
+                "不声称人民币十万元整股可负担性、精确股息、券商可执行收益或最终策略资格。",
+                "2025 年及以后 FINAL 窗口未查询、未读取、未持久化、未评估。",
+                "研究结果不是生产信号，不产生交易、订单或资金效果。",
+            ],
+        }
+        document_id = hashlib.sha256(
+            b"quantresearch-msft-yahoo-adjusted-ohlc-proxy-report/v1\0"
+            + canonical_json_bytes(document)
+        ).hexdigest()
+        document["report_artifact_id"] = document_id
+        def escaped(value: Any) -> str:
+            return html_module.escape(
+                json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+        selection = result["selection"]
+        events = [] if selection is None else selection["validation_buy_sell_index_and_raw_prices"]
+        report_html = (
+            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+            "<title>MSFT Yahoo 调整 OHLC 探索性代理研究</title><main>"
+            f"<p><strong>{first_line}</strong></p><h1>{document['title']}</h1>"
+            f"<p>分类：<code>{PROXY_LABEL}</code></p>"
+            f"<p>数据范围：{result['data_start']} 至 {result['data_end']}</p>"
+            f"<p>来源和转换：{document['source_transform']}</p>"
+            "<p>成本：基准单边 10bp；压力单边 25bp。账户：标准化财富与多头/现金暴露。</p>"
+            f"<p>冻结候选：15（SMA 8，突破/跟踪退出 6，OLS 1）。结论：{result['verdict']}。</p>"
+            f"<h2>TRAIN 与 VALIDATION 指标</h2><pre>{escaped(result['family_winners'])}</pre>"
+            f"<h2>最多一个入选候选</h2><pre>{escaped(selection)}</pre>"
+            f"<h2>VALIDATION 买卖索引与原始展示价格</h2><pre>{escaped(events)}</pre>"
+            "<h2>限制</h2><ul>"
+            + "".join(f"<li>{item}</li>" for item in document["limitations"])
+            + "</ul>"
+            f"<p>Snapshot：<code>{result['snapshot_id']}</code></p>"
+            f"<p>Study：<code>{html_module.escape(str(provenance.get('study_id', '')))}</code></p>"
+            f"<p>Report：<code>{document_id}</code></p></main></html>"
+        ).encode("utf-8")
+        return document, report_html
     allowed_verdicts = set(VERDICT_PRECEDENCE)
     if (
         result.get("schema") != "quantresearch-msft-study-result/v1"
