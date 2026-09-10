@@ -6604,12 +6604,20 @@ class ParameterStudy:
         ]
 
     def detail(self, study_id: str) -> dict[str, Any]:
+        return self._detail(study_id, for_page=False)
+
+    def page_detail(self, study_id: str) -> dict[str, Any]:
+        """Return the evidence projection rendered by the legacy Study pages."""
+        return self._detail(study_id, for_page=True)
+
+    def _detail(self, study_id: str, *, for_page: bool) -> dict[str, Any]:
         if not isinstance(study_id, str) or STUDY_ID.fullmatch(study_id) is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")
         connection = self.catalog.connect()
         try:
             connection.execute("BEGIN")
-            self._validate_study_projection(connection, study_id)
+            if not for_page:
+                self._validate_study_projection(connection, study_id)
             study = connection.execute(
                 "SELECT * FROM parameter_studies WHERE study_id = ?",
                 (study_id,),
@@ -6670,9 +6678,10 @@ class ParameterStudy:
                        payload_json, occurred_at
                 FROM parameter_study_evidence
                 WHERE study_id = ?
+                  AND (? = 0 OR evidence_type != 'METRIC_DOCUMENT_VERIFIED')
                 ORDER BY sequence
                 """,
-                (study_id,),
+                (study_id, int(for_page)),
             ).fetchall()
             trials = connection.execute(
                 """
@@ -6693,19 +6702,48 @@ class ParameterStudy:
                 """,
                 (study_id,),
             ).fetchall()
-            bindings = connection.execute(
-                """
-                SELECT *
-                FROM parameter_study_bindings
-                WHERE study_id = ?
-                ORDER BY search_round, role, fold_sequence, candidate_digest
-                """,
-                (study_id,),
-            ).fetchall()
+            if for_page:
+                bindings = connection.execute(
+                    """
+                    SELECT binding_id, search_round, candidate_digest, role,
+                           fold_sequence, fold_window_json, experiment_id,
+                           submitted_attempt_id, attempt_id, state
+                    FROM parameter_study_bindings
+                    WHERE study_id = ?
+                    ORDER BY search_round, role, fold_sequence, candidate_digest
+                    """,
+                    (study_id,),
+                ).fetchall()
+                attempt_rows = connection.execute(
+                    """
+                    SELECT DISTINCT a.attempt_id, a.experiment_id, a.status,
+                           a.sequence, a.comparison, a.result_digest,
+                           a.created_at, a.started_at, a.finished_at
+                    FROM attempts AS a
+                    JOIN parameter_study_bindings AS b
+                      ON b.attempt_id = a.attempt_id
+                    WHERE b.study_id = ?
+                    """,
+                    (study_id,),
+                ).fetchall()
+                attempts_by_id = {row["attempt_id"]: dict(row) for row in attempt_rows}
+            else:
+                bindings = connection.execute(
+                    """
+                    SELECT *
+                    FROM parameter_study_bindings
+                    WHERE study_id = ?
+                    ORDER BY search_round, role, fold_sequence, candidate_digest
+                    """,
+                    (study_id,),
+                ).fetchall()
+                attempts_by_id = {}
             lease = self._latest_lease(connection, study_id)
-            catalog_schema_version = connection.execute(
-                "SELECT MAX(version) FROM schema_migrations"
-            ).fetchone()[0]
+            catalog_schema_version = (
+                0
+                if for_page
+                else connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            )
         finally:
             connection.rollback()
             connection.close()
@@ -6916,20 +6954,31 @@ class ParameterStudy:
         binding_views = []
         attempt_classifications = {}
         for binding in bindings:
-            attempt = self.experiments.attempt_detail(binding["attempt_id"])
+            attempt = (
+                attempts_by_id.get(binding["attempt_id"])
+                if for_page
+                else self.experiments.attempt_detail(binding["attempt_id"])
+            )
+            if attempt is None:
+                raise RuntimeError("Study binding references an unknown Attempt")
             fold_window = _strict_json_object(
                 binding["fold_window_json"],
                 "Study binding fold window",
             )
-            task = _strict_json_object(
-                binding["task_json"],
-                "Study binding task",
-            )
-            if (
-                binding["candidate_digest"] not in trial_configurations
-                or _digest(task) != binding["task_digest"]
-                or task.get("dataset", {}).get("snapshot_id") != binding["dataset_snapshot_id"]
-                or self._binding_id(
+            if for_page:
+                task = None
+                task_identity_matches = True
+            else:
+                task = _strict_json_object(
+                    binding["task_json"],
+                    "Study binding task",
+                )
+                task_identity_matches = (
+                    _digest(task) == binding["task_digest"]
+                    and task["dataset"]["snapshot_id"] == binding["dataset_snapshot_id"]
+                )
+            if binding["candidate_digest"] not in trial_configurations or not task_identity_matches or (
+                self._binding_id(
                     study_id=study_id,
                     search_round=binding["search_round"],
                     candidate_digest=binding["candidate_digest"],
@@ -6938,19 +6987,18 @@ class ParameterStudy:
                     fold_window=fold_window,
                 )
                 != binding["binding_id"]
-                or attempt["experiment_id"] != binding["experiment_id"]
-            ):
+            ) or attempt["experiment_id"] != binding["experiment_id"]:
                 raise RuntimeError("Study binding projection does not match durable identity")
             stored_metric = (
                 None
-                if binding["metric_document_json"] is None
+                if for_page or binding["metric_document_json"] is None
                 else _strict_json_object(
                     binding["metric_document_json"],
                     "Study binding Metric Document",
                 )
             )
             metric_evidence = metric_evidence_by_binding.get(binding["binding_id"])
-            if (
+            if not for_page and (
                 (
                     binding["state"] == "VERIFIED"
                     and (
@@ -6967,42 +7015,45 @@ class ParameterStudy:
                 or (binding["state"] == "SUBMITTED" and stored_metric is not None)
             ):
                 raise RuntimeError("Study binding state disagrees with canonical evidence")
-            attempt_classifications[binding["binding_id"]] = attempt.get(
-                "historical_classification"
-            )
-            binding_views.append(
-                {
-                    "binding_id": binding["binding_id"],
-                    "search_round": binding["search_round"],
-                    "candidate_digest": binding["candidate_digest"],
-                    "role": binding["role"],
-                    "fold_sequence": binding["fold_sequence"],
-                    "fold_window": fold_window,
-                    "task": task,
-                    "task_digest": binding["task_digest"],
-                    "dataset_snapshot_id": binding["dataset_snapshot_id"],
-                    "experiment_id": binding["experiment_id"],
-                    "submitted_attempt_id": binding["submitted_attempt_id"],
-                    "attempt_id": binding["attempt_id"],
-                    "state": binding["state"],
-                    "attempt": {
-                        key: attempt.get(key)
-                        for key in (
-                            "status",
-                            "sequence",
-                            "comparison",
-                            "result_digest",
-                            "created_at",
-                            "started_at",
-                            "finished_at",
-                        )
-                    },
-                    "metric_document": stored_metric,
-                }
-            )
+            if not for_page:
+                attempt_classifications[binding["binding_id"]] = attempt.get(
+                    "historical_classification"
+                )
+            binding_view = {
+                "binding_id": binding["binding_id"],
+                "search_round": binding["search_round"],
+                "candidate_digest": binding["candidate_digest"],
+                "role": binding["role"],
+                "fold_sequence": binding["fold_sequence"],
+                "fold_window": fold_window,
+                "experiment_id": binding["experiment_id"],
+                "submitted_attempt_id": binding["submitted_attempt_id"],
+                "attempt_id": binding["attempt_id"],
+                "state": binding["state"],
+                "attempt": {
+                    key: attempt.get(key)
+                    for key in (
+                        "status",
+                        "sequence",
+                        "comparison",
+                        "result_digest",
+                        "created_at",
+                        "started_at",
+                        "finished_at",
+                    )
+                },
+                "metric_document": stored_metric,
+            }
+            if not for_page:
+                binding_view.update(
+                    task=task,
+                    task_digest=binding["task_digest"],
+                    dataset_snapshot_id=binding["dataset_snapshot_id"],
+                )
+            binding_views.append(binding_view)
         binding_projection_sha256 = canonical_sha256(binding_views)
         binding_classifications = []
-        for binding in binding_views:
+        for binding in ([] if for_page else binding_views):
             if not is_a_share_document(binding["task"]):
                 continue
             metric_document = binding["metric_document"]
@@ -7293,7 +7344,7 @@ class ParameterStudy:
             "outer_evidence": public_outer_evidence,
             "evidence": evidence_items,
         }
-        if is_a_share_document(frozen_plan):
+        if is_a_share_document(frozen_plan) and not for_page:
             source_identities = {
                 "study_id_sha256": identifier_sha256(study_id),
                 "frozen_plan_sha256": canonical_sha256(frozen_plan),

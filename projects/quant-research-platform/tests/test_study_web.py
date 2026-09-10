@@ -335,7 +335,7 @@ def test_study_pages_expose_research_evidence_and_escape_values(tmp_path: Path, 
         }
     )
     monkeypatch.setattr(app.state.studies, "list_summaries", lambda: [detail])
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: detail)
 
     listing = client.get("/studies")
     study = client.get(f"/studies/{STUDY_ID}")
@@ -448,7 +448,7 @@ def test_no_edge_study_uses_exact_qualification_wording_and_no_champion(
             "rationale": "No candidate passed matched-exposure qualification.",
         },
     )
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: detail)
 
     response = client.get(f"/studies/{STUDY_ID}")
 
@@ -507,12 +507,15 @@ def test_completed_study_replaces_controls_and_identifies_unranked_trials(
             ],
         }
     ]
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: detail)
 
     response = client.get(f"/studies/{STUDY_ID}")
 
     assert response.status_code == 200
     assert "This Study is complete. Its frozen evidence is read-only." in response.text
+    assert "COMPLETED" in response.text
+    assert "ACTIVE" in response.text
+    assert "ACCESSED" in response.text
     assert f'action="/studies/{STUDY_ID}/advance"' not in response.text
     assert f'action="/studies/{STUDY_ID}/control"' not in response.text
     assert "Unranked Trial 2" in response.text
@@ -563,7 +566,7 @@ def test_study_detail_and_report_render_optional_suggestion_journal(tmp_path: Pa
             "objective": None,
         },
     ]
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: detail)
 
     for path in (f"/studies/{STUDY_ID}", f"/studies/{STUDY_ID}/report"):
         response = client.get(path)
@@ -587,7 +590,7 @@ def test_old_studies_without_suggestion_journal_render_safely(tmp_path: Path, mo
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: detail)
 
     missing = client.get(f"/studies/{STUDY_ID}")
     detail["suggestion_journal"] = []
@@ -1279,7 +1282,7 @@ def test_real_parameter_study_evidence_renders_through_the_public_web_seam(
     web_root.mkdir()
     app, client = make_app(web_root)
     authenticate(app, client)
-    monkeypatch.setattr(app.state.studies, "detail", coordinator.detail)
+    monkeypatch.setattr(app.state.studies, "page_detail", coordinator.page_detail)
 
     response = client.get(f"/studies/{submitted['study_id']}")
 
@@ -1357,7 +1360,7 @@ def test_study_not_found_and_mutation_outcomes_are_visible(tmp_path: Path, monke
             "study_id": study_id,
         },
     )
-    monkeypatch.setattr(app.state.studies, "detail", lambda study_id: _study_detail())
+    monkeypatch.setattr(app.state.studies, "page_detail", lambda study_id: _study_detail())
     response = client.post(
         f"/studies/{STUDY_ID}/advance",
         data={"csrf_token": issued.csrf_token},
