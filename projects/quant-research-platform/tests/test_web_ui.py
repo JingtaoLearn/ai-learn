@@ -7,7 +7,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import quant_platform.web as web_module
+from quant_platform.catalog import initialize_catalog
+from quant_platform.dataset_service import DatasetResolutionError
+from quant_platform.datasets import publish_snapshot
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
@@ -743,6 +747,149 @@ def test_experiment_validation_error_preserves_submission_and_route_recovery(
         response.text,
     )
     assert 'href="/experiments/new"' in response.text
+
+
+def test_experiment_dataset_failure_is_redacted_and_preserves_retry_identity(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class UnavailableSource:
+        provider = "yahoo-chart-api"
+
+        def __init__(self):
+            self.latest_calls = 0
+            self.fetch_calls = 0
+
+        def latest_available_close(self, instrument: str) -> str:
+            self.latest_calls += 1
+            raise DatasetResolutionError(
+                "HTTPSConnectionPool(host='provider.internal'): name resolution failed"
+            )
+
+        def fetch(self, instrument: str, start: str, end: str):
+            self.fetch_calls += 1
+            raise DatasetResolutionError(
+                "GET https://provider.internal/private?token=secret failed: DNS error"
+            )
+
+    class OperatorPersistence:
+        def __init__(self):
+            self.catalog = initialize_catalog(tmp_path / "operator-state")
+
+        def verify_schema(self):
+            return None
+
+        def list_operators(self):
+            return self.catalog.list_operators()
+
+        def operator_detail(self, operator_id, version=None):
+            return self.catalog.operator_detail(operator_id, version)
+
+        def list_operator_versions(self, operator_id):
+            return self.catalog.list_operator_versions(operator_id)
+
+    persistence = OperatorPersistence()
+    monkeypatch.setattr(
+        web_module.PostgresOperatorPersistence,
+        "from_environment",
+        classmethod(lambda cls: persistence),
+    )
+
+    app, client = make_app(tmp_path)
+    issued = authenticate(app, client)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-08-18", "2026-08-19", "2026-08-20"]),
+            "Open": [6.0, 6.1, 6.2],
+            "High": [6.1, 6.2, 6.3],
+            "Low": [5.9, 6.0, 6.1],
+            "Close": [6.05, 6.15, 6.25],
+            "Volume": [1000, 1100, 1200],
+        }
+    )
+    published = publish_snapshot(
+        frame,
+        app.state.catalog.state_root,
+        {
+            "instrument": "601328.SS",
+            "provider": "yahoo-chart-api",
+            "market": "XSHG",
+            "currency": "CNY",
+            "adjustment": "unadjusted",
+        },
+    )
+    source = UnavailableSource()
+    app.state.datasets.sources[source.provider] = source
+
+    new_page = client.get("/experiments/new")
+    assert new_page.status_code == 200
+    assert 'max="2026-08-20"' in new_page.text
+    assert source.latest_calls == 0
+
+    form = _experiment_form(app, published["snapshot_id"], issued.csrf_token)
+    form |= {
+        "action_id": "preserved-dataset-retry-action",
+        "dataset_id": "601328.SS",
+        "start_date": "2026-08-18",
+        "end_date": "2026-08-21",
+        "template_evaluation_start": "2026-08-18",
+        "template_evaluation_end": "2026-08-21",
+    }
+    with app.state.catalog.connect() as connection:
+        before = (
+            connection.execute("SELECT count(*) FROM experiments").fetchone()[0],
+            connection.execute("SELECT count(*) FROM attempts").fetchone()[0],
+        )
+
+    response = client.post(
+        "/experiments/preview",
+        data=form,
+        headers={"origin": "https://quant.ai.jingtao.fun"},
+    )
+
+    assert response.status_code == 503
+    assert 'data-page="experiment-new"' in response.text
+    assert 'name="action_id" value="preserved-dataset-retry-action"' in response.text
+    assert "Dataset data is temporarily unavailable" in response.text
+    for forbidden in (
+        "provider.internal",
+        "https://",
+        "token=secret",
+        "ConnectionPool",
+        "DNS error",
+        "Traceback",
+    ):
+        assert forbidden not in response.text
+    assert source.fetch_calls == 1
+
+    task = _task_from_form(
+        form,
+        catalog=app.state.catalog,
+        operator_persistence=app.state.operator_persistence,
+    )
+    api_response = client.post(
+        "/api/experiments/preview",
+        json={"task": task},
+        headers={
+            "origin": "https://quant.ai.jingtao.fun",
+            "x-csrf-token": issued.csrf_token,
+        },
+    )
+    assert api_response.status_code == 503
+    assert api_response.json() == {
+        "ok": False,
+        "error": {
+            "code": "DATASET_UNAVAILABLE",
+            "message": web_module.DATASET_UNAVAILABLE_MESSAGE,
+        },
+    }
+    assert all(forbidden not in api_response.text for forbidden in ("provider.internal", "secret"))
+    with app.state.catalog.connect() as connection:
+        after = (
+            connection.execute("SELECT count(*) FROM experiments").fetchone()[0],
+            connection.execute("SELECT count(*) FROM attempts").fetchone()[0],
+        )
+    assert after == before
 
 
 def test_experiment_preview_no_js_theme_forms_preserve_post_context(

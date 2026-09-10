@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import stat
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -212,17 +213,26 @@ class ExperimentService:
         snapshot_path = (
             self.catalog.state_root / "datasets" / instrument / snapshot_id
         )
-        if snapshot_path.is_symlink() or not snapshot_path.is_dir():
+        if self.catalog._postgres is None and (
+            snapshot_path.is_symlink() or not snapshot_path.is_dir()
+        ):
             raise TaskValidationError(
                 f"unknown immutable dataset snapshot: {instrument}@{snapshot_id}"
             )
         try:
-            snapshot_manifest = _verify_snapshot(
-                snapshot_path,
-                snapshot_id,
-                verify_parent=True,
+            snapshot_context = (
+                self.catalog._postgres.materialize_dataset_snapshot(instrument, snapshot_id)
+                if self.catalog._postgres is not None
+                else nullcontext(snapshot_path)
             )
-        except RuntimeError as exc:
+            with snapshot_context as verified_snapshot_path:
+                snapshot_manifest = _verify_snapshot(
+                    verified_snapshot_path,
+                    snapshot_id,
+                    verify_parent=True,
+                    require_name=self.catalog._postgres is None,
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
             raise TaskValidationError(f"dataset snapshot failed verification: {exc}") from exc
         if snapshot_manifest["metadata"]["instrument"] != instrument:
             raise TaskValidationError("dataset snapshot instrument does not match")
