@@ -28,6 +28,7 @@ from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
 from .experiment_service import ExperimentService, TaskValidationError
+from .lightweight_study import LightweightStudyNotFound, LightweightStudyService
 from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
 from .postgres_persistence import PostgresOperatorPersistence
@@ -35,6 +36,7 @@ from .resolved_runner import effective_execution_identity
 from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
 from .settings import Settings
+from .study_remote import StudyRemoteError
 from .strategy_runner import (
     ARTIFACT_NAMES,
     HASHED_ARTIFACT_NAMES,
@@ -938,6 +940,7 @@ def create_app(
         experiments=experiments,
         release_locator=str(settings.project_root or settings.state_root),
     )
+    lightweight_studies = LightweightStudyService.from_environment()
     auth = AuthManager(catalog, settings, **({"clock": clock} if clock else {}))
     operators = OperatorService(
         operator_persistence,
@@ -950,9 +953,17 @@ def create_app(
     app.state.datasets = datasets
     app.state.experiments = experiments
     app.state.studies = studies
+    app.state.lightweight_studies = lightweight_studies
     app.state.operators = operators
     app.state.operator_persistence = operator_persistence
     app.state.auth = auth
+
+    def lightweight_service() -> LightweightStudyService:
+        service = app.state.lightweight_studies
+        if service is None:
+            raise StudyRemoteError("Lightweight Study training is not enabled")
+        return service
+
     app.mount(
         "/static",
         StaticFiles(directory=PACKAGE_ROOT / "static"),
@@ -1029,7 +1040,8 @@ def create_app(
         )
 
     @app.exception_handler(StudyNotFoundError)
-    async def study_not_found(request: Request, exc: StudyNotFoundError):
+    @app.exception_handler(LightweightStudyNotFound)
+    async def study_not_found(request: Request, exc: Exception):
         if request.url.path.startswith("/api/"):
             return _json_error(404, "NOT_FOUND", str(exc))
         try:
@@ -1051,8 +1063,9 @@ def create_app(
             return _json_error(401 if code == "AUTH_REQUIRED" else 403, code, str(exc))
         return RedirectResponse("/login", status_code=303)
 
+    @app.exception_handler(StudyRemoteError)
     @app.exception_handler(ValueError)
-    async def invalid_request(request: Request, exc: ValueError):
+    async def invalid_request(request: Request, exc: Exception):
         if request.url.path.startswith("/api/"):
             return _json_error(400, "INVALID_REQUEST", str(exc))
         try:
@@ -1372,6 +1385,39 @@ def create_app(
     async def api_studies(request: Request):
         _session(request)
         return {"studies": await run_in_threadpool(studies.list)}
+
+    @app.post("/api/lightweight-studies")
+    async def api_lightweight_study_submit(request: Request):
+        session = _session(request)
+        _csrf(request, session)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return _json_error(400, "INVALID_JSON", str(exc))
+        if type(body) is not dict or set(body) != {"action_id", "trial_budget"}:
+            return _json_error(
+                400, "INVALID_REQUEST", "Expected exactly action_id and trial_budget"
+            )
+        try:
+            study = await run_in_threadpool(
+                lightweight_service().submit,
+                action_id=body["action_id"],
+                trial_budget=body["trial_budget"],
+            )
+        except StudyRemoteError as exc:
+            return _json_error(400, "LIGHTWEIGHT_STUDY_REJECTED", str(exc))
+        return JSONResponse({"study": study}, status_code=201)
+
+    @app.get("/api/lightweight-studies/{study_id}")
+    async def api_lightweight_study_detail(request: Request, study_id: str):
+        _session(request)
+        try:
+            study = await run_in_threadpool(lightweight_service().detail, study_id)
+        except LightweightStudyNotFound as exc:
+            return _json_error(404, "NOT_FOUND", str(exc))
+        except StudyRemoteError as exc:
+            return _json_error(400, "LIGHTWEIGHT_STUDY_REJECTED", str(exc))
+        return {"study": study}
 
     @app.post("/api/studies/preview")
     async def api_study_preview(request: Request):
@@ -1827,9 +1873,63 @@ def create_app(
         session = _session(request)
         return _render(
             request,
+            "study_mode.html",
+            session=session,
+            lightweight_available=app.state.lightweight_studies is not None,
+        )
+
+    @app.get("/studies/new/lightweight")
+    async def lightweight_study_new(request: Request):
+        session = _session(request)
+        lightweight_service()
+        return _render(
+            request,
+            "lightweight_study_new.html",
+            session=session,
+            action_id=secrets.token_hex(16),
+            trial_budget=32,
+        )
+
+    @app.get("/studies/new/legacy")
+    async def legacy_study_new(request: Request):
+        session = _session(request)
+        return _render(
+            request,
             "study_new.html",
             session=session,
             **await study_form_context(),
+        )
+
+    @app.post("/studies/lightweight")
+    async def lightweight_study_submit(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        if set(form) != {"csrf_token", "action_id", "trial_budget"}:
+            raise StudyRemoteError("Lightweight Study submission fields are invalid")
+        _csrf(request, session, form["csrf_token"])
+        try:
+            trial_budget = int(form["trial_budget"])
+        except ValueError as exc:
+            raise StudyRemoteError("trial_budget must be an integer") from exc
+        study = await run_in_threadpool(
+            lightweight_service().submit,
+            action_id=form["action_id"],
+            trial_budget=trial_budget,
+        )
+        return RedirectResponse(
+            f"/studies/lightweight/{study['study_id']}", status_code=303
+        )
+
+    @app.get("/studies/lightweight/{study_id}")
+    async def lightweight_study_detail(request: Request, study_id: str):
+        session = _session(request)
+        study_id = _study_id(study_id)
+        study = await run_in_threadpool(lightweight_service().detail, study_id)
+        return _render(
+            request,
+            "lightweight_study_detail.html",
+            session=session,
+            study=study,
         )
 
     @app.post("/studies/preview")

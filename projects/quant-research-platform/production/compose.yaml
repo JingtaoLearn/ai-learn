@@ -199,6 +199,17 @@ services:
       QUANT_POSTGRES_DATABASE: quantresearch
       QUANT_POSTGRES_USER: qr_runtime
       QUANT_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
+      QR_LIGHTWEIGHT_STUDY_ENABLED: "true"
+      QR_STUDY_WORKER_ENDPOINT: ${QR_STUDY_WORKER_ENDPOINT:?set reviewed Feng worker origin}
+      QR_STUDY_SIGNING_PRIVATE_KEY: /run/secrets/study-signing-private.pem
+      QR_STUDY_TLS_CA_FILE: /run/secrets/study-worker-tls.crt
+      QR_STUDY_SOURCE_COMMIT: ${QR_STUDY_SOURCE_COMMIT:?set reviewed worker source commit}
+      QR_STUDY_SOURCE_TREE: ${QR_STUDY_SOURCE_TREE:?set reviewed worker source tree}
+      QR_STUDY_WORKER_IMAGE: ${QR_STUDY_WORKER_IMAGE:?set reviewed worker image digest}
+      QR_STUDY_POSTGRES_HOST: postgres
+      QR_STUDY_POSTGRES_DATABASE: quantresearch
+      QR_STUDY_POSTGRES_USER: qr_runtime
+      QR_STUDY_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
       MPLCONFIGDIR: /tmp/matplotlib
       QUANT_RESIDUAL_ROOT: /var/lib/quantresearch/residual
     tmpfs:
@@ -223,6 +234,21 @@ services:
       - type: bind
         source: /etc/quantresearch-production/secrets/postgres-runtime
         target: /run/secrets/postgres-runtime
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/study-signing-private.pem
+        target: /run/secrets/study-signing-private.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/study-signing-public.pem
+        target: /run/secrets/study-signing-private.pub.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/quantresearch-production/secrets/study-worker-tls.crt
+        target: /run/secrets/study-worker-tls.crt
         read_only: true
         bind: {create_host_path: false}
     expose: ["8090"]
@@ -309,6 +335,7 @@ networks:
   provider_proxy_internal: {driver: bridge, internal: true, attachable: false}
   provider_egress: {driver: bridge, internal: false, attachable: false}
   package_identity_internal: {driver: bridge, internal: true, attachable: false}
+
 
 volumes:
   postgres_data:

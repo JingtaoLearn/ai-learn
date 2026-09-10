@@ -43,11 +43,11 @@
       <div class="nav-group">
         <span class="nav-label">Create</span>
         <a href="/experiments/new"{% if is_new_experiment %} aria-current="page"{% endif %}>New experiment</a>
-        <a href="/studies/new"{% if path in ("/studies/new", "/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>New Study</a>
+        <a href="/studies/new"{% if path.startswith("/studies/new") or path in ("/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>New Study</a>
       </div>
       <div class="nav-group">
         <span class="nav-label">Research</span>
-        <a href="/studies"{% if is_studies and path not in ("/studies/new", "/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>Studies</a>
+        <a href="/studies"{% if is_studies and not path.startswith("/studies/new") and path not in ("/studies/preview", "/studies/edit") %} aria-current="page"{% endif %}>Studies</a>
       </div>
       <div class="nav-group">
         <span class="nav-label">Catalog</span>
