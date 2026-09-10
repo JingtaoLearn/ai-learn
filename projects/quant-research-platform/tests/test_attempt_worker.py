@@ -7,9 +7,37 @@ import pytest
 from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService, InvalidAttemptTransition
-from quant_platform.worker import SerialAttemptWorker
+from quant_platform.worker import SerialAttemptWorker, SerialStudyWorker
 
 from test_experiment_service import FIXTURE, _task
+
+
+def test_study_worker_backs_off_only_after_an_idle_tick():
+    class StudyService:
+        responses = [None, {"status": "ADVANCED"}, None]
+        calls = 0
+
+        def _advance_next_runnable(self):
+            response = self.responses[self.calls]
+            self.calls += 1
+            return response
+
+    clock = [0.0]
+    service = StudyService()
+    worker = SerialStudyWorker(
+        service,
+        idle_poll_seconds=5,
+        monotonic_clock=lambda: clock[0],
+    )
+
+    assert worker.run_once() is False
+    clock[0] = 4.9
+    assert worker.run_once() is False
+    assert service.calls == 1
+    clock[0] = 5.0
+    assert worker.run_once() is True
+    assert worker.run_once() is False
+    assert service.calls == 3
 
 
 def _created(tmp_path: Path):
