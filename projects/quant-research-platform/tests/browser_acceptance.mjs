@@ -657,6 +657,31 @@ try {
             `Dashboard identity cluster failed at ${width}px: ${JSON.stringify(contract)}`,
           );
         }
+        if (width === 390) {
+          const decisionVisibility = await evaluate(`(() => {
+            const outcome = document.querySelector(".evidence-outcome");
+            const action = document.querySelector(".evidence-next-action a");
+            if (!outcome || !action) return null;
+            const outcomeBox = outcome.getBoundingClientRect();
+            const actionBox = action.getBoundingClientRect();
+            return {
+              outcomeVisible: outcomeBox.width > 0 && outcomeBox.height > 0,
+              actionVisible: actionBox.width > 0 && actionBox.height > 0,
+              outcomeContained: outcomeBox.left >= 0 && outcomeBox.right <= innerWidth,
+              actionContained: actionBox.left >= 0 && actionBox.right <= innerWidth,
+              outcomeInFirstViewport: outcomeBox.top >= 0 && outcomeBox.bottom <= innerHeight,
+              actionInFirstViewport: actionBox.top >= 0 && actionBox.bottom <= innerHeight,
+            };
+          })()`);
+          if (
+            !decisionVisibility ||
+            Object.values(decisionVisibility).some((value) => !value)
+          ) {
+            throw new Error(
+              `390px decision evidence is hidden: ${JSON.stringify(decisionVisibility)}`,
+            );
+          }
+        }
       }
     }
   }

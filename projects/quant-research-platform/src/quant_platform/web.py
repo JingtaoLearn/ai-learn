@@ -73,6 +73,15 @@ STUDY_OUTCOMES = {
     "PAUSED": "Study paused.",
     "RESUMED": "Study resumed.",
 }
+DECISION_CAVEAT_FIELDS = {
+    "total_return_status": "Total return",
+    "matched_exposure_status": "Matched-exposure comparison",
+    "ranking_status": "Ranking eligibility",
+    "promotion_ready": "Promotion readiness",
+    "gross_dividends_cny": "Gross dividends",
+    "dividend_tax_cny": "Dividend tax",
+    "outstanding_tax_cny": "Outstanding tax",
+}
 
 
 def _canonical_json_text(value: Any) -> str:
@@ -902,6 +911,87 @@ def _report_payload(settings: Settings, attempt: dict[str, Any]) -> bytes:
     return _verified_run_payloads(settings, attempt)["report.html"]
 
 
+def _current_report_evidence(catalog: Any, attempt_id: str) -> dict[str, Any] | None:
+    if catalog._postgres is not None:
+        return catalog._postgres.current_report_evidence(attempt_id)
+    try:
+        report = read_latest_report(catalog.state_root, attempt_id)
+    except (AttemptReportError, OSError, RuntimeError, ValueError):
+        return None
+    return {
+        "report_artifact_id": report["manifest"]["report_artifact_id"],
+        "document": report["document"],
+    }
+
+
+def _decision_evidence_item(
+    catalog: Any,
+    attempt: dict[str, Any] | None,
+    study_ids: list[str],
+) -> dict[str, Any] | None:
+    if attempt is None:
+        return None
+    resolved = _bounded_json_loads(attempt["resolved_json"], "latest Attempt resolution")
+    resolved_dataset = resolved.get("dataset", {}) if isinstance(resolved, dict) else {}
+    report = _current_report_evidence(catalog, attempt["attempt_id"])
+    limitations: list[dict[str, str]] = []
+    if report is None:
+        limitations.append(
+            {
+                "label": "Canonical report",
+                "availability": "NOT_AVAILABLE",
+                "reason": "No verified canonical report is recorded for this Attempt.",
+            }
+        )
+    else:
+        for section in report["document"]["sections"]:
+            for field in section["fields"]:
+                label = DECISION_CAVEAT_FIELDS.get(field["field_id"])
+                if label is not None and field["availability"] != "AVAILABLE":
+                    limitations.append(
+                        {
+                            "label": label,
+                            "availability": field["availability"],
+                            "reason": field["reason"],
+                        }
+                    )
+    if not study_ids:
+        limitations.append(
+            {
+                "label": "Study evidence",
+                "availability": "NOT_LINKED",
+                "reason": "No Study identity is linked to this Attempt.",
+            }
+        )
+    report_id = None if report is None else report["report_artifact_id"]
+    return {
+        **attempt,
+        "resolved": resolved,
+        "dataset_snapshot_id": (
+            resolved_dataset.get("snapshot_id")
+            if isinstance(resolved_dataset, dict)
+            else None
+        ),
+        "study_ids": study_ids,
+        "report_artifact_id": report_id,
+        "report_document_id": (
+            None if report is None else report["document"]["document_id"]
+        ),
+        "limitations": limitations,
+        "next_action": (
+            {
+                "label": "Open verified Attempt report",
+                "href": f"/reports/{attempt['attempt_id']}",
+            }
+            if report_id is not None
+            else {
+                "label": "Inspect Experiment evidence",
+                "href": f"/experiments/{attempt['experiment_id']}",
+            }
+        ),
+    }
+
+
 def _dashboard_context(catalog: Any, operators: OperatorService) -> dict[str, Any]:
     """Read only the aggregate and recent data rendered by the dashboard."""
     connection = catalog.connect()
@@ -917,8 +1007,21 @@ def _dashboard_context(catalog: Any, operators: OperatorService) -> dict[str, An
             """
         ).fetchone()
         attempts = connection.execute(
-            "SELECT * FROM attempts ORDER BY created_at DESC LIMIT 8"
+            "SELECT a.*, e.canonical_attempt_id FROM attempts a "
+            "JOIN experiments e USING (experiment_id) "
+            "ORDER BY a.created_at DESC, a.sequence DESC LIMIT 8"
         ).fetchall()
+        latest = None if not attempts else dict(attempts[0])
+        study_ids = []
+        if latest is not None:
+            study_ids = [
+                row["study_id"]
+                for row in connection.execute(
+                    "SELECT DISTINCT study_id FROM parameter_study_bindings "
+                    "WHERE attempt_id = ? ORDER BY study_id",
+                    (latest["attempt_id"],),
+                ).fetchall()
+            ]
     finally:
         connection.close()
     return {
@@ -927,6 +1030,7 @@ def _dashboard_context(catalog: Any, operators: OperatorService) -> dict[str, An
         "operator_count": len(operators.list()),
         "failure_count": counts["failure_count"],
         "attempts": [dict(row) for row in attempts],
+        "latest_evidence": _decision_evidence_item(catalog, latest, study_ids),
     }
 
 

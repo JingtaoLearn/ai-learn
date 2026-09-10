@@ -1159,6 +1159,62 @@ fieldset label + label {
   background: var(--warning-surface);
 }
 
+.evidence-inbox {
+  border-top: 4px solid var(--interactive);
+}
+
+.evidence-outcome h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.evidence-identity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.evidence-identity-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-xs);
+  padding: var(--space-compact);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.evidence-identity-grid span,
+.evidence-next-action span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.evidence-identity-grid a,
+.evidence-identity-grid code {
+  min-height: auto;
+}
+
+.evidence-identities {
+  margin-bottom: var(--space-3);
+}
+
+.evidence-next-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.evidence-next-action > div {
+  display: grid;
+  gap: var(--space-xs);
+}
+
 .context-facts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1565,6 +1621,19 @@ iframe {
 
   .context-facts {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-identity-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .evidence-next-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .evidence-next-action .button {
+    width: 100%;
   }
 
   .report-toolbar {
