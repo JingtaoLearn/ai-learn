@@ -304,7 +304,7 @@ class ProductionClient:
             ) from exc
         actual = {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
         if status != 200 or actual != dict(expected):
-            raise ProductionClientError("result file identity does not verify")
+            raise ProductionClientError(f"result file identity does not verify: {name}")
         return payload
 
     def verify_focus_calibration(self, manifest: Mapping[str, Any]) -> dict[str, Any]:

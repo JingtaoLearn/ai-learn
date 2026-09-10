@@ -25,20 +25,20 @@
       "script": "gold_production_api_action.py",
       "model_id": "gold-au9999-ols55-ema1-b0175-s0275-v1",
       "production_manifest_sha256": "8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745",
-      "prompt": "PRODUCTION AUDIT COPY — execute only gold_production_api_action.py. job_id=1cd5557264db; model_id=gold-au9999-ols55-ema1-b0175-s0275-v1; schedule=40 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745."
+      "prompt": "PRODUCTION AUDIT COPY — execute only gold_production_api_action.py. job_id=1cd5557264db; model_id=gold-au9999-ols55-ema1-b0175-s0275-v1; schedule=40 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, publish and read back the stable report, render from the verified source notification, then emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=8153c89ba46ce4a52b39b914a706aa3a321caacf01366e3f2e4e7087a2e3e745."
     },
     {
       "id": "297c11cad0dc",
       "name": "bocom-production-daily-action",
       "enabled": true,
       "no_agent": true,
-      "schedule": "40 8 * * 1-5",
+      "schedule": "45 8 * * 1-5",
       "timezone": "Asia/Shanghai",
       "deliver": "feishu:oc_33bdb4845220ee3788fe50c50cf333ed",
       "script": "bocom_production_api_action.py",
       "model_id": "bocom-20d-ema5-hysteresis-crossing-v1.2",
       "production_manifest_sha256": "6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969",
-      "prompt": "PRODUCTION AUDIT COPY — execute only bocom_production_api_action.py. job_id=297c11cad0dc; model_id=bocom-20d-ema5-hysteresis-crossing-v1.2; schedule=40 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969."
+      "prompt": "PRODUCTION AUDIT COPY — execute only bocom_production_api_action.py. job_id=297c11cad0dc; model_id=bocom-20d-ema5-hysteresis-crossing-v1.2; schedule=45 8 * * 1-5 Asia/Shanghai; transport=loopback HTTPS mTLS via host-managed tunnel; behavior=trigger, verify immutable result/files, publish and read back the stable report, render from the verified source notification, then emit notification only; local_compute=false; flearn_fallback=false; automatic_ordering=false; production_manifest_sha256=6f9f10ed235c6229582ca2843c8b983a887dbdc0ac289170ca834e580bcae969."
     }
   ],
   "rollback": [
