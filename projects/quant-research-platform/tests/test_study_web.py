@@ -513,6 +513,9 @@ def test_completed_study_replaces_controls_and_identifies_unranked_trials(
 
     assert response.status_code == 200
     assert "This Study is complete. Its frozen evidence is read-only." in response.text
+    assert "COMPLETED" in response.text
+    assert "ACTIVE" in response.text
+    assert "ACCESSED" in response.text
     assert f'action="/studies/{STUDY_ID}/advance"' not in response.text
     assert f'action="/studies/{STUDY_ID}/control"' not in response.text
     assert "Unranked Trial 2" in response.text
