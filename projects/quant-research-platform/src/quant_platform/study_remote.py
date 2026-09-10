@@ -23,6 +23,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .study_training_kernel import (
+    TRAINING_JOB_TYPE,
+    StudyTrainingKernel,
+    TrainingKernelValidationError,
+    freeze_training_spec,
+    validate_training_spec,
+)
+
 PROTOCOL = "quantresearch-study-worker/v1"
 DISPATCH_PROTOCOL = "quantresearch-study-dispatch/v2"
 JOB_TYPE = "deterministic-synthetic-search-v1"
@@ -163,7 +171,90 @@ def freeze_synthetic_request(
     return {"job_id": _job_identity(frozen), **frozen}
 
 
+def freeze_training_request(
+    *,
+    trial_budget: int,
+    seed: int,
+    checkpoint_count: int,
+    parameter_low: float,
+    parameter_high: float,
+    objective_target: float,
+    source_commit: str,
+    source_tree: str,
+    worker_image: str,
+) -> dict[str, Any]:
+    if type(checkpoint_count) is not int or not 1 <= checkpoint_count <= MAX_CHECKPOINTS:
+        raise StudyValidationError(
+            f"checkpoint_count must be between 1 and {MAX_CHECKPOINTS}"
+        )
+    if HEX_40.fullmatch(source_commit) is None or HEX_40.fullmatch(source_tree) is None:
+        raise StudyValidationError("source commit and tree must be lowercase Git SHA-1 identities")
+    if IMAGE_DIGEST.fullmatch(worker_image) is None:
+        raise StudyValidationError("worker_image must be a sha256 image identity")
+    try:
+        training_spec = freeze_training_spec(
+            trial_budget=trial_budget,
+            seed=seed,
+            parameter_low=parameter_low,
+            parameter_high=parameter_high,
+            objective_target=objective_target,
+        )
+    except TrainingKernelValidationError as exc:
+        raise StudyValidationError(str(exc)) from exc
+    frozen = {
+        "schema_version": 1,
+        "protocol": PROTOCOL,
+        "job_type": TRAINING_JOB_TYPE,
+        "training_spec": training_spec,
+        "checkpoint_count": checkpoint_count,
+        "source_commit": source_commit,
+        "source_tree": source_tree,
+        "worker_image": worker_image,
+    }
+    return {"job_id": _job_identity(frozen), **frozen}
+
+
 def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("job_type") == TRAINING_JOB_TYPE:
+        _exact_fields(
+            value,
+            {
+                "job_id",
+                "schema_version",
+                "protocol",
+                "job_type",
+                "training_spec",
+                "checkpoint_count",
+                "source_commit",
+                "source_tree",
+                "worker_image",
+            },
+            "Study request",
+        )
+        if not isinstance(value.get("training_spec"), Mapping):
+            raise StudyValidationError("training_spec must be an object")
+        try:
+            spec = validate_training_spec(value["training_spec"])
+            search = spec["search"]
+            objective = spec["objective"]
+            rebuilt = freeze_training_request(
+                trial_budget=search["trial_budget"],
+                seed=search["seed"],
+                checkpoint_count=value["checkpoint_count"],
+                parameter_low=search["low"],
+                parameter_high=search["high"],
+                objective_target=objective["target"],
+                source_commit=value["source_commit"],
+                source_tree=value["source_tree"],
+                worker_image=value["worker_image"],
+            )
+        except TrainingKernelValidationError as exc:
+            raise StudyValidationError(str(exc)) from exc
+        if value.get("schema_version") != 1 or value.get("protocol") != PROTOCOL:
+            raise StudyValidationError("Study request protocol identity is unsupported")
+        if value.get("job_id") != rebuilt["job_id"]:
+            raise StudyValidationError("Study request identity does not match its frozen inputs")
+        return rebuilt
     _exact_fields(
         value,
         {
@@ -502,28 +593,19 @@ class WorkerJobStore:
                     "protocol": PROTOCOL,
                     "job_id": frozen["job_id"],
                     "request_digest": request_digest,
+                    "frozen_request": frozen,
                     "source_commit": frozen["source_commit"],
                     "source_tree": frozen["source_tree"],
                     "worker_image": self.worker_image,
                     "status": "ACCEPTED",
-                    "progress": {
-                        "completed_iterations": 0,
-                        "total_iterations": frozen["iterations"],
-                    },
+                    "progress": self._initial_progress(frozen),
                     "checkpoints": [],
                     "result": None,
                     "failure": None,
                     "updated_at": _utc_now(),
                 }
                 self._write(state)
-                thread = threading.Thread(
-                    target=self._execute,
-                    args=(frozen,),
-                    name=f"study-{frozen['job_id'][:12]}",
-                    daemon=True,
-                )
-                self._threads[frozen["job_id"]] = thread
-                thread.start()
+                self._start(frozen)
                 return state, False
         finally:
             with self._lock:
@@ -604,6 +686,86 @@ class WorkerJobStore:
         with self._lock:
             return self._read(job_id)
 
+    @staticmethod
+    def _initial_progress(request: Mapping[str, Any]) -> dict[str, Any]:
+        if request["job_type"] == TRAINING_JOB_TYPE:
+            return {
+                "completed_trials": 0,
+                "total_trials": request["training_spec"]["search"]["trial_budget"],
+                "suggestion_count": 0,
+            }
+        return {
+            "completed_iterations": 0,
+            "total_iterations": request["iterations"],
+        }
+
+    def _start(self, request: Mapping[str, Any]) -> None:
+        job_id = str(request["job_id"])
+        thread = threading.Thread(
+            target=self._execute,
+            args=(request,),
+            name=f"study-{job_id[:12]}",
+            daemon=True,
+        )
+        self._threads[job_id] = thread
+        thread.start()
+
+    def resume_incomplete(self) -> None:
+        """Restart accepted work deterministically from frozen inputs after worker restart."""
+        with self._lock:
+            for path in sorted(self.root.glob("*.json")):
+                state = _strict_object(path.read_bytes(), "worker job state")
+                if state.get("status") in TERMINAL_STATES:
+                    continue
+                request = state.get("frozen_request")
+                if not isinstance(request, Mapping):
+                    state["status"] = "FAILED"
+                    state["failure"] = {
+                        "code": "WORKER_RESTART_UNRECOVERABLE",
+                        "message": "accepted work predates frozen-request restart support",
+                    }
+                    state["updated_at"] = _utc_now()
+                    self._write(state)
+                    continue
+                try:
+                    frozen = validate_request(request)
+                except StudyValidationError as exc:
+                    state["status"] = "FAILED"
+                    state["failure"] = {
+                        "code": "WORKER_RESTART_INPUT_INVALID",
+                        "message": str(exc),
+                    }
+                    state["updated_at"] = _utc_now()
+                    self._write(state)
+                    continue
+                if frozen["worker_image"] != self.worker_image:
+                    state["status"] = "FAILED"
+                    state["failure"] = {
+                        "code": "WORKER_RESTART_IMAGE_DRIFT",
+                        "message": "persisted request targets a different worker image",
+                    }
+                    state["updated_at"] = _utc_now()
+                    self._write(state)
+                    continue
+                expected = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
+                if expected != state.get("request_digest"):
+                    state["status"] = "FAILED"
+                    state["failure"] = {
+                        "code": "WORKER_RESTART_INPUT_CONFLICT",
+                        "message": "persisted frozen request does not match its accepted digest",
+                    }
+                    state["updated_at"] = _utc_now()
+                    self._write(state)
+                    continue
+                state["status"] = "ACCEPTED"
+                state["progress"] = self._initial_progress(frozen)
+                state["checkpoints"] = []
+                state["result"] = None
+                state["failure"] = None
+                state["updated_at"] = _utc_now()
+                self._write(state)
+                self._start(frozen)
+
     def _execute(self, request: Mapping[str, Any]) -> None:
         job_id = str(request["job_id"])
         try:
@@ -614,6 +776,9 @@ class WorkerJobStore:
                 state["status"] = "RUNNING"
                 state["updated_at"] = _utc_now()
                 self._write(state)
+            if request["job_type"] == TRAINING_JOB_TYPE:
+                self._execute_training(request)
+                return
             total = int(request["iterations"])
             checkpoint_count = int(request["checkpoint_count"])
             checkpoints = sorted({max(1, total * index // checkpoint_count) for index in range(1, checkpoint_count + 1)})
@@ -673,6 +838,34 @@ class WorkerJobStore:
                     }
                     state["updated_at"] = _utc_now()
                     self._write(state)
+
+    def _execute_training(self, request: Mapping[str, Any]) -> None:
+        job_id = str(request["job_id"])
+
+        def checkpoint(progress: dict[str, Any], aggregate: dict[str, Any]) -> None:
+            with self._lock:
+                state = self._read(job_id)
+                if state is None:
+                    raise StudyRemoteError("worker state disappeared during training")
+                state["progress"] = progress
+                state["checkpoints"].append(aggregate)
+                state["updated_at"] = _utc_now()
+                self._write(state)
+
+        completed = StudyTrainingKernel().run(
+            request["training_spec"],
+            checkpoint_count=int(request["checkpoint_count"]),
+            on_checkpoint=checkpoint,
+        )
+        with self._lock:
+            state = self._read(job_id)
+            if state is None:
+                raise StudyRemoteError("worker state disappeared before training completion")
+            state["status"] = "SUCCEEDED"
+            state["progress"] = completed.progress
+            state["result"] = completed.evidence
+            state["updated_at"] = _utc_now()
+            self._write(state)
 
 
 class _StudyWorkerHandler(BaseHTTPRequestHandler):
@@ -796,6 +989,7 @@ class StudyWorkerServer(ThreadingHTTPServer):
         self.public_key = public_key
         public_key_id(public_key)
         super().__init__(address, _StudyWorkerHandler)
+        self.store.resume_incomplete()
 
 
 @dataclass(frozen=True)
@@ -1094,6 +1288,15 @@ class StudyPostgresStore:
     def initialize(self) -> None:
         with self.config.connect() as connection:
             connection.execute(STUDY_SCHEMA_SQL)
+            row = connection.execute(
+                "SELECT identity FROM qr_study.schema_identity WHERE singleton"
+            ).fetchone()
+            if row is None or row["identity"] != SCHEMA_IDENTITY:
+                raise StudyRemoteError("lightweight Study schema identity conflicts")
+
+    def verify_initialized(self) -> None:
+        """Verify an already-provisioned authority without requiring migration privileges."""
+        with self.config.connect() as connection:
             row = connection.execute(
                 "SELECT identity FROM qr_study.schema_identity WHERE singleton"
             ).fetchone()
@@ -1670,11 +1873,57 @@ def _worker_command(args: argparse.Namespace) -> int:
 
 def _execute_command(args: argparse.Namespace) -> int:
     store = StudyPostgresStore.from_environment()
-    store.initialize()
+    store.verify_initialized()
     request = freeze_synthetic_request(
         iterations=args.iterations,
         seed=args.seed,
         checkpoint_count=args.checkpoint_count,
+        source_commit=args.source_commit,
+        source_tree=args.source_tree,
+        worker_image=args.worker_image,
+    )
+    dispatcher = StudyDispatcher(
+        store,
+        SignedStudyClient(
+            args.endpoint,
+            Path(args.private_key),
+            tls_ca_file=Path(args.tls_ca_file) if args.tls_ca_file else None,
+        ),
+    )
+    submission = dispatcher.submit(request)
+    probes: list[dict[str, Any]] = []
+    reads: list[float] = []
+    authoritative = submission["authoritative"]
+    while authoritative["status"] not in TERMINAL_STATES:
+        if args.health_url:
+            probes.append(_probe(args.health_url, args.health_host))
+        time.sleep(args.poll_interval)
+        observed = dispatcher.read(request["job_id"])
+        reads.append(observed["read_elapsed_ms"])
+        authoritative = observed["authoritative"]
+    output = {
+        "schema_version": 1,
+        "request": request,
+        "submission": submission,
+        "authoritative": authoritative,
+        "storage_shape": store.storage_shape(request["job_id"]),
+        "health_probes": probes,
+        "remote_read_elapsed_ms": reads,
+    }
+    print(canonical_json_bytes(output).decode("utf-8"))
+    return 0 if authoritative["status"] == "SUCCEEDED" else 2
+
+
+def _execute_training_command(args: argparse.Namespace) -> int:
+    store = StudyPostgresStore.from_environment()
+    store.verify_initialized()
+    request = freeze_training_request(
+        trial_budget=args.trial_budget,
+        seed=args.seed,
+        checkpoint_count=args.checkpoint_count,
+        parameter_low=args.parameter_low,
+        parameter_high=args.parameter_high,
+        objective_target=args.objective_target,
         source_commit=args.source_commit,
         source_tree=args.source_tree,
         worker_image=args.worker_image,
@@ -1749,6 +1998,24 @@ def _parser() -> argparse.ArgumentParser:
     execute.add_argument("--health-url")
     execute.add_argument("--health-host")
     execute.set_defaults(handler=_execute_command)
+
+    execute_training = commands.add_parser("execute-training")
+    execute_training.add_argument("--endpoint", required=True)
+    execute_training.add_argument("--private-key", required=True)
+    execute_training.add_argument("--tls-ca-file")
+    execute_training.add_argument("--trial-budget", required=True, type=int)
+    execute_training.add_argument("--seed", required=True, type=int)
+    execute_training.add_argument("--checkpoint-count", type=int, default=8)
+    execute_training.add_argument("--parameter-low", type=float, default=0.0)
+    execute_training.add_argument("--parameter-high", type=float, default=1.0)
+    execute_training.add_argument("--objective-target", type=float, default=0.61803398875)
+    execute_training.add_argument("--source-commit", required=True)
+    execute_training.add_argument("--source-tree", required=True)
+    execute_training.add_argument("--worker-image", required=True)
+    execute_training.add_argument("--poll-interval", type=float, default=0.2)
+    execute_training.add_argument("--health-url")
+    execute_training.add_argument("--health-host")
+    execute_training.set_defaults(handler=_execute_training_command)
 
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--study-id", required=True)

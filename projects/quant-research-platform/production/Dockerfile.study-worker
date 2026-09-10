@@ -2,14 +2,21 @@ FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f14
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/opt/project/src
+    PYTHONPATH=/opt
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin study-worker \
-    && pip install --no-cache-dir --disable-pip-version-check "psycopg[binary]==3.3.5"
+    && pip install --no-cache-dir --disable-pip-version-check \
+        "optuna==4.9.0" "psycopg[binary]==3.3.5" \
+    && mkdir -p /opt/quant_platform \
+    && touch /opt/quant_platform/__init__.py
 
-COPY src/quant_platform/study_remote.py /opt/study_remote.py
+COPY src/quant_platform/schemas.py \
+     src/quant_platform/study_suggesters.py \
+     src/quant_platform/study_training_kernel.py \
+     src/quant_platform/study_remote.py \
+     /opt/quant_platform/
 
 USER 10001:10001
 WORKDIR /run/study-worker
 EXPOSE 8091
-ENTRYPOINT ["python", "/opt/study_remote.py", "worker"]
+ENTRYPOINT ["python", "-m", "quant_platform.study_remote", "worker"]
