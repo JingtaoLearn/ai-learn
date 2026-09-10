@@ -50,6 +50,10 @@ MAX_BODY_BYTES = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_CONTAINERS = 10_000
 MAX_JSON_NODES = 20_000
+DATASET_UNAVAILABLE_MESSAGE = (
+    "Dataset data is temporarily unavailable. Your selections and action identity are unchanged; "
+    "retry here after the maintained dataset is updated."
+)
 PACKAGE_ROOT = Path(__file__).resolve().parent
 LOGGER = logging.getLogger(__name__)
 STUDY_ID = re.compile(r"^[0-9a-f]{64}$")
@@ -102,6 +106,17 @@ def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
         {"ok": False, "error": {"code": code, "message": message}},
         status_code=status_code,
     )
+
+
+def _is_dataset_resolution_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, DatasetResolutionError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1021,10 +1036,30 @@ def create_app(
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         return response
 
+    async def dataset_unavailable_response(request: Request) -> Response:
+        if request.url.path.startswith("/api/"):
+            return _json_error(503, "DATASET_UNAVAILABLE", DATASET_UNAVAILABLE_MESSAGE)
+        try:
+            session = _session(request)
+        except AuthError:
+            return RedirectResponse("/login", status_code=303)
+        return _render(
+            request,
+            "error.html",
+            session=session,
+            status_code=503,
+            message=DATASET_UNAVAILABLE_MESSAGE,
+            recovery_message="Keep this action open and retry after the maintained dataset is updated.",
+            recovery_href="/experiments/new",
+            recovery_label="Return to New experiment",
+        )
+
     @app.exception_handler(TaskValidationError)
     @app.exception_handler(StudyValidationError)
     @app.exception_handler(OperatorSubmissionError)
     async def domain_error(request: Request, exc: Exception):
+        if _is_dataset_resolution_error(exc):
+            return await dataset_unavailable_response(request)
         if request.url.path.startswith("/api/"):
             return _json_error(400, "DOMAIN_ERROR", str(exc))
         try:
@@ -1079,6 +1114,10 @@ def create_app(
             status_code=400,
             message=str(exc),
         )
+
+    @app.exception_handler(DatasetResolutionError)
+    async def dataset_unavailable(request: Request, _exc: DatasetResolutionError):
+        return await dataset_unavailable_response(request)
 
     @app.get("/health")
     async def health():
@@ -1646,8 +1685,13 @@ def create_app(
         validation_error: Exception | None = None,
     ) -> dict[str, Any]:
         grouped = _operator_groups(operators)
-        dataset_options = await run_in_threadpool(datasets.list_available)
         values = form_values or {}
+        dataset_error: DatasetResolutionError | None = None
+        try:
+            dataset_options = await run_in_threadpool(datasets.list_available)
+        except DatasetResolutionError:
+            dataset_options = []
+            dataset_error = DatasetResolutionError(DATASET_UNAVAILABLE_MESSAGE)
         context = {
             "datasets": dataset_options,
             "grouped": grouped,
@@ -1658,11 +1702,14 @@ def create_app(
             "error_messages": {},
             "invalid_fields": set(),
         }
-        if validation_error is not None:
+        effective_error = dataset_error or validation_error
+        if effective_error is not None:
+            if _is_dataset_resolution_error(effective_error):
+                effective_error = DatasetResolutionError(DATASET_UNAVAILABLE_MESSAGE)
             context.update(
                 _form_error_context(
                     values,
-                    validation_error,
+                    effective_error,
                     fallback_field="experiment-form",
                 )
             )
@@ -1695,7 +1742,7 @@ def create_app(
                 request,
                 "experiment_new.html",
                 session=session,
-                status_code=400,
+                status_code=503 if _is_dataset_resolution_error(exc) else 400,
                 **await experiment_form_context(form, validation_error=exc),
             )
         return _render(
@@ -1738,7 +1785,7 @@ def create_app(
                 request,
                 "experiment_new.html",
                 session=session,
-                status_code=400,
+                status_code=503 if _is_dataset_resolution_error(exc) else 400,
                 **await experiment_form_context(form, validation_error=exc),
             )
         return RedirectResponse(

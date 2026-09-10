@@ -1146,13 +1146,25 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
     def dataset_snapshot_lineage(self, instrument: str, snapshot_id: str) -> dict[str, Any]:
         with self.config.connect() as connection:
             row = connection.execute(
-                "SELECT document FROM qr.dataset_lineage_claims "
-                "WHERE instrument=%s AND snapshot_id=%s",
+                "SELECT c.document, c.artifact_sha256, a.payload "
+                "FROM qr.dataset_lineage_claims AS c "
+                "JOIN qr.artifacts AS a USING (artifact_sha256) "
+                "WHERE c.instrument=%s AND c.snapshot_id=%s",
                 (instrument, snapshot_id),
             ).fetchone()
         if row is None:
             raise ValueError(f"unknown dataset lineage: {instrument}@{snapshot_id}")
+        artifact_sha256 = row["artifact_sha256"].strip()
+        payload = bytes(row["payload"])
+        if _sha256_bytes(payload) != artifact_sha256:
+            raise PersistenceUnavailableError("stored dataset lineage artifact is invalid")
+        payload_document = _strict_json(payload, "dataset lineage")
         document = row["document"]
+        if document != payload_document:
+            migrated_index = {"member_sha256": {"lineage.json": artifact_sha256}}
+            if document != migrated_index:
+                raise PersistenceUnavailableError("stored dataset lineage index is invalid")
+            document = payload_document
         if (
             not isinstance(document, dict)
             or document.get("instrument") != instrument

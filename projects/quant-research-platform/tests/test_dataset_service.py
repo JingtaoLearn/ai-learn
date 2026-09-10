@@ -290,6 +290,26 @@ def test_catalog_options_use_latest_authoritative_close_as_default_end(tmp_path:
     assert source.latest_calls == ["601328.SS"]
 
 
+def test_catalog_options_prefer_verified_snapshot_without_provider_access(tmp_path: Path):
+    source = FixedSource(_bars(SESSIONS))
+    service = _dataset_service(tmp_path, source)
+    published = publish_snapshot(_bars(SESSIONS), service.catalog.state_root, METADATA)
+
+    options = service.list_available()
+
+    assert options == [
+        {
+            "dataset_id": "601328.SS",
+            "name": "Bank of Communications (601328.SS)",
+            "instrument": "601328.SS",
+            "default_start": "2024-01-02",
+            "latest_available_close": "2026-08-20",
+            "latest_snapshot_id": published["snapshot_id"],
+        }
+    ]
+    assert source.latest_calls == []
+
+
 def test_complete_range_resolves_existing_snapshot_without_fetch(tmp_path: Path):
     source = FixedSource(_bars(SESSIONS))
     service = _dataset_service(tmp_path, source)

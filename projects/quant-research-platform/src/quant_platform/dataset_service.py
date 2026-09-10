@@ -1280,13 +1280,13 @@ class DatasetService:
             item = DatasetCatalogItem(**row)
             latest = self._latest(item)
             source = self.sources.get(item.provider)
-            if source is not None:
+            if latest is not None:
+                latest_close = latest[0]["data_end"]
+            elif source is not None:
                 latest_close = _date(
                     source.latest_available_close(item.instrument),
                     "latest available close",
                 )
-            elif latest is not None:
-                latest_close = latest[0]["data_end"]
             else:
                 raise DatasetResolutionError(
                     f"dataset source is unavailable: {item.provider}"

@@ -5,7 +5,7 @@
 {% block content %}
 <section class="page-heading"><p class="eyebrow">RESOLVED EXECUTION</p><h1>New experiment</h1><p>Define a reproducible dataset window, declared parameters, and published operator versions.</p></section>
 {% if errors %}<section class="validation-summary danger" role="alert" data-testid="experiment-errors"><h2>Correct the experiment submission</h2><ul>{% for error in errors %}<li><a href="#{{ error.field }}">{{ error.message }}</a></li>{% endfor %}</ul><a href="/experiments/new">Start a clean experiment</a></section>{% endif %}
-<form method="post" action="/experiments/new" data-testid="experiment-form">
+<form id="experiment-form" method="post" action="/experiments/new" data-testid="experiment-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="action_id" value="{{ action_id }}">
   <input type="hidden" name="template_name" value="{{ template.name }}">
