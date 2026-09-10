@@ -8,7 +8,6 @@ import threading
 import time
 from pathlib import Path
 
-import exchange_calendars
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +16,7 @@ from quant_platform.dataset_service import (
     MSFT_PROXY_LABEL,
     MSFT_YAHOO_BASIS_UNQUALIFIED,
     DatasetResolutionError,
+    MsftAdjustedOhlcProxyIngress,
     MsftDatasetIngress,
     msft_adjusted_ohlc_proxy_snapshot_from_yahoo,
     msft_snapshot_from_yahoo,
@@ -35,7 +35,6 @@ from quant_platform.msft_trend_study import (
     run_study,
 )
 from quant_platform.production_web import VERIFIED_CLIENT_HEADER, create_production_app
-from quant_platform.schemas import canonical_json_bytes
 from quant_platform.study_remote import (
     SignedStudyClient,
     StudyValidationError,
@@ -44,7 +43,10 @@ from quant_platform.study_remote import (
     freeze_market_request,
     validate_request,
 )
-from quant_platform.yahoo_proxy_sanitizer import sanitize_msft_yahoo_proxy_response
+from quant_platform.yahoo_proxy_sanitizer import (
+    YahooProxySanitizationError,
+    sanitize_msft_yahoo_proxy_response,
+)
 
 
 SEALED = "2026-09-10T12:00:00Z"
@@ -216,57 +218,43 @@ def test_proxy_parser_applies_one_factor_to_ohlc_and_rejects_2025_before_publica
     assert filtered_snapshot["data_end"] == "2022-02-01"
 
 
-def test_proxy_sanitizer_removes_live_contaminant_from_all_downstream_surfaces() -> None:
-    sentinel = "POST_CUTOFF_LIVE_SENTINEL_987654321"
-    sessions = exchange_calendars.get_calendar("XNYS").sessions_in_range(
-        "2022-02-01", "2024-12-31"
-    )
-    dates = [str(session.date()) for session in sessions]
-    assert len(dates) == 733
+def test_proxy_sanitizer_rejects_extra_metadata_before_snapshot_publication() -> None:
     payload = _proxy_yahoo_payload(
-        [*dates, "2025-01-02"],
+        ["2022-02-01", "2024-12-31"],
         extra_metadata={
             "regularMarketTime": 1735828200,
-            "regularMarketPrice": sentinel,
+            "regularMarketPrice": "POST_CUTOFF_LIVE_SENTINEL_987654321",
             "regularMarketDayHigh": 999999.0,
             "fiftyTwoWeekHigh": 999998.0,
             "currentTradingPeriod": {"regular": {"start": 1735828200}},
         },
     )
 
-    source_artifact = sanitize_msft_yahoo_proxy_response(
-        payload,
-        start="2022-02-01",
-        end="2024-12-31",
-    )
-    snapshot = msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
-        source_artifact,
-        request_url="https://query1.finance.yahoo.com/frozen-proxy",
-        sealed_at=SEALED,
-    )
-    remote_request = freeze_market_request(
-        snapshot=snapshot,
-        source_commit=COMMIT,
-        source_tree=TREE,
-        worker_image=IMAGE,
-    )
-    result = run_study(snapshot)
-    _document, report_html = chinese_report(
-        result,
-        {"study_id": "a" * 64, "source_commit": COMMIT, "source_tree": TREE, "worker_image": IMAGE},
-    )
+    class ReplayProvider:
+        @staticmethod
+        def get_sanitized_msft_proxy(_url, *, maximum_bytes, start, end):
+            assert len(payload) <= maximum_bytes
+            return sanitize_msft_yahoo_proxy_response(payload, start=start, end=end)
 
-    assert snapshot["record_count"] == 733
-    assert snapshot["data_end"] == "2024-12-31"
-    for surface in (
-        source_artifact,
-        canonical_json_bytes(snapshot),
-        canonical_json_bytes(remote_request),
-        report_html,
-    ):
-        assert sentinel.encode() not in surface
-        assert b"regularMarketTime" not in surface
-        assert b"currentTradingPeriod" not in surface
+    class InstrumentedPersistence:
+        publish_count = 0
+
+        @staticmethod
+        def dataset_ingress_receipt(*_args):
+            return None
+
+        def publish_msft_snapshot(self, **_kwargs):
+            self.publish_count += 1
+            raise AssertionError("contaminated response reached Snapshot publication")
+
+    persistence = InstrumentedPersistence()
+    ingress = MsftAdjustedOhlcProxyIngress(ReplayProvider(), persistence)
+    with pytest.raises(YahooProxySanitizationError, match="identity does not match"):
+        ingress.ingest(
+            {"start": "2022-02-01", "end": "2024-12-31", "expected_generation": 0},
+            "extra-metadata-replay",
+        )
+    assert persistence.publish_count == 0
 
 
 def _proxy_snapshot():

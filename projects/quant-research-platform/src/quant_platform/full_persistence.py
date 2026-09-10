@@ -1303,7 +1303,9 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             "study_id": study_id,
             "classification": PROXY_INVALIDATION_CLASSIFICATION,
             "invalidated_report_artifact_id": invalidated_report_artifact_id,
-            "first_line": "历史研究验收已失效；原始研究与报告字节保持不变",
+            "first_line": (
+                "历史报告已失效，绝不能用于支持研究或投资结论；原始研究与报告字节保持不变"
+            ),
             "reason": (
                 "持久化来源包含截止日后的动态市场元数据，且 Snapshot 清单列名与物理 "
                 "Parquet 列不一致。此记录仅追加失效分类，不改写历史证据。"

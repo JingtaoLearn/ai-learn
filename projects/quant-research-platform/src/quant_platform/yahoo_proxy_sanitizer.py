@@ -43,7 +43,7 @@ def _canonical_bytes(value: Any) -> bytes:
 
 
 def sanitize_msft_yahoo_proxy_response(payload_bytes: bytes, *, start: str, end: str) -> bytes:
-    """Drop every field except frozen identity and admitted historical chart arrays."""
+    """Admit only frozen identity metadata and bounded historical chart arrays."""
 
     if not payload_bytes:
         raise YahooProxySanitizationError("Yahoo response is empty")
@@ -63,8 +63,13 @@ def sanitize_msft_yahoo_proxy_response(payload_bytes: bytes, *, start: str, end:
             raise YahooProxySanitizationError("Yahoo response must contain one chart result")
         result = results[0]
         metadata = result["meta"]
-        if not isinstance(metadata, dict) or any(
-            metadata.get(key) != expected for key, expected in MSFT_PROXY_STATIC_IDENTITY.items()
+        if (
+            not isinstance(metadata, dict)
+            or set(metadata) != set(MSFT_PROXY_STATIC_IDENTITY)
+            or any(
+                metadata.get(key) != expected
+                for key, expected in MSFT_PROXY_STATIC_IDENTITY.items()
+            )
         ):
             raise YahooProxySanitizationError("Yahoo response identity does not match XNYS/MSFT")
         timestamps = result["timestamp"]
