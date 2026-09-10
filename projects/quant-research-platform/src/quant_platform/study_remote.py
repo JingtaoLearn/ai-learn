@@ -136,86 +136,180 @@ def _job_identity(frozen_inputs: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
-def freeze_synthetic_request(
-    *,
-    iterations: int,
-    seed: int,
-    checkpoint_count: int,
-    source_commit: str,
-    source_tree: str,
-    worker_image: str,
-) -> dict[str, Any]:
-    if type(iterations) is not int or not 1 <= iterations <= MAX_ITERATIONS:
-        raise StudyValidationError(f"iterations must be between 1 and {MAX_ITERATIONS}")
-    if type(seed) is not int or not 0 <= seed <= 4_294_967_295:
-        raise StudyValidationError("seed must be an unsigned 32-bit integer")
-    if type(checkpoint_count) is not int or not 1 <= checkpoint_count <= MAX_CHECKPOINTS:
-        raise StudyValidationError(
-            f"checkpoint_count must be between 1 and {MAX_CHECKPOINTS}"
+@dataclass(frozen=True)
+class _WorkerJobResult:
+    progress: dict[str, Any]
+    evidence: dict[str, Any]
+
+
+class _SyntheticWorkerJob:
+    job_type = JOB_TYPE
+
+    def freeze(
+        self,
+        *,
+        iterations: int,
+        seed: int,
+        checkpoint_count: int,
+        source_commit: str,
+        source_tree: str,
+        worker_image: str,
+    ) -> dict[str, Any]:
+        if type(iterations) is not int or not 1 <= iterations <= MAX_ITERATIONS:
+            raise StudyValidationError(f"iterations must be between 1 and {MAX_ITERATIONS}")
+        if type(seed) is not int or not 0 <= seed <= 4_294_967_295:
+            raise StudyValidationError("seed must be an unsigned 32-bit integer")
+        if type(checkpoint_count) is not int or not 1 <= checkpoint_count <= MAX_CHECKPOINTS:
+            raise StudyValidationError(
+                f"checkpoint_count must be between 1 and {MAX_CHECKPOINTS}"
+            )
+        _validate_source_identity(source_commit, source_tree, worker_image)
+        frozen = {
+            "schema_version": 1,
+            "protocol": PROTOCOL,
+            "job_type": self.job_type,
+            "iterations": iterations,
+            "seed": seed,
+            "checkpoint_count": checkpoint_count,
+            "source_commit": source_commit,
+            "source_tree": source_tree,
+            "worker_image": worker_image,
+        }
+        return {"job_id": _job_identity(frozen), **frozen}
+
+    def validate(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        _exact_fields(
+            value,
+            {
+                "job_id",
+                "schema_version",
+                "protocol",
+                "job_type",
+                "iterations",
+                "seed",
+                "checkpoint_count",
+                "source_commit",
+                "source_tree",
+                "worker_image",
+            },
+            "Study request",
         )
-    if HEX_40.fullmatch(source_commit) is None or HEX_40.fullmatch(source_tree) is None:
-        raise StudyValidationError("source commit and tree must be lowercase Git SHA-1 identities")
-    if IMAGE_DIGEST.fullmatch(worker_image) is None:
-        raise StudyValidationError("worker_image must be a sha256 image identity")
-    frozen = {
-        "schema_version": 1,
-        "protocol": PROTOCOL,
-        "job_type": JOB_TYPE,
-        "iterations": iterations,
-        "seed": seed,
-        "checkpoint_count": checkpoint_count,
-        "source_commit": source_commit,
-        "source_tree": source_tree,
-        "worker_image": worker_image,
-    }
-    return {"job_id": _job_identity(frozen), **frozen}
-
-
-def freeze_training_request(
-    *,
-    trial_budget: int,
-    seed: int,
-    checkpoint_count: int,
-    parameter_low: float,
-    parameter_high: float,
-    objective_target: float,
-    source_commit: str,
-    source_tree: str,
-    worker_image: str,
-) -> dict[str, Any]:
-    if type(checkpoint_count) is not int or not 1 <= checkpoint_count <= MAX_CHECKPOINTS:
-        raise StudyValidationError(
-            f"checkpoint_count must be between 1 and {MAX_CHECKPOINTS}"
+        rebuilt = self.freeze(
+            iterations=value["iterations"],
+            seed=value["seed"],
+            checkpoint_count=value["checkpoint_count"],
+            source_commit=value["source_commit"],
+            source_tree=value["source_tree"],
+            worker_image=value["worker_image"],
         )
-    if HEX_40.fullmatch(source_commit) is None or HEX_40.fullmatch(source_tree) is None:
-        raise StudyValidationError("source commit and tree must be lowercase Git SHA-1 identities")
-    if IMAGE_DIGEST.fullmatch(worker_image) is None:
-        raise StudyValidationError("worker_image must be a sha256 image identity")
-    try:
-        training_spec = freeze_training_spec(
-            trial_budget=trial_budget,
-            seed=seed,
-            parameter_low=parameter_low,
-            parameter_high=parameter_high,
-            objective_target=objective_target,
+        _validate_request_identity(value, rebuilt)
+        return rebuilt
+
+    def initial_progress(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "completed_iterations": 0,
+            "total_iterations": request["iterations"],
+        }
+
+    def run(
+        self,
+        request: Mapping[str, Any],
+        on_checkpoint: Callable[[dict[str, Any], dict[str, Any]], None],
+    ) -> _WorkerJobResult:
+        total = int(request["iterations"])
+        checkpoint_count = int(request["checkpoint_count"])
+        checkpoints = sorted(
+            {
+                max(1, total * index // checkpoint_count)
+                for index in range(1, checkpoint_count + 1)
+            }
         )
-    except TrainingKernelValidationError as exc:
-        raise StudyValidationError(str(exc)) from exc
-    frozen = {
-        "schema_version": 1,
-        "protocol": PROTOCOL,
-        "job_type": TRAINING_JOB_TYPE,
-        "training_spec": training_spec,
-        "checkpoint_count": checkpoint_count,
-        "source_commit": source_commit,
-        "source_tree": source_tree,
-        "worker_image": worker_image,
-    }
-    return {"job_id": _job_identity(frozen), **frozen}
+        checkpoint_index = 0
+        generator = int(request["seed"])
+        best_score = float("inf")
+        best_parameter = 0.0
+        for iteration in range(1, total + 1):
+            generator = (1_664_525 * generator + 1_013_904_223) & 0xFFFFFFFF
+            parameter = generator / 4_294_967_296
+            score = (parameter - 0.61803398875) ** 2 + (iteration % 997) * 1e-12
+            if score < best_score:
+                best_score = score
+                best_parameter = parameter
+            if checkpoint_index < len(checkpoints) and iteration == checkpoints[checkpoint_index]:
+                on_checkpoint(
+                    {
+                        "completed_iterations": iteration,
+                        "total_iterations": total,
+                        "checkpoint_sequence": checkpoint_index + 1,
+                    },
+                    {
+                        "sequence": checkpoint_index + 1,
+                        "completed_iterations": iteration,
+                        "best_parameter": best_parameter,
+                        "best_score": best_score,
+                    },
+                )
+                checkpoint_index += 1
+        return _WorkerJobResult(
+            progress={
+                "completed_iterations": total,
+                "total_iterations": total,
+                "checkpoint_sequence": checkpoint_index,
+            },
+            evidence={
+                "conclusion": "SYNTHETIC_MINIMUM_FOUND",
+                "iterations": total,
+                "best_parameter": best_parameter,
+                "best_score": best_score,
+                "checkpoint_count": checkpoint_index,
+            },
+        )
 
 
-def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
-    if value.get("job_type") == TRAINING_JOB_TYPE:
+class _TrainingWorkerJob:
+    job_type = TRAINING_JOB_TYPE
+
+    def freeze(
+        self,
+        *,
+        trial_budget: int,
+        seed: int,
+        checkpoint_count: int,
+        parameter_low: float,
+        parameter_high: float,
+        objective_target: float,
+        source_commit: str,
+        source_tree: str,
+        worker_image: str,
+    ) -> dict[str, Any]:
+        if type(checkpoint_count) is not int or not 1 <= checkpoint_count <= MAX_CHECKPOINTS:
+            raise StudyValidationError(
+                f"checkpoint_count must be between 1 and {MAX_CHECKPOINTS}"
+            )
+        _validate_source_identity(source_commit, source_tree, worker_image)
+        try:
+            training_spec = freeze_training_spec(
+                trial_budget=trial_budget,
+                seed=seed,
+                parameter_low=parameter_low,
+                parameter_high=parameter_high,
+                objective_target=objective_target,
+            )
+        except TrainingKernelValidationError as exc:
+            raise StudyValidationError(str(exc)) from exc
+        frozen = {
+            "schema_version": 1,
+            "protocol": PROTOCOL,
+            "job_type": self.job_type,
+            "training_spec": training_spec,
+            "checkpoint_count": checkpoint_count,
+            "source_commit": source_commit,
+            "source_tree": source_tree,
+            "worker_image": worker_image,
+        }
+        return {"job_id": _job_identity(frozen), **frozen}
+
+    def validate(self, value: Mapping[str, Any]) -> dict[str, Any]:
         _exact_fields(
             value,
             {
@@ -237,7 +331,7 @@ def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
             spec = validate_training_spec(value["training_spec"])
             search = spec["search"]
             objective = spec["objective"]
-            rebuilt = freeze_training_request(
+            rebuilt = self.freeze(
                 trial_budget=search["trial_budget"],
                 seed=search["seed"],
                 checkpoint_count=value["checkpoint_count"],
@@ -250,40 +344,109 @@ def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
             )
         except TrainingKernelValidationError as exc:
             raise StudyValidationError(str(exc)) from exc
-        if value.get("schema_version") != 1 or value.get("protocol") != PROTOCOL:
-            raise StudyValidationError("Study request protocol identity is unsupported")
-        if value.get("job_id") != rebuilt["job_id"]:
-            raise StudyValidationError("Study request identity does not match its frozen inputs")
+        _validate_request_identity(value, rebuilt)
         return rebuilt
-    _exact_fields(
-        value,
-        {
-            "job_id",
-            "schema_version",
-            "protocol",
-            "job_type",
-            "iterations",
-            "seed",
-            "checkpoint_count",
-            "source_commit",
-            "source_tree",
-            "worker_image",
-        },
-        "Study request",
-    )
-    rebuilt = freeze_synthetic_request(
-        iterations=value["iterations"],
-        seed=value["seed"],
-        checkpoint_count=value["checkpoint_count"],
-        source_commit=value["source_commit"],
-        source_tree=value["source_tree"],
-        worker_image=value["worker_image"],
-    )
+
+    def initial_progress(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "completed_trials": 0,
+            "total_trials": request["training_spec"]["search"]["trial_budget"],
+            "suggestion_count": 0,
+        }
+
+    def run(
+        self,
+        request: Mapping[str, Any],
+        on_checkpoint: Callable[[dict[str, Any], dict[str, Any]], None],
+    ) -> _WorkerJobResult:
+        completed = StudyTrainingKernel().run(
+            request["training_spec"],
+            checkpoint_count=int(request["checkpoint_count"]),
+            on_checkpoint=on_checkpoint,
+        )
+        return _WorkerJobResult(progress=completed.progress, evidence=completed.evidence)
+
+
+def _validate_source_identity(source_commit: str, source_tree: str, worker_image: str) -> None:
+    if HEX_40.fullmatch(source_commit) is None or HEX_40.fullmatch(source_tree) is None:
+        raise StudyValidationError("source commit and tree must be lowercase Git SHA-1 identities")
+    if IMAGE_DIGEST.fullmatch(worker_image) is None:
+        raise StudyValidationError("worker_image must be a sha256 image identity")
+
+
+def _validate_request_identity(
+    value: Mapping[str, Any], rebuilt: Mapping[str, Any]
+) -> None:
     if value.get("schema_version") != 1 or value.get("protocol") != PROTOCOL:
         raise StudyValidationError("Study request protocol identity is unsupported")
-    if value.get("job_type") != JOB_TYPE or value.get("job_id") != rebuilt["job_id"]:
+    if value.get("job_id") != rebuilt["job_id"]:
         raise StudyValidationError("Study request identity does not match its frozen inputs")
-    return rebuilt
+
+
+_SYNTHETIC_WORKER_JOB = _SyntheticWorkerJob()
+_TRAINING_WORKER_JOB = _TrainingWorkerJob()
+_WORKER_JOBS = {
+    _SYNTHETIC_WORKER_JOB.job_type: _SYNTHETIC_WORKER_JOB,
+    _TRAINING_WORKER_JOB.job_type: _TRAINING_WORKER_JOB,
+}
+
+
+def _worker_job(value: Mapping[str, Any]) -> _SyntheticWorkerJob | _TrainingWorkerJob:
+    job_type = value.get("job_type")
+    if not isinstance(job_type, str):
+        raise StudyValidationError("Study request identity does not match its frozen inputs")
+    try:
+        return _WORKER_JOBS[job_type]
+    except KeyError as exc:
+        raise StudyValidationError("Study request identity does not match its frozen inputs") from exc
+
+
+def freeze_synthetic_request(
+    *,
+    iterations: int,
+    seed: int,
+    checkpoint_count: int,
+    source_commit: str,
+    source_tree: str,
+    worker_image: str,
+) -> dict[str, Any]:
+    return _SYNTHETIC_WORKER_JOB.freeze(
+        iterations=iterations,
+        seed=seed,
+        checkpoint_count=checkpoint_count,
+        source_commit=source_commit,
+        source_tree=source_tree,
+        worker_image=worker_image,
+    )
+
+
+def freeze_training_request(
+    *,
+    trial_budget: int,
+    seed: int,
+    checkpoint_count: int,
+    parameter_low: float,
+    parameter_high: float,
+    objective_target: float,
+    source_commit: str,
+    source_tree: str,
+    worker_image: str,
+) -> dict[str, Any]:
+    return _TRAINING_WORKER_JOB.freeze(
+        trial_budget=trial_budget,
+        seed=seed,
+        checkpoint_count=checkpoint_count,
+        parameter_low=parameter_low,
+        parameter_high=parameter_high,
+        objective_target=objective_target,
+        source_commit=source_commit,
+        source_tree=source_tree,
+        worker_image=worker_image,
+    )
+
+
+def validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    return _worker_job(value).validate(value)
 
 
 def _validate_dispatch_generation(value: Any, label: str) -> int:
@@ -688,16 +851,7 @@ class WorkerJobStore:
 
     @staticmethod
     def _initial_progress(request: Mapping[str, Any]) -> dict[str, Any]:
-        if request["job_type"] == TRAINING_JOB_TYPE:
-            return {
-                "completed_trials": 0,
-                "total_trials": request["training_spec"]["search"]["trial_budget"],
-                "suggestion_count": 0,
-            }
-        return {
-            "completed_iterations": 0,
-            "total_iterations": request["iterations"],
-        }
+        return _worker_job(request).initial_progress(request)
 
     def _start(self, request: Mapping[str, Any]) -> None:
         job_id = str(request["job_id"])
@@ -776,55 +930,24 @@ class WorkerJobStore:
                 state["status"] = "RUNNING"
                 state["updated_at"] = _utc_now()
                 self._write(state)
-            if request["job_type"] == TRAINING_JOB_TYPE:
-                self._execute_training(request)
-                return
-            total = int(request["iterations"])
-            checkpoint_count = int(request["checkpoint_count"])
-            checkpoints = sorted({max(1, total * index // checkpoint_count) for index in range(1, checkpoint_count + 1)})
-            checkpoint_index = 0
-            generator = int(request["seed"])
-            best_score = float("inf")
-            best_parameter = 0.0
-            for iteration in range(1, total + 1):
-                generator = (1_664_525 * generator + 1_013_904_223) & 0xFFFFFFFF
-                parameter = generator / 4_294_967_296
-                score = (parameter - 0.61803398875) ** 2 + (iteration % 997) * 1e-12
-                if score < best_score:
-                    best_score = score
-                    best_parameter = parameter
-                if checkpoint_index < len(checkpoints) and iteration == checkpoints[checkpoint_index]:
-                    with self._lock:
-                        state = self._read(job_id)
-                        if state is None:
-                            raise StudyRemoteError("worker state disappeared during execution")
-                        checkpoint = {
-                            "sequence": checkpoint_index + 1,
-                            "completed_iterations": iteration,
-                            "best_parameter": best_parameter,
-                            "best_score": best_score,
-                        }
-                        state["progress"] = {
-                            "completed_iterations": iteration,
-                            "total_iterations": total,
-                            "checkpoint_sequence": checkpoint_index + 1,
-                        }
-                        state["checkpoints"].append(checkpoint)
-                        state["updated_at"] = _utc_now()
-                        self._write(state)
-                    checkpoint_index += 1
+            def checkpoint(progress: dict[str, Any], aggregate: dict[str, Any]) -> None:
+                with self._lock:
+                    checkpoint_state = self._read(job_id)
+                    if checkpoint_state is None:
+                        raise StudyRemoteError("worker state disappeared during execution")
+                    checkpoint_state["progress"] = progress
+                    checkpoint_state["checkpoints"].append(aggregate)
+                    checkpoint_state["updated_at"] = _utc_now()
+                    self._write(checkpoint_state)
+
+            completed = _worker_job(request).run(request, checkpoint)
             with self._lock:
                 state = self._read(job_id)
                 if state is None:
                     raise StudyRemoteError("worker state disappeared before completion")
                 state["status"] = "SUCCEEDED"
-                state["result"] = {
-                    "conclusion": "SYNTHETIC_MINIMUM_FOUND",
-                    "iterations": total,
-                    "best_parameter": best_parameter,
-                    "best_score": best_score,
-                    "checkpoint_count": len(state["checkpoints"]),
-                }
+                state["progress"] = completed.progress
+                state["result"] = completed.evidence
                 state["updated_at"] = _utc_now()
                 self._write(state)
         except Exception as exc:
@@ -838,34 +961,6 @@ class WorkerJobStore:
                     }
                     state["updated_at"] = _utc_now()
                     self._write(state)
-
-    def _execute_training(self, request: Mapping[str, Any]) -> None:
-        job_id = str(request["job_id"])
-
-        def checkpoint(progress: dict[str, Any], aggregate: dict[str, Any]) -> None:
-            with self._lock:
-                state = self._read(job_id)
-                if state is None:
-                    raise StudyRemoteError("worker state disappeared during training")
-                state["progress"] = progress
-                state["checkpoints"].append(aggregate)
-                state["updated_at"] = _utc_now()
-                self._write(state)
-
-        completed = StudyTrainingKernel().run(
-            request["training_spec"],
-            checkpoint_count=int(request["checkpoint_count"]),
-            on_checkpoint=checkpoint,
-        )
-        with self._lock:
-            state = self._read(job_id)
-            if state is None:
-                raise StudyRemoteError("worker state disappeared before training completion")
-            state["status"] = "SUCCEEDED"
-            state["progress"] = completed.progress
-            state["result"] = completed.evidence
-            state["updated_at"] = _utc_now()
-            self._write(state)
 
 
 class _StudyWorkerHandler(BaseHTTPRequestHandler):
@@ -1871,10 +1966,8 @@ def _worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _execute_command(args: argparse.Namespace) -> int:
-    store = StudyPostgresStore.from_environment()
-    store.verify_initialized()
-    request = freeze_synthetic_request(
+def _synthetic_request_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return freeze_synthetic_request(
         iterations=args.iterations,
         seed=args.seed,
         checkpoint_count=args.checkpoint_count,
@@ -1882,42 +1975,10 @@ def _execute_command(args: argparse.Namespace) -> int:
         source_tree=args.source_tree,
         worker_image=args.worker_image,
     )
-    dispatcher = StudyDispatcher(
-        store,
-        SignedStudyClient(
-            args.endpoint,
-            Path(args.private_key),
-            tls_ca_file=Path(args.tls_ca_file) if args.tls_ca_file else None,
-        ),
-    )
-    submission = dispatcher.submit(request)
-    probes: list[dict[str, Any]] = []
-    reads: list[float] = []
-    authoritative = submission["authoritative"]
-    while authoritative["status"] not in TERMINAL_STATES:
-        if args.health_url:
-            probes.append(_probe(args.health_url, args.health_host))
-        time.sleep(args.poll_interval)
-        observed = dispatcher.read(request["job_id"])
-        reads.append(observed["read_elapsed_ms"])
-        authoritative = observed["authoritative"]
-    output = {
-        "schema_version": 1,
-        "request": request,
-        "submission": submission,
-        "authoritative": authoritative,
-        "storage_shape": store.storage_shape(request["job_id"]),
-        "health_probes": probes,
-        "remote_read_elapsed_ms": reads,
-    }
-    print(canonical_json_bytes(output).decode("utf-8"))
-    return 0 if authoritative["status"] == "SUCCEEDED" else 2
 
 
-def _execute_training_command(args: argparse.Namespace) -> int:
-    store = StudyPostgresStore.from_environment()
-    store.verify_initialized()
-    request = freeze_training_request(
+def _training_request_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return freeze_training_request(
         trial_budget=args.trial_budget,
         seed=args.seed,
         checkpoint_count=args.checkpoint_count,
@@ -1928,6 +1989,12 @@ def _execute_training_command(args: argparse.Namespace) -> int:
         source_tree=args.source_tree,
         worker_image=args.worker_image,
     )
+
+
+def _execute_command(args: argparse.Namespace) -> int:
+    request = args.request_factory(args)
+    store = StudyPostgresStore.from_environment()
+    store.verify_initialized()
     dispatcher = StudyDispatcher(
         store,
         SignedStudyClient(
@@ -1997,7 +2064,10 @@ def _parser() -> argparse.ArgumentParser:
     execute.add_argument("--poll-interval", type=float, default=0.2)
     execute.add_argument("--health-url")
     execute.add_argument("--health-host")
-    execute.set_defaults(handler=_execute_command)
+    execute.set_defaults(
+        handler=_execute_command,
+        request_factory=_synthetic_request_from_args,
+    )
 
     execute_training = commands.add_parser("execute-training")
     execute_training.add_argument("--endpoint", required=True)
@@ -2015,7 +2085,10 @@ def _parser() -> argparse.ArgumentParser:
     execute_training.add_argument("--poll-interval", type=float, default=0.2)
     execute_training.add_argument("--health-url")
     execute_training.add_argument("--health-host")
-    execute_training.set_defaults(handler=_execute_training_command)
+    execute_training.set_defaults(
+        handler=_execute_command,
+        request_factory=_training_request_from_args,
+    )
 
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--study-id", required=True)
