@@ -350,6 +350,54 @@ def test_persisted_production_shaped_completed_study_is_read_only_decision_evide
     assert sum(event["event_type"] == "ACCESSED" for event in inspected["holdout_ledger"]) == 1
 
 
+def test_study_page_detail_preserves_visible_evidence_without_per_binding_attempt_detail(
+    tmp_path: Path, monkeypatch
+):
+    studies, experiments = _study_service(tmp_path)
+    study_id = _persist_production_completed_study(studies, experiments)
+    full = studies.detail(study_id)
+    selects = []
+    connect = studies.catalog.connect
+
+    def traced_connect():
+        connection = connect()
+        connection.set_trace_callback(
+            lambda statement: selects.append(statement)
+            if statement.lstrip().upper().startswith("SELECT")
+            else None
+        )
+        return connection
+
+    def forbidden_attempt_detail(attempt_id):
+        raise AssertionError(f"page projection expanded Attempt {attempt_id}")
+
+    monkeypatch.setattr(studies.catalog, "connect", traced_connect)
+    monkeypatch.setattr(experiments, "attempt_detail", forbidden_attempt_detail)
+
+    page = studies.page_detail(study_id)
+
+    for field in ("study_id", "phase", "control_status", "selection_outcome", "holdout"):
+        assert page[field] == full[field]
+    assert page["decision_summary"] == full["decision_summary"]
+    assert page["rankings"] == full["rankings"]
+    assert page["events"] == full["events"]
+    assert [
+        (item["binding_id"], item["experiment_id"], item["attempt"])
+        for item in page["bindings"]
+    ] == [
+        (item["binding_id"], item["experiment_id"], item["attempt"])
+        for item in full["bindings"]
+    ]
+    assert all(item["metric_document"] is None for item in page["bindings"])
+    assert len(selects) <= 14
+    assert sum("FROM attempts AS a" in statement for statement in selects) == 1
+    assert not any("SELECT * FROM attempts" in statement for statement in selects)
+    assert not any(
+        "metric_document_json" in statement and "parameter_study_bindings" in statement
+        for statement in selects
+    )
+
+
 class FixedCalendar:
     source_identity = {
         "calendar": "XSHG",

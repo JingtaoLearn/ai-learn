@@ -2238,7 +2238,7 @@ def create_app(
     async def study_report(request: Request, study_id: str):
         session = _session(request)
         study_id = _study_id(study_id)
-        detail = await run_in_threadpool(studies.detail, study_id)
+        detail = await run_in_threadpool(studies.page_detail, study_id)
         return _render(
             request,
             "study_report.html",
@@ -2250,7 +2250,7 @@ def create_app(
     async def study_detail(request: Request, study_id: str):
         session = _session(request)
         study_id = _study_id(study_id)
-        detail = await run_in_threadpool(studies.detail, study_id)
+        detail = await run_in_threadpool(studies.page_detail, study_id)
         outcome = _study_outcome(
             settings.session_secret,
             session,
