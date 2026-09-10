@@ -2223,7 +2223,7 @@ def main() -> None:
         runner_image=settings.runner_image,
         attempt_controller=application.state.experiments,
     )
-    study_worker = SerialStudyWorker(application.state.studies)
+    study_worker = SerialStudyWorker(application.state.studies, idle_poll_seconds=5)
     attempt_worker = SerialAttemptWorker(
         application.state.experiments,
         executor=executor,

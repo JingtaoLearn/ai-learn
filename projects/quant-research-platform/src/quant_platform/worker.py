@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import time
 from typing import Any
 
 from .experiment_service import ExperimentService
@@ -10,11 +11,27 @@ from .parameter_study import ParameterStudy
 class SerialStudyWorker:
     """Advance at most one privately discovered Parameter Study."""
 
-    def __init__(self, service: ParameterStudy):
+    def __init__(
+        self,
+        service: ParameterStudy,
+        *,
+        idle_poll_seconds: float = 0.0,
+        monotonic_clock: Callable[[], float] | None = None,
+    ):
+        if idle_poll_seconds < 0:
+            raise ValueError("idle_poll_seconds must not be negative")
         self.service = service
+        self.idle_poll_seconds = idle_poll_seconds
+        self.monotonic_clock = monotonic_clock or time.monotonic
+        self._next_poll_at = 0.0
 
     def run_once(self) -> bool:
-        return self.service._advance_next_runnable() is not None
+        now = self.monotonic_clock()
+        if now < self._next_poll_at:
+            return False
+        progressed = self.service._advance_next_runnable() is not None
+        self._next_poll_at = now if progressed else now + self.idle_poll_seconds
+        return progressed
 
 
 class SerialAttemptWorker:

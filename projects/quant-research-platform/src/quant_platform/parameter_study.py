@@ -6309,9 +6309,36 @@ class ParameterStudy:
                 row["study_id"]
                 for row in connection.execute(
                     """
-                    SELECT study_id
-                    FROM parameter_studies
-                    ORDER BY updated_at, created_at, study_id
+                    SELECT study.study_id
+                    FROM parameter_studies AS study
+                    WHERE (
+                        study.control_status = 'ACTIVE'
+                        AND study.phase = 'FROZEN'
+                    ) OR study.phase IN (
+                        'VALIDATING_SELECTION_PROCESS',
+                        'HOLDOUT_READY',
+                        'HOLDOUT_RUNNING'
+                    ) OR (
+                        study.control_status != 'ACTIVE'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM parameter_study_bindings AS binding
+                            JOIN parameter_study_actions AS intent
+                              ON intent.action_id =
+                                 'study-internal:effect:' || binding.binding_id
+                             AND intent.operation = 'EFFECT_INTENT'
+                            WHERE binding.study_id = study.study_id
+                              AND binding.state = 'SUBMITTED'
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM parameter_study_actions AS receipt
+                                  WHERE receipt.action_id =
+                                        'study-internal:receipt:' || binding.binding_id
+                                    AND receipt.operation = 'EFFECT_RECEIPT'
+                              )
+                        )
+                    )
+                    ORDER BY study.updated_at, study.created_at, study.study_id
                     """
                 ).fetchall()
             ]

@@ -3116,6 +3116,90 @@ def test_projection_disagreement_fails_all_study_entry_points(tmp_path: Path):
                 studies._advance_next_runnable()
 
 
+def test_idle_worker_skips_terminal_studies_but_keeps_actionable_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    database = tmp_path / "worker-admission.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE parameter_studies (
+                study_id TEXT PRIMARY KEY,
+                phase TEXT NOT NULL,
+                control_status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE parameter_study_bindings (
+                binding_id TEXT PRIMARY KEY,
+                study_id TEXT NOT NULL,
+                state TEXT NOT NULL
+            );
+            CREATE TABLE parameter_study_actions (
+                action_id TEXT PRIMARY KEY,
+                operation TEXT NOT NULL
+            );
+            """
+        )
+        connection.executemany(
+            "INSERT INTO parameter_studies VALUES (?, ?, ?, ?, ?)",
+            [
+                ("completed", "COMPLETED", "ACTIVE", "1", "1"),
+                ("failed", "FROZEN", "FAILED", "2", "2"),
+                ("phase", "FROZEN", "ACTIVE", "3", "3"),
+                ("remote", "VALIDATING_SELECTION_PROCESS", "PAUSED", "4", "4"),
+                ("binding", "FROZEN", "FAILED", "5", "5"),
+            ],
+        )
+        connection.execute(
+            "INSERT INTO parameter_study_bindings VALUES ('binding-1', 'binding', 'SUBMITTED')"
+        )
+        connection.execute(
+            """
+            INSERT INTO parameter_study_actions VALUES (
+                'study-internal:effect:binding-1', 'EFFECT_INTENT'
+            )
+            """
+        )
+
+    class CatalogStub:
+        def connect(self) -> sqlite3.Connection:
+            connection = sqlite3.connect(database)
+            connection.row_factory = sqlite3.Row
+            return connection
+
+    studies = object.__new__(ParameterStudy)
+    studies.catalog = CatalogStub()
+
+    classified: list[str] = []
+
+    def classify(connection: sqlite3.Connection, study_id: str):
+        classified.append(study_id)
+        return parameter_study_module._StudyReadiness(
+            "TEST_DISCOVERABLE",
+            None,
+            {},
+            discoverable=True,
+        )
+
+    monkeypatch.setattr(studies, "_classify_readiness", classify)
+    monkeypatch.setattr(
+        studies,
+        "advance",
+        lambda study_id: {"status": "ADVANCED", "study_id": study_id},
+    )
+
+    assert studies._advance_next_runnable()["status"] == "ADVANCED"
+    assert set(classified) == {
+        "phase",
+        "remote",
+        "binding",
+    }
+    assert "completed" not in classified
+    assert "failed" not in classified
+
+
 def test_selection_restarts_after_every_durable_round_step(tmp_path: Path):
     studies, experiments = _study_service(tmp_path)
     spec = _minimal_orchestration_spec()
