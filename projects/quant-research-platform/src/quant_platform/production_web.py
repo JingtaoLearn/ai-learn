@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import urllib.request
 from pathlib import Path
@@ -62,7 +64,7 @@ def create_production_app(
 
     @app.middleware("http")
     async def verified_client_boundary(request: Request, call_next):
-        if request.url.path in {"/health/live", "/health/ready"}:
+        if request.url.path in {"/health", "/health/live", "/health/ready"}:
             return await call_next(request)
         supplied = request.headers.get(VERIFIED_CLIENT_HEADER)
         if (
@@ -93,6 +95,10 @@ def create_production_app(
     @app.get("/health/ready")
     async def ready():
         return _response(200, {"status": "ready" if service.policy.ready() else "not-ready"})
+
+    @app.get("/health")
+    async def health():
+        return _response(200, {"status": "ok", "persistence": "postgresql", "schema": "operator-v1"})
 
     @app.post("/api/v1/production/runs")
     async def create_run(request: Request):
@@ -211,6 +217,43 @@ def create_production_app(
             },
         )
 
+    @app.post("/api/v1/studies/{study_id}/invalidation")
+    async def invalidate_msft_study_report(request: Request, study_id: str):
+        if studies is None:
+            return _error(503, "MSFT_STUDY_UNAVAILABLE", "MSFT Study service is unavailable")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+            return _error(422, "CONTENT_TYPE_REJECTED", "Content-Type must be application/json")
+        body = await request.body()
+        if not body or len(body) > MAX_BODY_BYTES:
+            return _error(422, "BODY_SIZE_REJECTED", "request body size is invalid")
+        try:
+            value = json.loads(body)
+            from .msft_trend_study import PROXY_INVALIDATION_CLASSIFICATION
+
+            if not isinstance(value, dict) or set(value) != {
+                "classification",
+                "report_artifact_id",
+            }:
+                raise StudyRemoteError("MSFT Study invalidation body fields are invalid")
+            if value["classification"] != PROXY_INVALIDATION_CLASSIFICATION:
+                raise StudyRemoteError("MSFT Study invalidation classification is invalid")
+            result = await run_in_threadpool(
+                studies.invalidate_msft_report,
+                study_id=study_id,
+                report_artifact_id=value["report_artifact_id"],
+            )
+        except (json.JSONDecodeError, StudyRemoteError, ValueError) as exc:
+            return _error(422, "MSFT_STUDY_INVALIDATION_REJECTED", str(exc))
+        except PersistenceConflict as exc:
+            return _error(409, "MSFT_STUDY_INVALIDATION_CONFLICT", str(exc))
+        return _response(
+            201,
+            {
+                "ok": True,
+                "invalidation": {key: item for key, item in result.items() if key != "html"},
+            },
+        )
+
     return app
 
 
@@ -218,6 +261,7 @@ class _ProxyOnlyProvider:
     def __init__(self, proxy_url: str):
         if proxy_url != "http://provider-egress-proxy:3128":
             raise RuntimeError("provider proxy URL must name the isolated Compose proxy")
+        self.proxy_url = proxy_url
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy_url}))
 
     def get(self, url: str, *, headers: Mapping[str, str], maximum_bytes: int) -> bytes:
@@ -229,6 +273,45 @@ class _ProxyOnlyProvider:
             if response.status != 200 or response.geturl() != url:
                 raise RuntimeError("provider response status or URL is invalid")
             return payload
+
+    def get_sanitized_msft_proxy(
+        self,
+        url: str,
+        *,
+        maximum_bytes: int,
+        start: str,
+        end: str,
+    ) -> bytes:
+        """Keep the provider response inside a short-lived sanitizer process."""
+
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "quant_platform.yahoo_proxy_sanitizer",
+                    "--url",
+                    url,
+                    "--start",
+                    start,
+                    "--end",
+                    end,
+                    "--maximum-bytes",
+                    str(maximum_bytes),
+                    "--proxy-url",
+                    self.proxy_url,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=35,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("Yahoo proxy sanitizer process failed") from exc
+        if completed.returncode != 0 or not completed.stdout or len(completed.stdout) > maximum_bytes:
+            raise RuntimeError("Yahoo proxy sanitizer rejected the provider response")
+        return completed.stdout
 
 
 def _required_path(name: str) -> Path:

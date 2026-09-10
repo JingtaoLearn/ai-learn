@@ -19,6 +19,7 @@ KERNEL_IDENTITY = "quant_platform.msft_trend_study@1.0.0"
 PROXY_LABEL = "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY"
 PROXY_SNAPSHOT_SCHEMA = "quantresearch-msft-yahoo-adjusted-ohlc-proxy-snapshot/v1"
 PROXY_RESULT_SCHEMA = "quantresearch-msft-yahoo-adjusted-ohlc-proxy-study-result/v1"
+PROXY_INVALIDATION_CLASSIFICATION = "INVALIDATED_POST_CUTOFF_METADATA_AND_FALSE_MANIFEST"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 VERDICT_PRECEDENCE = (
     "INVALID_OR_CONTAMINATED",

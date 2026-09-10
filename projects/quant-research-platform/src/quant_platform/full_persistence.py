@@ -1024,7 +1024,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             key: value for key, value in frozen.items() if key != "records"
         } | {
             "schema_version": 6,
-            "columns": list(REQUIRED_RECORD_FIELDS),
+            "columns": list(record_fields),
             "parquet_sha256": parquet_sha256,
         }
         manifest_payload = canonical_json_bytes(manifest) + b"\n"
@@ -1283,6 +1283,104 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             "document": document,
             "html": members["report.html"],
         }
+
+    def publish_msft_study_invalidation(
+        self,
+        *,
+        study_id: str,
+        invalidated_report_artifact_id: str,
+    ) -> dict[str, Any]:
+        """Append a visible immutable correction without changing historical report bytes."""
+
+        from .msft_trend_study import PROXY_INVALIDATION_CLASSIFICATION, build_report_pointer
+
+        if SHA256.fullmatch(study_id) is None or SHA256.fullmatch(
+            invalidated_report_artifact_id
+        ) is None:
+            raise ValueError("MSFT Study invalidation identities must be lowercase SHA-256")
+        core = {
+            "schema": "quantresearch-msft-study-invalidation-report/v1",
+            "study_id": study_id,
+            "classification": PROXY_INVALIDATION_CLASSIFICATION,
+            "invalidated_report_artifact_id": invalidated_report_artifact_id,
+            "first_line": "历史研究验收已失效；原始研究与报告字节保持不变",
+            "reason": (
+                "持久化来源包含截止日后的动态市场元数据，且 Snapshot 清单列名与物理 "
+                "Parquet 列不一致。此记录仅追加失效分类，不改写历史证据。"
+            ),
+        }
+        report_id = hashlib.sha256(
+            b"quantresearch-msft-study-invalidation-report/v1\0" + canonical_json_bytes(core)
+        ).hexdigest()
+        document = {**core, "report_artifact_id": report_id}
+        html = (
+            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+            "<title>MSFT 历史研究失效说明</title><main><p><strong>"
+            + document["first_line"]
+            + "</strong></p><h1>MSFT Yahoo 调整 OHLC 代理研究失效说明</h1><p>分类：<code>"
+            + PROXY_INVALIDATION_CLASSIFICATION
+            + "</code></p><p>Study：<code>"
+            + study_id
+            + "</code></p><p>保留的历史报告：<code>"
+            + invalidated_report_artifact_id
+            + "</code></p><p>"
+            + document["reason"]
+            + "</p></main></html>"
+        ).encode("utf-8")
+        members = {
+            "report-document.json": (
+                "application/json",
+                canonical_json_bytes(document) + b"\n",
+            ),
+            "report.html": ("text/html", html),
+        }
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (f"study-report:{study_id}",),
+                    )
+                    current = connection.execute(
+                        "SELECT report_artifact_id,sequence FROM qr.study_report_current "
+                        "WHERE study_id=%s",
+                        (study_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise PersistenceConflict("MSFT Study has no report to invalidate")
+                    current_report_id = current["report_artifact_id"].strip()
+                    if current_report_id == report_id:
+                        return self.current_msft_study_report(study_id)
+                    if current_report_id != invalidated_report_artifact_id:
+                        raise PersistenceConflict("MSFT Study current report changed before invalidation")
+                    current_pointer = {
+                        "report_artifact_id": current_report_id,
+                        "sequence": int(current["sequence"]),
+                    }
+                    pointer = build_report_pointer(study_id, report_id, current_pointer)
+                    if pointer is None:
+                        raise PersistenceConflict("MSFT Study invalidation did not advance the pointer")
+                    artifact_set_id = self._publish_artifact_set_in_transaction(
+                        connection, kind="MSFT_STUDY_INVALIDATION", members=members
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.study_report_artifacts(report_artifact_id,study_id,"
+                        "artifact_set_id) VALUES (%s,%s,%s)",
+                        (report_id, study_id, artifact_set_id),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.study_report_pointer_events(study_id,sequence,"
+                        "report_artifact_id,pointer) VALUES (%s,%s,%s,%s)",
+                        (study_id, pointer["sequence"], report_id, Jsonb(pointer)),
+                    )
+                    connection.execute(
+                        "UPDATE qr.study_report_current SET report_artifact_id=%s,sequence=%s "
+                        "WHERE study_id=%s",
+                        (report_id, pointer["sequence"], study_id),
+                    )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("MSFT Study invalidation publication failed") from exc
+        return self.current_msft_study_report(study_id)
 
     def attempt_report(self, attempt_id: str) -> bytes:
         with self.config.connect() as connection:
@@ -2511,6 +2609,9 @@ def main() -> int:
     verify = commands.add_parser("verify")
     verify.add_argument("--source-root", type=Path, required=True)
     verify.add_argument("--manifest", type=Path, required=True)
+    invalidate = commands.add_parser("invalidate-msft-study")
+    invalidate.add_argument("--study-id", required=True)
+    invalidate.add_argument("--report-artifact-id", required=True)
     args = parser.parse_args()
     if args.command == "migrate":
         runtime_password = os.environ.get("QUANT_POSTGRES_PASSWORD_FILE")
@@ -2529,11 +2630,24 @@ def main() -> int:
             args.source_root, _load_json_file(args.manifest)
         )
         _write_create_only(args.receipt, receipt)
-    else:
+    elif args.command == "verify":
         manifest = _load_json_file(args.manifest)
         if inventory_source(args.source_root) != manifest:
             raise MigrationRejected("frozen source inventory mismatch")
         FullPostgresPersistence.from_environment().verify_schema()
+    else:
+        result = FullPostgresPersistence.from_environment().publish_msft_study_invalidation(
+            study_id=args.study_id,
+            invalidated_report_artifact_id=args.report_artifact_id,
+        )
+        print(
+            json.dumps(
+                {key: value for key, value in result.items() if key != "html"},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 

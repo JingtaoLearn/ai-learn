@@ -40,6 +40,7 @@ from .market_sessions import (
 )
 from .updates import ConcurrentUpdateError, reconcile_daily_history, snapshot_update_lineage
 from .yahoo import yahoo_adjusted_ohlc_proxy_url, yahoo_chart_url
+from .yahoo_proxy_sanitizer import MSFT_PROXY_STATIC_IDENTITY, SANITIZED_PROXY_SCHEMA
 from .total_return_claims import read_time_classification
 
 
@@ -99,7 +100,7 @@ class FetchedDailyBars:
 
 
 def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
-    payload_bytes: bytes,
+    source_artifact_bytes: bytes,
     *,
     request_url: str,
     sealed_at: str,
@@ -112,46 +113,54 @@ def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
 
     if start != MSFT_PROXY_START or end != MSFT_PROXY_END:
         raise DatasetResolutionError("MSFT proxy range must be exactly 2022-02-01 through 2024-12-31")
-    if not payload_bytes or len(payload_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
-        raise DatasetResolutionError("Yahoo MSFT proxy response body size is invalid")
+    if not source_artifact_bytes or len(source_artifact_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise DatasetResolutionError("Yahoo MSFT proxy source artifact size is invalid")
     try:
-        payload = json.loads(
-            payload_bytes,
+        artifact = json.loads(
+            source_artifact_bytes,
             object_pairs_hook=_strict_object,
             parse_constant=lambda item: (_ for _ in ()).throw(
-                DatasetResolutionError(f"Yahoo response contains non-finite value: {item}")
+                DatasetResolutionError(f"Yahoo source artifact contains non-finite value: {item}")
             ),
         )
-        chart = payload["chart"]
-        if chart.get("error") is not None:
-            raise DatasetResolutionError("Yahoo response reports an error")
-        results = chart["result"]
-        if not isinstance(results, list) or len(results) != 1:
-            raise DatasetResolutionError("Yahoo response must contain exactly one chart result")
-        result = results[0]
-        metadata = result["meta"]
+        if set(artifact) != {
+            "schema",
+            "identity",
+            "request_window",
+            "raw_response_sha256",
+            "chart",
+        }:
+            raise DatasetResolutionError("Yahoo MSFT proxy source artifact fields are invalid")
+        if artifact["schema"] != SANITIZED_PROXY_SCHEMA:
+            raise DatasetResolutionError("Yahoo MSFT proxy source artifact schema is invalid")
+        if artifact["identity"] != MSFT_PROXY_STATIC_IDENTITY:
+            raise DatasetResolutionError("Yahoo source identity does not match XNYS/MSFT")
+        if artifact["request_window"] != {"start": start, "end": end}:
+            raise DatasetResolutionError("Yahoo source request window is invalid")
+        response_sha256 = artifact["raw_response_sha256"]
         if (
-            metadata.get("symbol") != "MSFT"
-            or metadata.get("currency") != "USD"
-            or metadata.get("dataGranularity") != "1d"
-            or metadata.get("exchangeTimezoneName") != "America/New_York"
+            not isinstance(response_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None
         ):
-            raise DatasetResolutionError("Yahoo response metadata does not match XNYS/MSFT")
-        timestamps = result["timestamp"]
-        quotes = result["indicators"]["quote"]
-        adjusted = result["indicators"]["adjclose"]
-        if not isinstance(quotes, list) or len(quotes) != 1:
-            raise DatasetResolutionError("Yahoo MSFT proxy quote generation is invalid")
-        if not isinstance(adjusted, list) or len(adjusted) != 1:
-            raise DatasetResolutionError("Yahoo MSFT proxy adjusted close generation is invalid")
-        quote = quotes[0]
+            raise DatasetResolutionError("Yahoo source response identity is invalid")
+        chart = artifact["chart"]
+        if not isinstance(chart, dict) or set(chart) != {
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adjclose",
+        }:
+            raise DatasetResolutionError("Yahoo sanitized chart fields are invalid")
+        timestamps = chart["timestamp"]
         arrays = (
             timestamps,
-            quote["open"],
-            quote["high"],
-            quote["low"],
-            quote["close"],
-            adjusted[0]["adjclose"],
+            chart["open"],
+            chart["high"],
+            chart["low"],
+            chart["close"],
+            chart["adjclose"],
         )
         if not all(isinstance(values, list) for values in arrays):
             raise DatasetResolutionError("Yahoo MSFT proxy arrays are invalid")
@@ -160,7 +169,7 @@ def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
     except DatasetResolutionError:
         raise
     except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DatasetResolutionError("Yahoo MSFT proxy response schema is invalid") from exc
+        raise DatasetResolutionError("Yahoo MSFT proxy source artifact schema is invalid") from exc
     try:
         dates = (
             pd.to_datetime(timestamps, unit="s", utc=True)
@@ -176,7 +185,7 @@ def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
     if date_strings[0] < start or date_strings[-1] > end:
         raise DatasetResolutionError("Yahoo MSFT proxy returned an observation outside the frozen range")
 
-    response_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    source_artifact_sha256 = hashlib.sha256(source_artifact_bytes).hexdigest()
     rows: list[dict[str, Any]] = []
     for index, date in enumerate(date_strings):
         raw_values = [arrays[position][index] for position in range(1, 5)]
@@ -234,10 +243,8 @@ def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
             "instrument": "MSFT",
             "request_url": request_url,
             "response_sha256": response_sha256,
-            "response_bytes_base64": base64.b64encode(payload_bytes).decode("ascii"),
-            "canonical_content_sha256": hashlib.sha256(
-                canonical_json_bytes(payload)
-            ).hexdigest(),
+            "source_artifact_sha256": source_artifact_sha256,
+            "source_artifact_bytes_base64": base64.b64encode(source_artifact_bytes).decode("ascii"),
             "separate_corporate_action_postings": 0,
             "classification": MSFT_PROXY_LABEL,
         },
@@ -287,17 +294,18 @@ class MsftAdjustedOhlcProxyIngress:
         if existing is not None:
             return existing
         url = yahoo_adjusted_ohlc_proxy_url("MSFT", start, end)
-        payload = self.provider.get(
+        source_artifact = self.provider.get_sanitized_msft_proxy(
             url,
-            headers={"User-Agent": "quant-research-platform/0.1"},
             maximum_bytes=MAX_PROVIDER_RESPONSE_BYTES,
+            start=start,
+            end=end,
         )
         now = self.clock()
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
             raise DatasetResolutionError("MSFT proxy ingress clock must be timezone-aware")
         sealed_at = now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         snapshot = msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
-            payload,
+            source_artifact,
             request_url=url,
             sealed_at=sealed_at,
             start=start,

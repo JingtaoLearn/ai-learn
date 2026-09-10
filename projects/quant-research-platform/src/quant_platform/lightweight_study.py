@@ -128,6 +128,18 @@ class LightweightStudyService:
             raise StudyRemoteError("MSFT Study report is unavailable before successful read-back")
         if not detail["kind"].startswith("MSFT_") or self.platform is None:
             raise StudyRemoteError("canonical report is available only for the MSFT market Study")
+        from .msft_trend_study import PROXY_INVALIDATION_CLASSIFICATION
+
+        try:
+            current = self.platform.current_msft_study_report(study_id)
+        except ValueError:
+            current = None
+        if (
+            current is not None
+            and current["document"].get("classification")
+            == PROXY_INVALIDATION_CLASSIFICATION
+        ):
+            return current
         return self.platform.publish_msft_study_report(
             study_id=study_id,
             result=detail["result"],
@@ -138,6 +150,22 @@ class LightweightStudyService:
                 "snapshot_id": detail["snapshot_id"],
                 "classification": detail["classification"],
             },
+        )
+
+    def invalidate_msft_report(
+        self,
+        *,
+        study_id: str,
+        report_artifact_id: str,
+    ) -> dict[str, Any]:
+        detail = self.detail(study_id)
+        if detail["status"] != "SUCCEEDED" or not detail["kind"].startswith("MSFT_"):
+            raise StudyRemoteError("only a successful MSFT Study report can be invalidated")
+        if self.platform is None:
+            raise StudyRemoteError("PostgreSQL MSFT report authority is unavailable")
+        return self.platform.publish_msft_study_invalidation(
+            study_id=study_id,
+            invalidated_report_artifact_id=report_artifact_id,
         )
 
     @staticmethod
