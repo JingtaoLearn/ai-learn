@@ -423,6 +423,7 @@ def _study_service(
     )
     experiments = ExperimentService(
         catalog,
+        operator_persistence=catalog,
         execution_identity=EXECUTION_IDENTITY,
         datasets=datasets,
     )
@@ -2095,6 +2096,51 @@ def test_list_returns_study_views_in_reverse_creation_order(tmp_path: Path):
     ]
     assert all(item["phase"] == "FROZEN" for item in listed)
     assert all("historical_classification" in item for item in listed)
+
+
+def test_study_summary_is_one_bounded_query_without_detail_evidence(
+    tmp_path: Path,
+    monkeypatch,
+):
+    studies, _ = _study_service(tmp_path)
+    preview = studies.preview(_spec())
+    submitted = studies.submit(
+        _spec(),
+        expected_preview_digest=preview["preview_digest"],
+        action_id="summary-read",
+    )
+    statements = []
+    original_connect = studies.catalog.connect
+
+    def tracked_connect():
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(studies.catalog, "connect", tracked_connect)
+
+    summaries = studies.list_summaries()
+
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 1
+    assert not any(
+        table in selects[0]
+        for table in (
+            "parameter_study_events",
+            "parameter_study_evidence",
+            "parameter_study_trials",
+            "parameter_study_bindings",
+        )
+    )
+    assert summaries == [
+        {
+            "study_id": submitted["study_id"],
+            "frozen_plan": preview["frozen_plan"],
+            "phase": "FROZEN",
+            "control_status": "ACTIVE",
+            "holdout": {"access": "SEALED"},
+        }
+    ]
 
 
 def test_study_list_and_detail_classification_are_read_only_and_source_equivalent(

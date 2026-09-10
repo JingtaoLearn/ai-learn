@@ -1109,6 +1109,66 @@ class ExperimentService:
             )
         ]
 
+    def list_experiment_summaries(self) -> list[dict[str, Any]]:
+        """Return the bounded projection used by history without loading Attempt detail."""
+        current_operators = {
+            item["operator_id"]: item for item in self.operator_persistence.list_operators()
+        }
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT e.experiment_id, e.identity_json, e.created_at,
+                       e.canonical_attempt_id,
+                       COUNT(a.attempt_id) AS attempt_count,
+                       COALESCE(
+                           (
+                               SELECT latest.status
+                               FROM attempts AS latest
+                               WHERE latest.experiment_id = e.experiment_id
+                               ORDER BY latest.sequence DESC
+                               LIMIT 1
+                           ),
+                           'PENDING'
+                       ) AS current_status,
+                       MAX(CASE WHEN a.comparison = 'DIVERGENT' THEN 1 ELSE 0 END)
+                           AS has_divergent_attempt
+                FROM experiments AS e
+                LEFT JOIN attempts AS a USING (experiment_id)
+                GROUP BY e.experiment_id, e.identity_json, e.created_at,
+                         e.canonical_attempt_id
+                ORDER BY e.created_at DESC, e.experiment_id DESC
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+
+        summaries = []
+        for row in rows:
+            identity = strict_json_loads(row["identity_json"])
+            operators = identity["operators"]
+            has_drift = any(
+                (current := current_operators.get(operator["operator_id"])) is None
+                or current["latest_version"] != operator["resolved_version"]
+                or current["content_digest"] != operator["content_digest"]
+                for operator in operators.values()
+            )
+            summaries.append(
+                {
+                    "experiment_id": row["experiment_id"],
+                    "created_at": row["created_at"],
+                    "attempt_count": row["attempt_count"],
+                    "current_status": row["current_status"],
+                    "has_drift": has_drift,
+                    "canonical_attempt_id": row["canonical_attempt_id"],
+                    "has_divergent_attempt": bool(row["has_divergent_attempt"]),
+                    "dataset": identity["dataset"],
+                    "template": identity["template"],
+                    "operators": operators,
+                }
+            )
+        return summaries
+
     def claim_next_attempt(self) -> dict[str, Any] | None:
         with self.catalog.transaction(immediate=True) as connection:
             row = connection.execute(
