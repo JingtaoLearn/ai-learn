@@ -941,6 +941,86 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             ).fetchone()
         return None if row is None else row["report_artifact_id"].strip()
 
+    def current_report_evidence(self, attempt_id: str) -> dict[str, Any] | None:
+        """Read and verify the current immutable report identity and document."""
+
+        if SHA256.fullmatch(attempt_id) is None:
+            raise ValueError("attempt_id must be lowercase SHA-256")
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT c.report_artifact_id, c.sequence, e.pointer, r.artifact_set_id "
+                "FROM qr.report_current c "
+                "JOIN qr.report_pointer_events e "
+                "ON e.attempt_id=c.attempt_id AND e.sequence=c.sequence "
+                "JOIN qr.report_artifacts r "
+                "ON r.report_artifact_id=c.report_artifact_id "
+                "WHERE c.attempt_id=%s",
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            return None
+
+        from .attempt_report import (
+            _validate_pointer_record,
+            validate_report_document,
+            validate_report_manifest,
+        )
+
+        report_artifact_id = row["report_artifact_id"].strip()
+        pointer = _validate_pointer_record(row["pointer"])
+        if (
+            pointer["attempt_id"] != attempt_id
+            or pointer["report_artifact_id"] != report_artifact_id
+            or pointer["sequence"] != row["sequence"]
+        ):
+            raise PersistenceUnavailableError("current report pointer binding is invalid")
+        members = self.read_artifact_set(row["artifact_set_id"].strip())
+        if set(members) != {
+            "report-document.json",
+            "report.html",
+            "report-manifest.json",
+        }:
+            raise PersistenceUnavailableError("current report artifact membership is invalid")
+        manifest = validate_report_manifest(
+            _strict_json(members["report-manifest.json"], "report manifest")
+        )
+        document = validate_report_document(
+            _strict_json(members["report-document.json"], "ReportDocument")
+        )
+        fields = {
+            field["field_id"]: field
+            for section in document["sections"]
+            for field in section["fields"]
+        }
+        expected_files = [
+            {
+                "path": "report-document.json",
+                "size": len(members["report-document.json"]),
+                "sha256": _sha256_bytes(members["report-document.json"]),
+            },
+            {
+                "path": "report.html",
+                "size": len(members["report.html"]),
+                "sha256": _sha256_bytes(members["report.html"]),
+            },
+        ]
+        if (
+            manifest["attempt_id"] != attempt_id
+            or manifest["report_artifact_id"] != report_artifact_id
+            or manifest["document_id"] != document["document_id"]
+            or manifest["files"] != expected_files
+            or pointer["report_manifest_sha256"]
+            != _sha256_bytes(canonical_json_bytes(manifest) + b"\n")
+            or pointer["report_document_sha256"] != manifest["report_document_sha256"]
+            or fields["attempt_id"]["raw"] != attempt_id
+            or fields["bundle_id"]["raw"] != manifest["bundle_id"]
+        ):
+            raise PersistenceUnavailableError("current report artifact binding is invalid")
+        return {
+            "report_artifact_id": report_artifact_id,
+            "document": document,
+        }
+
     def publish_attempt_completion(
         self,
         connection: Any,

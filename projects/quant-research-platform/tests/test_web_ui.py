@@ -9,13 +9,15 @@ from pathlib import Path
 import httpx
 import pandas as pd
 import quant_platform.web as web_module
+from fastapi.testclient import TestClient
+from quant_platform.attempt_report import read_latest_report
 from quant_platform.catalog import initialize_catalog
 from quant_platform.dataset_service import DatasetResolutionError
 from quant_platform.datasets import publish_snapshot
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.web import _task_from_form
 
-from test_attempt_report import _install_cross_attempt_artifact
+from test_attempt_report import _install_cross_attempt_artifact, _publish_fixture_report
 from test_auth import _claims, _token
 from test_experiment_service import _task
 from test_web_api import authenticate, bocom_action_view, make_app, snapshot
@@ -594,6 +596,92 @@ def test_template_and_dashboard_show_slot_defaults_and_linked_recent_attempts(
     assert f'href="/experiments/{created["experiment_id"]}"' in dashboard.text
 
 
+def test_dashboard_presents_latest_verified_evidence_and_unsupported_fields(
+    tmp_path: Path,
+):
+    class OperatorPersistence(web_module.PostgresOperatorPersistence):
+        def __init__(self):
+            pass
+
+        def verify_schema(self):
+            return None
+
+        def list_operators(self):
+            return []
+
+    allowlist = tmp_path / "allowed.txt"
+    allowlist.write_text("researcher@example.com\n", encoding="utf-8")
+    app = web_module.create_app(
+        web_module.Settings(
+            environment="test",
+            auth_mode="sso",
+            state_root=tmp_path / "state",
+            public_url="https://quant.ai.jingtao.fun",
+            allowed_hosts=("quant.ai.jingtao.fun",),
+            auth_shared_secret="s" * 48,
+            session_secret="c" * 48,
+            allowed_emails_file=allowlist,
+            sso_login_url="https://ms-login.ai.jingtao.fun/auth/login",
+            sso_audience="https://quant.ai.jingtao.fun/auth/callback",
+            sso_callback_url="https://quant.ai.jingtao.fun/auth/callback",
+            password_scrypt_hash=None,
+            secure_cookies=True,
+        ),
+        operator_persistence=OperatorPersistence(),
+    )
+    client = TestClient(
+        app,
+        base_url="https://quant.ai.jingtao.fun",
+        headers={"host": "quant.ai.jingtao.fun"},
+    )
+    authenticate(app, client)
+    experiment_id = "a" * 64
+    attempt_id = "a" * 64
+    snapshot_id = "b" * 64
+    with app.state.catalog.transaction(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO experiments(
+                experiment_id, identity_json, created_at, canonical_attempt_id,
+                canonical_result_digest
+            ) VALUES (?, '{}', '2026-09-10T08:59:35Z', ?, ?)
+            """,
+            (experiment_id, attempt_id, "c" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts(
+                attempt_id, experiment_id, action_id, sequence, status,
+                requested_json, resolved_json, created_at, result_digest, comparison
+            ) VALUES (?, ?, 'evidence-inbox', 1, 'SUCCEEDED', '{}', ?,
+                      '2026-09-10T08:59:36Z', ?, 'CANONICAL')
+            """,
+            (
+                attempt_id,
+                experiment_id,
+                json.dumps({"dataset": {"snapshot_id": snapshot_id}}),
+                "c" * 64,
+            ),
+        )
+    _publish_fixture_report(app.state.catalog.state_root)
+    report = read_latest_report(app.state.catalog.state_root, attempt_id)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-testid="evidence-inbox"' in response.text
+    assert "Outcome:" in response.text and "SUCCEEDED" in response.text
+    assert experiment_id in response.text
+    assert attempt_id in response.text
+    assert snapshot_id in response.text
+    assert report["manifest"]["report_artifact_id"] in response.text
+    assert report["document"]["document_id"] in response.text
+    assert "Gross dividends — UNAVAILABLE" in response.text
+    assert "No Study identity is linked to this Attempt." in response.text
+    assert f'href="/reports/{attempt_id}"' in response.text
+    assert response.text.index("Outcome:") < response.text.index("Platform totals")
+
+
 def test_overview_and_catalog_surfaces_expose_mobile_records_and_grouped_evidence(
     tmp_path: Path,
 ):
@@ -989,6 +1077,7 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
         result_digest=result["result_digest"],
     )
 
+    dashboard = client.get("/")
     history = client.get("/history")
     detail = client.get(f"/experiments/{created['experiment_id']}")
     wrapper = client.get(f"/reports/{attempt['attempt_id']}")
@@ -1000,6 +1089,20 @@ def test_history_detail_and_report_use_verified_sandbox_route(tmp_path: Path):
         headers={"sec-fetch-dest": "iframe", "sec-fetch-site": "same-origin"},
     )
 
+    report_evidence = read_latest_report(
+        app.state.catalog.state_root, attempt["attempt_id"]
+    )
+    assert dashboard.status_code == 200
+    assert 'data-testid="evidence-inbox"' in dashboard.text
+    assert "Outcome:" in dashboard.text and "SUCCEEDED" in dashboard.text
+    assert created["experiment_id"] in dashboard.text
+    assert attempt["attempt_id"] in dashboard.text
+    assert report_evidence["manifest"]["report_artifact_id"] in dashboard.text
+    assert report_evidence["document"]["document_id"] in dashboard.text
+    assert "Total return — NOT_EVALUATED" in dashboard.text
+    assert "No Study identity is linked to this Attempt." in dashboard.text
+    assert f'href="/reports/{attempt["attempt_id"]}"' in dashboard.text
+    assert dashboard.text.index("Outcome:") < dashboard.text.index("Platform totals")
     assert created["experiment_id"] in history.text
     assert 'data-testid="attempt-timeline"' in detail.text
     assert '<iframe sandbox="allow-scripts"' in detail.text

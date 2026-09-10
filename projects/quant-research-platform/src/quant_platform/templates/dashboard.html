@@ -3,11 +3,33 @@
 {% block page %}dashboard{% endblock %}
 {% block content %}
 <section class="page-heading split">
-  <div><p class="eyebrow">PLATFORM STATUS</p>
-  <h1>Research overview</h1>
-  <p>Immutable strategy experiments and isolated operator execution.</p></div>
+  <div><p class="eyebrow">DAILY EVIDENCE</p>
+  <h1>Research decision inbox</h1>
+  <p>The latest recorded evidence, its limits, and the next available inspection step.</p></div>
   <a class="button" href="/experiments/new">New experiment</a>
 </section>
+{% if latest_evidence %}
+<section class="panel evidence-inbox" data-testid="evidence-inbox" aria-labelledby="latest-evidence-heading">
+  <div class="section-heading evidence-outcome">
+    <div><p class="eyebrow">LATEST RECORDED ATTEMPT · {{ latest_evidence.created_at }}</p><h2 id="latest-evidence-heading">Outcome: <span class="status" data-status="{{ latest_evidence.status }}">{{ latest_evidence.status }}</span></h2></div>
+    {% if latest_evidence.comparison %}<span class="badge">{{ latest_evidence.comparison }} result</span>{% endif %}
+  </div>
+  <p>This is stored execution state, not an inference of edge, market outcome, or authorization to promote a signal.</p>
+  <div class="evidence-next-action"><div><span>Next legitimate action</span><strong>{{ latest_evidence.next_action.label }}</strong></div><a class="button" href="{{ latest_evidence.next_action.href }}">{{ latest_evidence.next_action.label }}</a></div>
+  <div class="evidence-identity-grid" aria-label="Supporting immutable evidence identities">
+    <div><span>Experiment</span><a class="mono" href="/experiments/{{ latest_evidence.experiment_id }}">{{ latest_evidence.experiment_id[:12] }}…</a></div>
+    <div><span>Attempt</span><code>{{ latest_evidence.attempt_id[:12] }}…</code></div>
+    <div><span>Study</span>{% if latest_evidence.study_ids %}{% for study_id in latest_evidence.study_ids %}<a class="mono" href="/studies/{{ study_id }}">{{ study_id[:12] }}…</a>{% endfor %}{% else %}<strong>Not linked</strong>{% endif %}</div>
+    <div><span>Report artifact</span>{% if latest_evidence.report_artifact_id %}<a class="mono" href="/reports/{{ latest_evidence.attempt_id }}">{{ latest_evidence.report_artifact_id[:12] }}…</a>{% else %}<strong>Not available</strong>{% endif %}</div>
+  </div>
+  <details class="evidence-identities"><summary>Full immutable identities</summary><dl class="technical"><dt>Experiment</dt><dd>{{ latest_evidence.experiment_id }}</dd><dt>Attempt</dt><dd>{{ latest_evidence.attempt_id }}</dd><dt>Canonical Attempt</dt><dd>{{ latest_evidence.canonical_attempt_id or "Not established" }}</dd><dt>Dataset snapshot</dt><dd>{{ latest_evidence.dataset_snapshot_id or "Not available" }}</dd>{% for study_id in latest_evidence.study_ids %}<dt>Study</dt><dd>{{ study_id }}</dd>{% endfor %}<dt>Report artifact</dt><dd>{{ latest_evidence.report_artifact_id or "Not available" }}</dd><dt>Report document</dt><dd>{{ latest_evidence.report_document_id or "Not available" }}</dd>{% if latest_evidence.result_digest %}<dt>Result digest</dt><dd>{{ latest_evidence.result_digest }}</dd>{% endif %}</dl></details>
+  {% if latest_evidence.limitations %}
+  <div class="decision-caveat" data-testid="evidence-limitations"><strong>Material limitations</strong><ul>{% for limitation in latest_evidence.limitations %}<li><strong>{{ limitation.label }} — {{ limitation.availability }}</strong>: {{ limitation.reason }}</li>{% endfor %}</ul></div>
+  {% endif %}
+</section>
+{% else %}
+<section class="empty" data-testid="evidence-inbox-empty"><strong>No research evidence is recorded yet.</strong> <a href="/experiments/new">Create the first experiment.</a></section>
+{% endif %}
 <section class="metrics" aria-label="Platform totals" data-testid="dashboard-metrics">
   <div><span>Experiments</span><strong>{{ experiment_count }}</strong></div>
   <div><span>Attempts</span><strong>{{ attempt_count }}</strong></div>
