@@ -738,6 +738,15 @@ class WorkerJobStore:
                     state["updated_at"] = _utc_now()
                     self._write(state)
                     continue
+                if frozen["worker_image"] != self.worker_image:
+                    state["status"] = "FAILED"
+                    state["failure"] = {
+                        "code": "WORKER_RESTART_IMAGE_DRIFT",
+                        "message": "persisted request targets a different worker image",
+                    }
+                    state["updated_at"] = _utc_now()
+                    self._write(state)
+                    continue
                 expected = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
                 if expected != state.get("request_digest"):
                     state["status"] = "FAILED"
