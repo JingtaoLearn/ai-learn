@@ -1,6 +1,6 @@
 # Ailearn production-client cutover
 
-This file is an operator recipe only. Running it is outside this source-correction action. The reviewed configuration is `ailearn-schedule-cutover.json`. The existing jobs keep their IDs, weekday 08:40 Asia/Shanghai schedule, enabled count, and Feishu destination.
+The reviewed configuration is `ailearn-schedule-cutover.json`. The existing jobs keep their IDs, enabled count, and Feishu destination. Gold remains at weekday 08:40 Asia/Shanghai; BOCOM moves to 08:45 so the single-admission API calls cannot collide.
 
 ## Install the reviewed client without third-party runtime dependencies
 
@@ -55,7 +55,7 @@ PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_
 PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_platform.production_schedule_client --job-id 297c11cad0dc --scheduled-for 2026-03-09T00:40:00Z --jobs-file "$tmp_jobs"
 ```
 
-Use a newly admitted weekday 08:40 Asia/Shanghai fire instead of the example fire when performing the real disabled-copy validation. Both calls must return byte-identical verified `notification.txt` payloads from zhlearn and exit zero. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, model, or notification error fails closed; there is no local computation or alternate endpoint.
+Use a newly admitted weekday 08:40 production identity instead of the example, or use distinct bounded validation identities, when performing real validation. BOCOM's 08:45 cron start retains the frozen 08:40 production identity. Each call must verify the immutable result, source notification and report, atomically publish and HTTPS-read back the current stable report, then render the concise notification locally. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, report-publication, model, or action error fails closed; there is no local computation or alternate endpoint.
 
 ## Cut over the two existing records
 
@@ -69,7 +69,7 @@ bocom_prompt="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); pri
 hermes cron pause 1cd5557264db
 hermes cron pause 297c11cad0dc
 hermes cron edit 1cd5557264db --name gold-production-daily-action --schedule '40 8 * * 1-5' --deliver feishu:oc_33bdb4845220ee3788fe50c50cf333ed --script gold_production_api_action.py --prompt "$gold_prompt" --no-agent
-hermes cron edit 297c11cad0dc --name bocom-production-daily-action --schedule '40 8 * * 1-5' --deliver feishu:oc_33bdb4845220ee3788fe50c50cf333ed --script bocom_production_api_action.py --prompt "$bocom_prompt" --no-agent
+hermes cron edit 297c11cad0dc --name bocom-production-daily-action --schedule '45 8 * * 1-5' --deliver feishu:oc_33bdb4845220ee3788fe50c50cf333ed --script bocom_production_api_action.py --prompt "$bocom_prompt" --no-agent
 hermes cron resume 1cd5557264db
 hermes cron resume 297c11cad0dc
 hermes cron list --all
