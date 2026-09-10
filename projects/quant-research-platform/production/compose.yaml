@@ -252,7 +252,7 @@ services:
         read_only: true
         bind: {create_host_path: false}
     expose: ["8090"]
-    networks: [api_internal, study_worker_egress]
+    networks: [api_internal]
     depends_on:
       schema-migrate: {condition: service_completed_successfully}
     healthcheck:
@@ -335,7 +335,7 @@ networks:
   provider_proxy_internal: {driver: bridge, internal: true, attachable: false}
   provider_egress: {driver: bridge, internal: false, attachable: false}
   package_identity_internal: {driver: bridge, internal: true, attachable: false}
-  study_worker_egress: {driver: bridge, internal: false, attachable: false}
+
 
 volumes:
   postgres_data:

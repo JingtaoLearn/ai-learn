@@ -75,7 +75,7 @@ class LightweightStudyService:
             )
         request = freeze_training_request(
             trial_budget=trial_budget,
-            seed=int(action_id[:13], 16),
+            seed=int(action_id[:8], 16),
             checkpoint_count=min(8, trial_budget),
             parameter_low=0.0,
             parameter_high=1.0,

@@ -55,6 +55,7 @@ def test_lightweight_submission_identity_converges_without_local_compute() -> No
 
     assert first["study_id"] == duplicate["study_id"]
     assert requests[0] == requests[1]
+    assert requests[0]["training_spec"]["search"]["seed"] == int("1" * 8, 16)
     assert requests[0]["training_spec"]["objective"]["data_classification"] == (
         "SYNTHETIC_NON_MARKET"
     )
