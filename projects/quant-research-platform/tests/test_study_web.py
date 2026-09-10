@@ -334,7 +334,7 @@ def test_study_pages_expose_research_evidence_and_escape_values(tmp_path: Path, 
             ],
         }
     )
-    monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
+    monkeypatch.setattr(app.state.studies, "list_summaries", lambda: [detail])
     monkeypatch.setattr(app.state.studies, "detail", lambda study_id: detail)
 
     listing = client.get("/studies")
@@ -1119,7 +1119,7 @@ def test_study_list_identity_is_copyable_with_no_js_fallback(tmp_path: Path, mon
     app, client = make_app(tmp_path)
     authenticate(app, client)
     detail = _study_detail()
-    monkeypatch.setattr(app.state.studies, "list", lambda: [detail])
+    monkeypatch.setattr(app.state.studies, "list_summaries", lambda: [detail])
 
     response = client.get("/studies")
 

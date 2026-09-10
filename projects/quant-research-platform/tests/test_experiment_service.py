@@ -35,6 +35,7 @@ def _service(
     return (
         ExperimentService(
             catalog,
+            operator_persistence=catalog,
             execution_identity={
                 "runner": "quant-platform",
                 "source_digest": "e" * 64,
@@ -325,6 +326,50 @@ def test_history_contains_unique_experiments_attempt_count_and_current_drift(tmp
     assert all(not operator["drifted"] for operator in detail["operators"].values())
 
 
+def test_history_summary_uses_two_bounded_queries_without_attempt_payloads(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service, snapshot_id = _service(tmp_path)
+    created = service.submit(_task(snapshot_id), action_id="create")
+    service.rerun(created["experiment_id"], action_id="rerun")
+    expected = service.experiment_detail(created["experiment_id"])
+    statements = []
+    original_connect = service.catalog.connect
+
+    def tracked_connect():
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(service.catalog, "connect", tracked_connect)
+
+    summaries = service.list_experiment_summaries()
+
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 2
+    assert not any(
+        field in " ".join(selects)
+        for field in ("requested_json", "resolved_json", "logs", "result_path")
+    )
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["experiment_id"] == created["experiment_id"]
+    assert summary["created_at"] == expected["created_at"]
+    assert summary["attempt_count"] == 2
+    assert summary["current_status"] == "PENDING"
+    assert summary["has_drift"] is False
+    assert summary["canonical_attempt_id"] is None
+    assert summary["has_divergent_attempt"] is False
+    assert summary["dataset"] == expected["dataset"]
+    assert summary["template"] == expected["template"]
+    assert {
+        slot: operator["operator_id"] for slot, operator in summary["operators"].items()
+    } == {
+        slot: operator["operator_id"] for slot, operator in expected["operators"].items()
+    }
+
+
 def test_rerun_keeps_the_experiment_resolution_frozen_while_detail_reports_drift(
     tmp_path: Path,
 ):
@@ -355,6 +400,7 @@ def test_rerun_keeps_the_experiment_resolution_frozen_while_detail_reports_drift
     ]
     assert original["resolved_version"] == "1.0.0"
     assert service.experiment_detail(created["experiment_id"])["has_drift"] is True
+    assert service.list_experiment_summaries()[0]["has_drift"] is True
 
 
 def test_a_share_attempt_and_experiment_reads_add_fail_closed_classification_without_mutation(

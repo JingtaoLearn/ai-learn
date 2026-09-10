@@ -6566,6 +6566,43 @@ class ParameterStudy:
             connection.close()
         return [self.detail(row["study_id"]) for row in rows]
 
+    def list_summaries(self) -> list[dict[str, Any]]:
+        """Return the bounded projection needed by the Study index."""
+        connection = self.catalog.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT s.study_id, s.frozen_plan_json, s.phase, s.control_status,
+                       CASE
+                           WHEN MAX(CASE WHEN h.event_type = 'ACCESSED' THEN 1 ELSE 0 END) = 1
+                               THEN 'ACCESSED'
+                           WHEN MAX(CASE WHEN h.event_type = 'GRANTED' THEN 1 ELSE 0 END) = 1
+                               THEN 'GRANTED'
+                           ELSE 'SEALED'
+                       END AS holdout_access
+                FROM parameter_studies AS s
+                LEFT JOIN parameter_study_holdout_ledger AS h USING (study_id)
+                GROUP BY s.study_id, s.frozen_plan_json, s.phase,
+                         s.control_status, s.created_at
+                ORDER BY s.created_at DESC, s.study_id DESC
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            {
+                "study_id": row["study_id"],
+                "frozen_plan": _strict_json_object(
+                    row["frozen_plan_json"],
+                    "Parameter Study frozen plan",
+                ),
+                "phase": row["phase"],
+                "control_status": row["control_status"],
+                "holdout": {"access": row["holdout_access"]},
+            }
+            for row in rows
+        ]
+
     def detail(self, study_id: str) -> dict[str, Any]:
         if not isinstance(study_id, str) or STUDY_ID.fullmatch(study_id) is None:
             raise StudyNotFoundError(f"unknown Parameter Study: {study_id}")

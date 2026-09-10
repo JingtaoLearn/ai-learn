@@ -1915,7 +1915,7 @@ def create_app(
             raise ValueError("history status filter is invalid")
         if drift_filter not in {"all", "current", "drifted"}:
             raise ValueError("history drift filter is invalid")
-        history_rows = experiments.list_experiments()
+        history_rows = await run_in_threadpool(experiments.list_experiment_summaries)
         if status_filter != "all":
             history_rows = [
                 item
@@ -1965,7 +1965,7 @@ def create_app(
             request,
             "studies.html",
             session=session,
-            studies=await run_in_threadpool(studies.list),
+            studies=await run_in_threadpool(studies.list_summaries),
         )
 
     async def study_form_context(
