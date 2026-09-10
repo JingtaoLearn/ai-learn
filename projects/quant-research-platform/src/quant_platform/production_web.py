@@ -11,6 +11,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from .dataset_service import DatasetResolutionError, MsftDatasetIngress
+from .full_persistence import FullPostgresPersistence, PersistenceConflict
 from .production_bocom import BocomProductionJob
 from .production_contract import ProductionRelease
 from .production_focus import FocusCalibrationProductionJob
@@ -49,6 +51,7 @@ def create_production_app(
     results: ProductionResultStore,
     *,
     verified_client_identity: str,
+    msft_ingress: MsftDatasetIngress | None = None,
 ) -> FastAPI:
     if not verified_client_identity or "," in verified_client_identity:
         raise ValueError("verified client identity is invalid")
@@ -120,6 +123,30 @@ def create_production_app(
             return _error(404, "RESULT_FILE_NOT_FOUND", str(exc))
         return Response(value, status_code=200, media_type="application/octet-stream")
 
+    @app.post("/api/v1/datasets/msft/snapshots")
+    async def create_msft_snapshot(request: Request):
+        if msft_ingress is None:
+            return _error(503, "MSFT_INGRESS_UNAVAILABLE", "MSFT Dataset ingress is unavailable")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+            return _error(422, "CONTENT_TYPE_REJECTED", "Content-Type must be application/json")
+        body = await request.body()
+        if not body or len(body) > MAX_BODY_BYTES:
+            return _error(422, "BODY_SIZE_REJECTED", "request body size is invalid")
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict):
+                raise DatasetResolutionError("MSFT ingress body must be an object")
+            receipt = await run_in_threadpool(
+                msft_ingress.ingest,
+                value,
+                request.headers.get("idempotency-key", ""),
+            )
+        except (json.JSONDecodeError, DatasetResolutionError, ValueError) as exc:
+            return _error(422, "MSFT_INGRESS_REJECTED", str(exc))
+        except PersistenceConflict as exc:
+            return _error(409, "MSFT_INGRESS_CONFLICT", str(exc))
+        return _response(201, {"ok": True, "snapshot": receipt})
+
     return app
 
 
@@ -178,17 +205,24 @@ def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
     package_identity_authority = HttpPackageIdentityAuthorityClient(
         os.environ.get("QR_PACKAGE_IDENTITY_AUTHORITY_URL", "")
     )
+    provider = _ProxyOnlyProvider(os.environ.get("HTTPS_PROXY", ""))
     worker = ProductionWorker(
         store,
         jobs,
-        _ProxyOnlyProvider(os.environ.get("HTTPS_PROXY", "")),
+        provider,
         results,
         package_identity_authority,
         work_root=work_root,
         owner=f"production-worker:{os.getpid()}",
     )
     identity = os.environ.get("QR_VERIFIED_CLIENT_IDENTITY", "")
-    return create_production_app(service, results, verified_client_identity=identity), worker
+    ingress = MsftDatasetIngress(provider, FullPostgresPersistence.from_environment())
+    return create_production_app(
+        service,
+        results,
+        verified_client_identity=identity,
+        msft_ingress=ingress,
+    ), worker
 
 
 def main() -> None:

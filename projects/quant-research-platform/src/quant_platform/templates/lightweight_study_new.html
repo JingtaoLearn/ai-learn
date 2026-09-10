@@ -18,4 +18,20 @@
   </section>
   <div class="actions"><a class="button quiet" href="/studies/new">Back to modes</a><button type="submit">Create lightweight Study</button></div>
 </form>
+<form method="post" action="/studies/lightweight/msft" data-testid="msft-study-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="action_id" value="{{ action_id }}">
+  <section class="panel">
+    <p class="eyebrow">XNYS / MSFT · RESEARCH ONLY</p>
+    <h2>Frozen MSFT trend evaluation</h2>
+    <p>Submit one reviewed immutable Snapshot to Feng. Exactly 15 predeclared candidates are evaluated in memory; no per-trial Attempt or report rows are created.</p>
+    <div class="form-grid">
+      <label>Snapshot identity<input name="snapshot_id" pattern="[0-9a-f]{64}" required></label>
+      <label>Compute placement<input value="Feng only · no local fallback" readonly></label>
+      <label>Terminal position<input value="Final close mark; no fabricated exit" readonly></label>
+      <label>Authority<input value="zhlearn PostgreSQL" readonly></label>
+    </div>
+  </section>
+  <div class="actions"><button type="submit">Create MSFT Study</button></div>
+</form>
 {% endblock %}

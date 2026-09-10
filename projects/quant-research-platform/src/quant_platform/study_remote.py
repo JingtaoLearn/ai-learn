@@ -23,6 +23,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .msft_trend_study import (
+    MARKET_JOB_TYPE,
+    MsftStudyValidationError,
+    run_study,
+    validate_snapshot,
+)
 from .study_training_kernel import (
     TRAINING_JOB_TYPE,
     StudyTrainingKernel,
@@ -35,7 +41,7 @@ PROTOCOL = "quantresearch-study-worker/v1"
 DISPATCH_PROTOCOL = "quantresearch-study-dispatch/v2"
 JOB_TYPE = "deterministic-synthetic-search-v1"
 SCHEMA_IDENTITY = "quantresearch-lightweight-study-postgresql-v4"
-MAX_BODY_BYTES = 16_384
+MAX_BODY_BYTES = 4 * 1_048_576
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_ITERATIONS = 100_000_000
 MAX_CHECKPOINTS = 20
@@ -367,6 +373,100 @@ class _TrainingWorkerJob:
         return _WorkerJobResult(progress=completed.progress, evidence=completed.evidence)
 
 
+class _MarketWorkerJob:
+    job_type = MARKET_JOB_TYPE
+
+    def freeze(
+        self,
+        *,
+        snapshot: Mapping[str, Any],
+        checkpoint_count: int,
+        source_commit: str,
+        source_tree: str,
+        worker_image: str,
+    ) -> dict[str, Any]:
+        if checkpoint_count != 3:
+            raise StudyValidationError("MSFT market Study uses exactly three bounded checkpoints")
+        _validate_source_identity(source_commit, source_tree, worker_image)
+        try:
+            frozen_snapshot = validate_snapshot(snapshot)
+        except MsftStudyValidationError as exc:
+            raise StudyValidationError(str(exc)) from exc
+        frozen = {
+            "schema_version": 1,
+            "protocol": PROTOCOL,
+            "job_type": self.job_type,
+            "snapshot": frozen_snapshot,
+            "checkpoint_count": checkpoint_count,
+            "source_commit": source_commit,
+            "source_tree": source_tree,
+            "worker_image": worker_image,
+        }
+        return {"job_id": _job_identity(frozen), **frozen}
+
+    def validate(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        _exact_fields(
+            value,
+            {
+                "job_id",
+                "schema_version",
+                "protocol",
+                "job_type",
+                "snapshot",
+                "checkpoint_count",
+                "source_commit",
+                "source_tree",
+                "worker_image",
+            },
+            "Study request",
+        )
+        if not isinstance(value.get("snapshot"), Mapping):
+            raise StudyValidationError("MSFT Snapshot must be an object")
+        rebuilt = self.freeze(
+            snapshot=value["snapshot"],
+            checkpoint_count=value["checkpoint_count"],
+            source_commit=value["source_commit"],
+            source_tree=value["source_tree"],
+            worker_image=value["worker_image"],
+        )
+        _validate_request_identity(value, rebuilt)
+        return rebuilt
+
+    def initial_progress(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return {"completed_candidates": 0, "total_candidates": 15}
+
+    def run(
+        self,
+        request: Mapping[str, Any],
+        on_checkpoint: Callable[[dict[str, Any], dict[str, Any]], None],
+    ) -> _WorkerJobResult:
+        try:
+            evidence = run_study(request["snapshot"], checkpoint=on_checkpoint)
+        except MsftStudyValidationError as exc:
+            evidence = {
+                "schema": "quantresearch-msft-study-result/v1",
+                "kernel": "quant_platform.msft_trend_study@1.0.0",
+                "snapshot_id": request["snapshot"]["snapshot_id"],
+                "trial_count": 0,
+                "family_winners": [],
+                "selection": None,
+                "final": None,
+                "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
+                "conclusion": "INCONCLUSIVE_DATA_OR_EXECUTION",
+                "reason": str(exc),
+                "per_trial_attempt_rows": 0,
+                "terminal_exit_fabricated": False,
+            }
+        return _WorkerJobResult(
+            progress={
+                "completed_candidates": evidence["trial_count"],
+                "total_candidates": 15,
+                "checkpoint_sequence": 3 if evidence["trial_count"] == 15 else 0,
+            },
+            evidence=evidence,
+        )
+
+
 def _validate_source_identity(source_commit: str, source_tree: str, worker_image: str) -> None:
     if HEX_40.fullmatch(source_commit) is None or HEX_40.fullmatch(source_tree) is None:
         raise StudyValidationError("source commit and tree must be lowercase Git SHA-1 identities")
@@ -385,13 +485,17 @@ def _validate_request_identity(
 
 _SYNTHETIC_WORKER_JOB = _SyntheticWorkerJob()
 _TRAINING_WORKER_JOB = _TrainingWorkerJob()
+_MARKET_WORKER_JOB = _MarketWorkerJob()
 _WORKER_JOBS = {
     _SYNTHETIC_WORKER_JOB.job_type: _SYNTHETIC_WORKER_JOB,
     _TRAINING_WORKER_JOB.job_type: _TRAINING_WORKER_JOB,
+    _MARKET_WORKER_JOB.job_type: _MARKET_WORKER_JOB,
 }
 
 
-def _worker_job(value: Mapping[str, Any]) -> _SyntheticWorkerJob | _TrainingWorkerJob:
+def _worker_job(
+    value: Mapping[str, Any],
+) -> _SyntheticWorkerJob | _TrainingWorkerJob | _MarketWorkerJob:
     job_type = value.get("job_type")
     if not isinstance(job_type, str):
         raise StudyValidationError("Study request identity does not match its frozen inputs")
@@ -439,6 +543,22 @@ def freeze_training_request(
         parameter_low=parameter_low,
         parameter_high=parameter_high,
         objective_target=objective_target,
+        source_commit=source_commit,
+        source_tree=source_tree,
+        worker_image=worker_image,
+    )
+
+
+def freeze_market_request(
+    *,
+    snapshot: Mapping[str, Any],
+    source_commit: str,
+    source_tree: str,
+    worker_image: str,
+) -> dict[str, Any]:
+    return _MARKET_WORKER_JOB.freeze(
+        snapshot=snapshot,
+        checkpoint_count=3,
         source_commit=source_commit,
         source_tree=source_tree,
         worker_image=worker_image,

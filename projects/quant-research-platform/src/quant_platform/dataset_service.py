@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from importlib.metadata import version
 from numbers import Number
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -91,6 +91,216 @@ class DatasetCatalogItem:
 class FetchedDailyBars:
     bars: pd.DataFrame
     source_identity: dict[str, Any]
+
+
+def msft_snapshot_from_yahoo(
+    payload_bytes: bytes,
+    *,
+    request_url: str,
+    sealed_at: str,
+) -> dict[str, Any]:
+    """Parse one byte-frozen Yahoo response into the explicit XNYS/MSFT schema."""
+
+    from .msft_trend_study import build_snapshot
+
+    if not payload_bytes or len(payload_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise DatasetResolutionError("Yahoo MSFT response body size is invalid")
+    try:
+        payload = json.loads(
+            payload_bytes,
+            object_pairs_hook=_strict_object,
+            parse_constant=lambda item: (_ for _ in ()).throw(
+                DatasetResolutionError(f"Yahoo response contains non-finite value: {item}")
+            ),
+        )
+        chart = payload["chart"]
+        if chart.get("error") is not None:
+            raise DatasetResolutionError("Yahoo response reports an error")
+        results = chart["result"]
+        if not isinstance(results, list) or len(results) != 1:
+            raise DatasetResolutionError("Yahoo response must contain exactly one chart result")
+        result = results[0]
+        metadata = result["meta"]
+        if (
+            metadata.get("symbol") != "MSFT"
+            or metadata.get("currency") != "USD"
+            or metadata.get("dataGranularity") != "1d"
+            or metadata.get("exchangeTimezoneName") != "America/New_York"
+        ):
+            raise DatasetResolutionError("Yahoo response metadata does not match XNYS/MSFT")
+        timestamps = result["timestamp"]
+        quotes = result["indicators"]["quote"]
+        if not isinstance(quotes, list) or len(quotes) != 1:
+            raise DatasetResolutionError("Yahoo MSFT quote generation is invalid")
+        quote = quotes[0]
+        opens = quote["open"]
+        closes = quote["close"]
+        if not all(isinstance(values, list) for values in (timestamps, opens, closes)):
+            raise DatasetResolutionError("Yahoo MSFT price arrays are invalid")
+        if len({len(timestamps), len(opens), len(closes)}) != 1 or not timestamps:
+            raise DatasetResolutionError("Yahoo MSFT price arrays are not aligned")
+        events = result.get("events", {})
+        if not isinstance(events, dict):
+            raise DatasetResolutionError("Yahoo MSFT events are invalid")
+    except DatasetResolutionError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT response schema is invalid") from exc
+    try:
+        dates = (
+            pd.to_datetime(timestamps, unit="s", utc=True)
+            .tz_convert(ZoneInfo("America/New_York"))
+            .normalize()
+            .tz_localize(None)
+        )
+    except (TypeError, ValueError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT timestamps are invalid") from exc
+    if dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise DatasetResolutionError("Yahoo MSFT sessions must be unique and increasing")
+
+    event_map: dict[str, dict[str, float]] = {
+        str(session.date()): {"split_factor": 1.0, "cash_dividend": 0.0}
+        for session in dates
+    }
+    splits = events.get("splits", {})
+    dividends = events.get("dividends", {})
+    if not isinstance(splits, dict) or not isinstance(dividends, dict):
+        raise DatasetResolutionError("Yahoo MSFT event groups are invalid")
+    for value in splits.values():
+        if not isinstance(value, dict) or type(value.get("date")) is not int:
+            raise DatasetResolutionError("Yahoo MSFT split event is invalid")
+        date = str(
+            pd.Timestamp(value["date"], unit="s", tz="UTC")
+            .tz_convert("America/New_York")
+            .date()
+        )
+        numerator = value.get("numerator")
+        denominator = value.get("denominator")
+        if type(numerator) not in (int, float) or type(denominator) not in (int, float):
+            raise DatasetResolutionError("Yahoo MSFT split ratio is invalid")
+        ratio = float(numerator) / float(denominator)
+        if date not in event_map or not math.isfinite(ratio) or ratio <= 0:
+            raise DatasetResolutionError("Yahoo MSFT split event does not match a session")
+        event_map[date]["split_factor"] *= ratio
+    for value in dividends.values():
+        if not isinstance(value, dict) or type(value.get("date")) is not int:
+            raise DatasetResolutionError("Yahoo MSFT dividend event is invalid")
+        date = str(
+            pd.Timestamp(value["date"], unit="s", tz="UTC")
+            .tz_convert("America/New_York")
+            .date()
+        )
+        amount = value.get("amount")
+        if type(amount) not in (int, float) or not math.isfinite(float(amount)) or amount < 0:
+            raise DatasetResolutionError("Yahoo MSFT dividend amount is invalid")
+        if date not in event_map:
+            raise DatasetResolutionError("Yahoo MSFT dividend event does not match a session")
+        event_map[date]["cash_dividend"] += float(amount)
+    response_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    rows: list[dict[str, Any]] = []
+    for index, session in enumerate(dates):
+        open_value = opens[index]
+        close_value = closes[index]
+        if (
+            type(open_value) not in (int, float)
+            or type(close_value) not in (int, float)
+            or not math.isfinite(float(open_value))
+            or not math.isfinite(float(close_value))
+            or open_value <= 0
+            or close_value <= 0
+        ):
+            raise DatasetResolutionError("Yahoo MSFT prices must be complete, finite and positive")
+        date = str(session.date())
+        raw_identity = {
+            "response_sha256": response_sha256,
+            "session_index": index,
+            "session_date": date,
+            "timestamp": timestamps[index],
+            "open": open_value,
+            "close": close_value,
+            **event_map[date],
+        }
+        rows.append(
+            {
+                "session_date": date,
+                "open": float(open_value),
+                "close": float(close_value),
+                **event_map[date],
+                "source_record_identity": hashlib.sha256(
+                    canonical_json_bytes(raw_identity)
+                ).hexdigest(),
+                "record_sealed_at": sealed_at,
+            }
+        )
+    return build_snapshot(
+        rows,
+        source_identity={
+            "provider": "yahoo-chart-api",
+            "instrument": "MSFT",
+            "request_url": request_url,
+            "response_sha256": response_sha256,
+            "canonical_content_sha256": hashlib.sha256(
+                canonical_json_bytes(payload)
+            ).hexdigest(),
+        },
+        sealed_at=sealed_at,
+    )
+
+
+class MsftDatasetIngress:
+    """Authenticated API action target; provider access remains outside the UI service."""
+
+    def __init__(self, provider: Any, persistence: Any, *, clock: Callable[[], datetime] | None = None):
+        self.provider = provider
+        self.persistence = persistence
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def ingest(self, request: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
+        if not isinstance(request, Mapping) or set(request) != {
+            "start",
+            "end",
+            "expected_generation",
+        }:
+            raise DatasetResolutionError("MSFT ingress request fields are invalid")
+        start = _date(request["start"], "MSFT ingress start")
+        end = _date(request["end"], "MSFT ingress end")
+        generation = request["expected_generation"]
+        if start > end or type(generation) is not int or generation < 0:
+            raise DatasetResolutionError("MSFT ingress range or generation is invalid")
+        if not isinstance(idempotency_key, str) or not idempotency_key or len(idempotency_key) > 128:
+            raise DatasetResolutionError("MSFT ingress idempotency key is invalid")
+        frozen_request = {
+            "instrument": "MSFT",
+            "market": "XNYS",
+            "start": start,
+            "end": end,
+            "expected_generation": generation,
+        }
+        request_digest = hashlib.sha256(canonical_json_bytes(frozen_request)).hexdigest()
+        existing = self.persistence.dataset_ingress_receipt(idempotency_key, request_digest)
+        if existing is not None:
+            return existing
+        url = yahoo_chart_url("MSFT", start, end)
+        payload = self.provider.get(
+            url,
+            headers={"User-Agent": "quant-research-platform/0.1"},
+            maximum_bytes=MAX_PROVIDER_RESPONSE_BYTES,
+        )
+        now = self.clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise DatasetResolutionError("MSFT ingress clock must be timezone-aware")
+        sealed_at = now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        snapshot = msft_snapshot_from_yahoo(
+            payload,
+            request_url=url,
+            sealed_at=sealed_at,
+        )
+        return self.persistence.publish_msft_snapshot(
+            snapshot=snapshot,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            expected_generation=generation,
+        )
 
 
 class DailyBarsSource(Protocol):
