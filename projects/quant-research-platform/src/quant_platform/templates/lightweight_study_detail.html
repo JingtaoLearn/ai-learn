@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Lightweight Study · Quant Research{% endblock %}
+{% block page %}lightweight-study-detail{% endblock %}
+{% block content %}
+<section class="page-heading split">
+  <div><p class="eyebrow">LIGHTWEIGHT STUDY · SYNTHETIC NON-MARKET</p><h1>Aggregate training result</h1><p class="mono">{{ study.study_id }}</p></div>
+  <span class="badge" data-testid="lightweight-study-status">{{ study.status }}</span>
+</section>
+{% if study.sync_error %}<section class="notice" role="status">{{ study.sync_error }}</section>{% endif %}
+<section class="metrics" aria-label="Aggregate Study progress" data-testid="lightweight-study-progress">
+  <div><span>Status</span><strong>{{ study.status }}</strong></div>
+  <div><span>Completed work units</span><strong>{{ study.progress.completed_trials if study.progress else 0 }}</strong></div>
+  <div><span>Bounded budget</span><strong>{{ study.progress.total_trials if study.progress else study.trial_budget }}</strong></div>
+  <div><span>Aggregate checkpoint</span><strong>{{ study.progress.checkpoint_sequence if study.progress and study.progress.checkpoint_sequence else 0 }}</strong></div>
+</section>
+<section class="panel" data-testid="lightweight-study-boundary">
+  <h2>Execution boundary</h2>
+  <dl class="technical">
+    <dt>Study product</dt><dd>Lightweight training Study — not an Attempt sequence</dd>
+    <dt>Objective classification</dt><dd>{{ study.objective.data_classification }}</dd>
+    <dt>Compute authority</dt><dd>Feng remote worker</dd>
+    <dt>Data authority</dt><dd>zhlearn PostgreSQL</dd>
+    <dt>Local compute attempted</dt><dd>{{ study.local_compute_attempted | lower }}</dd>
+    <dt>Worker image</dt><dd class="mono">{{ study.worker_image }}</dd>
+  </dl>
+</section>
+{% if study.result %}
+<section class="panel" data-testid="lightweight-study-result">
+  <p class="eyebrow">FINAL AGGREGATE</p><h2>{{ study.result.conclusion }}</h2>
+  <p class="notice">This result describes only the synthetic non-market objective. It is not evidence of investment effectiveness.</p>
+  <dl class="technical">
+    <dt>Completed work units</dt><dd>{{ study.result.completed_trials }}</dd>
+    <dt>Suggestions evaluated</dt><dd>{{ study.result.suggestion_count }}</dd>
+    <dt>Best aggregate parameter</dt><dd>{{ study.result.best_parameter }}</dd>
+    <dt>Best aggregate score</dt><dd>{{ study.result.best_score }}</dd>
+    <dt>Checkpoint count</dt><dd>{{ study.result.checkpoint_count }}</dd>
+  </dl>
+</section>
+{% elif study.failure %}
+<section class="validation-summary danger" role="alert" data-testid="lightweight-study-failure"><h2>{{ study.failure.code }}</h2><p>{{ study.failure.message }}</p><p>Local compute attempted: {{ study.local_compute_attempted | lower }}</p></section>
+{% else %}
+<section class="notice" role="status"><strong>Training is in progress.</strong> Refresh this page to read the latest bounded checkpoint from Feng into zhlearn PostgreSQL.</section>
+<div class="actions"><a class="button" href="/studies/lightweight/{{ study.study_id }}">Refresh aggregate progress</a></div>
+{% endif %}
+{% endblock %}

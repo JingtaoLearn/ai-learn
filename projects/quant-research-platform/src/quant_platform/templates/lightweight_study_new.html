@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}New lightweight Study · Quant Research{% endblock %}
+{% block page %}lightweight-study-new{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">LIGHTWEIGHT TRAINING · FENG COMPUTE</p><h1>New lightweight Study</h1><p>Create one bounded training job. zhlearn remains the PostgreSQL authority; Feng performs all internal search work.</p></section>
+<section class="notice" role="note"><strong>Synthetic non-market prototype.</strong> The objective is a fixed quadratic demonstration and cannot support a strategy or investment-effectiveness claim.</section>
+<form method="post" action="/studies/lightweight" data-testid="lightweight-study-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="action_id" value="{{ action_id }}">
+  <section class="panel">
+    <h2>Bounded aggregate training</h2>
+    <div class="form-grid">
+      <label>Internal evaluation budget<input name="trial_budget" type="number" min="1" max="64" value="{{ trial_budget }}" required></label>
+      <label>Compute placement<input value="Feng only · no local fallback" readonly></label>
+      <label>Search method<input value="Optuna TPE · frozen v4.9.0" readonly></label>
+      <label>Persisted evidence<input value="Aggregate checkpoints and final result only" readonly></label>
+    </div>
+  </section>
+  <div class="actions"><a class="button quiet" href="/studies/new">Back to modes</a><button type="submit">Create lightweight Study</button></div>
+</form>
+{% endblock %}

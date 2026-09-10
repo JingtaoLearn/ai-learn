@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Choose Study mode · Quant Research{% endblock %}
+{% block page %}study-mode{% endblock %}
+{% block content %}
+<section class="page-heading"><p class="eyebrow">CREATE A STUDY</p><h1>Choose the execution model</h1><p>The two Study modes have different persistence and compute behavior. Select one explicitly.</p></section>
+<section class="panel" data-testid="lightweight-study-mode">
+  <p class="eyebrow">RECOMMENDED · LIGHTWEIGHT TRAINING</p>
+  <h2>Lightweight Study on Feng</h2>
+  <p>Runs one bounded Optuna training job on Feng. zhlearn keeps one authoritative Study identity, aggregate checkpoints, and the final aggregate conclusion. It does not create an Experiment or Attempt for each internal evaluation.</p>
+  <p class="notice"><strong>Prototype objective:</strong> synthetic, non-market, and unsuitable for investment conclusions.</p>
+  {% if lightweight_available %}<a class="button" href="/studies/new/lightweight">Choose lightweight training</a>{% else %}<span class="badge">Temporarily unavailable</span>{% endif %}
+</section>
+<section class="panel" data-testid="legacy-study-mode">
+  <p class="eyebrow">LEGACY · ATTEMPT-BACKED</p>
+  <h2>Legacy Parameter Study</h2>
+  <p>Uses the historical parameter-training flow that materializes Experiments and Attempts. Existing accepted evidence remains readable and this mode is not selected automatically.</p>
+  <a class="button quiet" href="/studies/new/legacy">Choose legacy mode</a>
+</section>
+{% endblock %}

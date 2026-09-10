@@ -299,7 +299,7 @@ def test_study_html_creation_uses_only_the_public_parameter_study_seam(
     monkeypatch.setattr(app.state.datasets, "list_available", forbidden)
     monkeypatch.setattr(app.state.operators, "list", forbidden)
 
-    page = client.get("/studies/new")
+    page = client.get("/studies/new/legacy")
     posted = client.post(
         "/studies/preview",
         data=form,
@@ -740,7 +740,7 @@ def test_study_wizard_renders_explicit_schema_typed_parameter_selectors(tmp_path
     snapshot(app)
     _typed_study_operator(app)
 
-    response = client.get("/studies/new")
+    response = client.get("/studies/new/legacy")
 
     assert response.status_code == 200
     for name, kind in (
@@ -933,7 +933,7 @@ def test_study_wizard_and_submit_work_without_javascript(tmp_path: Path):
     issued = authenticate(app, client)
     snapshot_id = snapshot(app)
 
-    wizard = client.get("/studies/new")
+    wizard = client.get("/studies/new/legacy")
 
     assert wizard.status_code == 200
     assert 'data-page="study-new"' in wizard.text
@@ -1421,7 +1421,7 @@ def test_study_pages_include_skip_navigation_and_non_scripted_system_theme(tmp_p
     app, client = make_app(tmp_path)
     authenticate(app, client)
 
-    page = client.get("/studies/new")
+    page = client.get("/studies/new/legacy")
     css = client.get("/static/app.css").text
 
     assert 'class="skip-link" href="#main-content"' in page.text
