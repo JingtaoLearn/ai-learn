@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import subprocess
 import threading
@@ -12,8 +11,15 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from quant_platform.dataset_service import DatasetResolutionError, msft_snapshot_from_yahoo
+from quant_platform.dataset_service import (
+    MSFT_YAHOO_BASIS_UNQUALIFIED,
+    DatasetResolutionError,
+    MsftDatasetIngress,
+    msft_snapshot_from_yahoo,
+)
 from quant_platform.msft_trend_study import (
+    SNAPSHOT_BASIS_CONTRACT,
+    VERDICT_PRECEDENCE,
     MsftStudyValidationError,
     build_report_pointer,
     build_snapshot,
@@ -61,6 +67,7 @@ def _snapshot(records):
         source_identity={
             "provider": "synthetic-fixture",
             "response_sha256": _identity("response"),
+            "basis_contract": SNAPSHOT_BASIS_CONTRACT,
         },
         sealed_at=SEALED,
     )
@@ -90,63 +97,34 @@ def test_explicit_snapshot_seals_source_actions_and_rejects_missing_or_malformed
         _snapshot([malformed])
 
 
-def test_yahoo_fixture_maps_split_dividend_and_per_record_source_identity() -> None:
-    first = int(pd.Timestamp("2025-01-02 14:30:00", tz="UTC").timestamp())
-    second = int(pd.Timestamp("2025-01-03 14:30:00", tz="UTC").timestamp())
-    payload = json.dumps(
-        {
-            "chart": {
-                "error": None,
-                "result": [
-                    {
-                        "meta": {
-                            "symbol": "MSFT",
-                            "currency": "USD",
-                            "dataGranularity": "1d",
-                            "exchangeTimezoneName": "America/New_York",
-                        },
-                        "timestamp": [first, second],
-                        "indicators": {
-                            "quote": [{"open": [100.0, 51.0], "close": [102.0, 52.0]}]
-                        },
-                        "events": {
-                            "splits": {
-                                str(second): {
-                                    "date": second,
-                                    "numerator": 2.0,
-                                    "denominator": 1.0,
-                                }
-                            },
-                            "dividends": {
-                                str(second): {"date": second, "amount": 0.25}
-                            },
-                        },
-                    }
-                ],
-            }
-        },
-        separators=(",", ":"),
-    ).encode()
+def test_yahoo_basis_is_fail_closed_before_provider_access_or_relabeling() -> None:
+    class Provider:
+        calls = 0
 
-    snapshot = msft_snapshot_from_yahoo(
-        payload,
-        request_url="https://query1.finance.yahoo.com/frozen",
-        sealed_at=SEALED,
-    )
+        def get(self, *args, **kwargs):
+            self.calls += 1
+            return b"{}"
 
-    assert snapshot["records"][1]["split_factor"] == 2.0
-    assert snapshot["records"][1]["cash_dividend"] == 0.25
-    assert snapshot["records"][0]["source_record_identity"] != snapshot["records"][1][
-        "source_record_identity"
-    ]
-    missing_close = json.loads(payload)
-    del missing_close["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-    with pytest.raises(DatasetResolutionError, match="schema is invalid"):
+    class Persistence:
+        @staticmethod
+        def dataset_ingress_receipt(*args):
+            return None
+
+    provider = Provider()
+    ingress = MsftDatasetIngress(provider, Persistence())
+
+    with pytest.raises(DatasetResolutionError, match=MSFT_YAHOO_BASIS_UNQUALIFIED):
+        ingress.ingest(
+            {"start": "2025-01-02", "end": "2025-01-03", "expected_generation": 0},
+            "unqualified-basis",
+        )
+    with pytest.raises(DatasetResolutionError, match=MSFT_YAHOO_BASIS_UNQUALIFIED):
         msft_snapshot_from_yahoo(
-            json.dumps(missing_close).encode(),
+            b"{}",
             request_url="https://query1.finance.yahoo.com/frozen",
             sealed_at=SEALED,
         )
+    assert provider.calls == 0
 
 
 def test_t_minus_one_open_t_ledger_cost_cash_dividend_split_and_terminal_open() -> None:
@@ -180,6 +158,76 @@ def test_t_minus_one_open_t_ledger_cost_cash_dividend_split_and_terminal_open() 
         "marked_at": "final-close",
         "fabricated_exit": False,
         "unrealized_pnl_included": True,
+        "unrealized_terminal_pnl": pytest.approx(
+            result.ledger[-1]["split_adjusted_shares"]
+            * (result.ledger[-1]["close"] - result.ledger[-1]["open"])
+            - result.ledger[-1]["cost"]
+        ),
+    }
+
+
+def test_split_and_dividend_reconcile_on_stable_adjusted_share_basis() -> None:
+    rows = [
+        _record("2025-01-02", 100.0, 100.0),
+        _record("2025-01-03", 100.0, 100.0, split=2.0),
+        _record("2025-01-06", 100.0, 100.0, dividend=0.50),
+        _record("2025-01-07", 100.0, 100.0),
+    ]
+    result = replay(
+        rows,
+        [1, 1, 1, 1],
+        start="2025-01-02",
+        end="2025-01-07",
+        one_way_bps=10,
+    )
+
+    assert result.ledger[1]["open_equity"] == pytest.approx(result.ledger[0]["open_equity"])
+    assert result.ledger[1]["split_adjusted_shares"] == result.ledger[0][
+        "split_adjusted_shares"
+    ]
+    assert result.ledger[1]["broker_shares_after_split"] == 2 * result.ledger[1][
+        "broker_shares_before_split"
+    ]
+    research_units = result.ledger[2]["split_adjusted_shares"]
+    broker_units = result.ledger[2]["broker_shares_after_split"]
+    assert result.ledger[2]["dividend_credit"] == pytest.approx(research_units * 0.50)
+    assert result.ledger[2]["dividend_credit"] == pytest.approx(broker_units * 0.25)
+
+
+def test_interval_metrics_ignore_intermediate_closes_and_emit_structural_nulls() -> None:
+    rows = [
+        _record("2025-01-02", 100.0, 101.0),
+        _record("2025-01-03", 110.0, 109.0),
+        _record("2025-01-06", 90.0, 91.0),
+        _record("2025-01-07", 120.0, 121.0),
+    ]
+    changed_closes = [
+        dict(row, close=close)
+        for row, close in zip(rows, [500.0, 1.0, 900.0, 121.0], strict=True)
+    ]
+    first = replay(rows, [1, 1, 1, 1], start="2025-01-02", end="2025-01-07", one_way_bps=10)
+    second = replay(
+        changed_closes,
+        [1, 1, 1, 1],
+        start="2025-01-02",
+        end="2025-01-07",
+        one_way_bps=10,
+    )
+
+    assert first.interval_returns == second.interval_returns
+    for metric in ("volatility", "sharpe", "sortino"):
+        assert first.metrics[metric] == second.metrics[metric]
+    assert first.metrics["final_equity"] == second.metrics["final_equity"]
+    assert first.metrics["interval_return_count"] == 3
+
+    cash = replay(rows, [0, 0, 0, 0], start="2025-01-02", end="2025-01-07", one_way_bps=10)
+    assert cash.metrics["sharpe"] is None
+    assert cash.metrics["sortino"] is None
+    assert cash.metrics["calmar"] is None
+    assert cash.metrics["metric_null_reasons"] == {
+        "sharpe": "ZERO_SAMPLE_STANDARD_DEVIATION",
+        "sortino": "ZERO_DOWNSIDE_DEVIATION",
+        "calmar": "ZERO_MAXIMUM_DRAWDOWN",
     }
 
 
@@ -200,6 +248,24 @@ def _long_synthetic_snapshot():
             )
         )
     return _snapshot(records)
+
+
+def _flat_synthetic_snapshot():
+    sessions = pd.bdate_range("2021-01-04", "2025-06-30")
+    return _snapshot([_record(str(session.date()), 100.0, 100.0) for session in sessions])
+
+
+def test_required_candidate_metric_null_is_inconclusive() -> None:
+    result = run_study(_flat_synthetic_snapshot())
+
+    assert result["verdict"] == "INCONCLUSIVE_DATA_OR_EXECUTION"
+    assert result["selection"] is None
+    assert result["final_evaluation_counts"] == {
+        "primary_candidate": 0,
+        "neighbors": 0,
+        "alternatives": 0,
+        "reselection": 0,
+    }
 
 
 def test_frozen_candidate_selection_and_final_boundary_are_aggregate_only() -> None:
@@ -225,8 +291,24 @@ def test_frozen_candidate_selection_and_final_boundary_are_aggregate_only() -> N
         "QUALIFIED_FOR_PAPER",
     }
     assert [item[0]["completed_candidates"] for item in checkpoints] == [5, 10, 15]
+    ols = next(item for item in result["family_winners"] if item["family"] == "OLS_SLOPE_HYSTERESIS")
+    assert ols["neighborhood_stability"]["phase"] == "VALIDATION"
+    assert ols["neighborhood_stability"]["neighbor_count"] == 0
+    assert ols["eligible_for_final_ranking"] is False
+    assert "ZERO_PREDECLARED_NEIGHBORS" in ols["ineligibility_reasons"]
+    assert all(
+        neighbor["metrics"]["period_start"] == "2024-01-02"
+        for winner in result["family_winners"]
+        for neighbor in winner["validation_neighbors"]
+    )
     if result["selection"] is not None:
         assert result["selection"]["no_final_reselection"] is True
+        assert result["final_evaluation_counts"] == {
+            "primary_candidate": 1,
+            "neighbors": 0,
+            "alternatives": 0,
+            "reselection": 0,
+        }
         assert result["final"]["baseline_cost_metrics"]["period_start"] == "2025-01-02"
         assert result["final"]["baseline_cost_metrics"]["period_end"] == "2025-06-30"
 
@@ -363,6 +445,24 @@ def test_no_qualified_result_renders_deterministic_immutable_chinese_report() ->
         },
     )
     assert replacement is not None and replacement["sequence"] == 2
+
+
+@pytest.mark.parametrize("verdict", VERDICT_PRECEDENCE)
+def test_machine_and_chinese_report_share_total_verdict_vocabulary(verdict: str) -> None:
+    snapshot = _long_synthetic_snapshot()
+    result = {
+        "schema": "quantresearch-msft-study-result/v1",
+        "snapshot_id": snapshot["snapshot_id"],
+        "trial_count": 15,
+        "selection": None,
+        "final": None,
+        "verdict": verdict,
+    }
+
+    document, html = chinese_report(result, {"source": "synthetic"})
+
+    assert document["verdict"] == verdict
+    assert verdict.encode() in html
 
 
 def test_production_api_authenticates_and_reads_back_idempotent_msft_ingress() -> None:

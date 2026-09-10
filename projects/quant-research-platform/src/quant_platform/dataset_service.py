@@ -57,6 +57,7 @@ PRODUCTION_XSHG_YAHOO_METADATA = {
     "gmtoffset": 28800,
 }
 PROVIDER_STREAM_CHUNK_BYTES = 64 * 1024
+MSFT_YAHOO_BASIS_UNQUALIFIED = "YAHOO_MSFT_ADJUSTMENT_BASIS_UNQUALIFIED"
 
 
 class DatasetResolutionError(ValueError):
@@ -100,6 +101,8 @@ def msft_snapshot_from_yahoo(
     sealed_at: str,
 ) -> dict[str, Any]:
     """Parse one byte-frozen Yahoo response into the explicit XNYS/MSFT schema."""
+
+    raise DatasetResolutionError(MSFT_YAHOO_BASIS_UNQUALIFIED)
 
     from .msft_trend_study import build_snapshot
 
@@ -280,6 +283,8 @@ class MsftDatasetIngress:
         existing = self.persistence.dataset_ingress_receipt(idempotency_key, request_digest)
         if existing is not None:
             return existing
+        raise DatasetResolutionError(MSFT_YAHOO_BASIS_UNQUALIFIED)
+
         url = yahoo_chart_url("MSFT", start, end)
         payload = self.provider.get(
             url,

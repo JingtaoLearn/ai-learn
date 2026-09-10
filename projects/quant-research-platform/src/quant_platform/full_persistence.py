@@ -1181,14 +1181,6 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                         (f"study-report:{study_id}",),
                     )
-                    artifact_set_id = self._publish_artifact_set_in_transaction(
-                        connection, kind="MSFT_STUDY_REPORT", members=members
-                    )
-                    connection.execute(
-                        "INSERT INTO qr.study_report_artifacts(report_artifact_id,study_id,artifact_set_id) "
-                        "VALUES (%s,%s,%s) ON CONFLICT (report_artifact_id) DO NOTHING",
-                        (report_id, study_id, artifact_set_id),
-                    )
                     current = connection.execute(
                         "SELECT report_artifact_id,sequence FROM qr.study_report_current WHERE study_id=%s",
                         (study_id,),
@@ -1203,6 +1195,15 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     )
                     pointer = build_report_pointer(study_id, report_id, current_pointer)
                     if pointer is not None:
+                        artifact_set_id = self._publish_artifact_set_in_transaction(
+                            connection, kind="MSFT_STUDY_REPORT", members=members
+                        )
+                        connection.execute(
+                            "INSERT INTO qr.study_report_artifacts(report_artifact_id,study_id,"
+                            "artifact_set_id) VALUES (%s,%s,%s) "
+                            "ON CONFLICT (report_artifact_id) DO NOTHING",
+                            (report_id, study_id, artifact_set_id),
+                        )
                         sequence = pointer["sequence"]
                         connection.execute(
                             "INSERT INTO qr.study_report_pointer_events(study_id,sequence,"

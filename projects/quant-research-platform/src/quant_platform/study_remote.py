@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from .msft_trend_study import (
     MARKET_JOB_TYPE,
+    VERDICT_PRECEDENCE,
     MsftStudyValidationError,
     run_study,
     validate_snapshot,
@@ -453,9 +454,16 @@ class _MarketWorkerJob:
                 "final": None,
                 "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
                 "conclusion": "INCONCLUSIVE_DATA_OR_EXECUTION",
+                "verdict_precedence": list(VERDICT_PRECEDENCE),
                 "reason": str(exc),
                 "per_trial_attempt_rows": 0,
                 "terminal_exit_fabricated": False,
+                "final_evaluation_counts": {
+                    "primary_candidate": 0,
+                    "neighbors": 0,
+                    "alternatives": 0,
+                    "reselection": 0,
+                },
             }
         return _WorkerJobResult(
             progress={

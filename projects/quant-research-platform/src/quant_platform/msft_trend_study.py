@@ -15,6 +15,20 @@ MARKET_JOB_TYPE = "xnys-msft-trend-study-v1"
 SNAPSHOT_SCHEMA = "quantresearch-xnys-total-return-snapshot/v1"
 KERNEL_IDENTITY = "quant_platform.msft_trend_study@1.0.0"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+VERDICT_PRECEDENCE = (
+    "INVALID_OR_CONTAMINATED",
+    "INCONCLUSIVE_DATA_OR_EXECUTION",
+    "REJECTED_VALIDATION",
+    "REJECTED_NO_EDGE",
+    "QUALIFIED_FOR_PAPER",
+)
+SNAPSHOT_BASIS_CONTRACT = {
+    "schema": "quantresearch-xnys-total-return-basis/v1",
+    "price_basis": "split-adjusted-to-stable-research-share;cash-dividends-excluded",
+    "split_basis": "new-broker-shares-per-old-broker-share;effective-before-session-open",
+    "dividend_basis": "USD-per-stable-split-adjusted-research-share;credit-before-session-open",
+    "event_date_basis": "XNYS-session-date",
+}
 REQUIRED_RECORD_FIELDS = (
     "session_date",
     "open",
@@ -164,7 +178,11 @@ def build_snapshot(
         raise MsftStudyValidationError("source_identity must be an object")
     try:
         source = dict(source_identity)
+        if source.get("basis_contract") != SNAPSHOT_BASIS_CONTRACT:
+            raise MsftStudyValidationError("Snapshot source basis contract is unqualified")
         source_digest = hashlib.sha256(canonical_json_bytes(source)).hexdigest()
+    except MsftStudyValidationError:
+        raise
     except (TypeError, ValueError) as exc:
         raise MsftStudyValidationError("source_identity must be finite canonical JSON") from exc
     core = {
@@ -310,6 +328,7 @@ class Replay:
     metrics: dict[str, Any]
     ledger: list[dict[str, Any]]
     trades: list[dict[str, Any]]
+    interval_returns: list[float]
 
 
 def _period_rows(
@@ -343,7 +362,8 @@ def replay(
     ledger: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     open_trade: dict[str, Any] | None = None
-    equities: list[float] = []
+    open_equities: list[float] = []
+    close_equities: list[float] = []
     exposures: list[int] = []
     for row, target in zip(period, positions, strict=True):
         session = datetime.strptime(row["session_date"], "%Y-%m-%d")
@@ -400,8 +420,10 @@ def replay(
             open_trade = None
         total_cost += cost
         total_notional += notional
-        equity = cash + shares * float(row["close"])
-        equities.append(equity)
+        open_equity = cash + shares * price
+        close_equity = cash + shares * float(row["close"])
+        open_equities.append(open_equity)
+        close_equities.append(close_equity)
         exposures.append(int(shares > 0))
         ledger.append(
             {
@@ -420,34 +442,60 @@ def replay(
                 "broker_shares_before_split": broker_before,
                 "broker_shares_after_split": broker_shares,
                 "cash": cash,
-                "equity": equity,
+                "open_equity": open_equity,
+                "equity": close_equity,
             }
         )
         prior_date = session
-    daily_returns = np.diff(np.concatenate(([initial_capital], np.asarray(equities)))) / np.concatenate(
-        ([initial_capital], np.asarray(equities[:-1]))
-    )
+    interval_ends = np.asarray(open_equities[1:])
+    interval_starts = np.asarray([initial_capital, *open_equities[1:-1]])
+    interval_returns = (interval_ends - interval_starts) / interval_starts
     elapsed_days = max(1, (datetime.strptime(period[-1]["session_date"], "%Y-%m-%d") - datetime.strptime(period[0]["session_date"], "%Y-%m-%d")).days)
-    cumulative = equities[-1] / initial_capital - 1.0
-    annualized = (equities[-1] / initial_capital) ** (365.0 / elapsed_days) - 1.0
-    volatility = float(np.std(daily_returns, ddof=1) * math.sqrt(252.0)) if len(daily_returns) > 1 else 0.0
-    mean = float(np.mean(daily_returns))
-    std = float(np.std(daily_returns, ddof=1)) if len(daily_returns) > 1 else 0.0
-    downside = np.minimum(daily_returns, 0.0)
-    downside_std = float(np.sqrt(np.mean(np.square(downside))))
-    sharpe = mean / std * math.sqrt(252.0) if std > 0 else 0.0
-    sortino = mean / downside_std * math.sqrt(252.0) if downside_std > 0 else 0.0
-    peaks = np.maximum.accumulate(np.concatenate(([initial_capital], np.asarray(equities))))[1:]
-    drawdown = 1.0 - np.asarray(equities) / peaks
+    terminal_equity = close_equities[-1]
+    cumulative = terminal_equity / initial_capital - 1.0
+    annualized = (terminal_equity / initial_capital) ** (365.0 / elapsed_days) - 1.0
+    metric_null_reasons: dict[str, str] = {}
+    mean = float(np.mean(interval_returns)) if len(interval_returns) else 0.0
+    if len(interval_returns) > 1:
+        std = float(np.std(interval_returns, ddof=1))
+        volatility: float | None = std * math.sqrt(252.0)
+        if std > 0:
+            sharpe: float | None = mean / std * math.sqrt(252.0)
+        else:
+            sharpe = None
+            metric_null_reasons["sharpe"] = "ZERO_SAMPLE_STANDARD_DEVIATION"
+    else:
+        volatility = None
+        sharpe = None
+        metric_null_reasons["volatility"] = "INSUFFICIENT_OPEN_TO_OPEN_INTERVALS"
+        metric_null_reasons["sharpe"] = "INSUFFICIENT_OPEN_TO_OPEN_INTERVALS"
+    downside = np.minimum(interval_returns, 0.0)
+    downside_deviation = float(np.sqrt(np.mean(np.square(downside)))) if len(downside) else 0.0
+    if downside_deviation > 0:
+        sortino: float | None = mean / downside_deviation * math.sqrt(252.0)
+    else:
+        sortino = None
+        metric_null_reasons["sortino"] = "ZERO_DOWNSIDE_DEVIATION"
+    drawdown_path = np.concatenate(([initial_capital], np.asarray(open_equities)))
+    peaks = np.maximum.accumulate(drawdown_path)
+    drawdown = 1.0 - drawdown_path / peaks
     maximum_drawdown = float(max(0.0, np.max(drawdown)))
-    calmar = annualized / maximum_drawdown if maximum_drawdown > 0 else 0.0
+    if maximum_drawdown > 0:
+        calmar: float | None = annualized / maximum_drawdown
+    else:
+        calmar = None
+        metric_null_reasons["calmar"] = "ZERO_MAXIMUM_DRAWDOWN"
     wins = [trade["net_pnl"] for trade in trades if trade["net_pnl"] > 0]
     losses = [-trade["net_pnl"] for trade in trades if trade["net_pnl"] < 0]
     profit_factor = sum(wins) / sum(losses) if losses else (0.0 if not wins else 1_000_000.0)
     years: dict[str, float] = {}
     start_equity = initial_capital
     for year in sorted({row["session_date"][:4] for row in period}):
-        year_values = [equity for row, equity in zip(period, equities, strict=True) if row["session_date"].startswith(year)]
+        year_values = [
+            equity
+            for row, equity in zip(period, open_equities, strict=True)
+            if row["session_date"].startswith(year)
+        ]
         years[year] = year_values[-1] / start_equity - 1.0
         start_equity = year_values[-1]
     metrics = {
@@ -467,8 +515,11 @@ def replay(
         "turnover": total_notional / initial_capital,
         "average_exposure": float(np.mean(exposures)),
         "cost_drag": total_cost / initial_capital,
-        "final_equity": equities[-1],
+        "final_equity": terminal_equity,
         "yearly_returns": years,
+        "interval_return_count": len(interval_returns),
+        "interval_return_basis": "admitted-open-to-next-open;zero-risk-free;ledger-effects-included",
+        "metric_null_reasons": metric_null_reasons,
         "terminal_position": {
             "state": "OPEN" if shares else "FLAT",
             "split_adjusted_whole_shares": shares,
@@ -476,25 +527,48 @@ def replay(
             "marked_at": "final-close",
             "fabricated_exit": False,
             "unrealized_pnl_included": shares > 0,
+            "unrealized_terminal_pnl": (
+                0.0
+                if open_trade is None
+                else shares * (float(period[-1]["close"]) - float(open_trade["entry_price"]))
+                - float(open_trade["entry_cost"])
+            ),
         },
     }
     if not all(math.isfinite(float(value)) for key, value in metrics.items() if isinstance(value, (int, float))):
         raise MsftStudyValidationError("replay produced a non-finite metric")
-    return Replay(metrics=metrics, ledger=ledger, trades=trades)
+    return Replay(
+        metrics=metrics,
+        ledger=ledger,
+        trades=trades,
+        interval_returns=[float(value) for value in interval_returns],
+    )
 
 
 def _rank(metrics: Mapping[str, Any]) -> tuple[float, float, float, float]:
+    def ranked(name: str) -> float:
+        value = metrics[name]
+        return -math.inf if value is None else float(value)
+
     return (
-        float(metrics["calmar"]),
-        float(metrics["sharpe"]),
-        float(metrics["annualized_return"]),
+        ranked("calmar"),
+        ranked("sharpe"),
+        ranked("annualized_return"),
         -float(metrics["turnover"]),
+    )
+
+
+def _required_metrics_defined(metrics: Mapping[str, Any]) -> bool:
+    return all(
+        metrics.get(name) is not None
+        for name in ("annualized_return", "sharpe", "sortino", "calmar", "maximum_drawdown")
     )
 
 
 def _validation_pass(metrics: Mapping[str, Any], matched: Mapping[str, Any]) -> bool:
     return (
-        metrics["annualized_return"] >= 0.0
+        _required_metrics_defined(metrics)
+        and metrics["annualized_return"] >= 0.0
         and metrics["sharpe"] >= 0.5
         and metrics["maximum_drawdown"] <= 0.40
         and metrics["annualized_return"] - matched["annualized_return"] >= 0.0
@@ -526,10 +600,14 @@ def _neighbors(selected: Mapping[str, Any], population: Sequence[Mapping[str, An
     if not fields:
         return []
     family_population = [item for item in population if item["family"] == family]
+    grids = {field: sorted({item[field] for item in family_population}) for field in fields}
     neighbors: list[Mapping[str, Any]] = []
     for item in family_population:
-        differences = sum(item[field] != selected[field] for field in fields)
-        if differences == 1:
+        changed = [field for field in fields if item[field] != selected[field]]
+        if len(changed) != 1:
+            continue
+        field = changed[0]
+        if abs(grids[field].index(item[field]) - grids[field].index(selected[field])) == 1:
             neighbors.append(item)
     return neighbors
 
@@ -565,7 +643,8 @@ def run_study(
     for family in ("SMA_CROSS", "BREAKOUT_TRAILING", "OLS_SLOPE_HYSTERESIS"):
         family_winners.append(max((item for item in train_results if item[0]["family"] == family), key=lambda item: _rank(item[1].metrics)))
     validation_rows: list[dict[str, Any]] = []
-    passing: list[tuple[dict[str, Any], Replay]] = []
+    passing: list[tuple[dict[str, Any], Replay, dict[str, Any]]] = []
+    required_validation_null = False
     for candidate, train in family_winners:
         result = replay(
             rows,
@@ -577,7 +656,49 @@ def run_study(
         matched = _matched_exposure(
             rows, PHASES["VALIDATION"][0], PHASES["VALIDATION"][1] or final_end, result.metrics["average_exposure"]
         )
-        passed = _validation_pass(result.metrics, matched)
+        neighbor_results = [
+            {
+                "candidate_id": _candidate_id(item),
+                "rule": dict(item),
+                "metrics": replay(
+                    rows,
+                    _signals(rows, item),
+                    start=PHASES["VALIDATION"][0],
+                    end=PHASES["VALIDATION"][1] or final_end,
+                    one_way_bps=10,
+                ).metrics,
+            }
+            for item in _neighbors(candidate, population)
+        ]
+        neighbor_sharpes = [item["metrics"]["sharpe"] for item in neighbor_results]
+        stability = {
+            "phase": "VALIDATION",
+            "neighbor_count": len(neighbor_results),
+            "positive_net_return_fraction": (
+                sum(item["metrics"]["cumulative_return"] > 0 for item in neighbor_results)
+                / len(neighbor_results)
+                if neighbor_results
+                else None
+            ),
+            "median_sharpe": (
+                float(np.median(neighbor_sharpes))
+                if neighbor_sharpes and all(value is not None for value in neighbor_sharpes)
+                else None
+            ),
+        }
+        singleton = not neighbor_results
+        candidate_null = not _required_metrics_defined(result.metrics)
+        neighbor_gate_null = not singleton and stability["median_sharpe"] is None
+        required_validation_null = (
+            required_validation_null or candidate_null or neighbor_gate_null
+        )
+        stability_passed = (
+            not singleton
+            and not neighbor_gate_null
+            and float(stability["positive_net_return_fraction"]) >= 0.50
+            and float(stability["median_sharpe"]) >= 0.0
+        )
+        passed = _validation_pass(result.metrics, matched) and stability_passed
         validation_rows.append(
             {
                 "family": candidate["family"],
@@ -585,12 +706,31 @@ def run_study(
                 "train_metrics": train.metrics,
                 "validation_metrics": result.metrics,
                 "matched_exposure": matched,
+                "validation_neighbors": neighbor_results,
+                "neighborhood_stability": stability,
+                "eligible_for_final_ranking": passed,
+                "ineligibility_reasons": [
+                    reason
+                    for reason, applies in (
+                        ("ZERO_PREDECLARED_NEIGHBORS", singleton),
+                        ("REQUIRED_METRIC_STRUCTURAL_NULL", candidate_null),
+                        ("NEIGHBOR_GATE_STRUCTURAL_NULL", neighbor_gate_null),
+                        ("VALIDATION_FILTER_FAILED", not _validation_pass(result.metrics, matched)),
+                        ("NEIGHBOR_STABILITY_FAILED", not singleton and not stability_passed),
+                    )
+                    if applies
+                ],
                 "passed": passed,
             }
         )
         if passed:
-            passing.append((candidate, result))
+            passing.append((candidate, result, stability))
     if not passing:
+        verdict = (
+            "INCONCLUSIVE_DATA_OR_EXECUTION"
+            if required_validation_null
+            else "REJECTED_VALIDATION"
+        )
         return {
             "schema": "quantresearch-msft-study-result/v1",
             "kernel": KERNEL_IDENTITY,
@@ -599,19 +739,21 @@ def run_study(
             "family_winners": validation_rows,
             "selection": None,
             "final": None,
-            "verdict": "REJECTED_VALIDATION",
-            "conclusion": "REJECTED_VALIDATION",
-            "verdict_precedence": [
-                "INVALID_OR_CONTAMINATED",
-                "INCONCLUSIVE_DATA_OR_EXECUTION",
-                "REJECTED_VALIDATION",
-                "REJECTED_NO_EDGE",
-                "QUALIFIED_FOR_PAPER",
-            ],
+            "verdict": verdict,
+            "conclusion": verdict,
+            "verdict_precedence": list(VERDICT_PRECEDENCE),
             "per_trial_attempt_rows": 0,
             "terminal_exit_fabricated": False,
+            "final_evaluation_counts": {
+                "primary_candidate": 0,
+                "neighbors": 0,
+                "alternatives": 0,
+                "reselection": 0,
+            },
         }
-    selected, selected_validation = max(passing, key=lambda item: _rank(item[1].metrics))
+    selected, selected_validation, selected_stability = max(
+        passing, key=lambda item: _rank(item[1].metrics)
+    )
     final = replay(rows, _signals(rows, selected), start=PHASES["FINAL"][0], end=final_end, one_way_bps=10)
     stress = replay(rows, _signals(rows, selected), start=PHASES["FINAL"][0], end=final_end, one_way_bps=25)
     buy_hold = replay(rows, [1] * len(rows), start=PHASES["FINAL"][0], end=final_end, one_way_bps=10)
@@ -620,46 +762,63 @@ def run_study(
     simple = {"family": "SMA_CROSS", "fast_sessions": 1, "slow_sessions": 200}
     simple_trend = replay(rows, _signals(rows, simple), start=PHASES["FINAL"][0], end=final_end, one_way_bps=10)
     matched = _matched_exposure(rows, PHASES["FINAL"][0], final_end, final.metrics["average_exposure"])
-    neighbor_results = [
-        replay(rows, _signals(rows, item), start=PHASES["FINAL"][0], end=final_end, one_way_bps=10).metrics
-        for item in _neighbors(selected, population)
-    ]
-    stability = {
-        "neighbor_count": len(neighbor_results),
-        "positive_net_return_fraction": (
-            sum(item["cumulative_return"] > 0 for item in neighbor_results) / len(neighbor_results)
-            if neighbor_results
-            else 1.0
-        ),
-        "median_sharpe": float(np.median([item["sharpe"] for item in neighbor_results])) if neighbor_results else 0.0,
-    }
-    risk_improvement = (
-        final.metrics["sharpe"] - buy_hold.metrics["sharpe"] >= 0.20
-        or (
-            buy_hold.metrics["maximum_drawdown"] > 0
-            and (buy_hold.metrics["maximum_drawdown"] - final.metrics["maximum_drawdown"])
-            / buy_hold.metrics["maximum_drawdown"]
-            >= 0.20
-        )
+    gate_inputs_defined = (
+        _required_metrics_defined(final.metrics)
+        and stress.metrics["annualized_return"] is not None
+        and stress.metrics["sharpe"] is not None
+        and buy_hold.metrics["annualized_return"] is not None
+        and buy_hold.metrics["sharpe"] is not None
+        and buy_hold.metrics["maximum_drawdown"] is not None
+        and matched["annualized_return"] is not None
+        and matched["sharpe"] is not None
     )
-    gates = {
-        "net_cagr": final.metrics["annualized_return"] >= 0.05,
-        "sharpe": final.metrics["sharpe"] >= 0.70,
-        "sortino": final.metrics["sortino"] >= 0.90,
-        "calmar": final.metrics["calmar"] >= 0.35,
-        "maximum_drawdown": final.metrics["maximum_drawdown"] <= 0.30,
-        "completed_round_trips": final.metrics["completed_round_trips"] >= 3,
-        "buy_hold_shortfall": final.metrics["annualized_return"] >= buy_hold.metrics["annualized_return"] - 0.03,
-        "risk_improvement": risk_improvement,
-        "timing_return": final.metrics["annualized_return"] - matched["annualized_return"] >= 0.02,
-        "timing_sharpe": final.metrics["sharpe"] - matched["sharpe"] >= 0.15,
-        "stress_cagr": stress.metrics["annualized_return"] >= 0.0,
-        "stress_sharpe": stress.metrics["sharpe"] >= 0.50,
-        "neighbor_positive": stability["positive_net_return_fraction"] >= 0.50,
-        "neighbor_sharpe": stability["median_sharpe"] >= 0.0,
-        "validation_passed": True,
-    }
-    verdict = "QUALIFIED_FOR_PAPER" if all(gates.values()) else "REJECTED_NO_EDGE"
+    gates: dict[str, bool] | None = None
+    if gate_inputs_defined:
+        risk_improvement = (
+            float(final.metrics["sharpe"]) - float(buy_hold.metrics["sharpe"]) >= 0.20
+            or (
+                float(buy_hold.metrics["maximum_drawdown"]) > 0
+                and (
+                    float(buy_hold.metrics["maximum_drawdown"])
+                    - float(final.metrics["maximum_drawdown"])
+                )
+                / float(buy_hold.metrics["maximum_drawdown"])
+                >= 0.20
+            )
+        )
+        gates = {
+            "net_cagr": float(final.metrics["annualized_return"]) >= 0.05,
+            "sharpe": float(final.metrics["sharpe"]) >= 0.70,
+            "sortino": float(final.metrics["sortino"]) >= 0.90,
+            "calmar": float(final.metrics["calmar"]) >= 0.35,
+            "maximum_drawdown": float(final.metrics["maximum_drawdown"]) <= 0.30,
+            "completed_round_trips": final.metrics["completed_round_trips"] >= 3,
+            "buy_hold_shortfall": (
+                float(final.metrics["annualized_return"])
+                >= float(buy_hold.metrics["annualized_return"]) - 0.03
+            ),
+            "risk_improvement": risk_improvement,
+            "timing_return": (
+                float(final.metrics["annualized_return"])
+                - float(matched["annualized_return"])
+                >= 0.02
+            ),
+            "timing_sharpe": float(final.metrics["sharpe"]) - float(matched["sharpe"])
+            >= 0.15,
+            "stress_cagr": float(stress.metrics["annualized_return"]) >= 0.0,
+            "stress_sharpe": float(stress.metrics["sharpe"]) >= 0.50,
+            "neighbor_positive": float(selected_stability["positive_net_return_fraction"])
+            >= 0.50,
+            "neighbor_sharpe": float(selected_stability["median_sharpe"]) >= 0.0,
+            "validation_passed": True,
+        }
+    verdict = (
+        "INCONCLUSIVE_DATA_OR_EXECUTION"
+        if gates is None
+        else "QUALIFIED_FOR_PAPER"
+        if all(gates.values())
+        else "REJECTED_NO_EDGE"
+    )
     return {
         "schema": "quantresearch-msft-study-result/v1",
         "kernel": KERNEL_IDENTITY,
@@ -683,31 +842,26 @@ def run_study(
                 "PRICE_ABOVE_SMA200_SIMPLE_TREND": simple_trend.metrics,
                 "MATCHED_AVERAGE_EXPOSURE_ANALYTICAL_NONTRADABLE": matched,
             },
-            "neighborhood_stability": stability,
+            "neighborhood_stability": selected_stability,
             "qualification_gates": gates,
             "ledger_digest": hashlib.sha256(canonical_json_bytes(final.ledger)).hexdigest(),
         },
         "verdict": verdict,
         "conclusion": verdict,
-        "verdict_precedence": [
-            "INVALID_OR_CONTAMINATED",
-            "INCONCLUSIVE_DATA_OR_EXECUTION",
-            "REJECTED_VALIDATION",
-            "REJECTED_NO_EDGE",
-            "QUALIFIED_FOR_PAPER",
-        ],
+        "verdict_precedence": list(VERDICT_PRECEDENCE),
         "per_trial_attempt_rows": 0,
         "terminal_exit_fabricated": False,
+        "final_evaluation_counts": {
+            "primary_candidate": 1,
+            "neighbors": 0,
+            "alternatives": 0,
+            "reselection": 0,
+        },
     }
 
 
 def chinese_report(result: Mapping[str, Any], provenance: Mapping[str, Any]) -> tuple[dict[str, Any], bytes]:
-    allowed_verdicts = {
-        "INCONCLUSIVE_DATA_OR_EXECUTION",
-        "REJECTED_VALIDATION",
-        "REJECTED_NO_EDGE",
-        "QUALIFIED_FOR_PAPER",
-    }
+    allowed_verdicts = set(VERDICT_PRECEDENCE)
     if (
         result.get("schema") != "quantresearch-msft-study-result/v1"
         or result.get("verdict") not in allowed_verdicts

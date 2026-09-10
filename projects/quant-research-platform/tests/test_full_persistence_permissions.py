@@ -98,3 +98,48 @@ def test_dataset_lineage_reads_verified_payload_from_migrated_member_index() -> 
     assert persistence.dataset_snapshot_lineage(instrument, snapshot_id) == {
         "kind": "legacy_snapshot"
     }
+
+
+def test_identical_current_msft_report_is_read_before_closed_membership_publish(
+    monkeypatch,
+) -> None:
+    from quant_platform.msft_trend_study import chinese_report
+
+    study_id = "a" * 64
+    result = {
+        "schema": "quantresearch-msft-study-result/v1",
+        "snapshot_id": "b" * 64,
+        "trial_count": 15,
+        "selection": None,
+        "final": None,
+        "verdict": "REJECTED_VALIDATION",
+    }
+    provenance = {"source": "synthetic"}
+    document, html = chinese_report(result, provenance)
+    connection = _Connection(
+        {"report_artifact_id": document["report_artifact_id"], "sequence": 1}
+    )
+    persistence = full_persistence.FullPostgresPersistence(
+        cast(Any, _Config(connection)),
+        admit_schema=False,
+    )
+    readback = {
+        "study_id": study_id,
+        "report_artifact_id": document["report_artifact_id"],
+        "sequence": 1,
+        "document": document,
+        "html": html,
+    }
+    monkeypatch.setattr(persistence, "current_msft_study_report", lambda value: readback)
+    monkeypatch.setattr(
+        persistence,
+        "_publish_artifact_set_in_transaction",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate publish")),
+    )
+
+    assert persistence.publish_msft_study_report(
+        study_id=study_id,
+        result=result,
+        provenance=provenance,
+    ) == readback
+    assert not any("INSERT INTO" in statement for statement in connection.statements)
