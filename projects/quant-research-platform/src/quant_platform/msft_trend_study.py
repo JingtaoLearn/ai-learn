@@ -29,12 +29,58 @@ PHASES = {
     "VALIDATION": ("2024-01-02", "2024-12-31"),
     "FINAL": ("2025-01-02", None),
 }
+OPERATOR_DEFINITIONS = (
+    {
+        "operator_id": "msft_sma_cross",
+        "version": "1.0.0",
+        "slot": "fit",
+        "semantics": "SMA_fast(close through t-1) > SMA_slow(close through t-1)",
+        "parameters": ["fast_sessions", "slow_sessions"],
+    },
+    {
+        "operator_id": "msft_breakout_trailing",
+        "version": "1.0.0",
+        "slot": "fit",
+        "semantics": "prior-close breakout entry and trailing-low exit excluding prior close",
+        "parameters": ["entry_sessions", "exit_sessions"],
+    },
+    {
+        "operator_id": "annualized_log_ols_slope",
+        "version": "1.0.0",
+        "slot": "statistic",
+        "semantics": "252 times OLS log-price slope through t-1",
+        "parameters": ["window_sessions"],
+    },
+    {
+        "operator_id": "long_cash_level_hysteresis",
+        "version": "1.0.0",
+        "slot": "decision",
+        "semantics": "long above entry level; cash at or below exit level; otherwise hold",
+        "parameters": ["entry_threshold", "exit_threshold"],
+    },
+    {
+        "operator_id": "whole_share_long_cash",
+        "version": "1.0.0",
+        "slot": "sizing",
+        "semantics": "largest affordable whole split-adjusted research-share position",
+        "parameters": ["target_fraction"],
+    },
+    {
+        "operator_id": "one_way_bps",
+        "version": "1.0.0",
+        "slot": "cost",
+        "semantics": "one-way basis points on every traded notional",
+        "parameters": ["one_way_bps"],
+    },
+)
 OPERATOR_IDENTITIES = {
-    "SMA_CROSS": "msft_sma_cross@1.0.0",
-    "BREAKOUT_TRAILING": "msft_breakout_trailing@1.0.0",
-    "OLS_SLOPE_HYSTERESIS": "annualized_log_ols_slope@1.0.0+long_cash_level_hysteresis@1.0.0",
-    "sizing": "whole_share_long_cash@1.0.0",
-    "cost": "one_way_bps@1.0.0",
+    definition["operator_id"]: {
+        "version": definition["version"],
+        "content_digest": hashlib.sha256(
+            b"quantresearch-msft-operator/v1\0" + canonical_json_bytes(definition)
+        ).hexdigest(),
+    }
+    for definition in OPERATOR_DEFINITIONS
 }
 
 
