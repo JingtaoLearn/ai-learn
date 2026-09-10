@@ -1285,6 +1285,15 @@ class StudyPostgresStore:
             if row is None or row["identity"] != SCHEMA_IDENTITY:
                 raise StudyRemoteError("lightweight Study schema identity conflicts")
 
+    def verify_initialized(self) -> None:
+        """Verify an already-provisioned authority without requiring migration privileges."""
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT identity FROM qr_study.schema_identity WHERE singleton"
+            ).fetchone()
+            if row is None or row["identity"] != SCHEMA_IDENTITY:
+                raise StudyRemoteError("lightweight Study schema identity conflicts")
+
     def admit(self, request: Mapping[str, Any], endpoint: str) -> tuple[dict[str, Any], bool]:
         frozen = validate_request(request)
         digest = hashlib.sha256(canonical_json_bytes(frozen)).hexdigest()
@@ -1855,7 +1864,7 @@ def _worker_command(args: argparse.Namespace) -> int:
 
 def _execute_command(args: argparse.Namespace) -> int:
     store = StudyPostgresStore.from_environment()
-    store.initialize()
+    store.verify_initialized()
     request = freeze_synthetic_request(
         iterations=args.iterations,
         seed=args.seed,
@@ -1898,7 +1907,7 @@ def _execute_command(args: argparse.Namespace) -> int:
 
 def _execute_training_command(args: argparse.Namespace) -> int:
     store = StudyPostgresStore.from_environment()
-    store.initialize()
+    store.verify_initialized()
     request = freeze_training_request(
         trial_budget=args.trial_budget,
         seed=args.seed,
