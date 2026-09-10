@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import socket
 import subprocess
 import threading
@@ -17,6 +18,7 @@ from quant_platform.study_remote import (
     WorkerJobStore,
     canonical_json_bytes,
     freeze_synthetic_request,
+    freeze_training_request,
 )
 
 
@@ -285,6 +287,110 @@ def test_many_iterations_are_one_bounded_idempotent_worker_job(tmp_path: Path):
     files = list(state_root.iterdir())
     assert [path.name for path in files] == [f"{request['job_id']}.json"]
     assert files[0].stat().st_size < 16_384
+
+
+def test_real_optuna_training_kernel_keeps_only_bounded_aggregate_state(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    state_root = tmp_path / "state"
+    store = WorkerJobStore(state_root, IMAGE)
+    server = StudyWorkerServer(("127.0.0.1", 0), store, private_key.with_suffix(".pub.pem"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = SignedStudyClient(f"http://127.0.0.1:{server.server_port}", private_key)
+    request = freeze_training_request(
+        trial_budget=24,
+        seed=17,
+        checkpoint_count=4,
+        parameter_low=0.0,
+        parameter_high=1.0,
+        objective_target=0.61803398875,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+    try:
+        first = client.submit(request)
+        duplicate = client.submit(request)
+        deadline = time.monotonic() + 15
+        while True:
+            job = client.read(request["job_id"]).value["job"]
+            if job["status"] in {"SUCCEEDED", "FAILED"}:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert first.status_code == 202
+    assert duplicate.status_code == 200
+    assert job["status"] == "SUCCEEDED"
+    assert job["result"]["conclusion"] == "SYNTHETIC_OBJECTIVE_SEARCH_COMPLETED"
+    assert job["result"]["completed_trials"] == 24
+    assert job["result"]["data_classification"] == "SYNTHETIC_NON_MARKET"
+    assert job["progress"]["completed_trials"] == 24
+    assert len(job["checkpoints"]) == 4
+    assert "history" not in job and "trials" not in job
+    files = list(state_root.iterdir())
+    assert [path.name for path in files] == [f"{request['job_id']}.json"]
+    assert files[0].stat().st_size < 16_384
+
+
+def test_incomplete_training_restarts_from_frozen_request(tmp_path: Path):
+    private_key = _keypair(tmp_path)
+    state_root = tmp_path / "state"
+    request = freeze_training_request(
+        trial_budget=12,
+        seed=29,
+        checkpoint_count=3,
+        parameter_low=0.0,
+        parameter_high=1.0,
+        objective_target=0.25,
+        source_commit=COMMIT,
+        source_tree=TREE,
+        worker_image=IMAGE,
+    )
+    store = WorkerJobStore(state_root, IMAGE)
+    store._write(
+        {
+            "schema_version": 1,
+            "protocol": "quantresearch-study-worker/v1",
+            "job_id": request["job_id"],
+            "request_digest": hashlib.sha256(canonical_json_bytes(request)).hexdigest(),
+            "frozen_request": request,
+            "source_commit": COMMIT,
+            "source_tree": TREE,
+            "worker_image": IMAGE,
+            "status": "RUNNING",
+            "progress": {"completed_trials": 7, "total_trials": 12},
+            "checkpoints": [{"sequence": 1, "completed_trials": 4}],
+            "result": None,
+            "failure": None,
+            "updated_at": "2026-09-10T00:00:00Z",
+        }
+    )
+    server = StudyWorkerServer(("127.0.0.1", 0), store, private_key.with_suffix(".pub.pem"))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = SignedStudyClient(f"http://127.0.0.1:{server.server_port}", private_key)
+    try:
+        deadline = time.monotonic() + 15
+        while True:
+            job = client.read(request["job_id"]).value["job"]
+            if job["status"] in {"SUCCEEDED", "FAILED"}:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert job["status"] == "SUCCEEDED"
+    assert job["progress"]["completed_trials"] == 12
+    assert len(job["checkpoints"]) == 3
+    assert job["result"]["objective"]["target"] == 0.25
 
 
 def test_wrong_signing_identity_is_rejected_without_dispatch(tmp_path: Path):

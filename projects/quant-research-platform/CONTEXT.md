@@ -40,9 +40,15 @@ A versioned after-close monitoring contract that appends new evidence to a froze
 
 ## Parameter Study
 
-A frozen parameter-search and chronological-validation protocol together with every Trial, Experiment binding, evaluation, control event, and conclusion it produces.
+A frozen parameter-search and chronological-validation protocol together with the minimum append-only lifecycle, bounded aggregate progress, final evidence, and conclusion needed to govern it truthfully. Its internal search iterations are not Experiments or Attempts.
 
 **Distinguish from:** model training. A Parameter Study does not produce mutable model weights.
+
+## Study Training Kernel
+
+The versioned computation that consumes one Frozen Study Plan, performs internal training or search iterations, and returns bounded aggregate progress and final evidence without making those iterations separately authoritative.
+
+**Distinguish from:** an Experiment, which is one platform-wide deduplicated strategy computation, and an Attempt, which is one physical launch of an Experiment.
 
 ## Study Lineage
 
