@@ -31,6 +31,7 @@ from first_party_graph_offline import BodyDelivery, FirstPartyGraphController, T
 
 CANARY_IDS = (
     "EXACT_IDENTITY_GATE",
+    "FUTURE_EXECUTION_AUTHORITY_GATE",
     "DURABLE_CLAIM_BEFORE_TRANSPORT",
     "CLAIM_REUSE_REFUSED",
     "RESTRICTED_ATOMIC_BODY_RECEIPT",
@@ -40,6 +41,9 @@ CANARY_IDS = (
     "STATE_ROOT_OUTSIDE_GIT",
 )
 
+EXPECTED_EXECUTION_HANDOFF_SHA256 = "c" * 64
+EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256 = "d" * 64
+
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
@@ -47,7 +51,12 @@ def _canonical(value: object) -> bytes:
     )
 
 
-def _authority(state_root: Path) -> tuple[dict[str, object], CandidateIdentity]:
+def _authority(
+    state_root: Path,
+    *,
+    execution_handoff_sha256: str = EXPECTED_EXECUTION_HANDOFF_SHA256,
+    execution_authority_context_sha256: str = EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256,
+) -> tuple[dict[str, object], CandidateIdentity]:
     identity = candidate_identity()
     value: dict[str, object] = {
         "schema": AUTHORITY_SCHEMA,
@@ -57,8 +66,8 @@ def _authority(state_root: Path) -> tuple[dict[str, object], CandidateIdentity]:
         "network_adapter_sha256": identity.network_adapter_sha256,
         "launcher_sha256": identity.launcher_sha256,
         "candidate_sha256": identity.candidate_sha256,
-        "execution_handoff_sha256": "a" * 64,
-        "execution_authority_context_sha256": "b" * 64,
+        "execution_handoff_sha256": execution_handoff_sha256,
+        "execution_authority_context_sha256": execution_authority_context_sha256,
         "claim_key": "gold-first-party-graph-fed-board-monetary-policy-v2",
         "state_root": str(state_root.resolve(strict=False)),
         "network_capability": {
@@ -83,8 +92,17 @@ def _authority(state_root: Path) -> tuple[dict[str, object], CandidateIdentity]:
     return value, identity
 
 
-def _write_authority(root: Path) -> tuple[Path, str, CandidateIdentity]:
-    authority, identity = _authority(root / "state")
+def _write_authority(
+    root: Path,
+    *,
+    execution_handoff_sha256: str = EXPECTED_EXECUTION_HANDOFF_SHA256,
+    execution_authority_context_sha256: str = EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256,
+) -> tuple[Path, str, CandidateIdentity]:
+    authority, identity = _authority(
+        root / "state",
+        execution_handoff_sha256=execution_handoff_sha256,
+        execution_authority_context_sha256=execution_authority_context_sha256,
+    )
     payload = _canonical(authority) + b"\n"
     path = root / "authority.json"
     path.write_bytes(payload)
@@ -221,6 +239,8 @@ def _run_once(
         expected_protocol_sha256=PROTOCOL_SHA256,
         expected_candidate_sha256=identity.candidate_sha256,
         expected_authority_sha256=authority_sha256,
+        expected_execution_handoff_sha256=EXPECTED_EXECUTION_HANDOFF_SHA256,
+        expected_execution_authority_context_sha256=(EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256),
         transport_factory=factory,
     )
     return outcome, _RunInputs(authority_path, authority_sha256, state_root), identity
@@ -244,6 +264,10 @@ def _check_identity_gate(protocol_path: Path) -> object:
                 expected_protocol_sha256=PROTOCOL_SHA256,
                 expected_candidate_sha256="0" * 64,
                 expected_authority_sha256=authority_sha256,
+                expected_execution_handoff_sha256=EXPECTED_EXECUTION_HANDOFF_SHA256,
+                expected_execution_authority_context_sha256=(
+                    EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256
+                ),
                 transport_factory=forbidden_factory,
             )
         except ExecutionRefused as exc:
@@ -255,6 +279,66 @@ def _check_identity_gate(protocol_path: Path) -> object:
         return {
             "code": "CANDIDATE_IDENTITY_MISMATCH",
             "candidate_sha256": identity.candidate_sha256,
+        }
+
+
+def _check_future_execution_authority_gate(protocol_path: Path) -> object:
+    rejected_codes = []
+    cases = (
+        (
+            "a" * 64,
+            EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256,
+            "EXECUTION_HANDOFF_IDENTITY_MISMATCH",
+        ),
+        (
+            EXPECTED_EXECUTION_HANDOFF_SHA256,
+            "b" * 64,
+            "EXECUTION_AUTHORITY_CONTEXT_IDENTITY_MISMATCH",
+        ),
+    )
+    for handoff_sha256, context_sha256, expected_code in cases:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            authority_path, authority_sha256, identity = _write_authority(
+                root,
+                execution_handoff_sha256=handoff_sha256,
+                execution_authority_context_sha256=context_sha256,
+            )
+            called = [0]
+
+            def forbidden_factory(_: RestrictedBodyReceiptStore) -> _SyntheticControllerTransport:
+                called[0] += 1
+                raise AssertionError("factory reached")
+
+            try:
+                _execute_once(
+                    authority_path=authority_path,
+                    protocol_path=protocol_path,
+                    state_root=root / "state",
+                    expected_protocol_sha256=PROTOCOL_SHA256,
+                    expected_candidate_sha256=identity.candidate_sha256,
+                    expected_authority_sha256=authority_sha256,
+                    expected_execution_handoff_sha256=EXPECTED_EXECUTION_HANDOFF_SHA256,
+                    expected_execution_authority_context_sha256=(
+                        EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256
+                    ),
+                    transport_factory=forbidden_factory,
+                )
+            except ExecutionRefused as exc:
+                assert exc.code == expected_code
+                rejected_codes.append(exc.code)
+            else:
+                raise AssertionError("unbound future execution authority accepted")
+            assert called == [0]
+            assert not (root / "state").exists()
+
+    with tempfile.TemporaryDirectory() as directory:
+        accepted, _, _ = _run_once(protocol_path, Path(directory))
+        assert accepted.graph.terminal_code == "COMPLETED"
+        return {
+            "arbitrary_well_formed_values": rejected_codes,
+            "state_or_transport_created_before_rejection": False,
+            "independently_expected_pair": "ACCEPTED",
         }
 
 
@@ -302,6 +386,10 @@ def _check_one_shot(protocol_path: Path) -> tuple[object, object, object]:
             expected_protocol_sha256=PROTOCOL_SHA256,
             expected_candidate_sha256=identity.candidate_sha256,
             expected_authority_sha256=inputs.authority_sha256,
+            expected_execution_handoff_sha256=EXPECTED_EXECUTION_HANDOFF_SHA256,
+            expected_execution_authority_context_sha256=(
+                EXPECTED_EXECUTION_AUTHORITY_CONTEXT_SHA256
+            ),
             transport_factory=factory,
         )
         assert second.graph.terminal_code == "CLAIM_ALREADY_CONSUMED"
@@ -463,6 +551,9 @@ def main() -> int:
     protocol_path = Path(sys.argv[1])
     checks: dict[str, Callable[[], object]] = {
         "EXACT_IDENTITY_GATE": lambda: _check_identity_gate(protocol_path),
+        "FUTURE_EXECUTION_AUTHORITY_GATE": lambda: _check_future_execution_authority_gate(
+            protocol_path
+        ),
         "DURABLE_CLAIM_BEFORE_TRANSPORT": lambda: _check_one_shot(protocol_path)[0],
         "CLAIM_REUSE_REFUSED": lambda: _check_one_shot(protocol_path)[1],
         "RESTRICTED_ATOMIC_BODY_RECEIPT": _check_body_no_overwrite,

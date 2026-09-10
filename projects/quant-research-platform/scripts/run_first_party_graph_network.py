@@ -19,6 +19,8 @@ def main() -> int:
     parser.add_argument("--protocol")
     parser.add_argument("--protocol-sha256")
     parser.add_argument("--candidate-sha256")
+    parser.add_argument("--execution-handoff-sha256")
+    parser.add_argument("--execution-authority-context-sha256")
     parser.add_argument("--state-root")
     arguments = parser.parse_args()
 
@@ -31,6 +33,8 @@ def main() -> int:
                 arguments.protocol,
                 arguments.protocol_sha256,
                 arguments.candidate_sha256,
+                arguments.execution_handoff_sha256,
+                arguments.execution_authority_context_sha256,
                 arguments.state_root,
             )
         ):
@@ -64,6 +68,8 @@ def main() -> int:
         arguments.protocol,
         arguments.protocol_sha256,
         arguments.candidate_sha256,
+        arguments.execution_handoff_sha256,
+        arguments.execution_authority_context_sha256,
         arguments.state_root,
     )
     if any(value is None for value in required):
@@ -85,6 +91,10 @@ def main() -> int:
             expected_protocol_sha256=arguments.protocol_sha256,
             expected_candidate_sha256=arguments.candidate_sha256,
             expected_authority_sha256=arguments.authority_sha256,
+            expected_execution_handoff_sha256=arguments.execution_handoff_sha256,
+            expected_execution_authority_context_sha256=(
+                arguments.execution_authority_context_sha256
+            ),
         )
     except ExecutionRefused as exc:
         print(

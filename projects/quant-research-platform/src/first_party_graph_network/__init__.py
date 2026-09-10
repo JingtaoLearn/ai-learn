@@ -213,6 +213,8 @@ def _validate_authority(
     expected_protocol_sha256: str,
     expected_candidate_sha256: str,
     expected_authority_sha256: str,
+    expected_execution_handoff_sha256: str,
+    expected_execution_authority_context_sha256: str,
 ) -> tuple[dict[str, object], CandidateIdentity]:
     if _require_sha256(expected_protocol_sha256) != PROTOCOL_SHA256:
         raise ExecutionRefused("PROTOCOL_IDENTITY_MISMATCH")
@@ -234,8 +236,12 @@ def _validate_authority(
     network = authority.get("network_capability")
     if not isinstance(network, dict) or set(network) != _NETWORK_FIELDS:
         raise ExecutionRefused("AUTHORITY_INVALID")
-    for field in ("execution_handoff_sha256", "execution_authority_context_sha256"):
-        _require_sha256(authority.get(field))
+    expected_handoff = _require_sha256(expected_execution_handoff_sha256)
+    expected_context = _require_sha256(expected_execution_authority_context_sha256)
+    if authority.get("execution_handoff_sha256") != expected_handoff:
+        raise ExecutionRefused("EXECUTION_HANDOFF_IDENTITY_MISMATCH")
+    if authority.get("execution_authority_context_sha256") != expected_context:
+        raise ExecutionRefused("EXECUTION_AUTHORITY_CONTEXT_IDENTITY_MISMATCH")
     if (
         authority.get("schema") != AUTHORITY_SCHEMA
         or authority.get("decision") != "AUTHORIZE_ONE_SHOT_NETWORK_EXECUTION"
@@ -568,6 +574,8 @@ def execute_once(
     expected_protocol_sha256: str,
     expected_candidate_sha256: str,
     expected_authority_sha256: str,
+    expected_execution_handoff_sha256: str,
+    expected_execution_authority_context_sha256: str,
 ) -> ExecutionOutcome:
     return _execute_once(
         authority_path=authority_path,
@@ -576,6 +584,8 @@ def execute_once(
         expected_protocol_sha256=expected_protocol_sha256,
         expected_candidate_sha256=expected_candidate_sha256,
         expected_authority_sha256=expected_authority_sha256,
+        expected_execution_handoff_sha256=expected_execution_handoff_sha256,
+        expected_execution_authority_context_sha256=(expected_execution_authority_context_sha256),
         transport_factory=LockedHTTPSTransport,
     )
 
@@ -588,6 +598,8 @@ def _execute_once(
     expected_protocol_sha256: str,
     expected_candidate_sha256: str,
     expected_authority_sha256: str,
+    expected_execution_handoff_sha256: str,
+    expected_execution_authority_context_sha256: str,
     transport_factory: Callable[[RestrictedBodyReceiptStore], _CountedTransport],
 ) -> ExecutionOutcome:
     authority, identity = _validate_authority(
@@ -597,6 +609,8 @@ def _execute_once(
         expected_protocol_sha256=expected_protocol_sha256,
         expected_candidate_sha256=expected_candidate_sha256,
         expected_authority_sha256=expected_authority_sha256,
+        expected_execution_handoff_sha256=expected_execution_handoff_sha256,
+        expected_execution_authority_context_sha256=(expected_execution_authority_context_sha256),
     )
     root = _private_directory(state_root)
     claim_path = root / "claim.json"
