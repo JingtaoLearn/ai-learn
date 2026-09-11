@@ -1628,6 +1628,28 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             raise PersistenceUnavailableError("report artifact has no report.html")
         return members["report.html"]
 
+    def accepted_evidence_package(
+        self, evidence_id: str, *, expected_class: str
+    ) -> dict[str, Any]:
+        """Read an immutable accepted-evidence package from PostgreSQL."""
+
+        if SHA256.fullmatch(evidence_id) is None:
+            raise ValueError("evidence_id must be lowercase SHA-256")
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT evidence_class, artifact_set_id, source_path "
+                "FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
+                (evidence_id,),
+            ).fetchone()
+        if row is None or row["evidence_class"] != expected_class:
+            raise ValueError("unknown accepted evidence package")
+        return {
+            "evidence_id": evidence_id,
+            "evidence_class": row["evidence_class"],
+            "source_path": row["source_path"],
+            "members": self.read_artifact_set(row["artifact_set_id"].strip()),
+        }
+
     def production_result(self, result_id: str) -> dict[str, Any]:
         with self.config.connect() as connection:
             row = connection.execute(

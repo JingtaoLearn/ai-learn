@@ -28,7 +28,7 @@ research = "quant_platform.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-quant_platform = ["templates/*.html", "static/*"]
+quant_platform = ["*.json", "templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

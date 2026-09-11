@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quantresearch.local/schemas/gold-evaluation-report-v1.json",
+  "title": "Immutable Gold evaluation report input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "labels", "evidence", "current_state", "period", "fit", "metrics", "series", "trades", "limitations"],
+  "properties": {
+    "schema_id": {"const": "quant-platform/gold-evaluation-report/v1"},
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["market_proxy", "cost_assumption", "disclaimer"],
+      "properties": {
+        "market_proxy": {"const": "SGE_AU9999_PROXY"},
+        "cost_assumption": {"const": "FIXED_SPREAD_ASSUMPTION_5_CNY_PER_G"},
+        "disclaimer": {"const": "市场代理评估，不代表招行实际可成交收益"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "verdict", "verdict_line", "effectiveness_basis", "evaluation_run_id", "generated_at"],
+      "properties": {
+        "status": {"enum": ["PENDING", "DESCRIPTIVE_ONLY", "UNTOUCHED_EVALUATED"]},
+        "verdict": {"enum": ["PENDING", "PASS", "NO_EDGE", "NOT_SUPPORTED", "INVALIDATED", "SUPPORTED_FOR_FURTHER_RESEARCH"]},
+        "verdict_line": {"type": "string", "minLength": 1},
+        "effectiveness_basis": {"enum": ["PENDING", "RETROSPECTIVE_DESCRIPTIVE", "UNTOUCHED_EVALUATION"]},
+        "evaluation_run_id": {"type": "string", "minLength": 1},
+        "generated_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "current_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "label"],
+      "properties": {
+        "position": {"enum": ["PENDING", "CASH", "LONG"]},
+        "label": {"type": "string", "minLength": 1}
+      }
+    },
+    "period": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "recent_start"],
+      "properties": {
+        "start": {"const": "2023-09-01"},
+        "end": {"type": ["string", "null"], "format": "date"},
+        "recent_start": {"type": ["string", "null"], "format": "date"}
+      }
+    },
+    "fit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "causal", "description"],
+      "properties": {
+        "method": {"type": "string", "minLength": 1},
+        "causal": {"const": true},
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_wealth", "final_wealth", "strategy_return", "buy_hold_return", "excess_return", "max_drawdown", "transaction_count", "full_spread"],
+      "properties": {
+        "initial_wealth": {"$ref": "#/$defs/cnyMetric"},
+        "final_wealth": {"$ref": "#/$defs/cnyMetric"},
+        "strategy_return": {"$ref": "#/$defs/percentMetric"},
+        "buy_hold_return": {"$ref": "#/$defs/percentMetric"},
+        "excess_return": {"$ref": "#/$defs/percentMetric"},
+        "max_drawdown": {"$ref": "#/$defs/cnyMetric"},
+        "transaction_count": {"$ref": "#/$defs/countMetric"},
+        "full_spread": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "value", "unit"],
+          "properties": {
+            "availability": {"const": "AVAILABLE"},
+            "value": {"const": 5},
+            "unit": {"const": "CNY_PER_G"}
+          }
+        }
+      }
+    },
+    "series": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "official_close", "fitted_level", "fitted_trend", "fit_information_cutoff", "position"],
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "official_close": {"type": "number"},
+          "fitted_level": {"type": "number"},
+          "fitted_trend": {"type": "number"},
+          "fit_information_cutoff": {"type": "string", "format": "date"},
+          "position": {"enum": ["CASH", "LONG"]}
+        }
+      }
+    },
+    "trades": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trade_id", "signal_date", "execution_date", "kind", "side", "position_before", "position_after", "execution_price", "spread_cny_per_g"],
+        "properties": {
+          "trade_id": {"type": "string", "minLength": 1},
+          "signal_date": {"type": ["string", "null"], "format": "date"},
+          "execution_date": {"type": "string", "format": "date"},
+          "kind": {"enum": ["SIGNAL_BUY", "SIGNAL_SELL", "FORCED_TERMINAL_SELL"]},
+          "side": {"enum": ["BUY", "SELL"]},
+          "position_before": {"enum": ["CASH", "LONG"]},
+          "position_after": {"enum": ["CASH", "LONG"]},
+          "execution_price": {"type": "number"},
+          "spread_cny_per_g": {"const": 5}
+        }
+      }
+    },
+    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "properties": {"status": {"const": "PENDING"}},
+            "required": ["status"]
+          }
+        },
+        "required": ["evidence"]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "properties": {
+              "verdict_line": {"const": "Evaluation evidence is pending; no result is claimed."}
+            }
+          },
+          "metrics": {
+            "properties": {
+              "initial_wealth": {"$ref": "#/$defs/pendingResultMetric"},
+              "final_wealth": {"$ref": "#/$defs/pendingResultMetric"},
+              "strategy_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "buy_hold_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "excess_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "max_drawdown": {"$ref": "#/$defs/pendingResultMetric"},
+              "transaction_count": {"$ref": "#/$defs/pendingResultMetric"}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "metricBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availability", "value", "unit"],
+      "properties": {
+        "availability": {"enum": ["AVAILABLE", "PENDING", "UNAVAILABLE"]},
+        "value": {"type": ["number", "null"]},
+        "unit": {"type": "string"}
+      }
+    },
+    "pendingResultMetric": {
+      "properties": {
+        "availability": {"enum": ["PENDING", "UNAVAILABLE"]},
+        "value": {"const": null}
+      }
+    },
+    "cnyMetric": {"allOf": [{"$ref": "#/$defs/metricBase"}, {"properties": {"unit": {"const": "CNY"}}}]},
+    "percentMetric": {"allOf": [{"$ref": "#/$defs/metricBase"}, {"properties": {"unit": {"const": "PERCENT"}}}]},
+    "countMetric": {"allOf": [{"$ref": "#/$defs/metricBase"}, {"properties": {"unit": {"const": "COUNT"}}}]}
+  }
+}
