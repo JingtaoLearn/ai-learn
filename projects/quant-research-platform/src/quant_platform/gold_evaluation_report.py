@@ -21,6 +21,7 @@ PANORAMA_START = "2023-09-01"
 PROXY_LABEL = "SGE_AU9999_PROXY"
 SPREAD_LABEL = "FIXED_SPREAD_ASSUMPTION_5_CNY_PER_G"
 DISCLAIMER = "市场代理评估，不代表招行实际可成交收益"
+PENDING_VERDICT_LINE = "Evaluation evidence is pending; no result is claimed."
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 POSITIONS = {"PENDING", "CASH", "LONG"}
 VERDICTS = {
@@ -353,6 +354,8 @@ def validate_gold_evaluation(value: Mapping[str, Any]) -> None:
         raise GoldEvaluationReportError("$.evidence.generated_at must be a timestamp or null")
     if status == "PENDING" and (verdict != "PENDING" or basis != "PENDING"):
         raise GoldEvaluationReportError("pending evidence cannot carry a research conclusion")
+    if status == "PENDING" and evidence["verdict_line"] != PENDING_VERDICT_LINE:
+        raise GoldEvaluationReportError("pending evidence must use the fixed no-result verdict line")
     if status == "DESCRIPTIVE_ONLY" and basis != "RETROSPECTIVE_DESCRIPTIVE":
         raise GoldEvaluationReportError("descriptive evidence must be labelled retrospective")
     if verdict == "PASS" and (status != "UNTOUCHED_EVALUATED" or basis != "UNTOUCHED_EVALUATION"):
@@ -386,6 +389,12 @@ def validate_gold_evaluation(value: Mapping[str, Any]) -> None:
     spread = metrics["full_spread"]
     if spread != {"availability": "AVAILABLE", "value": 5, "unit": "CNY_PER_G"}:
         raise GoldEvaluationReportError("$.metrics.full_spread must be the fixed 5 CNY/g assumption")
+    if status == "PENDING" and any(
+        metrics[name]["availability"] == "AVAILABLE" or metrics[name]["value"] is not None
+        for name in METRIC_UNITS
+        if name != "full_spread"
+    ):
+        raise GoldEvaluationReportError("pending evidence must not expose result metrics")
 
     limitations = root["limitations"]
     if not isinstance(limitations, list) or not limitations or not all(isinstance(item, str) and item.strip() for item in limitations):

@@ -1,4 +1,8 @@
 import json
+from pathlib import Path
+
+import pytest
+from jsonschema import Draft202012Validator
 
 from quant_platform.full_persistence import FullPostgresPersistence
 from quant_platform.gold_evaluation_report import (
@@ -231,6 +235,38 @@ def test_pending_report_is_concise_and_never_invents_values():
     assert PROXY_LABEL in rendered and SPREAD_LABEL in rendered and DISCLAIMER in rendered
     assert evidence_id in rendered and artifact_sha in rendered
     assert "<polyline" not in rendered
+
+
+def test_pending_report_rejects_invented_results_and_outcome_claim():
+    schema_path = (
+        Path(__file__).parents[1]
+        / "src"
+        / "quant_platform"
+        / "gold_evaluation_report.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    assert not list(validator.iter_errors(_pending_evaluation()))
+
+    reviewer_payload = _pending_evaluation()
+    reviewer_payload["metrics"]["initial_wealth"] = _metric(
+        "AVAILABLE", 123456, "CNY"
+    )
+    reviewer_payload["metrics"]["strategy_return"] = _metric(
+        "AVAILABLE", 42, "PERCENT"
+    )
+    reviewer_payload["evidence"]["verdict_line"] = "PASS — invented pending result"
+
+    metrics_only = _pending_evaluation()
+    metrics_only["metrics"] = reviewer_payload["metrics"]
+    outcome_only = _pending_evaluation()
+    outcome_only["evidence"]["verdict_line"] = reviewer_payload["evidence"]["verdict_line"]
+
+    for value in (reviewer_payload, metrics_only, outcome_only):
+        with pytest.raises(GoldEvaluationReportError, match="pending evidence"):
+            load_gold_evaluation_artifact(_payload(value), evidence_id="0" * 64)
+        assert list(validator.iter_errors(value))
 
 
 def test_chart_markers_are_derived_from_the_validated_trade_ledger():

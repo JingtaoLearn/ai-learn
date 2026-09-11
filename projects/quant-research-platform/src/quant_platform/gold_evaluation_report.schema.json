@@ -120,6 +120,39 @@
     },
     "limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "properties": {"status": {"const": "PENDING"}},
+            "required": ["status"]
+          }
+        },
+        "required": ["evidence"]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "properties": {
+              "verdict_line": {"const": "Evaluation evidence is pending; no result is claimed."}
+            }
+          },
+          "metrics": {
+            "properties": {
+              "initial_wealth": {"$ref": "#/$defs/pendingResultMetric"},
+              "final_wealth": {"$ref": "#/$defs/pendingResultMetric"},
+              "strategy_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "buy_hold_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "excess_return": {"$ref": "#/$defs/pendingResultMetric"},
+              "max_drawdown": {"$ref": "#/$defs/pendingResultMetric"},
+              "transaction_count": {"$ref": "#/$defs/pendingResultMetric"}
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "metricBase": {
       "type": "object",
@@ -129,6 +162,12 @@
         "availability": {"enum": ["AVAILABLE", "PENDING", "UNAVAILABLE"]},
         "value": {"type": ["number", "null"]},
         "unit": {"type": "string"}
+      }
+    },
+    "pendingResultMetric": {
+      "properties": {
+        "availability": {"enum": ["PENDING", "UNAVAILABLE"]},
+        "value": {"const": null}
       }
     },
     "cnyMetric": {"allOf": [{"$ref": "#/$defs/metricBase"}, {"properties": {"unit": {"const": "CNY"}}}]},
