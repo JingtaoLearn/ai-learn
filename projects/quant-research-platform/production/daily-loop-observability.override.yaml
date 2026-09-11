@@ -1,0 +1,9 @@
+services:
+  production-api:
+    image: registry.jingtao.fun/quant-research-platform@sha256:3f01198b632ddd525a0a49130aae870afcaf815d13b49d5f4b63578c1d545131
+    environment:
+      QR_DAILY_LOOP_RECEIPTS_PATH: /var/lib/quantresearch/residual/runtime/daily-loop/cron-receipts.json
+  platform-ui:
+    image: registry.jingtao.fun/quant-research-platform@sha256:3f01198b632ddd525a0a49130aae870afcaf815d13b49d5f4b63578c1d545131
+    environment:
+      QR_DAILY_LOOP_RECEIPTS_PATH: /var/lib/quantresearch/residual/runtime/daily-loop/cron-receipts.json

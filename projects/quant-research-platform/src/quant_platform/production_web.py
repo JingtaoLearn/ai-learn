@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .dataset_service import DatasetResolutionError, MsftAdjustedOhlcProxyIngress
+from .daily_loop_status import CronReceiptStore, DailyLoopStatusError
 from .full_persistence import FullPostgresPersistence, PersistenceConflict
 from .lightweight_study import LightweightStudyService
 from .production_bocom import BocomProductionJob
@@ -57,6 +58,7 @@ def create_production_app(
     verified_client_identity: str,
     msft_ingress: MsftAdjustedOhlcProxyIngress | None = None,
     studies: LightweightStudyService | None = None,
+    cron_receipts: CronReceiptStore | None = None,
 ) -> FastAPI:
     if not verified_client_identity or "," in verified_client_identity:
         raise ValueError("verified client identity is invalid")
@@ -110,6 +112,21 @@ def create_production_app(
         key = request.headers.get("idempotency-key", "")
         status, value = await run_in_threadpool(service.create_or_read, body, key)
         return _response(status, value)
+
+    @app.post("/api/v1/production/daily-loop/cron-receipts")
+    async def record_cron_receipts(request: Request):
+        if cron_receipts is None:
+            return _error(503, "RECEIPT_STORE_UNAVAILABLE", "Cron receipt storage is unavailable")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json":
+            return _error(422, "CONTENT_TYPE_REJECTED", "Content-Type must be application/json")
+        body = await request.body()
+        if not body or len(body) > MAX_BODY_BYTES:
+            return _error(422, "BODY_SIZE_REJECTED", "request body size is invalid")
+        try:
+            receipt = await run_in_threadpool(cron_receipts.replace, body)
+        except (DailyLoopStatusError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return _error(422, "INVALID_CRON_RECEIPT", str(exc))
+        return _response(200, {"ok": True, **receipt})
 
     @app.get("/api/v1/production/runs/{production_run_id}")
     async def run_status(production_run_id: str):
@@ -366,12 +383,19 @@ def build_runtime_app() -> tuple[FastAPI, ProductionWorker]:
     persistence = FullPostgresPersistence.from_environment()
     ingress = MsftAdjustedOhlcProxyIngress(provider, persistence)
     studies = LightweightStudyService.from_environment()
+    receipt_path = Path(
+        os.environ.get(
+            "QR_DAILY_LOOP_RECEIPTS_PATH",
+            str(state_root / "daily-loop-cron-receipts.json"),
+        )
+    )
     return create_production_app(
         service,
         results,
         verified_client_identity=identity,
         msft_ingress=ingress,
         studies=studies,
+        cron_receipts=CronReceiptStore(receipt_path),
     ), worker
 
 

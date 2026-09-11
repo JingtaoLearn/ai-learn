@@ -82,6 +82,7 @@ services:
       QR_PACKAGE_IDENTITY_AUTHORITY_URL: http://package-identity-authority:8091
       QR_PRODUCTION_RELEASE_MANIFEST: /etc/quantresearch/authorities/release.json
       QR_PRODUCTION_AUTHORITIES_ROOT: /etc/quantresearch/authorities
+      QR_DAILY_LOOP_RECEIPTS_PATH: /var/lib/quantresearch/residual/runtime/daily-loop/cron-receipts.json
       QR_VERIFIED_CLIENT_IDENTITY: ${QR_VERIFIED_CLIENT_IDENTITY:?set reviewed certificate subject}
       QUANT_POSTGRES_HOST: postgres
       QUANT_POSTGRES_DATABASE: quantresearch
@@ -231,6 +232,7 @@ services:
       QR_STUDY_POSTGRES_DATABASE: quantresearch
       QR_STUDY_POSTGRES_USER: qr_runtime
       QR_STUDY_POSTGRES_PASSWORD_FILE: /run/secrets/postgres-runtime
+      QR_DAILY_LOOP_RECEIPTS_PATH: /var/lib/quantresearch/residual/runtime/daily-loop/cron-receipts.json
       MPLCONFIGDIR: /tmp/matplotlib
       QUANT_RESIDUAL_ROOT: /var/lib/quantresearch/residual
     tmpfs:

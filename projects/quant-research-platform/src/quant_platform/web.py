@@ -10,6 +10,7 @@ import secrets
 import stat
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode
@@ -27,11 +28,13 @@ from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
+from .daily_loop_status import CronReceiptStore, DailyLoopStatusService
 from .experiment_service import ExperimentService, TaskValidationError
 from .lightweight_study import LightweightStudyNotFound, LightweightStudyService
 from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
 from .postgres_persistence import PostgresOperatorPersistence
+from .production_store import ProductionStore
 from .resolved_runner import effective_execution_identity
 from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
@@ -1066,6 +1069,24 @@ def create_app(
         validator=operator_validator,
         runner_image=settings.runner_image,
     )
+    production_store = ProductionStore(settings.state_root)
+    production_store.initialize()
+    daily_loop = DailyLoopStatusService(
+        production_store,
+        CronReceiptStore(
+            Path(
+                os.environ.get(
+                    "QR_DAILY_LOOP_RECEIPTS_PATH",
+                    str(settings.state_root / "daily-loop-cron-receipts.json"),
+                )
+            )
+        ),
+        clock=(
+            (lambda: datetime.fromtimestamp(clock(), UTC))
+            if clock is not None
+            else (lambda: datetime.now(UTC))
+        ),
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.catalog = catalog
@@ -1075,6 +1096,7 @@ def create_app(
     app.state.lightweight_studies = lightweight_studies
     app.state.operators = operators
     app.state.operator_persistence = operator_persistence
+    app.state.daily_loop = daily_loop
     app.state.auth = auth
 
     def lightweight_service() -> LightweightStudyService:
@@ -1357,6 +1379,11 @@ def create_app(
         return {
             "datasets": await run_in_threadpool(datasets.list_available)
         }
+
+    @app.get("/api/daily-loop/status")
+    async def api_daily_loop_status(request: Request):
+        _session(request)
+        return await run_in_threadpool(daily_loop.snapshot)
 
     @app.get("/api/datasets/{dataset_id}/snapshots/{snapshot_id}")
     async def api_dataset_detail(request: Request, dataset_id: str, snapshot_id: str):
@@ -1655,6 +1682,7 @@ def create_app(
         except AuthError:
             return RedirectResponse("/login", status_code=303)
         context = await run_in_threadpool(_dashboard_context, catalog, operators)
+        context["daily_loop"] = await run_in_threadpool(daily_loop.snapshot)
         return _render(
             request,
             "dashboard.html",

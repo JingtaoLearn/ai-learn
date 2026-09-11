@@ -8,6 +8,24 @@
   <p>The latest recorded evidence, its limits, and the next available inspection step.</p></div>
   <a class="button" href="/experiments/new">New experiment</a>
 </section>
+<section class="panel" data-testid="daily-loop-status" aria-labelledby="daily-loop-heading">
+  <div class="section-heading">
+    <div><p class="eyebrow">SCHEDULED DELIVERY</p><h2 id="daily-loop-heading">Gold and BOCOM daily loop</h2></div>
+    <a href="/api/daily-loop/status">Machine-readable status</a>
+  </div>
+  <p>Current evidence for the latest weekday occurrence. Service health alone does not satisfy delivery.</p>
+  <div class="table-wrap"><table class="record-table"><caption>Latest scheduled delivery evidence</caption><thead><tr><th>Job</th><th>Expected / due</th><th>State</th><th>Run</th><th>Report read-back</th><th>Feishu receipt</th><th>First failure</th></tr></thead>
+  <tbody>{% for job in daily_loop.jobs %}<tr>
+    <td data-label="Job"><strong>{{ job.name }}</strong><br><code>{{ job.job_id }}</code></td>
+    <td data-label="Expected / due"><time datetime="{{ job.expected_for }}">{{ job.expected_for }}</time><br><span class="muted">due {{ job.deadline }}</span></td>
+    <td data-label="State"><span class="status" data-status="{{ job.state }}">{{ job.state }}</span></td>
+    <td data-label="Run"><span class="status" data-status="{{ job.run.state }}">{{ job.run.state }}</span>{% if job.run.production_run_id %}<br><code>{{ job.run.production_run_id[:12] }}…</code>{% endif %}</td>
+    <td data-label="Report read-back"><span class="status" data-status="{{ job.report.state }}">{{ job.report.state }}</span>{% if job.report.state != "MISSING" %}<br><a href="{{ job.report.url }}">Open report</a>{% endif %}</td>
+    <td data-label="Feishu receipt"><span class="status" data-status="{{ job.message.state }}">{{ job.message.state }}</span>{% if job.message.receipt_id %}<br><code>{{ job.message.receipt_id[:12] }}…</code>{% endif %}</td>
+    <td data-label="First failure">{{ job.first_failure or "—" }}</td>
+  </tr>{% endfor %}</tbody></table></div>
+  <p class="muted">Cron receipt observed: {{ daily_loop.cron_receipt_observed_at or "not yet observed" }}</p>
+</section>
 {% if latest_evidence %}
 <section class="panel evidence-inbox" data-testid="evidence-inbox" aria-labelledby="latest-evidence-heading">
   <div class="section-heading evidence-outcome">
