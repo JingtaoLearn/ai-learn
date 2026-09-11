@@ -30,6 +30,14 @@ from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
 from .daily_loop_status import CronReceiptStore, DailyLoopStatusService
 from .experiment_service import ExperimentService, TaskValidationError
+from .gold_evaluation_report import (
+    ARTIFACT_NAME as GOLD_EVALUATION_ARTIFACT_NAME,
+    EVIDENCE_CLASS as GOLD_EVALUATION_EVIDENCE_CLASS,
+    GoldEvaluationReportError,
+    load_gold_evaluation_artifact,
+    load_native_gold_evaluation_package,
+    render_gold_evaluation_report,
+)
 from .lightweight_study import LightweightStudyNotFound, LightweightStudyService
 from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
@@ -2378,6 +2386,49 @@ def create_app(
         )
         return RedirectResponse(
             f"/experiments/{result['experiment_id']}", status_code=303
+        )
+
+    @app.get("/reports/gold/{evidence_id}")
+    async def gold_evaluation_report(request: Request, evidence_id: str):
+        _session(request)
+        try:
+            if not os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
+                raise ValueError("PostgreSQL evidence authority is unavailable")
+            from .full_persistence import FullPostgresPersistence
+
+            package = await run_in_threadpool(
+                FullPostgresPersistence.from_environment().accepted_evidence_package,
+                evidence_id,
+                expected_class=GOLD_EVALUATION_EVIDENCE_CLASS,
+            )
+            if GOLD_EVALUATION_ARTIFACT_NAME in package["members"]:
+                evaluation, artifact_sha256 = load_gold_evaluation_artifact(
+                    package["members"][GOLD_EVALUATION_ARTIFACT_NAME],
+                    evidence_id=evidence_id,
+                )
+            else:
+                evaluation, artifact_sha256 = load_native_gold_evaluation_package(
+                    package["members"], evidence_id=evidence_id
+                )
+            rendered = render_gold_evaluation_report(
+                evaluation,
+                evidence_id=evidence_id,
+                artifact_sha256=artifact_sha256,
+            )
+        except (GoldEvaluationReportError, KeyError, OSError, RuntimeError, ValueError):
+            return HTMLResponse("Gold evaluation report not found.", status_code=404)
+        return Response(
+            rendered,
+            media_type="text/html",
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
+                    "form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+                ),
+                "Content-Disposition": "inline",
+                "X-QuantResearch-Evidence-Id": evidence_id,
+                "X-QuantResearch-Evaluation-SHA256": artifact_sha256,
+            },
         )
 
     @app.get("/reports/{attempt_id}")
