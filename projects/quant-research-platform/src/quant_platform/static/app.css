@@ -723,6 +723,8 @@ pre,
 
 .status[data-status="SUCCEEDED"],
 .status[data-status="COMPLETED"],
+.status[data-status="COMPLETE"],
+.status[data-status="DELIVERED"],
 .status[data-status="VERIFIED"],
 .status[data-status="ELIGIBLE"] {
   border-color: var(--success);
@@ -739,6 +741,7 @@ pre,
 }
 
 .status[data-status="FAILED"],
+.status[data-status="DELIVERY_FAILED"],
 .status[data-status="INTERRUPTED"],
 .status[data-status="INELIGIBLE"] {
   border-color: var(--danger);
@@ -747,6 +750,7 @@ pre,
 }
 
 .status[data-status="PAUSED"],
+.status[data-status="SILENT_MISS"],
 .status[data-status="DRIFTED"],
 .status[data-status="TERMINATION_UNCONFIRMED"] {
   border-color: var(--warning);

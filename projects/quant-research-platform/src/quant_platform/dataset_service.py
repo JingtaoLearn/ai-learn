@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -11,7 +12,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from importlib.metadata import version
 from numbers import Number
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -38,7 +39,8 @@ from .market_sessions import (
     MarketSessionEvidenceSource,
 )
 from .updates import ConcurrentUpdateError, reconcile_daily_history, snapshot_update_lineage
-from .yahoo import yahoo_chart_url
+from .yahoo import yahoo_adjusted_ohlc_proxy_url, yahoo_chart_url
+from .yahoo_proxy_sanitizer import MSFT_PROXY_STATIC_IDENTITY, SANITIZED_PROXY_SCHEMA
 from .total_return_claims import read_time_classification
 
 
@@ -57,6 +59,10 @@ PRODUCTION_XSHG_YAHOO_METADATA = {
     "gmtoffset": 28800,
 }
 PROVIDER_STREAM_CHUNK_BYTES = 64 * 1024
+MSFT_YAHOO_BASIS_UNQUALIFIED = "YAHOO_MSFT_ADJUSTMENT_BASIS_UNQUALIFIED"
+MSFT_PROXY_LABEL = "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY"
+MSFT_PROXY_START = "2022-02-01"
+MSFT_PROXY_END = "2024-12-31"
 
 
 class DatasetResolutionError(ValueError):
@@ -91,6 +97,440 @@ class DatasetCatalogItem:
 class FetchedDailyBars:
     bars: pd.DataFrame
     source_identity: dict[str, Any]
+
+
+def msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
+    source_artifact_bytes: bytes,
+    *,
+    request_url: str,
+    sealed_at: str,
+    start: str = MSFT_PROXY_START,
+    end: str = MSFT_PROXY_END,
+) -> dict[str, Any]:
+    """Freeze Yahoo's adjusted-close-factor OHLC as an explicitly unqualified proxy."""
+
+    from .msft_trend_study import build_proxy_snapshot
+
+    if start != MSFT_PROXY_START or end != MSFT_PROXY_END:
+        raise DatasetResolutionError("MSFT proxy range must be exactly 2022-02-01 through 2024-12-31")
+    if not source_artifact_bytes or len(source_artifact_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise DatasetResolutionError("Yahoo MSFT proxy source artifact size is invalid")
+    try:
+        artifact = json.loads(
+            source_artifact_bytes,
+            object_pairs_hook=_strict_object,
+            parse_constant=lambda item: (_ for _ in ()).throw(
+                DatasetResolutionError(f"Yahoo source artifact contains non-finite value: {item}")
+            ),
+        )
+        if set(artifact) != {
+            "schema",
+            "identity",
+            "request_window",
+            "raw_response_sha256",
+            "chart",
+        }:
+            raise DatasetResolutionError("Yahoo MSFT proxy source artifact fields are invalid")
+        if artifact["schema"] != SANITIZED_PROXY_SCHEMA:
+            raise DatasetResolutionError("Yahoo MSFT proxy source artifact schema is invalid")
+        if artifact["identity"] != MSFT_PROXY_STATIC_IDENTITY:
+            raise DatasetResolutionError("Yahoo source identity does not match XNYS/MSFT")
+        if artifact["request_window"] != {"start": start, "end": end}:
+            raise DatasetResolutionError("Yahoo source request window is invalid")
+        response_sha256 = artifact["raw_response_sha256"]
+        if (
+            not isinstance(response_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None
+        ):
+            raise DatasetResolutionError("Yahoo source response identity is invalid")
+        chart = artifact["chart"]
+        if not isinstance(chart, dict) or set(chart) != {
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adjclose",
+        }:
+            raise DatasetResolutionError("Yahoo sanitized chart fields are invalid")
+        timestamps = chart["timestamp"]
+        arrays = (
+            timestamps,
+            chart["open"],
+            chart["high"],
+            chart["low"],
+            chart["close"],
+            chart["adjclose"],
+        )
+        if not all(isinstance(values, list) for values in arrays):
+            raise DatasetResolutionError("Yahoo MSFT proxy arrays are invalid")
+        if len({len(values) for values in arrays}) != 1 or not timestamps:
+            raise DatasetResolutionError("Yahoo MSFT proxy arrays are not aligned")
+    except DatasetResolutionError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT proxy source artifact schema is invalid") from exc
+    try:
+        dates = (
+            pd.to_datetime(timestamps, unit="s", utc=True)
+            .tz_convert(ZoneInfo("America/New_York"))
+            .normalize()
+            .tz_localize(None)
+        )
+    except (TypeError, ValueError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT proxy timestamps are invalid") from exc
+    if dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise DatasetResolutionError("Yahoo MSFT proxy sessions must be unique and increasing")
+    date_strings = [str(value.date()) for value in dates]
+    if date_strings[0] < start or date_strings[-1] > end:
+        raise DatasetResolutionError("Yahoo MSFT proxy returned an observation outside the frozen range")
+
+    source_artifact_sha256 = hashlib.sha256(source_artifact_bytes).hexdigest()
+    rows: list[dict[str, Any]] = []
+    for index, date in enumerate(date_strings):
+        raw_values = [arrays[position][index] for position in range(1, 5)]
+        adjusted_close = arrays[5][index]
+        values = [*raw_values, adjusted_close]
+        if any(
+            type(value) not in (int, float)
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+            for value in values
+        ):
+            raise DatasetResolutionError(
+                "Yahoo MSFT proxy requires complete finite positive OHLC and adjusted close"
+            )
+        raw_open, raw_high, raw_low, raw_close = (float(value) for value in raw_values)
+        factor = float(adjusted_close) / raw_close
+        if not math.isfinite(factor) or factor <= 0:
+            raise DatasetResolutionError("Yahoo MSFT proxy adjustment factor is invalid")
+        adjusted_values = [value * factor for value in (raw_open, raw_high, raw_low, raw_close)]
+        if any(not math.isfinite(value) or value <= 0 for value in adjusted_values):
+            raise DatasetResolutionError("Yahoo MSFT proxy adjusted OHLC is invalid")
+        raw_identity = {
+            "response_sha256": response_sha256,
+            "session_index": index,
+            "session_date": date,
+            "timestamp": timestamps[index],
+            "raw_open": raw_open,
+            "raw_high": raw_high,
+            "raw_low": raw_low,
+            "raw_close": raw_close,
+            "adjclose": float(adjusted_close),
+        }
+        rows.append(
+            {
+                "session_date": date,
+                "raw_open": raw_open,
+                "raw_high": raw_high,
+                "raw_low": raw_low,
+                "raw_close": raw_close,
+                "adjustment_factor": factor,
+                "open": adjusted_values[0],
+                "high": adjusted_values[1],
+                "low": adjusted_values[2],
+                "close": adjusted_values[3],
+                "source_record_identity": hashlib.sha256(
+                    canonical_json_bytes(raw_identity)
+                ).hexdigest(),
+                "record_sealed_at": sealed_at,
+            }
+        )
+    return build_proxy_snapshot(
+        rows,
+        source_identity={
+            "provider": "yahoo-chart-api",
+            "instrument": "MSFT",
+            "request_url": request_url,
+            "response_sha256": response_sha256,
+            "source_artifact_sha256": source_artifact_sha256,
+            "source_artifact_bytes_base64": base64.b64encode(source_artifact_bytes).decode("ascii"),
+            "separate_corporate_action_postings": 0,
+            "classification": MSFT_PROXY_LABEL,
+        },
+        sealed_at=sealed_at,
+    )
+
+
+class MsftAdjustedOhlcProxyIngress:
+    """One fixed-range, idempotent and explicitly non-confirmatory proxy ingress."""
+
+    def __init__(self, provider: Any, persistence: Any, *, clock: Callable[[], datetime] | None = None):
+        self.provider = provider
+        self.persistence = persistence
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def ingest(self, request: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
+        if not isinstance(request, Mapping) or set(request) != {
+            "start",
+            "end",
+            "expected_generation",
+        }:
+            raise DatasetResolutionError("MSFT proxy ingress request fields are invalid")
+        start = _date(request["start"], "MSFT proxy ingress start")
+        end = _date(request["end"], "MSFT proxy ingress end")
+        generation = request["expected_generation"]
+        if (
+            start != MSFT_PROXY_START
+            or end != MSFT_PROXY_END
+            or type(generation) is not int
+            or generation < 0
+        ):
+            raise DatasetResolutionError(
+                "MSFT proxy range must be exactly 2022-02-01 through 2024-12-31"
+            )
+        if not isinstance(idempotency_key, str) or not idempotency_key or len(idempotency_key) > 128:
+            raise DatasetResolutionError("MSFT proxy ingress idempotency key is invalid")
+        frozen_request = {
+            "instrument": "MSFT",
+            "market": "XNYS",
+            "classification": MSFT_PROXY_LABEL,
+            "start": start,
+            "end": end,
+            "expected_generation": generation,
+        }
+        request_digest = hashlib.sha256(canonical_json_bytes(frozen_request)).hexdigest()
+        existing = self.persistence.dataset_ingress_receipt(idempotency_key, request_digest)
+        if existing is not None:
+            return existing
+        url = yahoo_adjusted_ohlc_proxy_url("MSFT", start, end)
+        source_artifact = self.provider.get_sanitized_msft_proxy(
+            url,
+            maximum_bytes=MAX_PROVIDER_RESPONSE_BYTES,
+            start=start,
+            end=end,
+        )
+        now = self.clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise DatasetResolutionError("MSFT proxy ingress clock must be timezone-aware")
+        sealed_at = now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        snapshot = msft_adjusted_ohlc_proxy_snapshot_from_yahoo(
+            source_artifact,
+            request_url=url,
+            sealed_at=sealed_at,
+            start=start,
+            end=end,
+        )
+        return self.persistence.publish_msft_snapshot(
+            snapshot=snapshot,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            expected_generation=generation,
+        )
+
+
+def msft_snapshot_from_yahoo(
+    payload_bytes: bytes,
+    *,
+    request_url: str,
+    sealed_at: str,
+) -> dict[str, Any]:
+    """Parse one byte-frozen Yahoo response into the explicit XNYS/MSFT schema."""
+
+    raise DatasetResolutionError(MSFT_YAHOO_BASIS_UNQUALIFIED)
+
+    from .msft_trend_study import build_snapshot
+
+    if not payload_bytes or len(payload_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise DatasetResolutionError("Yahoo MSFT response body size is invalid")
+    try:
+        payload = json.loads(
+            payload_bytes,
+            object_pairs_hook=_strict_object,
+            parse_constant=lambda item: (_ for _ in ()).throw(
+                DatasetResolutionError(f"Yahoo response contains non-finite value: {item}")
+            ),
+        )
+        chart = payload["chart"]
+        if chart.get("error") is not None:
+            raise DatasetResolutionError("Yahoo response reports an error")
+        results = chart["result"]
+        if not isinstance(results, list) or len(results) != 1:
+            raise DatasetResolutionError("Yahoo response must contain exactly one chart result")
+        result = results[0]
+        metadata = result["meta"]
+        if (
+            metadata.get("symbol") != "MSFT"
+            or metadata.get("currency") != "USD"
+            or metadata.get("dataGranularity") != "1d"
+            or metadata.get("exchangeTimezoneName") != "America/New_York"
+        ):
+            raise DatasetResolutionError("Yahoo response metadata does not match XNYS/MSFT")
+        timestamps = result["timestamp"]
+        quotes = result["indicators"]["quote"]
+        if not isinstance(quotes, list) or len(quotes) != 1:
+            raise DatasetResolutionError("Yahoo MSFT quote generation is invalid")
+        quote = quotes[0]
+        opens = quote["open"]
+        closes = quote["close"]
+        if not all(isinstance(values, list) for values in (timestamps, opens, closes)):
+            raise DatasetResolutionError("Yahoo MSFT price arrays are invalid")
+        if len({len(timestamps), len(opens), len(closes)}) != 1 or not timestamps:
+            raise DatasetResolutionError("Yahoo MSFT price arrays are not aligned")
+        events = result.get("events", {})
+        if not isinstance(events, dict):
+            raise DatasetResolutionError("Yahoo MSFT events are invalid")
+    except DatasetResolutionError:
+        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT response schema is invalid") from exc
+    try:
+        dates = (
+            pd.to_datetime(timestamps, unit="s", utc=True)
+            .tz_convert(ZoneInfo("America/New_York"))
+            .normalize()
+            .tz_localize(None)
+        )
+    except (TypeError, ValueError) as exc:
+        raise DatasetResolutionError("Yahoo MSFT timestamps are invalid") from exc
+    if dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise DatasetResolutionError("Yahoo MSFT sessions must be unique and increasing")
+
+    event_map: dict[str, dict[str, float]] = {
+        str(session.date()): {"split_factor": 1.0, "cash_dividend": 0.0}
+        for session in dates
+    }
+    splits = events.get("splits", {})
+    dividends = events.get("dividends", {})
+    if not isinstance(splits, dict) or not isinstance(dividends, dict):
+        raise DatasetResolutionError("Yahoo MSFT event groups are invalid")
+    for value in splits.values():
+        if not isinstance(value, dict) or type(value.get("date")) is not int:
+            raise DatasetResolutionError("Yahoo MSFT split event is invalid")
+        date = str(
+            pd.Timestamp(value["date"], unit="s", tz="UTC")
+            .tz_convert("America/New_York")
+            .date()
+        )
+        numerator = value.get("numerator")
+        denominator = value.get("denominator")
+        if type(numerator) not in (int, float) or type(denominator) not in (int, float):
+            raise DatasetResolutionError("Yahoo MSFT split ratio is invalid")
+        ratio = float(numerator) / float(denominator)
+        if date not in event_map or not math.isfinite(ratio) or ratio <= 0:
+            raise DatasetResolutionError("Yahoo MSFT split event does not match a session")
+        event_map[date]["split_factor"] *= ratio
+    for value in dividends.values():
+        if not isinstance(value, dict) or type(value.get("date")) is not int:
+            raise DatasetResolutionError("Yahoo MSFT dividend event is invalid")
+        date = str(
+            pd.Timestamp(value["date"], unit="s", tz="UTC")
+            .tz_convert("America/New_York")
+            .date()
+        )
+        amount = value.get("amount")
+        if type(amount) not in (int, float) or not math.isfinite(float(amount)) or amount < 0:
+            raise DatasetResolutionError("Yahoo MSFT dividend amount is invalid")
+        if date not in event_map:
+            raise DatasetResolutionError("Yahoo MSFT dividend event does not match a session")
+        event_map[date]["cash_dividend"] += float(amount)
+    response_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    rows: list[dict[str, Any]] = []
+    for index, session in enumerate(dates):
+        open_value = opens[index]
+        close_value = closes[index]
+        if (
+            type(open_value) not in (int, float)
+            or type(close_value) not in (int, float)
+            or not math.isfinite(float(open_value))
+            or not math.isfinite(float(close_value))
+            or open_value <= 0
+            or close_value <= 0
+        ):
+            raise DatasetResolutionError("Yahoo MSFT prices must be complete, finite and positive")
+        date = str(session.date())
+        raw_identity = {
+            "response_sha256": response_sha256,
+            "session_index": index,
+            "session_date": date,
+            "timestamp": timestamps[index],
+            "open": open_value,
+            "close": close_value,
+            **event_map[date],
+        }
+        rows.append(
+            {
+                "session_date": date,
+                "open": float(open_value),
+                "close": float(close_value),
+                **event_map[date],
+                "source_record_identity": hashlib.sha256(
+                    canonical_json_bytes(raw_identity)
+                ).hexdigest(),
+                "record_sealed_at": sealed_at,
+            }
+        )
+    return build_snapshot(
+        rows,
+        source_identity={
+            "provider": "yahoo-chart-api",
+            "instrument": "MSFT",
+            "request_url": request_url,
+            "response_sha256": response_sha256,
+            "canonical_content_sha256": hashlib.sha256(
+                canonical_json_bytes(payload)
+            ).hexdigest(),
+        },
+        sealed_at=sealed_at,
+    )
+
+
+class MsftDatasetIngress:
+    """Authenticated API action target; provider access remains outside the UI service."""
+
+    def __init__(self, provider: Any, persistence: Any, *, clock: Callable[[], datetime] | None = None):
+        self.provider = provider
+        self.persistence = persistence
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    def ingest(self, request: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
+        if not isinstance(request, Mapping) or set(request) != {
+            "start",
+            "end",
+            "expected_generation",
+        }:
+            raise DatasetResolutionError("MSFT ingress request fields are invalid")
+        start = _date(request["start"], "MSFT ingress start")
+        end = _date(request["end"], "MSFT ingress end")
+        generation = request["expected_generation"]
+        if start > end or type(generation) is not int or generation < 0:
+            raise DatasetResolutionError("MSFT ingress range or generation is invalid")
+        if not isinstance(idempotency_key, str) or not idempotency_key or len(idempotency_key) > 128:
+            raise DatasetResolutionError("MSFT ingress idempotency key is invalid")
+        frozen_request = {
+            "instrument": "MSFT",
+            "market": "XNYS",
+            "start": start,
+            "end": end,
+            "expected_generation": generation,
+        }
+        request_digest = hashlib.sha256(canonical_json_bytes(frozen_request)).hexdigest()
+        existing = self.persistence.dataset_ingress_receipt(idempotency_key, request_digest)
+        if existing is not None:
+            return existing
+        raise DatasetResolutionError(MSFT_YAHOO_BASIS_UNQUALIFIED)
+
+        url = yahoo_chart_url("MSFT", start, end)
+        payload = self.provider.get(
+            url,
+            headers={"User-Agent": "quant-research-platform/0.1"},
+            maximum_bytes=MAX_PROVIDER_RESPONSE_BYTES,
+        )
+        now = self.clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise DatasetResolutionError("MSFT ingress clock must be timezone-aware")
+        sealed_at = now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        snapshot = msft_snapshot_from_yahoo(
+            payload,
+            request_url=url,
+            sealed_at=sealed_at,
+        )
+        return self.persistence.publish_msft_snapshot(
+            snapshot=snapshot,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            expected_generation=generation,
+        )
 
 
 class DailyBarsSource(Protocol):

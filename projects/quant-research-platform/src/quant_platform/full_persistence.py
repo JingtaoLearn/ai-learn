@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Sequence
 
+import pandas as pd
 import psycopg
 from psycopg.types.json import Jsonb
 
@@ -27,7 +29,7 @@ from .postgres_persistence import (
 )
 from .schemas import canonical_json_bytes
 
-FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v3"
+FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v4"
 MIGRATION_MANIFEST_SCHEMA = "quantresearch-full-migration-manifest/v1"
 PARITY_RECEIPT_SCHEMA = "quantresearch-full-migration-parity/v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -334,6 +336,15 @@ CREATE TABLE IF NOT EXISTS qr.dataset_current (
     instrument text PRIMARY KEY, snapshot_id char(64) NOT NULL REFERENCES qr.dataset_snapshots(snapshot_id),
     generation bigint NOT NULL DEFAULT 1 CHECK (generation > 0)
 );
+CREATE TABLE IF NOT EXISTS qr.msft_snapshot_payloads (
+    snapshot_id char(64) PRIMARY KEY REFERENCES qr.dataset_snapshots(snapshot_id),
+    artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id)
+);
+CREATE TABLE IF NOT EXISTS qr.dataset_ingress_actions (
+    idempotency_key text PRIMARY KEY, request_digest char(64) NOT NULL,
+    snapshot_id char(64) NOT NULL REFERENCES qr.dataset_snapshots(snapshot_id),
+    response jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
 CREATE TABLE IF NOT EXISTS qr.dataset_updates (
     update_id text PRIMARY KEY, instrument text NOT NULL, snapshot_id char(64),
     artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id),
@@ -369,6 +380,24 @@ CREATE TABLE IF NOT EXISTS qr.report_current (
     attempt_id text PRIMARY KEY, report_artifact_id char(64) NOT NULL REFERENCES qr.report_artifacts(report_artifact_id),
     sequence bigint NOT NULL
 );
+CREATE TABLE IF NOT EXISTS qr.study_report_artifacts (
+    report_artifact_id char(64) PRIMARY KEY,
+    study_id char(64) NOT NULL,
+    artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE(study_id, report_artifact_id)
+);
+CREATE TABLE IF NOT EXISTS qr.study_report_pointer_events (
+    study_id char(64) NOT NULL, sequence bigint NOT NULL CHECK (sequence > 0),
+    report_artifact_id char(64) NOT NULL REFERENCES qr.study_report_artifacts(report_artifact_id),
+    pointer jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(study_id, sequence)
+);
+CREATE TABLE IF NOT EXISTS qr.study_report_current (
+    study_id char(64) PRIMARY KEY,
+    report_artifact_id char(64) NOT NULL REFERENCES qr.study_report_artifacts(report_artifact_id),
+    sequence bigint NOT NULL CHECK (sequence > 0)
+);
 CREATE TABLE IF NOT EXISTS qr.production_results (
     result_id char(64) PRIMARY KEY, request_id text,
     artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id),
@@ -394,6 +423,8 @@ BEGIN
     IF EXISTS (SELECT 1 FROM qr.operator_versions WHERE artifact_set_id = NEW.artifact_set_id)
        OR EXISTS (SELECT 1 FROM qr.attempt_evidence_packages WHERE artifact_set_id = NEW.artifact_set_id)
        OR EXISTS (SELECT 1 FROM qr.report_artifacts WHERE artifact_set_id = NEW.artifact_set_id)
+       OR EXISTS (SELECT 1 FROM qr.study_report_artifacts WHERE artifact_set_id = NEW.artifact_set_id)
+       OR EXISTS (SELECT 1 FROM qr.msft_snapshot_payloads WHERE artifact_set_id = NEW.artifact_set_id)
        OR EXISTS (SELECT 1 FROM qr.production_results WHERE artifact_set_id = NEW.artifact_set_id)
        OR EXISTS (SELECT 1 FROM qr.dataset_updates WHERE artifact_set_id = NEW.artifact_set_id)
        OR EXISTS (SELECT 1 FROM qr.formal_calibration_claims WHERE artifact_set_id = NEW.artifact_set_id)
@@ -442,12 +473,16 @@ IMMUTABLE_TABLES = (
     ("qr", "residual_artifacts"),
     ("qr", "source_files"),
     ("qr", "dataset_snapshots"),
+    ("qr", "msft_snapshot_payloads"),
+    ("qr", "dataset_ingress_actions"),
     ("qr", "dataset_updates"),
     ("qr", "dataset_lineage_claims"),
     ("qr", "attempt_evidence_packages"),
     ("qr", "attempt_events"),
     ("qr", "report_artifacts"),
     ("qr", "report_pointer_events"),
+    ("qr", "study_report_artifacts"),
+    ("qr", "study_report_pointer_events"),
     ("qr", "production_results"),
     ("qr", "formal_calibration_claims"),
     ("qr", "accounting_outcome_references"),
@@ -631,6 +666,18 @@ def install_full_schema(
                 current = connection.execute(
                     "SELECT identity FROM qr.full_schema_identity WHERE singleton"
                 ).fetchone()
+                if current is not None and current["identity"] == (
+                    "quantresearch-postgresql-full-persistence-v3"
+                ):
+                    connection.execute(
+                        'DROP TRIGGER IF EXISTS "full_schema_identity_immutable" '
+                        "ON qr.full_schema_identity"
+                    )
+                    connection.execute(
+                        "UPDATE qr.full_schema_identity SET identity=%s WHERE singleton",
+                        (FULL_SCHEMA_IDENTITY,),
+                    )
+                    current = {"identity": FULL_SCHEMA_IDENTITY}
                 if current is None or current["identity"] != FULL_SCHEMA_IDENTITY:
                     raise PersistenceSchemaError("full PostgreSQL schema identity conflicts")
             for schema, table in IMMUTABLE_TABLES:
@@ -912,6 +959,430 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 raise PersistenceUnavailableError("stored artifact verification failed")
             result[row["logical_name"]] = payload
         return result
+
+    def dataset_ingress_receipt(
+        self, idempotency_key: str, request_digest: str
+    ) -> dict[str, Any] | None:
+        if not idempotency_key or len(idempotency_key) > 128 or SHA256.fullmatch(request_digest) is None:
+            raise ValueError("dataset ingress identity is invalid")
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT request_digest, response FROM qr.dataset_ingress_actions "
+                "WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["request_digest"].strip() != request_digest:
+            raise PersistenceConflict("dataset ingress idempotency key conflicts")
+        return dict(row["response"])
+
+    def publish_msft_snapshot(
+        self,
+        *,
+        snapshot: Mapping[str, Any],
+        idempotency_key: str,
+        request_digest: str,
+        expected_generation: int,
+    ) -> dict[str, Any]:
+        """Publish one explicit XNYS/MSFT Snapshot and generation-checked pointer."""
+
+        from .msft_trend_study import (
+            PROXY_LABEL,
+            PROXY_REQUIRED_RECORD_FIELDS,
+            PROXY_SNAPSHOT_SCHEMA,
+            REQUIRED_RECORD_FIELDS,
+            validate_proxy_snapshot,
+            validate_snapshot,
+        )
+
+        is_proxy = snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA
+        frozen = validate_proxy_snapshot(snapshot) if is_proxy else validate_snapshot(snapshot)
+        record_fields = PROXY_REQUIRED_RECORD_FIELDS if is_proxy else REQUIRED_RECORD_FIELDS
+        dataset_id = "MSFT-YAHOO-ADJUSTED-OHLC-PROXY" if is_proxy else "MSFT-XNYS-TOTAL-RETURN"
+        artifact_kind = "MSFT_YAHOO_ADJUSTED_OHLC_PROXY" if is_proxy else "XNYS_MSFT_SNAPSHOT"
+        adjustment = PROXY_LABEL if is_proxy else "split-adjusted-dividend-unadjusted"
+        pointer_instrument = "MSFT:YAHOO_ADJUSTED_OHLC_PROXY" if is_proxy else "MSFT"
+        if (
+            not idempotency_key
+            or len(idempotency_key) > 128
+            or SHA256.fullmatch(request_digest) is None
+            or type(expected_generation) is not int
+            or expected_generation < 0
+        ):
+            raise ValueError("dataset ingress identity or generation is invalid")
+        existing = self.dataset_ingress_receipt(idempotency_key, request_digest)
+        if existing is not None:
+            return existing
+        frame = pd.DataFrame(frozen["records"])[list(record_fields)]
+        parquet_buffer = io.BytesIO()
+        frame.to_parquet(parquet_buffer, index=False)
+        parquet = parquet_buffer.getvalue()
+        parquet_sha256, residual_key = self._runtime_residual(parquet)
+        snapshot_payload = canonical_json_bytes(frozen) + b"\n"
+        manifest = {
+            key: value for key, value in frozen.items() if key != "records"
+        } | {
+            "schema_version": 6,
+            "columns": list(record_fields),
+            "parquet_sha256": parquet_sha256,
+        }
+        manifest_payload = canonical_json_bytes(manifest) + b"\n"
+        lineage = {
+            "schema_version": 1,
+            "kind": "authenticated_provider_ingress",
+            "instrument": "MSFT",
+            "snapshot_id": frozen["snapshot_id"],
+            "source_identity_sha256": frozen["source_identity_sha256"],
+            "request_digest": request_digest,
+            "classification": adjustment,
+        }
+        lineage_payload = canonical_json_bytes(lineage) + b"\n"
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (f"dataset-ingress:{idempotency_key}",),
+                    )
+                    action = connection.execute(
+                        "SELECT request_digest, response FROM qr.dataset_ingress_actions "
+                        "WHERE idempotency_key=%s",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if action is not None:
+                        if action["request_digest"].strip() != request_digest:
+                            raise PersistenceConflict("dataset ingress idempotency key conflicts")
+                        return dict(action["response"])
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (pointer_instrument,),
+                    )
+                    current = connection.execute(
+                        "SELECT snapshot_id, generation FROM qr.dataset_current WHERE instrument=%s",
+                        (pointer_instrument,),
+                    ).fetchone()
+                    generation = 0 if current is None else int(current["generation"])
+                    if generation != expected_generation:
+                        raise PersistenceConflict("dataset current generation changed")
+                    artifact_set_id = self._publish_artifact_set_in_transaction(
+                        connection,
+                        kind=artifact_kind,
+                        members={
+                            "manifest.json": ("application/json", manifest_payload),
+                            "snapshot.json": ("application/json", snapshot_payload),
+                            "lineage.json": ("application/json", lineage_payload),
+                        },
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.residual_artifacts(artifact_sha256, byte_size, media_type, "
+                        "residual_class, residual_key) VALUES (%s,%s,'application/x-parquet',"
+                        "'DATASET_PARQUET',%s) ON CONFLICT (artifact_sha256) DO NOTHING",
+                        (parquet_sha256, len(parquet), residual_key),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr_catalog.dataset_catalog(dataset_id,name,instrument,provider,"
+                        "market,currency,adjustment,calendar,default_start,created_at) VALUES "
+                        "(%s,%s,'MSFT','yahoo-chart-api','XNYS','USD',%s,'XNYS',%s,%s) "
+                        "ON CONFLICT (dataset_id) DO NOTHING",
+                        (
+                            dataset_id,
+                            (
+                                "Microsoft (MSFT) Yahoo adjusted OHLC proxy — unqualified/non-confirmatory"
+                                if is_proxy
+                                else "Microsoft (MSFT)"
+                            ),
+                            adjustment,
+                            frozen["data_start"],
+                            frozen["sealed_at"],
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.dataset_snapshots(snapshot_id,instrument,schema_version,"
+                        "canonical_sha256,parquet_sha256,manifest_sha256,parquet_artifact_sha256,manifest) "
+                        "VALUES (%s,'MSFT',6,%s,%s,%s,%s,%s) ON CONFLICT (snapshot_id) DO NOTHING",
+                        (
+                            frozen["snapshot_id"],
+                            frozen["records_sha256"],
+                            parquet_sha256,
+                            _sha256_bytes(manifest_payload),
+                            parquet_sha256,
+                            Jsonb(manifest),
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.msft_snapshot_payloads(snapshot_id,artifact_set_id) "
+                        "VALUES (%s,%s) ON CONFLICT (snapshot_id) DO NOTHING",
+                        (frozen["snapshot_id"], artifact_set_id),
+                    )
+                    lineage_sha = _sha256_bytes(lineage_payload)
+                    connection.execute(
+                        "INSERT INTO qr.dataset_lineage_claims(instrument,snapshot_id,artifact_sha256,document) "
+                        "VALUES ('MSFT',%s,%s,%s) ON CONFLICT (instrument,snapshot_id) DO NOTHING",
+                        (frozen["snapshot_id"], lineage_sha, Jsonb(lineage)),
+                    )
+                    update_id = hashlib.sha256(
+                        b"quantresearch-msft-ingress/v1\0" + request_digest.encode("ascii")
+                    ).hexdigest()
+                    connection.execute(
+                        "INSERT INTO qr.dataset_updates(update_id,instrument,snapshot_id,artifact_set_id,document) "
+                        "VALUES (%s,'MSFT',%s,%s,%s) ON CONFLICT (update_id) DO NOTHING",
+                        (update_id, frozen["snapshot_id"], artifact_set_id, Jsonb(lineage)),
+                    )
+                    new_generation = generation + 1
+                    connection.execute(
+                        "INSERT INTO qr.dataset_current(instrument,snapshot_id,generation) "
+                        "VALUES (%s,%s,%s) ON CONFLICT (instrument) DO UPDATE SET "
+                        "snapshot_id=EXCLUDED.snapshot_id,generation=EXCLUDED.generation",
+                        (pointer_instrument, frozen["snapshot_id"], new_generation),
+                    )
+                    response = {
+                        "dataset_id": dataset_id,
+                        "classification": adjustment,
+                        "snapshot_id": frozen["snapshot_id"],
+                        "schema_version": 6,
+                        "record_count": frozen["record_count"],
+                        "data_start": frozen["data_start"],
+                        "data_end": frozen["data_end"],
+                        "required_fields": frozen["required_fields"],
+                        "null_counts": frozen["null_counts"],
+                        "source_identity_sha256": frozen["source_identity_sha256"],
+                        "records_sha256": frozen["records_sha256"],
+                        "parquet_sha256": parquet_sha256,
+                        "manifest_sha256": _sha256_bytes(manifest_payload),
+                        "generation": new_generation,
+                    }
+                    connection.execute(
+                        "INSERT INTO qr.dataset_ingress_actions(idempotency_key,request_digest,"
+                        "snapshot_id,response) VALUES (%s,%s,%s,%s)",
+                        (idempotency_key, request_digest, frozen["snapshot_id"], Jsonb(response)),
+                    )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("MSFT Snapshot publication failed") from exc
+        readback = self.dataset_ingress_receipt(idempotency_key, request_digest)
+        if readback is None or readback["snapshot_id"] != frozen["snapshot_id"]:
+            raise PersistenceUnavailableError("MSFT Snapshot read-back mismatch")
+        return readback
+
+    def msft_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        if SHA256.fullmatch(snapshot_id) is None:
+            raise ValueError("snapshot_id must be lowercase SHA-256")
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT artifact_set_id FROM qr.msft_snapshot_payloads WHERE snapshot_id=%s",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("unknown MSFT Snapshot")
+        members = self.read_artifact_set(row["artifact_set_id"].strip())
+        from .msft_trend_study import (
+            PROXY_SNAPSHOT_SCHEMA,
+            validate_proxy_snapshot,
+            validate_snapshot,
+        )
+
+        snapshot = _strict_json(members["snapshot.json"], "MSFT Snapshot")
+        return (
+            validate_proxy_snapshot(snapshot)
+            if snapshot.get("schema") == PROXY_SNAPSHOT_SCHEMA
+            else validate_snapshot(snapshot)
+        )
+
+    def publish_msft_study_report(
+        self,
+        *,
+        study_id: str,
+        result: Mapping[str, Any],
+        provenance: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if SHA256.fullmatch(study_id) is None:
+            raise ValueError("study_id must be lowercase SHA-256")
+        from .msft_trend_study import PROXY_RESULT_SCHEMA, build_report_pointer, chinese_report
+
+        effective_provenance = dict(provenance)
+        if result.get("schema") == PROXY_RESULT_SCHEMA:
+            effective_provenance["study_id"] = study_id
+        document, html = chinese_report(result, effective_provenance)
+        report_id = document["report_artifact_id"]
+        members = {
+            "report-document.json": (
+                "application/json",
+                canonical_json_bytes(document) + b"\n",
+            ),
+            "report.html": ("text/html", html),
+        }
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (f"study-report:{study_id}",),
+                    )
+                    current = connection.execute(
+                        "SELECT report_artifact_id,sequence FROM qr.study_report_current WHERE study_id=%s",
+                        (study_id,),
+                    ).fetchone()
+                    current_pointer = (
+                        None
+                        if current is None
+                        else {
+                            "report_artifact_id": current["report_artifact_id"].strip(),
+                            "sequence": int(current["sequence"]),
+                        }
+                    )
+                    pointer = build_report_pointer(study_id, report_id, current_pointer)
+                    if pointer is not None:
+                        artifact_set_id = self._publish_artifact_set_in_transaction(
+                            connection, kind="MSFT_STUDY_REPORT", members=members
+                        )
+                        connection.execute(
+                            "INSERT INTO qr.study_report_artifacts(report_artifact_id,study_id,"
+                            "artifact_set_id) VALUES (%s,%s,%s) "
+                            "ON CONFLICT (report_artifact_id) DO NOTHING",
+                            (report_id, study_id, artifact_set_id),
+                        )
+                        sequence = pointer["sequence"]
+                        connection.execute(
+                            "INSERT INTO qr.study_report_pointer_events(study_id,sequence,"
+                            "report_artifact_id,pointer) VALUES (%s,%s,%s,%s)",
+                            (study_id, sequence, report_id, Jsonb(pointer)),
+                        )
+                        connection.execute(
+                            "INSERT INTO qr.study_report_current(study_id,report_artifact_id,sequence) "
+                            "VALUES (%s,%s,%s) ON CONFLICT (study_id) DO UPDATE SET "
+                            "report_artifact_id=EXCLUDED.report_artifact_id,sequence=EXCLUDED.sequence",
+                            (study_id, report_id, sequence),
+                        )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("MSFT Study report publication failed") from exc
+        return self.current_msft_study_report(study_id)
+
+    def current_msft_study_report(self, study_id: str) -> dict[str, Any]:
+        with self.config.connect() as connection:
+            row = connection.execute(
+                "SELECT c.report_artifact_id,c.sequence,a.artifact_set_id,e.pointer "
+                "FROM qr.study_report_current c JOIN qr.study_report_artifacts a "
+                "USING (report_artifact_id) JOIN qr.study_report_pointer_events e "
+                "ON e.study_id=c.study_id AND e.sequence=c.sequence WHERE c.study_id=%s",
+                (study_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("MSFT Study report is unavailable")
+        members = self.read_artifact_set(row["artifact_set_id"].strip())
+        document = _strict_json(members["report-document.json"], "MSFT Study report")
+        report_id = row["report_artifact_id"].strip()
+        if document.get("report_artifact_id") != report_id or row["pointer"].get(
+            "report_artifact_id"
+        ) != report_id:
+            raise PersistenceUnavailableError("MSFT Study report binding is invalid")
+        return {
+            "study_id": study_id,
+            "report_artifact_id": report_id,
+            "sequence": int(row["sequence"]),
+            "canonical_url": f"https://127.0.0.1:8443/api/v1/studies/{study_id}/report",
+            "document": document,
+            "html": members["report.html"],
+        }
+
+    def publish_msft_study_invalidation(
+        self,
+        *,
+        study_id: str,
+        invalidated_report_artifact_id: str,
+    ) -> dict[str, Any]:
+        """Append a visible immutable correction without changing historical report bytes."""
+
+        from .msft_trend_study import PROXY_INVALIDATION_CLASSIFICATION, build_report_pointer
+
+        if SHA256.fullmatch(study_id) is None or SHA256.fullmatch(
+            invalidated_report_artifact_id
+        ) is None:
+            raise ValueError("MSFT Study invalidation identities must be lowercase SHA-256")
+        core = {
+            "schema": "quantresearch-msft-study-invalidation-report/v1",
+            "study_id": study_id,
+            "classification": PROXY_INVALIDATION_CLASSIFICATION,
+            "invalidated_report_artifact_id": invalidated_report_artifact_id,
+            "first_line": (
+                "历史报告已失效，绝不能用于支持研究或投资结论；原始研究与报告字节保持不变"
+            ),
+            "reason": (
+                "持久化来源包含截止日后的动态市场元数据，且 Snapshot 清单列名与物理 "
+                "Parquet 列不一致。此记录仅追加失效分类，不改写历史证据。"
+            ),
+        }
+        report_id = hashlib.sha256(
+            b"quantresearch-msft-study-invalidation-report/v1\0" + canonical_json_bytes(core)
+        ).hexdigest()
+        document = {**core, "report_artifact_id": report_id}
+        html = (
+            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+            "<title>MSFT 历史研究失效说明</title><main><p><strong>"
+            + document["first_line"]
+            + "</strong></p><h1>MSFT Yahoo 调整 OHLC 代理研究失效说明</h1><p>分类：<code>"
+            + PROXY_INVALIDATION_CLASSIFICATION
+            + "</code></p><p>Study：<code>"
+            + study_id
+            + "</code></p><p>保留的历史报告：<code>"
+            + invalidated_report_artifact_id
+            + "</code></p><p>"
+            + document["reason"]
+            + "</p></main></html>"
+        ).encode("utf-8")
+        members = {
+            "report-document.json": (
+                "application/json",
+                canonical_json_bytes(document) + b"\n",
+            ),
+            "report.html": ("text/html", html),
+        }
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (f"study-report:{study_id}",),
+                    )
+                    current = connection.execute(
+                        "SELECT report_artifact_id,sequence FROM qr.study_report_current "
+                        "WHERE study_id=%s",
+                        (study_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise PersistenceConflict("MSFT Study has no report to invalidate")
+                    current_report_id = current["report_artifact_id"].strip()
+                    if current_report_id == report_id:
+                        return self.current_msft_study_report(study_id)
+                    if current_report_id != invalidated_report_artifact_id:
+                        raise PersistenceConflict("MSFT Study current report changed before invalidation")
+                    current_pointer = {
+                        "report_artifact_id": current_report_id,
+                        "sequence": int(current["sequence"]),
+                    }
+                    pointer = build_report_pointer(study_id, report_id, current_pointer)
+                    if pointer is None:
+                        raise PersistenceConflict("MSFT Study invalidation did not advance the pointer")
+                    artifact_set_id = self._publish_artifact_set_in_transaction(
+                        connection, kind="MSFT_STUDY_INVALIDATION", members=members
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.study_report_artifacts(report_artifact_id,study_id,"
+                        "artifact_set_id) VALUES (%s,%s,%s)",
+                        (report_id, study_id, artifact_set_id),
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.study_report_pointer_events(study_id,sequence,"
+                        "report_artifact_id,pointer) VALUES (%s,%s,%s,%s)",
+                        (study_id, pointer["sequence"], report_id, Jsonb(pointer)),
+                    )
+                    connection.execute(
+                        "UPDATE qr.study_report_current SET report_artifact_id=%s,sequence=%s "
+                        "WHERE study_id=%s",
+                        (report_id, pointer["sequence"], study_id),
+                    )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("MSFT Study invalidation publication failed") from exc
+        return self.current_msft_study_report(study_id)
 
     def attempt_report(self, attempt_id: str) -> bytes:
         with self.config.connect() as connection:
@@ -2140,6 +2611,9 @@ def main() -> int:
     verify = commands.add_parser("verify")
     verify.add_argument("--source-root", type=Path, required=True)
     verify.add_argument("--manifest", type=Path, required=True)
+    invalidate = commands.add_parser("invalidate-msft-study")
+    invalidate.add_argument("--study-id", required=True)
+    invalidate.add_argument("--report-artifact-id", required=True)
     args = parser.parse_args()
     if args.command == "migrate":
         runtime_password = os.environ.get("QUANT_POSTGRES_PASSWORD_FILE")
@@ -2158,11 +2632,24 @@ def main() -> int:
             args.source_root, _load_json_file(args.manifest)
         )
         _write_create_only(args.receipt, receipt)
-    else:
+    elif args.command == "verify":
         manifest = _load_json_file(args.manifest)
         if inventory_source(args.source_root) != manifest:
             raise MigrationRejected("frozen source inventory mismatch")
         FullPostgresPersistence.from_environment().verify_schema()
+    else:
+        result = FullPostgresPersistence.from_environment().publish_msft_study_invalidation(
+            study_id=args.study_id,
+            invalidated_report_artifact_id=args.report_artifact_id,
+        )
+        print(
+            json.dumps(
+                {key: value for key, value in result.items() if key != "html"},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 

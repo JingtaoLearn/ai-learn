@@ -10,6 +10,7 @@ import secrets
 import stat
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode
@@ -27,11 +28,13 @@ from .auth import AuthError, AuthManager, SessionData
 from .catalog import initialize_catalog
 from .dataset_service import DatasetResolutionError, DatasetService
 from .datasets import _verify_snapshot
+from .daily_loop_status import CronReceiptStore, DailyLoopStatusService
 from .experiment_service import ExperimentService, TaskValidationError
 from .lightweight_study import LightweightStudyNotFound, LightweightStudyService
 from .operator_service import OperatorService, OperatorSubmissionError, Validator
 from .parameter_study import ParameterStudy, StudyNotFoundError, StudyValidationError
 from .postgres_persistence import PostgresOperatorPersistence
+from .production_store import ProductionStore
 from .resolved_runner import effective_execution_identity
 from .schemas import SchemaValidationError, canonical_json_bytes, validate_parameters
 from .seed import BUILTINS
@@ -1066,6 +1069,24 @@ def create_app(
         validator=operator_validator,
         runner_image=settings.runner_image,
     )
+    production_store = ProductionStore(settings.state_root)
+    production_store.initialize()
+    daily_loop = DailyLoopStatusService(
+        production_store,
+        CronReceiptStore(
+            Path(
+                os.environ.get(
+                    "QR_DAILY_LOOP_RECEIPTS_PATH",
+                    str(settings.state_root / "daily-loop-cron-receipts.json"),
+                )
+            )
+        ),
+        clock=(
+            (lambda: datetime.fromtimestamp(clock(), UTC))
+            if clock is not None
+            else (lambda: datetime.now(UTC))
+        ),
+    )
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.catalog = catalog
@@ -1075,6 +1096,7 @@ def create_app(
     app.state.lightweight_studies = lightweight_studies
     app.state.operators = operators
     app.state.operator_persistence = operator_persistence
+    app.state.daily_loop = daily_loop
     app.state.auth = auth
 
     def lightweight_service() -> LightweightStudyService:
@@ -1357,6 +1379,11 @@ def create_app(
         return {
             "datasets": await run_in_threadpool(datasets.list_available)
         }
+
+    @app.get("/api/daily-loop/status")
+    async def api_daily_loop_status(request: Request):
+        _session(request)
+        return await run_in_threadpool(daily_loop.snapshot)
 
     @app.get("/api/datasets/{dataset_id}/snapshots/{snapshot_id}")
     async def api_dataset_detail(request: Request, dataset_id: str, snapshot_id: str):
@@ -1655,6 +1682,7 @@ def create_app(
         except AuthError:
             return RedirectResponse("/login", status_code=303)
         context = await run_in_threadpool(_dashboard_context, catalog, operators)
+        context["daily_loop"] = await run_in_threadpool(daily_loop.snapshot)
         return _render(
             request,
             "dashboard.html",
@@ -2071,6 +2099,22 @@ def create_app(
             f"/studies/lightweight/{study['study_id']}", status_code=303
         )
 
+    @app.post("/studies/lightweight/msft")
+    async def msft_study_submit(request: Request):
+        session = _session(request)
+        form = await _form_body(request)
+        if set(form) != {"csrf_token", "action_id", "snapshot_id"}:
+            raise StudyRemoteError("MSFT Study submission fields are invalid")
+        _csrf(request, session, form["csrf_token"])
+        study = await run_in_threadpool(
+            lightweight_service().submit_msft,
+            action_id=form["action_id"],
+            snapshot_id=form["snapshot_id"],
+        )
+        return RedirectResponse(
+            f"/studies/lightweight/{study['study_id']}", status_code=303
+        )
+
     @app.get("/studies/lightweight/{study_id}")
     async def lightweight_study_detail(request: Request, study_id: str):
         session = _session(request)
@@ -2238,6 +2282,23 @@ def create_app(
     async def study_report(request: Request, study_id: str):
         session = _session(request)
         study_id = _study_id(study_id)
+        if app.state.lightweight_studies is not None:
+            try:
+                report = await run_in_threadpool(lightweight_service().report, study_id)
+            except LightweightStudyNotFound:
+                pass
+            else:
+                return Response(
+                    report["html"],
+                    media_type="text/html",
+                    headers={
+                        "Content-Security-Policy": (
+                            "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                            "form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+                        ),
+                        "X-QuantResearch-Report-Artifact": report["report_artifact_id"],
+                    },
+                )
         detail = await run_in_threadpool(studies.page_detail, study_id)
         return _render(
             request,

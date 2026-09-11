@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from gold_research.focus_contract import Phase, canonical_json_bytes as focus_json, contract_document
 from gold_research.focus_runner import claim_phase
+from quant_platform.daily_loop_status import CronReceiptStore
 from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_client import ProductionClient
 from quant_platform.production_contract import (
@@ -90,7 +91,12 @@ def runtime(tmp_path, *, crash=lambda _point: None, clock=None):
         clock=clock,
         crash=crash,
     )
-    app = create_production_app(service, results, verified_client_identity=IDENTITY)
+    app = create_production_app(
+        service,
+        results,
+        verified_client_identity=IDENTITY,
+        cron_receipts=CronReceiptStore(tmp_path / "cron-receipts.json"),
+    )
     return store, results, service, provider, worker, TestClient(app)
 
 
@@ -106,6 +112,59 @@ def headers(value: ProductionRequest) -> dict[str, str]:
         "Idempotency-Key": value.request_id,
         "Content-Type": "application/json",
     }
+
+
+def test_mtls_client_can_publish_bounded_cron_receipt(tmp_path) -> None:
+    *_, client = runtime(tmp_path)
+    payload = {
+        "schema": "quantresearch-cron-receipts/v2",
+        "observed_at": "2026-09-11T01:06:00+00:00",
+        "jobs": [
+            {
+                "job_id": job_id,
+                "enabled": True,
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "40 8 * * 1-5" if job_id == "1cd5557264db" else "45 8 * * 1-5",
+                },
+                "last_run_at": "2026-09-11T08:45:45+08:00",
+                "last_status": "ok",
+                "last_delivery_error": False,
+                "delivery_target": {
+                    "channel": "feishu",
+                    "destination_sha256": "b" * 64,
+                },
+                "report_readback": {
+                    "status": "OK",
+                    "sha256": "a" * 64,
+                    "size": 123,
+                    "action_sha256": "c" * 64,
+                },
+                "execution": {
+                    "id": f"execution-{job_id}",
+                    "status": "completed",
+                    "claimed_at": "2026-09-11T08:45:15+08:00",
+                    "started_at": "2026-09-11T08:45:16+08:00",
+                    "finished_at": "2026-09-11T08:45:45+08:00",
+                },
+            }
+            for job_id in ("1cd5557264db", "297c11cad0dc")
+        ],
+    }
+
+    denied = client.post(
+        "/api/v1/production/daily-loop/cron-receipts", json=payload
+    )
+    accepted = client.post(
+        "/api/v1/production/daily-loop/cron-receipts",
+        json=payload,
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+
+    assert denied.status_code == 403
+    assert accepted.status_code == 200
+    assert accepted.json()["ok"] is True
+    assert len(accepted.json()["receipt_sha256"]) == 64
 
 
 def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> None:

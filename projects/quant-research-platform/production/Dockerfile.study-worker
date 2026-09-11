@@ -6,11 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin study-worker \
     && pip install --no-cache-dir --disable-pip-version-check \
-        "optuna==4.9.0" "psycopg[binary]==3.3.5" \
+        "numpy==2.3.2" "optuna==4.9.0" "psycopg[binary]==3.3.5" \
     && mkdir -p /opt/quant_platform \
     && touch /opt/quant_platform/__init__.py
 
 COPY src/quant_platform/schemas.py \
+     src/quant_platform/msft_trend_study.py \
      src/quant_platform/study_suggesters.py \
      src/quant_platform/study_training_kernel.py \
      src/quant_platform/study_remote.py \

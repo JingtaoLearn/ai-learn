@@ -14,6 +14,7 @@ from .study_remote import (
     StudyRemoteError,
     StudyTransportError,
     StudyValidationError,
+    freeze_market_request,
     freeze_training_request,
 )
 
@@ -32,6 +33,7 @@ class LightweightStudyService:
     source_commit: str
     source_tree: str
     worker_image: str
+    platform: Any | None = None
 
     @classmethod
     def from_environment(cls) -> LightweightStudyService | None:
@@ -58,12 +60,15 @@ class LightweightStudyService:
             Path(values["private_key"]),
             tls_ca_file=Path(values["tls_ca_file"]),
         )
+        from .full_persistence import FullPostgresPersistence
+
         return cls(
             store=store,
             dispatcher=StudyDispatcher(store, client),
             source_commit=values["source_commit"],
             source_tree=values["source_tree"],
             worker_image=values["worker_image"],
+            platform=FullPostgresPersistence.from_environment(),
         )
 
     def submit(self, *, action_id: str, trial_budget: int) -> dict[str, Any]:
@@ -87,6 +92,21 @@ class LightweightStudyService:
         result = self.dispatcher.submit(request)
         return self._view(result["authoritative"])
 
+    def submit_msft(self, *, action_id: str, snapshot_id: str) -> dict[str, Any]:
+        if ACTION_ID.fullmatch(action_id) is None:
+            raise StudyValidationError("lightweight Study action identity is invalid")
+        if self.platform is None:
+            raise StudyRemoteError("PostgreSQL MSFT Snapshot authority is unavailable")
+        snapshot = self.platform.msft_snapshot(snapshot_id)
+        request = freeze_market_request(
+            snapshot=snapshot,
+            source_commit=self.source_commit,
+            source_tree=self.source_tree,
+            worker_image=self.worker_image,
+        )
+        result = self.dispatcher.submit(request)
+        return self._view(result["authoritative"])
+
     def detail(self, study_id: str) -> dict[str, Any]:
         row = self.store.get(study_id)
         if row is None:
@@ -102,10 +122,65 @@ class LightweightStudyService:
                 )
         return self._view(row, sync_error=sync_error)
 
+    def report(self, study_id: str) -> dict[str, Any]:
+        detail = self.detail(study_id)
+        if detail["status"] != "SUCCEEDED" or detail["result"] is None:
+            raise StudyRemoteError("MSFT Study report is unavailable before successful read-back")
+        if not detail["kind"].startswith("MSFT_") or self.platform is None:
+            raise StudyRemoteError("canonical report is available only for the MSFT market Study")
+        from .msft_trend_study import PROXY_INVALIDATION_CLASSIFICATION
+
+        try:
+            current = self.platform.current_msft_study_report(study_id)
+        except ValueError:
+            current = None
+        if (
+            current is not None
+            and current["document"].get("classification")
+            == PROXY_INVALIDATION_CLASSIFICATION
+        ):
+            return current
+        return self.platform.publish_msft_study_report(
+            study_id=study_id,
+            result=detail["result"],
+            provenance={
+                "source_commit": detail["source_commit"],
+                "source_tree": detail["source_tree"],
+                "worker_image": detail["worker_image"],
+                "snapshot_id": detail["snapshot_id"],
+                "classification": detail["classification"],
+            },
+        )
+
+    def invalidate_msft_report(
+        self,
+        *,
+        study_id: str,
+        report_artifact_id: str,
+    ) -> dict[str, Any]:
+        detail = self.detail(study_id)
+        if detail["status"] != "SUCCEEDED" or not detail["kind"].startswith("MSFT_"):
+            raise StudyRemoteError("only a successful MSFT Study report can be invalidated")
+        if self.platform is None:
+            raise StudyRemoteError("PostgreSQL MSFT report authority is unavailable")
+        return self.platform.publish_msft_study_invalidation(
+            study_id=study_id,
+            invalidated_report_artifact_id=report_artifact_id,
+        )
+
     @staticmethod
     def _view(row: dict[str, Any], *, sync_error: str | None = None) -> dict[str, Any]:
         request = row["frozen_request"]
-        spec = request["training_spec"]
+        market = request.get("job_type") == "xnys-msft-trend-study-v1"
+        spec = request.get("training_spec")
+        market_snapshot = request.get("snapshot") if market else None
+        classification = (
+            market_snapshot.get("classification")
+            if isinstance(market_snapshot, dict)
+            else "IMMUTABLE_XNYS_TOTAL_RETURN_SNAPSHOT"
+            if market
+            else "SYNTHETIC_NON_MARKET"
+        )
         return {
             "study_id": row["study_id"],
             "status": row["status"],
@@ -115,8 +190,21 @@ class LightweightStudyService:
             "worker_image": row["worker_image"],
             "source_commit": row["source_commit"],
             "source_tree": row["source_tree"],
-            "objective": spec["objective"],
-            "trial_budget": spec["search"]["trial_budget"],
+            "kind": (
+                "MSFT_YAHOO_ADJUSTED_OHLC_PROXY"
+                if market and isinstance(market_snapshot, dict) and market_snapshot.get("classification")
+                else "MSFT_MARKET"
+                if market
+                else "SYNTHETIC_TRAINING"
+            ),
+            "classification": classification,
+            "objective": (
+                {"data_classification": classification}
+                if market
+                else spec["objective"]
+            ),
+            "trial_budget": 15 if market else spec["search"]["trial_budget"],
+            "snapshot_id": request["snapshot"]["snapshot_id"] if market else None,
             "progress": row.get("latest_progress"),
             "result": row.get("final_result"),
             "failure": row.get("failure"),

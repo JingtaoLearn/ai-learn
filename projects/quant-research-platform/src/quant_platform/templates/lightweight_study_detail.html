@@ -3,7 +3,7 @@
 {% block page %}lightweight-study-detail{% endblock %}
 {% block content %}
 <section class="page-heading split">
-  <div><p class="eyebrow">LIGHTWEIGHT STUDY · SYNTHETIC NON-MARKET</p><h1>Aggregate training result</h1><p class="mono">{{ study.study_id }}</p></div>
+  <div><p class="eyebrow">LIGHTWEIGHT STUDY · {{ "XNYS MSFT RESEARCH" if study.kind == "MSFT_MARKET" else "SYNTHETIC NON-MARKET" }}</p><h1>Aggregate training result</h1><p class="mono">{{ study.study_id }}</p></div>
   <span class="badge" data-testid="lightweight-study-status">{{ study.status }}</span>
 </section>
 {% if study.sync_error %}<section class="notice" role="status">{{ study.sync_error }}</section>{% endif %}
@@ -27,6 +27,11 @@
 {% if study.result %}
 <section class="panel" data-testid="lightweight-study-result">
   <p class="eyebrow">FINAL AGGREGATE</p><h2>{{ study.result.conclusion }}</h2>
+  {% if study.kind == "MSFT_MARKET" %}
+  <p class="notice">Research only; not a trade recommendation. Read the immutable Chinese conclusion for gates, controls and limitations.</p>
+  <dl class="technical"><dt>Snapshot</dt><dd class="mono">{{ study.snapshot_id }}</dd><dt>Verdict</dt><dd>{{ study.result.verdict }}</dd><dt>Candidate count</dt><dd>{{ study.result.trial_count }}</dd></dl>
+  <div class="actions"><a class="button" href="/studies/{{ study.study_id }}/report">Open immutable Chinese report</a></div>
+  {% else %}
   <p class="notice">This result describes only the synthetic non-market objective. It is not evidence of investment effectiveness.</p>
   <dl class="technical">
     <dt>Completed work units</dt><dd>{{ study.result.completed_trials }}</dd>
@@ -35,6 +40,7 @@
     <dt>Best aggregate score</dt><dd>{{ study.result.best_score }}</dd>
     <dt>Checkpoint count</dt><dd>{{ study.result.checkpoint_count }}</dd>
   </dl>
+  {% endif %}
 </section>
 {% elif study.failure %}
 <section class="validation-summary danger" role="alert" data-testid="lightweight-study-failure"><h2>{{ study.failure.code }}</h2><p>{{ study.failure.message }}</p><p>Local compute attempted: {{ study.local_compute_attempted | lower }}</p></section>
