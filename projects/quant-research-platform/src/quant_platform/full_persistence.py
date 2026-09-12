@@ -458,9 +458,9 @@ END; $$;
 CREATE OR REPLACE FUNCTION qr.lock_bocom_admission_readback()
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    LOCK TABLE qr.accepted_evidence_packages, qr.artifact_set_members,
-        qr.artifact_sets, qr.artifacts, qr.dataset_current, qr.dataset_snapshots,
-        qr.residual_artifacts, qr.source_files IN SHARE MODE;
+    LOCK TABLE qr.artifacts, qr.artifact_sets, qr.artifact_set_members,
+        qr.accepted_evidence_packages, qr.residual_artifacts, qr.source_files,
+        qr.dataset_snapshots, qr.dataset_current IN SHARE MODE;
 END; $$;
 REVOKE ALL ON FUNCTION qr.lock_bocom_admission_readback() FROM PUBLIC;
 """
