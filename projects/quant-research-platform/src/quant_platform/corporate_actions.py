@@ -34,13 +34,30 @@ COVERAGE_STATES = {
 USE_ROLES = {"CAUSAL_FEATURE", "ACCOUNTING_OUTCOME"}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
-_BOCOM_URL = (
-    "https",
-    "www.bankcomm.com",
-    "/BankCommSite/file/fileDownload.html",
+_BOCOM_V1_ARTIFACT_URL = (
+    "https://www.bankcomm.com/BankCommSite/file/fileDownload.html"
+    "?fileId=94697c067ebe4427a4165910712df44d"
 )
-_BOCOM_REQUEST_URL = "https://www.bankcomm.com/BankCommSite/file/fileDownload.html"
-_BOCOM_ARTIFACT_URL = f"{_BOCOM_REQUEST_URL}?fileId=94697c067ebe4427a4165910712df44d"
+_BOCOM_V2_ARTIFACT_URLS = frozenset(
+    {
+        "https://m.bankcomm.com/wap/zonghang/cn/file/fileDownload.html"
+        "?fileId=94697c067ebe4427a4165910712df44d",
+        "https://www.bankcomm.com/BankCommSite/file/fileDownload.html"
+        "?fileId=0aba78fdf863447ab12a7068f7714ccf",
+    }
+)
+_BOCOM_V2_SOURCE_PACKAGE = {
+    "action_id": "bocom-corporate-action-source-correction-185",
+    "checksums_sha256": "56ba4efd935af4a566c1d3ffcbe3cdff88ae72b724c3c7a7f758ecd5d8a9b056",
+    "canonical_events_sha256": "6c8ac2d85067c20ff0dafbf346c018d281d348e16cb29a467d9fca75d5fd6024",
+    "accounting_policy_sha256": "a112be88843c3fcfeece50f0afb20dc027deb70dedc3cad41136155475e60a98",
+    "source_manifest_sha256": "d0ef2a5b5ed668788855ad912b60c4ce77fa0f6b895d511272e45385f83bd06c",
+    "source_selection_sha256": "580a1b6348414387d8c51692fe648c8e44d779361d4b6b5221d08f7445ff9286",
+    "retrieval_receipts_sha256": "2d8894e7e0cf57eebd1a1e0d161679ee96e36502b5b46ae6dc3bbd4c78bf2c16",
+    "settlement_policy_id": "SSE-A-CASH-DIVIDEND-DESIGNATED-TRADE-TPLUS1-V1",
+    "tax_policy_id": "PRC-LISTED-A-DIVIDEND-TAX-MATRIX-2015-101-V1",
+}
+_BOCOM_V2_EVIDENCE_SHA256 = "2af966e537b52c41131470f33a2a7337195a2d0f231f5e3d178d90ed3e0a0c86"
 _XSHG_TIMEZONE = "Asia/Shanghai"
 _XSHG_SESSION_CLOSE = time(15, 0)
 FEN_PER_CNY = Decimal("100")
@@ -88,6 +105,13 @@ SYNTHETIC_COMPLETE_CONTRACT = {
     "source_contract_version": "synthetic-complete-enumeration@1",
     "scope": "DETERMINISTIC_NON_OBSERVATIONAL_TEST_FIXTURE_ONLY",
     "coverage_states": ["VERIFIED_NO_ACTION", "VERIFIED_COMPLETE_INTERVAL"],
+}
+BOCOM_SOURCE_PACKAGE_COMPLETE_CONTRACT = {
+    "schema_version": 1,
+    "source_contract_version": "bocom-xshg-dividend@2",
+    "scope": "601328.SS_HOLDER_ACTIONS_2025-08-15_THROUGH_2026-08-28",
+    "coverage_basis": "ACCEPTED_CHECKSUM_BOUND_FIRST_PARTY_SOURCE_PACKAGE",
+    "coverage_states": ["VERIFIED_COMPLETE_INTERVAL"],
 }
 
 
@@ -349,22 +373,20 @@ def _causal_decision_cutoff(available_through: str) -> tuple[date, datetime, dic
     )
 
 
-def _validate_bocom_url(value: Any, label: str) -> str:
+def _validate_bocom_url(value: Any, label: str, *, source_contract: str) -> str:
     if not isinstance(value, str):
         raise CorporateActionEvidenceError(f"{label} source URL is invalid")
     parsed = urlsplit(value)
-    if (
-        (
-            parsed.scheme.lower(),
-            (parsed.hostname or "").lower(),
-            parsed.path,
+    allowed = (
+        frozenset({_BOCOM_V1_ARTIFACT_URL})
+        if source_contract
+        in {"bocom-xshg-dividend@1", "synthetic-complete-enumeration@1"}
+        else _BOCOM_V2_ARTIFACT_URLS
+    )
+    if value not in allowed or parsed.username or parsed.password or parsed.fragment:
+        raise CorporateActionEvidenceError(
+            f"{label} source URL is outside the accepted source contract"
         )
-        != _BOCOM_URL
-        or parsed.username
-        or parsed.password
-        or parsed.fragment
-    ):
-        raise CorporateActionEvidenceError(f"{label} source URL is outside the BOCOM contract")
     if parsed.port not in (None, 443):
         raise CorporateActionEvidenceError(f"{label} source URL has an invalid port")
     return value
@@ -382,7 +404,7 @@ class CorporateActionEvidence:
         return canonical_json_bytes(self.document) + b"\n"
 
 
-def _validate_request(item: Any) -> str:
+def _validate_request(item: Any, *, source_contract: str) -> str:
     item = _require_fields(item, {"request_id", "payload"}, "request")
     payload = _require_fields(
         item["payload"],
@@ -391,12 +413,11 @@ def _validate_request(item: Any) -> str:
     )
     if payload["schema_version"] != 1 or payload["method"] != "GET":
         raise CorporateActionEvidenceError("request method or schema is invalid")
-    if _validate_bocom_url(payload["url"], "request") != _BOCOM_REQUEST_URL:
-        raise CorporateActionEvidenceError("request URL is outside the accepted source contract")
-    if not isinstance(payload["query"], dict) or payload["query"] != {
-        "fileId": "94697c067ebe4427a4165910712df44d"
-    }:
+    query = payload["query"]
+    if not isinstance(query, dict) or set(query) != {"fileId"}:
         raise CorporateActionEvidenceError("request query is outside the accepted source contract")
+    request_url = f"{payload['url']}?fileId={query['fileId']}"
+    _validate_bocom_url(request_url, "request", source_contract=source_contract)
     if payload["headers"] != {"accept": "application/pdf"}:
         raise CorporateActionEvidenceError(
             "request headers are outside the accepted source contract"
@@ -407,7 +428,9 @@ def _validate_request(item: Any) -> str:
     return request_id
 
 
-def _validate_artifact(item: Any, artifact_bytes: Mapping[str, bytes]) -> str:
+def _validate_artifact(
+    item: Any, artifact_bytes: Mapping[str, bytes], *, source_contract: str
+) -> str:
     item = _require_fields(
         item,
         {"artifact_id", "body_sha256", "byte_length", "media_type", "path", "source_url"},
@@ -428,13 +451,16 @@ def _validate_artifact(item: Any, artifact_bytes: Mapping[str, bytes]) -> str:
     expected_path = f"corporate-action-{artifact_id}.bin"
     if item["path"] != expected_path or Path(expected_path).name != expected_path:
         raise CorporateActionEvidenceError("artifact path is invalid")
-    if _validate_bocom_url(item["source_url"], "artifact") != _BOCOM_ARTIFACT_URL:
-        raise CorporateActionEvidenceError("artifact source URL does not match the accepted source")
+    _validate_bocom_url(item["source_url"], "artifact", source_contract=source_contract)
     return artifact_id
 
 
 def _validate_retrieval(
-    item: Any, request_ids: set[str], artifacts: dict[str, dict[str, Any]]
+    item: Any,
+    request_ids: set[str],
+    artifacts: dict[str, dict[str, Any]],
+    *,
+    source_contract: str,
 ) -> str:
     item = _require_fields(item, {"retrieval_id", "payload"}, "retrieval")
     payload = _require_fields(
@@ -468,10 +494,7 @@ def _validate_retrieval(
         raise CorporateActionEvidenceError("retrieval media type mismatch")
     if payload["final_url"] != artifact["source_url"]:
         raise CorporateActionEvidenceError("retrieval source URL mismatch")
-    if _validate_bocom_url(payload["final_url"], "retrieval") != _BOCOM_ARTIFACT_URL:
-        raise CorporateActionEvidenceError(
-            "retrieval source URL does not match the accepted source"
-        )
+    _validate_bocom_url(payload["final_url"], "retrieval", source_contract=source_contract)
     retrieval_id = _require_sha256(item["retrieval_id"], "retrieval ID")
     if identity_digest(RETRIEVAL_DOMAIN, payload) != retrieval_id:
         raise CorporateActionEvidenceError("retrieval identity mismatch")
@@ -481,6 +504,9 @@ def _validate_retrieval(
 def _validate_revision(
     item: Any,
     artifact_ids: set[str],
+    artifacts: Mapping[str, Mapping[str, Any]],
+    *,
+    source_contract: str,
 ) -> tuple[str, tuple[Any, ...]]:
     item = _require_fields(
         item,
@@ -584,8 +610,11 @@ def _validate_revision(
     _timestamp(item["available_at"], "event availability")
     if item["use_role"] not in USE_ROLES:
         raise CorporateActionEvidenceError("event use role is invalid")
-    if _validate_bocom_url(item["source_url"], "event") != _BOCOM_ARTIFACT_URL:
-        raise CorporateActionEvidenceError("event source URL does not match the accepted source")
+    _validate_bocom_url(item["source_url"], "event", source_contract=source_contract)
+    if item["source_url"] not in {
+        artifacts[artifact_id]["source_url"] for artifact_id in sources
+    }:
+        raise CorporateActionEvidenceError("event source URL does not match its source artifact")
     if item["acceptance_state"] != "ACCEPTED":
         raise CorporateActionEvidenceError("event acceptance state is invalid")
     if not isinstance(item["findings"], list) or not all(
@@ -715,11 +744,13 @@ def admit_corporate_action_evidence(
         "findings",
         "total_return_claim",
         "projection",
+        "source_package",
     }
-    compatible_fields = allowed_fields - {"projection", "complete_contract_id"}
+    compatible_fields = allowed_fields - {"projection", "complete_contract_id", "source_package"}
     if set(value) not in (
         compatible_fields,
         compatible_fields | {"projection"},
+        allowed_fields - {"projection", "source_package"},
         allowed_fields - {"projection"},
         allowed_fields,
     ):
@@ -729,6 +760,11 @@ def admit_corporate_action_evidence(
     source_contract = value["source_contract_version"]
     if source_contract == "bocom-xshg-dividend@1":
         if value["collector_version"] != "accepted-audit-import@1":
+            raise CorporateActionEvidenceError(
+                "collector_version is outside the accepted source contract"
+            )
+    elif source_contract == "bocom-xshg-dividend@2":
+        if value["collector_version"] != "accepted-source-package-import@1":
             raise CorporateActionEvidenceError(
                 "collector_version is outside the accepted source contract"
             )
@@ -756,6 +792,48 @@ def admit_corporate_action_evidence(
         raise CorporateActionEvidenceError("synthetic complete-enumeration contract is invalid")
     if source_contract == "bocom-xshg-dividend@1" and complete_contract_id is not None:
         raise CorporateActionEvidenceError("BOCOM/XSHG v1 cannot name a complete contract")
+    if source_contract == "bocom-xshg-dividend@2":
+        package = _require_fields(
+            value.get("source_package"),
+            {
+                "action_id",
+                "checksums_sha256",
+                "canonical_events_sha256",
+                "accounting_policy_sha256",
+                "source_manifest_sha256",
+                "source_selection_sha256",
+                "retrieval_receipts_sha256",
+                "settlement_policy_id",
+                "tax_policy_id",
+            },
+            "source package binding",
+        )
+        for field in (
+            "checksums_sha256",
+            "canonical_events_sha256",
+            "accounting_policy_sha256",
+            "source_manifest_sha256",
+            "source_selection_sha256",
+            "retrieval_receipts_sha256",
+        ):
+            _require_sha256(package[field], f"source package {field}")
+        if package != _BOCOM_V2_SOURCE_PACKAGE:
+            raise CorporateActionEvidenceError("source package identity is not the accepted package")
+        expected_bocom_contract_id = identity_digest(
+            "quant-platform/complete-enumeration-contract/v1",
+            BOCOM_SOURCE_PACKAGE_COMPLETE_CONTRACT,
+        )
+        if (
+            value["complete_enumeration_contract"] is not True
+            or complete_contract_id != expected_bocom_contract_id
+        ):
+            raise CorporateActionEvidenceError("BOCOM source-package complete contract is invalid")
+        if identity_digest(EVIDENCE_DOMAIN, value) != _BOCOM_V2_EVIDENCE_SHA256:
+            raise CorporateActionEvidenceError(
+                "BOCOM v2 evidence terms do not match the exact accepted source package"
+            )
+    elif "source_package" in value:
+        raise CorporateActionEvidenceError("source package binding is outside the source contract")
     if not isinstance(value["findings"], list) or not all(
         isinstance(item, str) for item in value["findings"]
     ):
@@ -766,17 +844,28 @@ def admit_corporate_action_evidence(
         if not isinstance(value[field], list):
             raise CorporateActionEvidenceError(f"{field} must be an array")
 
-    request_ids = [_validate_request(item) for item in value["requests"]]
+    request_ids = [
+        _validate_request(item, source_contract=source_contract) for item in value["requests"]
+    ]
     if len(request_ids) != len(set(request_ids)):
         raise CorporateActionEvidenceError("duplicate request identity")
     artifacts_by_id = {item.get("artifact_id"): item for item in value["artifacts"]}
     if len(artifacts_by_id) != len(value["artifacts"]):
         raise CorporateActionEvidenceError("duplicate artifact identity")
-    artifact_ids = [_validate_artifact(item, artifact_bytes) for item in value["artifacts"]]
+    artifact_ids = [
+        _validate_artifact(item, artifact_bytes, source_contract=source_contract)
+        for item in value["artifacts"]
+    ]
     if set(artifact_bytes) != set(artifact_ids):
         raise CorporateActionEvidenceError("artifact byte set does not match descriptor")
     retrieval_ids = [
-        _validate_retrieval(item, set(request_ids), artifacts_by_id) for item in value["retrievals"]
+        _validate_retrieval(
+            item,
+            set(request_ids),
+            artifacts_by_id,
+            source_contract=source_contract,
+        )
+        for item in value["retrievals"]
     ]
     if len(retrieval_ids) != len(set(retrieval_ids)):
         raise CorporateActionEvidenceError("duplicate retrieval identity")
@@ -788,12 +877,22 @@ def admit_corporate_action_evidence(
     revision_ids: list[str] = []
     terms_by_id: dict[str, tuple[Any, ...]] = {}
     for revision in value["revisions"]:
-        revision_id, terms = _validate_revision(revision, set(artifact_ids))
+        revision_id, terms = _validate_revision(
+            revision,
+            set(artifact_ids),
+            artifacts_by_id,
+            source_contract=source_contract,
+        )
         if revision_id in terms_by_id:
             raise CorporateActionEvidenceError("duplicate revision identity")
         revision_ids.append(revision_id)
         terms_by_id[revision_id] = terms
-        if revision["payload"]["parser_version"] != "bocom-dividend-pdf@1":
+        expected_parser = (
+            "accepted-source-package@1"
+            if source_contract == "bocom-xshg-dividend@2"
+            else "bocom-dividend-pdf@1"
+        )
+        if revision["payload"]["parser_version"] != expected_parser:
             raise CorporateActionEvidenceError("parser identity is outside the accepted contract")
         available_at = _timestamp(revision["available_at"], "event availability")
         source_retrievals = [
