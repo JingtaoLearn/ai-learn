@@ -2309,6 +2309,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         relative_path=f"{prefix}/{name}",
                         file_class="DATASET_METADATA",
                         payload=payload,
+                        classification=(
+                            "BYTEA_IMPORTED"
+                            if snapshot_id == PARENT_SNAPSHOT_ID
+                            else "BYTEA_RUNTIME"
+                        ),
                     )
             self._require_bocom_dataset_residual(connection, payload=parquet)
         return {
@@ -2600,6 +2605,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         file_class: str,
         payload: bytes,
         residual_sha256: str | None = None,
+        classification: str | None = None,
     ) -> str:
         digest = _sha256_bytes(payload)
         artifact_sha256 = None if residual_sha256 is not None else digest
@@ -2617,7 +2623,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             digest,
             artifact_sha256,
             residual_sha256,
-            "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
+            classification
+            if classification is not None
+            else "RESIDUAL"
+            if residual_sha256 is not None
+            else "BYTEA_RUNTIME",
         )
         actual = None if stored is None else (
             stored["file_class"],
