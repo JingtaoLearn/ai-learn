@@ -1651,6 +1651,222 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             "members": self.read_artifact_set(row["artifact_set_id"].strip()),
         }
 
+    @staticmethod
+    def _require_bocom_artifact_set(
+        connection: Any,
+        *,
+        artifact_set_id: str,
+        kind: str,
+        members: Mapping[str, tuple[str, bytes]],
+    ) -> None:
+        ordered = [
+            {
+                "logical_name": name,
+                "artifact_sha256": _sha256_bytes(members[name][1]),
+                "byte_size": len(members[name][1]),
+                "media_type": members[name][0],
+            }
+            for name in sorted(members)
+        ]
+        manifest = {"schema_version": 1, "kind": kind, "members": ordered}
+        expected_set_id = _sha256_bytes(canonical_json_bytes(manifest))
+        stored_set = connection.execute(
+            "SELECT kind, schema_version, canonical_manifest FROM qr.artifact_sets "
+            "WHERE artifact_set_id=%s",
+            (artifact_set_id,),
+        ).fetchone()
+        if artifact_set_id != expected_set_id or stored_set is None or (
+            stored_set["kind"],
+            stored_set["schema_version"],
+            stored_set["canonical_manifest"],
+        ) != (kind, 1, manifest):
+            raise PersistenceConflict("BOCOM artifact set identity conflicts")
+        stored_members = connection.execute(
+            "SELECT m.ordinal, m.logical_name, a.artifact_sha256, a.byte_size, "
+            "a.media_type, a.payload FROM qr.artifact_set_members m "
+            "JOIN qr.artifacts a USING (artifact_sha256) "
+            "WHERE m.artifact_set_id=%s ORDER BY m.ordinal",
+            (artifact_set_id,),
+        ).fetchall()
+        expected_members = [
+            (
+                ordinal,
+                member["logical_name"],
+                member["artifact_sha256"],
+                member["byte_size"],
+                member["media_type"],
+                members[member["logical_name"]][1],
+            )
+            for ordinal, member in enumerate(ordered)
+        ]
+        actual_members = [
+            (
+                row["ordinal"],
+                row["logical_name"],
+                row["artifact_sha256"].strip(),
+                row["byte_size"],
+                row["media_type"],
+                bytes(row["payload"]),
+            )
+            for row in stored_members
+        ]
+        if actual_members != expected_members:
+            raise PersistenceConflict("BOCOM artifact set membership conflicts")
+
+    @staticmethod
+    def _require_bocom_snapshot_row(
+        connection: Any,
+        *,
+        snapshot_id: str,
+        manifest: Mapping[str, Any],
+        manifest_payload: bytes,
+        parquet_payload: bytes,
+    ) -> None:
+        row = connection.execute(
+            "SELECT snapshot_id, instrument, schema_version, canonical_sha256, "
+            "parquet_sha256, manifest_sha256, parquet_artifact_sha256, manifest "
+            "FROM qr.dataset_snapshots WHERE snapshot_id=%s",
+            (snapshot_id,),
+        ).fetchone()
+        parquet_sha256 = _sha256_bytes(parquet_payload)
+        if row is None or (
+            row["snapshot_id"].strip(),
+            row["instrument"],
+            row["schema_version"],
+            row["canonical_sha256"].strip(),
+            row["parquet_sha256"].strip(),
+            row["manifest_sha256"].strip(),
+            row["parquet_artifact_sha256"].strip(),
+            row["manifest"],
+        ) != (
+            snapshot_id,
+            "601328.SS",
+            manifest["schema_version"],
+            manifest["canonical_sha256"],
+            parquet_sha256,
+            _sha256_bytes(manifest_payload),
+            parquet_sha256,
+            dict(manifest),
+        ):
+            raise PersistenceConflict("BOCOM Snapshot row identity conflicts")
+
+    @staticmethod
+    def _bocom_members_from_readback(
+        members: Mapping[str, bytes],
+        *,
+        receipt: Mapping[str, Any],
+        document: Mapping[str, Any],
+        evidence: Any,
+    ) -> dict[str, tuple[str, bytes]]:
+        from .bocom_admission import ACTION_ID, EXPECTED_CHECKSUMS_SHA256
+        from .corporate_actions import load_strict_json
+
+        package_index_payload = members.get("PACKAGE-INDEX.json")
+        if package_index_payload is None:
+            raise PersistenceConflict("BOCOM package index is missing")
+        package_index = load_strict_json(package_index_payload)
+        indexed = package_index.get("members") if isinstance(package_index, dict) else None
+        if (
+            not isinstance(indexed, list)
+            or package_index.get("schema_version") != 1
+            or package_index.get("action_id") != ACTION_ID
+            or len(indexed) != 29
+            or package_index_payload != canonical_json_bytes(package_index) + b"\n"
+        ):
+            raise PersistenceConflict("BOCOM package index identity conflicts")
+        expected: dict[str, tuple[str, bytes]] = {}
+        relative_rows: dict[str, Mapping[str, Any]] = {}
+        for ordinal, item in enumerate(indexed):
+            if not isinstance(item, dict) or set(item) != {
+                "logical_name",
+                "relative_path",
+                "byte_size",
+                "sha256",
+            }:
+                raise PersistenceConflict("BOCOM package member descriptor conflicts")
+            relative = item["relative_path"]
+            logical_name = item["logical_name"]
+            if (
+                not isinstance(relative, str)
+                or not isinstance(logical_name, str)
+                or logical_name != f"{ordinal:03d}-{Path(relative).name}"
+                or relative in relative_rows
+            ):
+                raise PersistenceConflict("BOCOM package member ordering conflicts")
+            payload = members.get(logical_name)
+            if (
+                payload is None
+                or item["byte_size"] != len(payload)
+                or item["sha256"] != _sha256_bytes(payload)
+            ):
+                raise PersistenceConflict("BOCOM package member bytes conflict")
+            media_type = {
+                ".json": "application/json",
+                ".pdf": "application/pdf",
+                ".docx": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                ".html": "text/html",
+                ".txt": "text/plain",
+                ".sha256": "text/plain",
+                ".md": "text/markdown",
+            }.get(Path(relative).suffix.lower(), "application/octet-stream")
+            expected[logical_name] = (media_type, payload)
+            relative_rows[relative] = item
+        if [item["relative_path"] for item in indexed] != sorted(relative_rows):
+            raise PersistenceConflict("BOCOM package member ordering conflicts")
+        checksum_row = relative_rows.get("CHECKSUMS.sha256")
+        if checksum_row is None:
+            raise PersistenceConflict("BOCOM checksum manifest is missing")
+        checksum_payload = members[checksum_row["logical_name"]]
+        if _sha256_bytes(checksum_payload) != EXPECTED_CHECKSUMS_SHA256:
+            raise PersistenceConflict("BOCOM checksum manifest identity conflicts")
+        checksum_entries: dict[str, str] = {}
+        for line in checksum_payload.decode("utf-8").splitlines():
+            digest, separator, relative = line.partition("  ")
+            if (
+                not separator
+                or SHA256.fullmatch(digest) is None
+                or not relative
+                or relative in checksum_entries
+            ):
+                raise PersistenceConflict("BOCOM checksum manifest content conflicts")
+            checksum_entries[relative] = digest
+        indexed_without_manifest = {
+            relative: item["sha256"]
+            for relative, item in relative_rows.items()
+            if relative != "CHECKSUMS.sha256"
+        }
+        if checksum_entries != indexed_without_manifest:
+            raise PersistenceConflict("BOCOM checksum bindings conflict")
+        expected["PACKAGE-INDEX.json"] = ("application/json", package_index_payload)
+        expected["evidence.json"] = ("application/json", evidence.json_bytes())
+        expected["ADMISSION.json"] = (
+            "application/json",
+            canonical_json_bytes(receipt) + b"\n",
+        )
+        artifacts = document.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise PersistenceConflict("BOCOM evidence artifact inventory conflicts")
+        for item in artifacts:
+            if not isinstance(item, dict):
+                raise PersistenceConflict("BOCOM evidence artifact descriptor conflicts")
+            path = item.get("path")
+            artifact_id = item.get("artifact_id")
+            media_type = item.get("media_type")
+            if (
+                not isinstance(path, str)
+                or not isinstance(artifact_id, str)
+                or not isinstance(media_type, str)
+                or path in expected
+                or artifact_id not in evidence.artifact_bytes
+            ):
+                raise PersistenceConflict("BOCOM evidence artifact descriptor conflicts")
+            expected[path] = (media_type, evidence.artifact_bytes[artifact_id])
+        if set(members) != set(expected):
+            raise PersistenceConflict("BOCOM artifact set has missing or extra members")
+        return expected
+
     def publish_bocom_admission(
         self,
         *,
@@ -1671,14 +1887,21 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         publication = prepare_bocom_admission(
             parent_snapshot_path, snapshot_path, package
         )
-        with self.config.connect() as connection:
-            existing = connection.execute(
-                "SELECT evidence_id FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
-                (ACTION_EVIDENCE_SHA256,),
-            ).fetchone()
-        if existing is not None:
-            return self.bocom_admission()
         verified = dict(publication.snapshot_manifest)
+        from .datasets import _verify_snapshot
+
+        parent_verified = _verify_snapshot(
+            parent_snapshot_path, PARENT_SNAPSHOT_ID, verify_parent=False
+        )
+        if not isinstance(parent_verified, dict):
+            raise PersistenceConflict("BOCOM parent Snapshot verification conflicts")
+        parent_manifest_payload, _ = _read_regular(
+            parent_snapshot_path / "manifest.json", maximum=MAX_BYTEA_ARTIFACT
+        )
+        parent_parquet, _ = _read_regular(parent_snapshot_path / "data.parquet")
+        child_manifest_payload, _ = _read_regular(
+            publication.snapshot_path / "manifest.json", maximum=MAX_BYTEA_ARTIFACT
+        )
         snapshot_members = {
             path.name: _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0]
             for path in publication.snapshot_path.iterdir()
@@ -1697,21 +1920,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                         (ACTION_SNAPSHOT_ID,),
                     )
-                    parent = connection.execute(
-                        "SELECT instrument, canonical_sha256, parquet_sha256 "
-                        "FROM qr.dataset_snapshots WHERE snapshot_id=%s",
-                        (PARENT_SNAPSHOT_ID,),
-                    ).fetchone()
-                    if parent is None or (
-                        parent["instrument"],
-                        parent["canonical_sha256"].strip(),
-                        parent["parquet_sha256"].strip(),
-                    ) != (
-                        "601328.SS",
-                        verified["canonical_sha256"],
-                        parquet_sha256,
-                    ):
-                        raise PersistenceConflict("BOCOM parent Snapshot identity conflicts")
+                    self._require_bocom_snapshot_row(
+                        connection,
+                        snapshot_id=PARENT_SNAPSHOT_ID,
+                        manifest=parent_verified,
+                        manifest_payload=parent_manifest_payload,
+                        parquet_payload=parent_parquet,
+                    )
                     current = connection.execute(
                         "SELECT snapshot_id, generation FROM qr.dataset_current "
                         "WHERE instrument='601328.SS'"
@@ -1721,9 +1936,40 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         current["generation"],
                     )
 
-                    artifact_set_id = self._publish_artifact_set_in_transaction(
+                    expected_artifact_manifest = {
+                        "schema_version": 1,
+                        "kind": EVIDENCE_CLASS,
+                        "members": [
+                            {
+                                "logical_name": name,
+                                "artifact_sha256": _sha256_bytes(payload),
+                                "byte_size": len(payload),
+                                "media_type": media_type,
+                            }
+                            for name, (media_type, payload) in sorted(
+                                publication.evidence_members.items()
+                            )
+                        ],
+                    }
+                    artifact_set_id = _sha256_bytes(
+                        canonical_json_bytes(expected_artifact_manifest)
+                    )
+                    stored_artifact_set = connection.execute(
+                        "SELECT 1 FROM qr.artifact_sets WHERE artifact_set_id=%s",
+                        (artifact_set_id,),
+                    ).fetchone()
+                    if stored_artifact_set is None:
+                        published_set_id = self._publish_artifact_set_in_transaction(
+                            connection,
+                            kind=EVIDENCE_CLASS,
+                            members=publication.evidence_members,
+                        )
+                        if published_set_id != artifact_set_id:
+                            raise PersistenceConflict("BOCOM artifact set identity conflicts")
+                    self._require_bocom_artifact_set(
                         connection,
-                        kind=EVIDENCE_CLASS,
+                        artifact_set_id=artifact_set_id,
+                        kind=publication.evidence_class,
                         members=publication.evidence_members,
                     )
                     connection.execute(
@@ -1797,25 +2043,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                             Jsonb(verified),
                         ),
                     )
-                    stored_snapshot = connection.execute(
-                        "SELECT instrument, schema_version, canonical_sha256, parquet_sha256, "
-                        "manifest FROM qr.dataset_snapshots WHERE snapshot_id=%s",
-                        (ACTION_SNAPSHOT_ID,),
-                    ).fetchone()
-                    if stored_snapshot is None or (
-                        stored_snapshot["instrument"],
-                        stored_snapshot["schema_version"],
-                        stored_snapshot["canonical_sha256"].strip(),
-                        stored_snapshot["parquet_sha256"].strip(),
-                        stored_snapshot["manifest"],
-                    ) != (
-                        "601328.SS",
-                        4,
-                        verified["canonical_sha256"],
-                        parquet_sha256,
-                        verified,
-                    ):
-                        raise PersistenceConflict("BOCOM Snapshot publication conflicts")
+                    self._require_bocom_snapshot_row(
+                        connection,
+                        snapshot_id=ACTION_SNAPSHOT_ID,
+                        manifest=verified,
+                        manifest_payload=child_manifest_payload,
+                        parquet_payload=parquet,
+                    )
                     current_after = connection.execute(
                         "SELECT snapshot_id, generation FROM qr.dataset_current "
                         "WHERE instrument='601328.SS'"
@@ -1836,55 +2070,128 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         from .bocom_admission import (
             ACTION_EVIDENCE_SHA256,
             ACTION_SNAPSHOT_ID,
+            ACTION_ID,
             EVIDENCE_CLASS,
+            EVIDENCE_SOURCE_PATH,
             PARENT_PARQUET_SHA256,
             PARENT_SNAPSHOT_ID,
         )
         from .corporate_actions import admit_corporate_action_evidence, load_strict_json
         from .datasets import _verify_snapshot
 
-        package = self.accepted_evidence_package(
-            ACTION_EVIDENCE_SHA256, expected_class=EVIDENCE_CLASS
-        )
-        members = package["members"]
-        receipt = load_strict_json(members["ADMISSION.json"])
-        document = load_strict_json(members["evidence.json"])
-        artifacts = {
-            item["artifact_id"]: members[item["path"]]
-            for item in document["artifacts"]
-        }
-        evidence = admit_corporate_action_evidence(document, artifacts)
-        package_index = load_strict_json(members["PACKAGE-INDEX.json"])
-        indexed = {
-            item["logical_name"]: item for item in package_index["members"]
-        }
-        if (
-            evidence.digest != ACTION_EVIDENCE_SHA256
-            or receipt.get("evidence_id") != ACTION_EVIDENCE_SHA256
-            or receipt.get("parent_snapshot_id") != PARENT_SNAPSHOT_ID
-            or receipt.get("snapshot_id") != ACTION_SNAPSHOT_ID
-            or len(indexed) != 29
-            or any(
-                name not in members
-                or item["sha256"] != _sha256_bytes(members[name])
-                or item["byte_size"] != len(members[name])
-                for name, item in indexed.items()
-            )
+        with (
+            self.materialize_dataset_snapshot("601328.SS", PARENT_SNAPSHOT_ID) as parent_path,
+            self.materialize_dataset_snapshot("601328.SS", ACTION_SNAPSHOT_ID) as child_path,
         ):
-            raise PersistenceUnavailableError("BOCOM evidence read-back mismatch")
-        with self.materialize_dataset_snapshot("601328.SS", ACTION_SNAPSHOT_ID) as path:
-            verified = _verify_snapshot(path, ACTION_SNAPSHOT_ID, verify_parent=False)
-            parquet, _ = _read_regular(path / "data.parquet")
+            parent_verified = _verify_snapshot(
+                parent_path, PARENT_SNAPSHOT_ID, verify_parent=False
+            )
+            verified = _verify_snapshot(child_path, ACTION_SNAPSHOT_ID, verify_parent=False)
+            parent_manifest_payload, _ = _read_regular(
+                parent_path / "manifest.json", maximum=MAX_BYTEA_ARTIFACT
+            )
+            child_manifest_payload, _ = _read_regular(
+                child_path / "manifest.json", maximum=MAX_BYTEA_ARTIFACT
+            )
+            parent_parquet, _ = _read_regular(parent_path / "data.parquet")
+            parquet, _ = _read_regular(child_path / "data.parquet")
         if (
-            not isinstance(verified, dict)
+            not isinstance(parent_verified, dict)
+            or not isinstance(verified, dict)
+            or parent_verified["schema_version"] != 3
             or verified["schema_version"] != 4
             or verified["corporate_action_evidence_sha256"] != ACTION_EVIDENCE_SHA256
+            or _sha256_bytes(parent_parquet) != PARENT_PARQUET_SHA256
             or _sha256_bytes(parquet) != PARENT_PARQUET_SHA256
+            or parent_parquet != parquet
         ):
             raise PersistenceUnavailableError("BOCOM Snapshot read-back mismatch")
+        expected_receipt = {
+            "schema": "quantresearch-bocom-admission/v1",
+            "action_id": ACTION_ID,
+            "evidence_id": ACTION_EVIDENCE_SHA256,
+            "evidence_class": EVIDENCE_CLASS,
+            "source_path": EVIDENCE_SOURCE_PATH,
+            "source_contract_version": "bocom-xshg-dividend@2",
+            "source_package": None,
+            "parent_snapshot_id": PARENT_SNAPSHOT_ID,
+            "snapshot_id": ACTION_SNAPSHOT_ID,
+            "schema_version": 4,
+            "canonical_sha256": verified["canonical_sha256"],
+            "parent_parquet_sha256": PARENT_PARQUET_SHA256,
+            "child_parquet_sha256": PARENT_PARQUET_SHA256,
+            "parent_child_byte_equal": True,
+            "dataset_current_changed": False,
+            "replay_performed": False,
+            "signal_or_trading_effect": False,
+        }
+        with self.config.connect() as connection:
+            package_row = connection.execute(
+                "SELECT evidence_id, evidence_class, artifact_set_id, source_path "
+                "FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
+                (ACTION_EVIDENCE_SHA256,),
+            ).fetchone()
+            if package_row is None or (
+                package_row["evidence_id"].strip(),
+                package_row["evidence_class"],
+                package_row["source_path"],
+            ) != (ACTION_EVIDENCE_SHA256, EVIDENCE_CLASS, EVIDENCE_SOURCE_PATH):
+                raise PersistenceConflict("BOCOM accepted-evidence identity conflicts")
+            artifact_set_id = package_row["artifact_set_id"].strip()
+            stored_member_rows = connection.execute(
+                "SELECT m.logical_name, a.payload FROM qr.artifact_set_members m "
+                "JOIN qr.artifacts a USING (artifact_sha256) "
+                "WHERE m.artifact_set_id=%s ORDER BY m.ordinal",
+                (artifact_set_id,),
+            ).fetchall()
+            members = {
+                row["logical_name"]: bytes(row["payload"]) for row in stored_member_rows
+            }
+            try:
+                receipt = load_strict_json(members["ADMISSION.json"])
+                document = load_strict_json(members["evidence.json"])
+                artifacts = {
+                    item["artifact_id"]: members[item["path"]]
+                    for item in document["artifacts"]
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PersistenceConflict("BOCOM evidence members conflict") from exc
+            evidence = admit_corporate_action_evidence(document, artifacts)
+            expected_receipt["source_contract_version"] = document[
+                "source_contract_version"
+            ]
+            expected_receipt["source_package"] = document["source_package"]
+            if evidence.digest != ACTION_EVIDENCE_SHA256 or receipt != expected_receipt:
+                raise PersistenceConflict("BOCOM evidence read-back conflicts")
+            expected_members = self._bocom_members_from_readback(
+                members,
+                receipt=receipt,
+                document=document,
+                evidence=evidence,
+            )
+            self._require_bocom_artifact_set(
+                connection,
+                artifact_set_id=artifact_set_id,
+                kind=EVIDENCE_CLASS,
+                members=expected_members,
+            )
+            self._require_bocom_snapshot_row(
+                connection,
+                snapshot_id=PARENT_SNAPSHOT_ID,
+                manifest=parent_verified,
+                manifest_payload=parent_manifest_payload,
+                parquet_payload=parent_parquet,
+            )
+            self._require_bocom_snapshot_row(
+                connection,
+                snapshot_id=ACTION_SNAPSHOT_ID,
+                manifest=verified,
+                manifest_payload=child_manifest_payload,
+                parquet_payload=parquet,
+            )
         return {
             **dict(receipt),
-            "artifact_set_id": package["artifact_set_id"],
+            "artifact_set_id": artifact_set_id,
             "artifact_member_count": len(members),
             "dataset_current_snapshot_id": self.dataset_current_snapshot("601328.SS"),
         }
