@@ -19,6 +19,9 @@ class _Rows:
     def fetchall(self) -> list[dict[str, object]]:
         return self._rows
 
+    def fetchone(self) -> dict[str, object] | None:
+        return None if not self._rows else self._rows[0]
+
 
 class _Connection:
     def __init__(self, rows: list[dict[str, object]]) -> None:
@@ -30,14 +33,27 @@ class _Connection:
         return _Rows(self._rows)
 
 
+class _RuntimeFileSetConnection:
+    def __init__(self, paths: list[str]) -> None:
+        self._paths = paths
+
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert "SELECT relative_path FROM qr.source_files" in statement
+        assert parameters == ("platform/datasets/601328.SS/snapshot/%",)
+        return _Rows([{"relative_path": path} for path in self._paths])
+
+
 class _RejectingConnection:
     @contextmanager
     def transaction(self) -> Iterator[_RejectingConnection]:
         yield self
 
-    def execute(self, statement: str, parameters: tuple[object, ...]) -> None:
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        if "FROM qr.accepted_evidence_packages" in statement:
+            return _Rows([])
         assert "pg_advisory_xact_lock" in statement
         assert len(parameters) == 1
+        return _Rows([])
 
 
 class _RejectingConfig:
@@ -47,6 +63,53 @@ class _RejectingConfig:
     @contextmanager
     def connect(self) -> Iterator[_RejectingConnection]:
         yield _RejectingConnection()
+
+
+class _ExistingAdmissionConnection:
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert "FROM qr.accepted_evidence_packages" in statement
+        assert len(parameters) == 1
+        return _Rows([{"present": 1}])
+
+
+class _ExistingAdmissionConfig:
+    def validated(self) -> _ExistingAdmissionConfig:
+        return self
+
+    @contextmanager
+    def connect(self) -> Iterator[_ExistingAdmissionConnection]:
+        yield _ExistingAdmissionConnection()
+
+
+class _ValidationBoundaryConnection:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    @contextmanager
+    def transaction(self) -> Iterator[_ValidationBoundaryConnection]:
+        self._events.append("transaction-enter")
+        try:
+            yield self
+        finally:
+            self._events.append("transaction-exit")
+
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert statement == "SELECT qr.lock_bocom_admission_readback()"
+        assert parameters == ()
+        self._events.append("writer-lock")
+        return _Rows([])
+
+
+class _ValidationBoundaryConfig:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def validated(self) -> _ValidationBoundaryConfig:
+        return self
+
+    @contextmanager
+    def connect(self) -> Iterator[_ValidationBoundaryConnection]:
+        yield _ValidationBoundaryConnection(self._events)
 
 
 def _identity(payload: bytes, key: str) -> dict[str, object]:
@@ -74,6 +137,76 @@ def _tree_state(root: Path) -> list[tuple[str, str, str | None]]:
         )
         for path in sorted(root.rglob("*"))
     ]
+
+
+def test_exact_bocom_repeat_reads_back_without_runtime_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quant_platform import bocom_admission
+
+    receipt = {"evidence_id": bocom_admission.ACTION_EVIDENCE_SHA256}
+    monkeypatch.setattr(
+        bocom_admission,
+        "prepare_bocom_admission",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        FullPostgresPersistence,
+        "_runtime_residual_with_creation",
+        lambda *args, **kwargs: pytest.fail("an exact repeat must not touch residual storage"),
+    )
+    persistence = FullPostgresPersistence(  # type: ignore[arg-type]
+        _ExistingAdmissionConfig(), admit_schema=False
+    )
+    monkeypatch.setattr(persistence, "bocom_admission", lambda: receipt)
+
+    assert persistence.publish_bocom_admission(
+        parent_snapshot_path=tmp_path / "parent",
+        snapshot_path=tmp_path / "child",
+        package=object(),
+    ) == receipt
+
+
+def test_bocom_readback_holds_writer_lock_across_complete_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    receipt = {"accepted": True}
+    persistence = FullPostgresPersistence(  # type: ignore[arg-type]
+        _ValidationBoundaryConfig(events), admit_schema=False
+    )
+
+    def readback() -> dict[str, bool]:
+        assert events == ["transaction-enter", "writer-lock"]
+        events.append("readback")
+        return receipt
+
+    monkeypatch.setattr(persistence, "_bocom_admission_readback", readback)
+
+    assert persistence.bocom_admission() == receipt
+    assert events == ["transaction-enter", "writer-lock", "readback", "transaction-exit"]
+
+
+def test_bocom_runtime_file_set_accepts_only_the_exact_canonical_paths() -> None:
+    prefix = "platform/datasets/601328.SS/snapshot"
+    expected = {f"{prefix}/data.parquet", f"{prefix}/manifest.json"}
+    FullPostgresPersistence._require_runtime_file_set(
+        _RuntimeFileSetConnection(sorted(expected)),
+        prefix=prefix,
+        expected_paths=expected,
+    )
+
+    for paths in (
+        [f"{prefix}/data.parquet"],
+        sorted(expected | {f"{prefix}/alias/manifest.json"}),
+        [f"{prefix}/data.parquet", f"{prefix}/manifest.json", f"{prefix}/manifest.json"],
+    ):
+        with pytest.raises(PersistenceConflict, match="runtime file path set conflicts"):
+            FullPostgresPersistence._require_runtime_file_set(
+                _RuntimeFileSetConnection(paths),
+                prefix=prefix,
+                expected_paths=expected,
+            )
 
 
 @pytest.mark.parametrize("legacy", [False, True])

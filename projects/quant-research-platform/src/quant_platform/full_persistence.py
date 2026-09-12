@@ -454,6 +454,15 @@ BEGIN
     END IF;
     RETURN NEW;
 END; $$;
+
+CREATE OR REPLACE FUNCTION qr.lock_bocom_admission_readback()
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    LOCK TABLE qr.artifacts, qr.artifact_sets, qr.artifact_set_members,
+        qr.accepted_evidence_packages, qr.residual_artifacts, qr.source_files,
+        qr.dataset_snapshots, qr.dataset_current IN SHARE MODE;
+END; $$;
+REVOKE ALL ON FUNCTION qr.lock_bocom_admission_readback() FROM PUBLIC;
 """
 
 IMMUTABLE_TABLES = (
@@ -743,6 +752,10 @@ def install_full_schema(
                 connection.execute(
                     f'REVOKE DELETE ON ALL TABLES IN SCHEMA "{schema}" FROM "{runtime_user}"'
                 )
+            connection.execute(
+                f'GRANT EXECUTE ON FUNCTION qr.lock_bocom_admission_readback() '
+                f'TO "{runtime_user}"'
+            )
             for schema, table in IMMUTABLE_TABLES:
                 connection.execute(
                     f'REVOKE UPDATE, DELETE ON "{schema}"."{table}" FROM "{runtime_user}"'
@@ -1937,6 +1950,16 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         publication = prepare_bocom_admission(
             parent_snapshot_path, snapshot_path, package
         )
+        try:
+            with self.config.connect() as connection:
+                already_published = connection.execute(
+                    "SELECT 1 FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
+                    (ACTION_EVIDENCE_SHA256,),
+                ).fetchone()
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+        if already_published is not None:
+            return self.bocom_admission()
         verified = dict(publication.snapshot_manifest)
         from .datasets import _verify_snapshot
 
@@ -2111,7 +2134,22 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         return self.bocom_admission()
 
     def bocom_admission(self) -> dict[str, Any]:
-        """Read back and verify the authoritative additive BOCOM admission."""
+        """Read back one writer-serialized authoritative BOCOM admission."""
+
+        with self.config.connect() as validation_connection:
+            with validation_connection.transaction():
+                validation_connection.execute(
+                    "SELECT qr.lock_bocom_admission_readback()",
+                    (),
+                )
+                return self._bocom_admission_readback()
+
+    def _bocom_admission_readback(self) -> dict[str, Any]:
+        """Validate all BOCOM rows and bytes while their writers are excluded.
+
+        The caller holds SHARE table locks across materialization, canonical path-set
+        validation, dependent row/byte checks, receipt reconstruction, and current read-back.
+        """
 
         from .bocom_admission import (
             ACTION_EVIDENCE_SHA256,
@@ -2139,6 +2177,16 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             child_manifest_payload, _ = _read_regular(
                 child_path / "manifest.json", maximum=MAX_BYTEA_ARTIFACT
             )
+            parent_members = {
+                path.name: _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0]
+                for path in parent_path.iterdir()
+                if path.name != "data.parquet"
+            }
+            child_members = {
+                path.name: _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0]
+                for path in child_path.iterdir()
+                if path.name != "data.parquet"
+            }
             parent_parquet, _ = _read_regular(parent_path / "data.parquet")
             parquet, _ = _read_regular(child_path / "data.parquet")
         if (
@@ -2235,6 +2283,33 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 manifest_payload=child_manifest_payload,
                 parquet_payload=parquet,
             )
+            for snapshot_id, snapshot_members, parquet_payload in (
+                (PARENT_SNAPSHOT_ID, parent_members, parent_parquet),
+                (ACTION_SNAPSHOT_ID, child_members, parquet),
+            ):
+                prefix = f"platform/datasets/601328.SS/{snapshot_id}"
+                self._require_runtime_file_set(
+                    connection,
+                    prefix=prefix,
+                    expected_paths={
+                        f"{prefix}/data.parquet",
+                        *(f"{prefix}/{name}" for name in snapshot_members),
+                    },
+                )
+                self._require_runtime_file(
+                    connection,
+                    relative_path=f"{prefix}/data.parquet",
+                    file_class="DATASET_PARQUET",
+                    payload=parquet_payload,
+                    residual_sha256=_sha256_bytes(parquet_payload),
+                )
+                for name, payload in snapshot_members.items():
+                    self._require_runtime_file(
+                        connection,
+                        relative_path=f"{prefix}/{name}",
+                        file_class="DATASET_METADATA",
+                        payload=payload,
+                    )
             self._require_bocom_dataset_residual(connection, payload=parquet)
         return {
             **dict(receipt),
@@ -2502,6 +2577,62 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
 
     @staticmethod
+    def _require_runtime_file_set(
+        connection: Any,
+        *,
+        prefix: str,
+        expected_paths: set[str],
+    ) -> None:
+        stored = connection.execute(
+            "SELECT relative_path FROM qr.source_files "
+            "WHERE relative_path LIKE %s ORDER BY relative_path",
+            (prefix + "/%",),
+        ).fetchall()
+        actual_paths = [row["relative_path"] for row in stored]
+        if actual_paths != sorted(expected_paths):
+            raise PersistenceConflict("runtime file path set conflicts")
+
+    @staticmethod
+    def _require_runtime_file(
+        connection: Any,
+        *,
+        relative_path: str,
+        file_class: str,
+        payload: bytes,
+        residual_sha256: str | None = None,
+    ) -> str:
+        digest = _sha256_bytes(payload)
+        artifact_sha256 = None if residual_sha256 is not None else digest
+        stored = connection.execute(
+            "SELECT file_class, mode, byte_size, sha256, artifact_sha256, residual_sha256, "
+            "classification "
+            "FROM qr.source_files "
+            "WHERE relative_path=%s",
+            (relative_path,),
+        ).fetchone()
+        expected = (
+            file_class,
+            0o444,
+            len(payload),
+            digest,
+            artifact_sha256,
+            residual_sha256,
+            "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
+        )
+        actual = None if stored is None else (
+            stored["file_class"],
+            stored["mode"],
+            stored["byte_size"],
+            stored["sha256"].strip(),
+            None if stored["artifact_sha256"] is None else stored["artifact_sha256"].strip(),
+            None if stored["residual_sha256"] is None else stored["residual_sha256"].strip(),
+            stored["classification"],
+        )
+        if actual != expected:
+            raise PersistenceConflict("runtime file identity conflicts")
+        return digest
+
+    @staticmethod
     def _insert_runtime_file(
         connection: Any,
         *,
@@ -2533,31 +2664,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
             ),
         )
-        stored = connection.execute(
-            "SELECT file_class, byte_size, sha256, artifact_sha256, residual_sha256, classification "
-            "FROM qr.source_files "
-            "WHERE relative_path=%s",
-            (relative_path,),
-        ).fetchone()
-        expected = (
-            file_class,
-            len(payload),
-            digest,
-            artifact_sha256,
-            residual_sha256,
-            "RESIDUAL" if residual_sha256 is not None else "BYTEA_RUNTIME",
+        return FullPostgresPersistence._require_runtime_file(
+            connection,
+            relative_path=relative_path,
+            file_class=file_class,
+            payload=payload,
+            residual_sha256=residual_sha256,
         )
-        actual = None if stored is None else (
-            stored["file_class"],
-            stored["byte_size"],
-            stored["sha256"].strip(),
-            None if stored["artifact_sha256"] is None else stored["artifact_sha256"].strip(),
-            None if stored["residual_sha256"] is None else stored["residual_sha256"].strip(),
-            stored["classification"],
-        )
-        if actual != expected:
-            raise PersistenceConflict("runtime file identity conflicts")
-        return digest
 
     def publish_dataset_update(
         self,
