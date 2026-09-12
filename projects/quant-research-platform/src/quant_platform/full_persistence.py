@@ -56,6 +56,13 @@ class PersistenceConflict(FullPersistenceError):
     """An immutable identity already exists with different content."""
 
 
+@dataclass(frozen=True)
+class _RuntimeResidualCreation:
+    path: Path
+    file_identity: tuple[int, int]
+    directories: tuple[Path, ...]
+
+
 # Existing domain code stores canonical JSON and UTC timestamps as TEXT. Keeping those
 # representations in PostgreSQL makes the migration byte-semantic rather than coercive.
 CATALOG_SCHEMA_SQL = """
@@ -1950,8 +1957,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             if path.name != "data.parquet"
         }
         parquet, _ = _read_regular(publication.snapshot_path / "data.parquet")
-        parquet_sha256, residual_key = self._runtime_residual(parquet)
+        residual_creation: _RuntimeResidualCreation | None = None
         try:
+            parquet_sha256, residual_key, residual_creation = self._runtime_residual_with_creation(
+                parquet
+            )
             with self.config.connect() as connection:
                 with connection.transaction():
                     connection.execute(
@@ -2092,8 +2102,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     )
                     if after_identity != current_identity:
                         raise PersistenceConflict("BOCOM admission changed dataset current")
-        except psycopg.Error as exc:
-            raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+        except BaseException as exc:
+            self._discard_runtime_residual_creation(residual_creation)
+            if isinstance(exc, psycopg.Error):
+                raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+            raise
         return self.bocom_admission()
 
     def bocom_admission(self) -> dict[str, Any]:
@@ -2363,6 +2376,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
 
     @staticmethod
     def _runtime_residual(payload: bytes) -> tuple[str, str]:
+        digest, relative, _ = FullPostgresPersistence._runtime_residual_with_creation(payload)
+        return digest, relative
+
+    @staticmethod
+    def _runtime_residual_with_creation(
+        payload: bytes,
+    ) -> tuple[str, str, _RuntimeResidualCreation | None]:
         residual_root = os.environ.get("QUANT_RESIDUAL_ROOT")
         if not residual_root:
             raise PersistenceUnavailableError("QUANT_RESIDUAL_ROOT is required")
@@ -2376,21 +2396,69 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         digest = _sha256_bytes(payload)
         relative = f"runtime/{digest[:2]}/{digest}"
         target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if target.exists():
+        created_directories: list[Path] = []
+        directory = target.parent
+        while directory != root and not directory.exists():
+            created_directories.append(directory)
+            directory = directory.parent
+        creation: _RuntimeResidualCreation | None = None
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                stream = target.open("xb")
+            except FileExistsError:
+                stored, _ = _read_regular(target)
+                if stored != payload:
+                    raise PersistenceConflict("runtime residual digest path conflicts")
+            else:
+                with stream:
+                    metadata = os.fstat(stream.fileno())
+                    creation = _RuntimeResidualCreation(
+                        target,
+                        (metadata.st_dev, metadata.st_ino),
+                        tuple(created_directories),
+                    )
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                target.chmod(0o444)
             stored, _ = _read_regular(target)
             if stored != payload:
-                raise PersistenceConflict("runtime residual digest path conflicts")
-        else:
-            with target.open("xb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            target.chmod(0o444)
-        stored, _ = _read_regular(target)
-        if stored != payload:
-            raise PersistenceUnavailableError("runtime residual read-back mismatch")
-        return digest, relative
+                raise PersistenceUnavailableError("runtime residual read-back mismatch")
+        except BaseException:
+            FullPostgresPersistence._discard_runtime_residual_creation(creation)
+            raise
+        return digest, relative, creation
+
+    @staticmethod
+    def _discard_runtime_residual_creation(
+        creation: _RuntimeResidualCreation | None,
+    ) -> None:
+        if creation is None:
+            return
+        try:
+            metadata = os.stat(creation.path, follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        except OSError as exc:
+            raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
+        if metadata is not None:
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != creation.file_identity
+            ):
+                raise PersistenceUnavailableError("new runtime residual changed before cleanup")
+            try:
+                creation.path.unlink()
+            except OSError as exc:
+                raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
+        for directory in creation.directories:
+            try:
+                directory.rmdir()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
 
     @staticmethod
     def _insert_runtime_file(
