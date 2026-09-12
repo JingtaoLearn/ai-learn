@@ -46,6 +46,18 @@ _BOCOM_V2_ARTIFACT_URLS = frozenset(
         "?fileId=0aba78fdf863447ab12a7068f7714ccf",
     }
 )
+_BOCOM_V2_SOURCE_PACKAGE = {
+    "action_id": "bocom-corporate-action-source-correction-185",
+    "checksums_sha256": "56ba4efd935af4a566c1d3ffcbe3cdff88ae72b724c3c7a7f758ecd5d8a9b056",
+    "canonical_events_sha256": "6c8ac2d85067c20ff0dafbf346c018d281d348e16cb29a467d9fca75d5fd6024",
+    "accounting_policy_sha256": "a112be88843c3fcfeece50f0afb20dc027deb70dedc3cad41136155475e60a98",
+    "source_manifest_sha256": "d0ef2a5b5ed668788855ad912b60c4ce77fa0f6b895d511272e45385f83bd06c",
+    "source_selection_sha256": "580a1b6348414387d8c51692fe648c8e44d779361d4b6b5221d08f7445ff9286",
+    "retrieval_receipts_sha256": "2d8894e7e0cf57eebd1a1e0d161679ee96e36502b5b46ae6dc3bbd4c78bf2c16",
+    "settlement_policy_id": "SSE-A-CASH-DIVIDEND-DESIGNATED-TRADE-TPLUS1-V1",
+    "tax_policy_id": "PRC-LISTED-A-DIVIDEND-TAX-MATRIX-2015-101-V1",
+}
+_BOCOM_V2_EVIDENCE_SHA256 = "2af966e537b52c41131470f33a2a7337195a2d0f231f5e3d178d90ed3e0a0c86"
 _XSHG_TIMEZONE = "Asia/Shanghai"
 _XSHG_SESSION_CLOSE = time(15, 0)
 FEN_PER_CNY = Decimal("100")
@@ -796,8 +808,6 @@ def admit_corporate_action_evidence(
             },
             "source package binding",
         )
-        if package["action_id"] != "bocom-corporate-action-source-correction-185":
-            raise CorporateActionEvidenceError("source package action identity is invalid")
         for field in (
             "checksums_sha256",
             "canonical_events_sha256",
@@ -807,13 +817,8 @@ def admit_corporate_action_evidence(
             "retrieval_receipts_sha256",
         ):
             _require_sha256(package[field], f"source package {field}")
-        if (
-            package["settlement_policy_id"]
-            != "SSE-A-CASH-DIVIDEND-DESIGNATED-TRADE-TPLUS1-V1"
-            or package["tax_policy_id"]
-            != "PRC-LISTED-A-DIVIDEND-TAX-MATRIX-2015-101-V1"
-        ):
-            raise CorporateActionEvidenceError("source package accounting policy binding is invalid")
+        if package != _BOCOM_V2_SOURCE_PACKAGE:
+            raise CorporateActionEvidenceError("source package identity is not the accepted package")
         expected_bocom_contract_id = identity_digest(
             "quant-platform/complete-enumeration-contract/v1",
             BOCOM_SOURCE_PACKAGE_COMPLETE_CONTRACT,
@@ -823,6 +828,10 @@ def admit_corporate_action_evidence(
             or complete_contract_id != expected_bocom_contract_id
         ):
             raise CorporateActionEvidenceError("BOCOM source-package complete contract is invalid")
+        if identity_digest(EVIDENCE_DOMAIN, value) != _BOCOM_V2_EVIDENCE_SHA256:
+            raise CorporateActionEvidenceError(
+                "BOCOM v2 evidence terms do not match the exact accepted source package"
+            )
     elif "source_package" in value:
         raise CorporateActionEvidenceError("source package binding is outside the source contract")
     if not isinstance(value["findings"], list) or not all(

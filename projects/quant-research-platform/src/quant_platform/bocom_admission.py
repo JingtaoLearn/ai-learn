@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -39,6 +40,7 @@ EXPECTED_DOCUMENT_SHA256 = {
     "SOURCE-SELECTION.json": "580a1b6348414387d8c51692fe648c8e44d779361d4b6b5221d08f7445ff9286",
     "RETRIEVAL-RECEIPTS.json": "2d8894e7e0cf57eebd1a1e0d161679ee96e36502b5b46ae6dc3bbd4c78bf2c16",
 }
+EXPECTED_CHECKSUMS_SHA256 = "56ba4efd935af4a566c1d3ffcbe3cdff88ae72b724c3c7a7f758ecd5d8a9b056"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -62,8 +64,11 @@ def _read_regular(root: Path, relative: str) -> bytes:
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise BocomAdmissionError(f"unsafe source package path: {relative}")
     path = root / relative_path
-    metadata = os.stat(path, follow_symlinks=False)
-    if not path.is_file() or path.is_symlink() or metadata.st_nlink != 1:
+    try:
+        metadata = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise BocomAdmissionError(f"source package member is unavailable: {relative}") from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise BocomAdmissionError(f"unsafe source package member: {relative}")
     return path.read_bytes()
 
@@ -77,18 +82,56 @@ def _json(root: Path, name: str) -> dict[str, Any]:
 
 def _verified_package_files(root: Path) -> dict[str, bytes]:
     checksums = _read_regular(root, "CHECKSUMS.sha256")
+    if _sha256(checksums) != EXPECTED_CHECKSUMS_SHA256:
+        raise BocomAdmissionError("source package checksum manifest identity mismatch")
     entries: dict[str, str] = {}
     for line in checksums.decode("utf-8").splitlines():
         digest, separator, relative = line.partition("  ")
-        if not separator or _SHA256.fullmatch(digest) is None or relative in entries:
+        relative_path = Path(relative)
+        if (
+            not separator
+            or _SHA256.fullmatch(digest) is None
+            or relative in entries
+            or not relative
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path.as_posix() != relative
+            or relative_path.name == "CHECKSUMS.sha256"
+        ):
             raise BocomAdmissionError("source package checksum manifest is invalid")
         entries[relative] = digest
-    actual = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() and path.name != "CHECKSUMS.sha256"
+
+    expected_files = set(entries) | {"CHECKSUMS.sha256"}
+    expected_directories = {
+        parent.as_posix()
+        for relative in entries
+        for parent in Path(relative).parents
+        if parent != Path(".")
     }
-    if actual != set(entries):
+    actual_files: set[str] = set()
+
+    def inspect(directory: Path) -> None:
+        try:
+            children = list(os.scandir(directory))
+        except OSError as exc:
+            raise BocomAdmissionError("source package inventory cannot be enumerated") from exc
+        for child in children:
+            relative = Path(child.path).relative_to(root).as_posix()
+            if child.is_symlink():
+                raise BocomAdmissionError(f"source package symlink is forbidden: {relative}")
+            if child.is_dir(follow_symlinks=False):
+                if relative not in expected_directories:
+                    raise BocomAdmissionError(f"unexpected source package directory: {relative}")
+                inspect(Path(child.path))
+            elif child.is_file(follow_symlinks=False):
+                if relative not in expected_files:
+                    raise BocomAdmissionError(f"unmanifested source package file: {relative}")
+                actual_files.add(relative)
+            else:
+                raise BocomAdmissionError(f"unsupported source package entry: {relative}")
+
+    inspect(root)
+    if actual_files != expected_files:
         raise BocomAdmissionError("source package checksum manifest is incomplete")
     payloads = {relative: _read_regular(root, relative) for relative in sorted(entries)}
     for relative, payload in payloads.items():
@@ -99,6 +142,80 @@ def _verified_package_files(root: Path) -> dict[str, bytes]:
             raise BocomAdmissionError(f"source package identity mismatch: {name}")
     payloads["CHECKSUMS.sha256"] = checksums
     return payloads
+
+
+def _cross_check_official_sources(
+    payloads: Mapping[str, bytes],
+    events: list[dict[str, Any]],
+    policy: Mapping[str, Any],
+    source_manifest: Mapping[str, Any],
+    retrieval_receipts: Mapping[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    settlement = policy.get("settlement")
+    tax = policy.get("tax")
+    if not isinstance(settlement, dict) or not isinstance(tax, dict):
+        raise BocomAdmissionError("accounting policy source bindings are invalid")
+    raw_references = [event.get("source") for event in events]
+    raw_references.extend(settlement.get("sources", []))
+    raw_references.extend(tax.get("sources", []))
+    if len(raw_references) != 6 or not all(isinstance(item, dict) for item in raw_references):
+        raise BocomAdmissionError("official source inventory is not the accepted six members")
+    source_references: list[dict[str, Any]] = [
+        item for item in raw_references if isinstance(item, dict)
+    ]
+
+    manifest_items = source_manifest.get("files")
+    receipt_items = retrieval_receipts.get("accepted_byte_retrievals")
+    if not isinstance(manifest_items, list) or not isinstance(receipt_items, list):
+        raise BocomAdmissionError("official source manifests are invalid")
+    source_rows: dict[str, dict[str, Any]] = {}
+    for item in manifest_items:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or path in source_rows:
+            raise BocomAdmissionError("official source manifest is invalid")
+        source_rows[path] = item
+    receipt_rows: dict[str, dict[str, Any]] = {}
+    for item in receipt_items:
+        source_id = item.get("source_id") if isinstance(item, dict) else None
+        if not isinstance(source_id, str) or source_id in receipt_rows:
+            raise BocomAdmissionError("official source receipt manifest is invalid")
+        receipt_rows[source_id] = item
+    if (
+        len(source_rows) != len(manifest_items)
+        or len(receipt_rows) != len(receipt_items)
+        or len(source_rows) != 6
+        or len(receipt_rows) != 6
+    ):
+        raise BocomAdmissionError("official source manifests are not exact")
+
+    expected_paths: set[str] = set()
+    expected_source_ids: set[str] = set()
+    for reference in source_references:
+        relative = reference.get("local_path")
+        expected_digest = reference.get("sha256")
+        if not isinstance(relative, str) or not isinstance(expected_digest, str):
+            raise BocomAdmissionError("official source member identity mismatch")
+        source_row = source_rows.get(relative)
+        if (
+            source_row is None
+            or source_row.get("sha256") != expected_digest
+            or source_row.get("url") != reference.get("url")
+            or source_row.get("mime_type") != reference.get("mime_type")
+            or relative not in payloads
+            or _sha256(payloads[relative]) != expected_digest
+        ):
+            raise BocomAdmissionError("official source member identity mismatch")
+        source_id = source_row.get("source_id")
+        if not isinstance(source_id, str):
+            raise BocomAdmissionError("official source retrieval identity mismatch")
+        receipt = receipt_rows.get(source_id)
+        if receipt is None or receipt.get("sha256") != expected_digest:
+            raise BocomAdmissionError("official source retrieval identity mismatch")
+        expected_paths.add(relative)
+        expected_source_ids.add(source_id)
+    if set(source_rows) != expected_paths or set(receipt_rows) != expected_source_ids:
+        raise BocomAdmissionError("official source inventory does not match the accepted package")
+    return source_rows, receipt_rows
 
 
 def _request_parts(url: str) -> tuple[str, dict[str, str]]:
@@ -150,7 +267,12 @@ def _package_members(payloads: Mapping[str, bytes]) -> dict[str, tuple[str, byte
 def load_bocom_admission_package(source_root: Path | str) -> BocomAdmissionPackage:
     """Verify source package 185 and adapt it to corporate-action contract v2."""
 
-    root = Path(source_root).resolve()
+    supplied_root = Path(source_root)
+    if supplied_root.is_symlink():
+        raise BocomAdmissionError("source package root symlink is forbidden")
+    root = supplied_root.resolve()
+    if not root.is_dir():
+        raise BocomAdmissionError("source package root is not a directory")
     payloads = _verified_package_files(root)
     events_document = _json(root, "CANONICAL-EVENTS.json")
     policy = _json(root, "ACCOUNTING-POLICY.json")
@@ -196,14 +318,9 @@ def load_bocom_admission_package(source_root: Path | str) -> BocomAdmissionPacka
     ]:
         raise BocomAdmissionError("downstream consumer inputs are not explicit")
 
-    source_rows = {
-        item["path"]: item for item in source_manifest.get("files", []) if isinstance(item, dict)
-    }
-    receipt_rows = {
-        item["source_id"]: item
-        for item in retrieval_receipts.get("accepted_byte_retrievals", [])
-        if isinstance(item, dict) and "source_id" in item
-    }
+    source_rows, receipt_rows = _cross_check_official_sources(
+        payloads, events, policy, source_manifest, retrieval_receipts
+    )
     if source_selection.get("coverage", {}).get("official_sse_disclosures_enumerated") != 241:
         raise BocomAdmissionError("official disclosure inventory count is invalid")
     if source_selection.get("coverage", {}).get("pagination_complete") is not True:
