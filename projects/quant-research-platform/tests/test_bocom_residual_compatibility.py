@@ -19,6 +19,9 @@ class _Rows:
     def fetchall(self) -> list[dict[str, object]]:
         return self._rows
 
+    def fetchone(self) -> dict[str, object] | None:
+        return None if not self._rows else self._rows[0]
+
 
 class _Connection:
     def __init__(self, rows: list[dict[str, object]]) -> None:
@@ -35,9 +38,12 @@ class _RejectingConnection:
     def transaction(self) -> Iterator[_RejectingConnection]:
         yield self
 
-    def execute(self, statement: str, parameters: tuple[object, ...]) -> None:
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        if "FROM qr.accepted_evidence_packages" in statement:
+            return _Rows([])
         assert "pg_advisory_xact_lock" in statement
         assert len(parameters) == 1
+        return _Rows([])
 
 
 class _RejectingConfig:
@@ -47,6 +53,22 @@ class _RejectingConfig:
     @contextmanager
     def connect(self) -> Iterator[_RejectingConnection]:
         yield _RejectingConnection()
+
+
+class _ExistingAdmissionConnection:
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert "FROM qr.accepted_evidence_packages" in statement
+        assert len(parameters) == 1
+        return _Rows([{"present": 1}])
+
+
+class _ExistingAdmissionConfig:
+    def validated(self) -> _ExistingAdmissionConfig:
+        return self
+
+    @contextmanager
+    def connect(self) -> Iterator[_ExistingAdmissionConnection]:
+        yield _ExistingAdmissionConnection()
 
 
 def _identity(payload: bytes, key: str) -> dict[str, object]:
@@ -74,6 +96,34 @@ def _tree_state(root: Path) -> list[tuple[str, str, str | None]]:
         )
         for path in sorted(root.rglob("*"))
     ]
+
+
+def test_exact_bocom_repeat_reads_back_without_runtime_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from quant_platform import bocom_admission
+
+    receipt = {"evidence_id": bocom_admission.ACTION_EVIDENCE_SHA256}
+    monkeypatch.setattr(
+        bocom_admission,
+        "prepare_bocom_admission",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        FullPostgresPersistence,
+        "_runtime_residual_with_creation",
+        lambda *args, **kwargs: pytest.fail("an exact repeat must not touch residual storage"),
+    )
+    persistence = FullPostgresPersistence(  # type: ignore[arg-type]
+        _ExistingAdmissionConfig(), admit_schema=False
+    )
+    monkeypatch.setattr(persistence, "bocom_admission", lambda: receipt)
+
+    assert persistence.publish_bocom_admission(
+        parent_snapshot_path=tmp_path / "parent",
+        snapshot_path=tmp_path / "child",
+        package=object(),
+    ) == receipt
 
 
 @pytest.mark.parametrize("legacy", [False, True])
