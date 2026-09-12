@@ -81,6 +81,37 @@ class _ExistingAdmissionConfig:
         yield _ExistingAdmissionConnection()
 
 
+class _ValidationBoundaryConnection:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    @contextmanager
+    def transaction(self) -> Iterator[_ValidationBoundaryConnection]:
+        self._events.append("transaction-enter")
+        try:
+            yield self
+        finally:
+            self._events.append("transaction-exit")
+
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert statement == "SELECT qr.lock_bocom_admission_readback()"
+        assert parameters == ()
+        self._events.append("writer-lock")
+        return _Rows([])
+
+
+class _ValidationBoundaryConfig:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def validated(self) -> _ValidationBoundaryConfig:
+        return self
+
+    @contextmanager
+    def connect(self) -> Iterator[_ValidationBoundaryConnection]:
+        yield _ValidationBoundaryConnection(self._events)
+
+
 def _identity(payload: bytes, key: str) -> dict[str, object]:
     return {
         "artifact_sha256": hashlib.sha256(payload).hexdigest(),
@@ -134,6 +165,26 @@ def test_exact_bocom_repeat_reads_back_without_runtime_mutation(
         snapshot_path=tmp_path / "child",
         package=object(),
     ) == receipt
+
+
+def test_bocom_readback_holds_writer_lock_across_complete_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    receipt = {"accepted": True}
+    persistence = FullPostgresPersistence(  # type: ignore[arg-type]
+        _ValidationBoundaryConfig(events), admit_schema=False
+    )
+
+    def readback() -> dict[str, bool]:
+        assert events == ["transaction-enter", "writer-lock"]
+        events.append("readback")
+        return receipt
+
+    monkeypatch.setattr(persistence, "_bocom_admission_readback", readback)
+
+    assert persistence.bocom_admission() == receipt
+    assert events == ["transaction-enter", "writer-lock", "readback", "transaction-exit"]
 
 
 def test_bocom_runtime_file_set_accepts_only_the_exact_canonical_paths() -> None:

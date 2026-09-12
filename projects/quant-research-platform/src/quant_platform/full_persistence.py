@@ -454,6 +454,15 @@ BEGIN
     END IF;
     RETURN NEW;
 END; $$;
+
+CREATE OR REPLACE FUNCTION qr.lock_bocom_admission_readback()
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    LOCK TABLE qr.accepted_evidence_packages, qr.artifact_set_members,
+        qr.artifact_sets, qr.artifacts, qr.dataset_current, qr.dataset_snapshots,
+        qr.residual_artifacts, qr.source_files IN SHARE MODE;
+END; $$;
+REVOKE ALL ON FUNCTION qr.lock_bocom_admission_readback() FROM PUBLIC;
 """
 
 IMMUTABLE_TABLES = (
@@ -743,6 +752,10 @@ def install_full_schema(
                 connection.execute(
                     f'REVOKE DELETE ON ALL TABLES IN SCHEMA "{schema}" FROM "{runtime_user}"'
                 )
+            connection.execute(
+                f'GRANT EXECUTE ON FUNCTION qr.lock_bocom_admission_readback() '
+                f'TO "{runtime_user}"'
+            )
             for schema, table in IMMUTABLE_TABLES:
                 connection.execute(
                     f'REVOKE UPDATE, DELETE ON "{schema}"."{table}" FROM "{runtime_user}"'
@@ -2121,7 +2134,22 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         return self.bocom_admission()
 
     def bocom_admission(self) -> dict[str, Any]:
-        """Read back and verify the authoritative additive BOCOM admission."""
+        """Read back one writer-serialized authoritative BOCOM admission."""
+
+        with self.config.connect() as validation_connection:
+            with validation_connection.transaction():
+                validation_connection.execute(
+                    "SELECT qr.lock_bocom_admission_readback()",
+                    (),
+                )
+                return self._bocom_admission_readback()
+
+    def _bocom_admission_readback(self) -> dict[str, Any]:
+        """Validate all BOCOM rows and bytes while their writers are excluded.
+
+        The caller holds SHARE table locks across materialization, canonical path-set
+        validation, dependent row/byte checks, receipt reconstruction, and current read-back.
+        """
 
         from .bocom_admission import (
             ACTION_EVIDENCE_SHA256,
