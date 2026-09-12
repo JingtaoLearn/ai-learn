@@ -9,6 +9,7 @@ from typing import Any, Iterator
 import pytest
 
 from quant_platform.full_persistence import FullPostgresPersistence, PersistenceConflict
+from quant_platform.postgres_persistence import PersistenceUnavailableError
 
 
 class _Rows:
@@ -175,3 +176,65 @@ def test_rejected_first_publication_removes_only_its_new_runtime_residual(
         )
 
     assert _tree_state(residual_root) == before
+
+
+def test_cleanup_restores_a_replacement_instead_of_deleting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    residual_root = tmp_path / "residual"
+    residual_root.mkdir()
+    monkeypatch.setenv("QUANT_RESIDUAL_ROOT", str(residual_root))
+    _, _, creation = FullPostgresPersistence._runtime_residual_with_creation(
+        b"invocation-created"
+    )
+    assert creation is not None
+    saved = creation.path.with_name("saved-invocation-inode")
+    replacement = b"pre-existing-or-concurrent-replacement"
+    original_rename = Path.rename
+    replacement_installed = False
+
+    def replace_before_capture(source: Path, target: Path) -> Path:
+        nonlocal replacement_installed
+        if source == creation.path and not replacement_installed:
+            original_rename(source, saved)
+            source.write_bytes(replacement)
+            replacement_installed = True
+        return original_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", replace_before_capture)
+
+    with pytest.raises(PersistenceUnavailableError, match="changed before cleanup"):
+        FullPostgresPersistence._discard_runtime_residual_creation(creation)
+
+    assert replacement_installed
+    assert creation.path.read_bytes() == replacement
+    assert saved.exists()
+
+
+@pytest.mark.parametrize("level", ["runtime", "shard"])
+def test_concurrently_created_residual_directories_are_not_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, level: str
+) -> None:
+    residual_root = tmp_path / "residual"
+    residual_root.mkdir()
+    monkeypatch.setenv("QUANT_RESIDUAL_ROOT", str(residual_root))
+    original_mkdir = Path.mkdir
+    foreign_directories: list[Path] = []
+
+    def concurrent_mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
+        is_race_target = (level == "runtime" and path.name == "runtime") or (
+            level == "shard" and path.parent.name == "runtime"
+        )
+        if not foreign_directories and is_race_target:
+            original_mkdir(path, mode=0o700)
+            foreign_directories.append(path)
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", concurrent_mkdir)
+    _, _, creation = FullPostgresPersistence._runtime_residual_with_creation(b"directory-race")
+    assert creation is not None
+    assert all(path not in creation.directories for path in foreign_directories)
+
+    FullPostgresPersistence._discard_runtime_residual_creation(creation)
+
+    assert all(path.exists() for path in foreign_directories)

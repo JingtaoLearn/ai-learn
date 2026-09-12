@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import io
 import json
@@ -59,7 +60,7 @@ class PersistenceConflict(FullPersistenceError):
 @dataclass(frozen=True)
 class _RuntimeResidualCreation:
     path: Path
-    file_identity: tuple[int, int]
+    file_identity: tuple[int, int] | None
     directories: tuple[Path, ...]
 
 
@@ -2397,19 +2398,30 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         relative = f"runtime/{digest[:2]}/{digest}"
         target = root / relative
         created_directories: list[Path] = []
-        directory = target.parent
-        while directory != root and not directory.exists():
-            created_directories.append(directory)
-            directory = directory.parent
         creation: _RuntimeResidualCreation | None = None
         try:
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # A successful exclusive mkdir is the only evidence that this call owns a directory.
+            for directory in (root / "runtime", target.parent):
+                try:
+                    directory.mkdir(mode=0o700)
+                except FileExistsError:
+                    metadata = os.stat(directory, follow_symlinks=False)
+                    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                        raise PersistenceUnavailableError("runtime residual directory is unsafe")
+                else:
+                    created_directories.insert(0, directory)
+                    creation = _RuntimeResidualCreation(
+                        target,
+                        None,
+                        tuple(created_directories),
+                    )
             try:
-                stream = target.open("xb")
+                stream = target.open("xb+")
             except FileExistsError:
                 stored, _ = _read_regular(target)
                 if stored != payload:
                     raise PersistenceConflict("runtime residual digest path conflicts")
+                creation = None
             else:
                 with stream:
                     metadata = os.fstat(stream.fileno())
@@ -2421,7 +2433,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
-                target.chmod(0o444)
+                    os.fchmod(stream.fileno(), 0o444)
             stored, _ = _read_regular(target)
             if stored != payload:
                 raise PersistenceUnavailableError("runtime residual read-back mismatch")
@@ -2436,28 +2448,57 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
     ) -> None:
         if creation is None:
             return
-        try:
-            metadata = os.stat(creation.path, follow_symlinks=False)
-        except FileNotFoundError:
-            metadata = None
-        except OSError as exc:
-            raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
-        if metadata is not None:
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or (metadata.st_dev, metadata.st_ino) != creation.file_identity
-            ):
-                raise PersistenceUnavailableError("new runtime residual changed before cleanup")
+        if creation.file_identity is not None:
             try:
-                creation.path.unlink()
+                # Capture the public name before inspecting it. Only the entry inside this
+                # invocation-exclusive directory is ever unlinked.
+                quarantine = Path(
+                    tempfile.mkdtemp(prefix=".cleanup-", dir=creation.path.parent)
+                )
             except OSError as exc:
                 raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
+            captured = quarantine / "residual"
+            try:
+                try:
+                    creation.path.rename(captured)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise PersistenceUnavailableError(
+                        "new runtime residual cleanup failed"
+                    ) from exc
+                else:
+                    metadata = os.stat(captured, follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(metadata.st_mode)
+                        or (metadata.st_dev, metadata.st_ino) != creation.file_identity
+                    ):
+                        try:
+                            os.link(captured, creation.path, follow_symlinks=False)
+                            captured.unlink()
+                        except OSError as exc:
+                            raise PersistenceUnavailableError(
+                                "new runtime residual cleanup failed"
+                            ) from exc
+                        raise PersistenceUnavailableError(
+                            "new runtime residual changed before cleanup"
+                        )
+                    captured.unlink()
+            finally:
+                try:
+                    quarantine.rmdir()
+                except OSError as exc:
+                    raise PersistenceUnavailableError(
+                        "new runtime residual cleanup failed"
+                    ) from exc
         for directory in creation.directories:
             try:
                 directory.rmdir()
             except FileNotFoundError:
                 continue
             except OSError as exc:
+                if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    continue
                 raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
 
     @staticmethod
