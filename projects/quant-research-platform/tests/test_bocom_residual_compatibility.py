@@ -43,6 +43,16 @@ class _RuntimeFileSetConnection:
         return _Rows([{"relative_path": path} for path in self._paths])
 
 
+class _RuntimeFileConnection:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert "FROM qr.source_files" in statement
+        assert parameters == ("platform/datasets/601328.SS/parent/manifest.json",)
+        return _Rows([self._row])
+
+
 class _RejectingConnection:
     @contextmanager
     def transaction(self) -> Iterator[_RejectingConnection]:
@@ -207,6 +217,38 @@ def test_bocom_runtime_file_set_accepts_only_the_exact_canonical_paths() -> None
                 prefix=prefix,
                 expected_paths=expected,
             )
+
+
+def test_bocom_parent_metadata_accepts_only_explicit_imported_classification() -> None:
+    payload = b"production-shaped imported parent metadata\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    row: dict[str, object] = {
+        "file_class": "DATASET_METADATA",
+        "mode": 0o444,
+        "byte_size": len(payload),
+        "sha256": digest,
+        "artifact_sha256": digest,
+        "residual_sha256": None,
+        "classification": "BYTEA_IMPORTED",
+    }
+    connection = _RuntimeFileConnection(row)
+
+    FullPostgresPersistence._require_runtime_file(
+        connection,
+        relative_path="platform/datasets/601328.SS/parent/manifest.json",
+        file_class="DATASET_METADATA",
+        payload=payload,
+        classification="BYTEA_IMPORTED",
+    )
+    row["classification"] = "BYTEA_RUNTIME"
+    with pytest.raises(PersistenceConflict, match="runtime file identity conflicts"):
+        FullPostgresPersistence._require_runtime_file(
+            connection,
+            relative_path="platform/datasets/601328.SS/parent/manifest.json",
+            file_class="DATASET_METADATA",
+            payload=payload,
+            classification="BYTEA_IMPORTED",
+        )
 
 
 @pytest.mark.parametrize("legacy", [False, True])
