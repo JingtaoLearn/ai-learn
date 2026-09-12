@@ -9,11 +9,15 @@ from pathlib import Path
 import pytest
 
 from quant_platform.bocom_admission import (
+    ACTION_EVIDENCE_SHA256,
+    ACTION_SNAPSHOT_ID,
     BocomAdmissionError,
+    EVIDENCE_CLASS,
     INTERVAL,
     PARENT_SNAPSHOT_ID,
     build_bocom_action_snapshot,
     load_bocom_admission_package,
+    prepare_bocom_admission,
 )
 from quant_platform.corporate_actions import (
     ARTIFACT_DOMAIN,
@@ -180,3 +184,33 @@ def test_exact_parent_produces_schema4_action_aware_snapshot(tmp_path: Path):
     assert result["event_count"] == 2
     assert result["data_start"] == "2019-05-06"
     assert result["data_end"] == INTERVAL[1]
+
+
+@pytest.mark.skipif(
+    SOURCE_PACKAGE is None or PARENT_SNAPSHOT is None,
+    reason="exact BOCOM package and parent Snapshot are not mounted",
+)
+def test_exact_package_prepares_additive_authoritative_admission(tmp_path: Path):
+    assert SOURCE_PACKAGE is not None
+    assert PARENT_SNAPSHOT is not None
+    package = load_bocom_admission_package(Path(SOURCE_PACKAGE))
+    built = build_bocom_action_snapshot(Path(PARENT_SNAPSHOT), tmp_path, package)
+
+    publication = prepare_bocom_admission(
+        Path(PARENT_SNAPSHOT), Path(built["path"]), package
+    )
+
+    assert publication.evidence_id == ACTION_EVIDENCE_SHA256
+    assert publication.evidence_class == EVIDENCE_CLASS
+    assert publication.snapshot_manifest["snapshot_id"] == ACTION_SNAPSHOT_ID
+    assert publication.receipt["parent_snapshot_id"] == PARENT_SNAPSHOT_ID
+    assert publication.receipt["parent_child_byte_equal"] is True
+    assert publication.receipt["dataset_current_changed"] is False
+    assert publication.receipt["replay_performed"] is False
+    assert publication.receipt["signal_or_trading_effect"] is False
+    assert {
+        "ADMISSION.json",
+        "evidence.json",
+        "corporate-action-142783d88318f144acc4ad097032546d00a6728f46a3d6c5317c62b50f95458a.bin",
+        "corporate-action-3396a8e1ced94445f6e6ca732eaf55c9d6977ce19282eafacf525b59df0663f3.bin",
+    }.issubset(publication.evidence_members)
