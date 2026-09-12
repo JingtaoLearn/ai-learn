@@ -1751,6 +1751,48 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             raise PersistenceConflict("BOCOM Snapshot row identity conflicts")
 
     @staticmethod
+    def _require_bocom_dataset_residual(connection: Any, *, payload: bytes) -> None:
+        digest = _sha256_bytes(payload)
+        legacy_key = f"{digest[:2]}/{digest}"
+        current_key = f"runtime/{digest[:2]}/{digest}"
+        rows = connection.execute(
+            "SELECT artifact_sha256, byte_size, media_type, residual_class, residual_key "
+            "FROM qr.residual_artifacts WHERE artifact_sha256=%s "
+            "OR residual_key IN (%s,%s) ORDER BY artifact_sha256, residual_key",
+            (digest, legacy_key, current_key),
+        ).fetchall()
+        if len(rows) != 1:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        row = rows[0]
+        residual_key = row["residual_key"]
+        if (
+            row["artifact_sha256"].strip(),
+            row["byte_size"],
+            row["media_type"],
+            row["residual_class"],
+        ) != (digest, len(payload), "application/octet-stream", "DATASET_PARQUET") or residual_key not in {
+            legacy_key,
+            current_key,
+        }:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        residual_root = os.environ.get("QUANT_RESIDUAL_ROOT")
+        if not residual_root:
+            raise PersistenceUnavailableError("QUANT_RESIDUAL_ROOT is required")
+        root = Path(residual_root).absolute()
+        try:
+            metadata = os.stat(root, follow_symlinks=False)
+        except (OSError, MigrationRejected) as exc:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts") from exc
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        try:
+            stored, _ = _read_regular(root / residual_key)
+        except (OSError, MigrationRejected) as exc:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts") from exc
+        if stored != payload:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+
+    @staticmethod
     def _bocom_members_from_readback(
         members: Mapping[str, bytes],
         *,
@@ -2001,17 +2043,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         "'DATASET_PARQUET',%s) ON CONFLICT (artifact_sha256) DO NOTHING",
                         (parquet_sha256, len(parquet), residual_key),
                     )
-                    stored_residual = connection.execute(
-                        "SELECT byte_size, residual_class, residual_key "
-                        "FROM qr.residual_artifacts WHERE artifact_sha256=%s",
-                        (parquet_sha256,),
-                    ).fetchone()
-                    if stored_residual is None or (
-                        stored_residual["byte_size"],
-                        stored_residual["residual_class"],
-                        stored_residual["residual_key"],
-                    ) != (len(parquet), "DATASET_PARQUET", residual_key):
-                        raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+                    self._require_bocom_dataset_residual(connection, payload=parquet)
                     prefix = f"platform/datasets/601328.SS/{ACTION_SNAPSHOT_ID}"
                     self._insert_runtime_file(
                         connection,
@@ -2189,6 +2221,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 manifest_payload=child_manifest_payload,
                 parquet_payload=parquet,
             )
+            self._require_bocom_dataset_residual(connection, payload=parquet)
         return {
             **dict(receipt),
             "artifact_set_id": artifact_set_id,
