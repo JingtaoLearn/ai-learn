@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import re
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +23,7 @@ from .corporate_actions import (
     CorporateActionEvidence,
     CorporateActionEvidenceError,
     admit_corporate_action_evidence,
+    canonical_json_bytes,
     identity_digest,
     load_strict_json,
 )
@@ -30,6 +33,11 @@ from .datasets import _canonical_data_bytes, _verify_snapshot, publish_snapshot
 ACTION_ID = "bocom-corporate-action-source-correction-185"
 STUDY_ID = "35ee96c76e4491e63c7dd42741beae18b04c04d747e8b7d9760135f130206178"
 PARENT_SNAPSHOT_ID = "fb7f22fe0f3bf2dce89e98ff3e8c6a66b78492cadfe159cec9d541492f6a03ae"
+ACTION_SNAPSHOT_ID = "b778aed143b18deca3966e295525df28433228d07a305f2b1217964331ad1106"
+ACTION_EVIDENCE_SHA256 = "2af966e537b52c41131470f33a2a7337195a2d0f231f5e3d178d90ed3e0a0c86"
+PARENT_PARQUET_SHA256 = "5ae6754b376a736385ff553b83d947bdc6905cc0791daf702f549d72b0e87f10"
+EVIDENCE_CLASS = "CORPORATE_ACTION_EVIDENCE"
+EVIDENCE_SOURCE_PATH = f"platform/corporate-action-evidence/{ACTION_ID}"
 INTERVAL = ("2025-08-15", "2026-08-28")
 SETTLEMENT_POLICY_ID = "SSE-A-CASH-DIVIDEND-DESIGNATED-TRADE-TPLUS1-V1"
 TAX_POLICY_ID = "PRC-LISTED-A-DIVIDEND-TAX-MATRIX-2015-101-V1"
@@ -49,6 +57,17 @@ class BocomAdmissionPackage:
     evidence: CorporateActionEvidence
     accepted_members: Mapping[str, tuple[str, bytes]]
     package_binding: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class BocomAdmissionPublication:
+    evidence_id: str
+    evidence_class: str
+    source_path: str
+    evidence_members: Mapping[str, tuple[str, bytes]]
+    snapshot_path: Path
+    snapshot_manifest: Mapping[str, Any]
+    receipt: Mapping[str, Any]
 
 
 class BocomAdmissionError(ValueError):
@@ -540,3 +559,110 @@ def build_bocom_action_snapshot(
         "event_count": len(package.evidence.document["revisions"]),
         "path": str(child),
     }
+
+
+def prepare_bocom_admission(
+    parent_snapshot: Path | str,
+    action_snapshot: Path | str,
+    package: BocomAdmissionPackage,
+) -> BocomAdmissionPublication:
+    """Prepare the exact additive PostgreSQL publication without mutating authority state."""
+
+    parent = Path(parent_snapshot).resolve()
+    child = Path(action_snapshot).resolve()
+    if parent.name != PARENT_SNAPSHOT_ID or child.name != ACTION_SNAPSHOT_ID:
+        raise BocomAdmissionError("BOCOM admission snapshot identity is not accepted")
+    parent_manifest = _verify_snapshot(
+        parent, PARENT_SNAPSHOT_ID, include_frame=False, verify_parent=False
+    )
+    child_manifest = _verify_snapshot(
+        child, ACTION_SNAPSHOT_ID, include_frame=False, verify_parent=False
+    )
+    if not isinstance(parent_manifest, dict) or not isinstance(child_manifest, dict):
+        raise BocomAdmissionError("BOCOM admission snapshots did not return manifests")
+    parent_parquet = _read_regular(parent, "data.parquet")
+    child_parquet = _read_regular(child, "data.parquet")
+    if (
+        package.evidence.digest != ACTION_EVIDENCE_SHA256
+        or not package.evidence.publishable
+        or parent_manifest.get("schema_version") != 3
+        or child_manifest.get("schema_version") != 4
+        or child_manifest.get("corporate_action_evidence_sha256") != ACTION_EVIDENCE_SHA256
+        or parent_manifest.get("canonical_sha256") != child_manifest.get("canonical_sha256")
+        or _sha256(parent_parquet) != PARENT_PARQUET_SHA256
+        or _sha256(child_parquet) != PARENT_PARQUET_SHA256
+        or parent_parquet != child_parquet
+    ):
+        raise BocomAdmissionError("BOCOM admission does not preserve exact accepted identities")
+
+    receipt = {
+        "schema": "quantresearch-bocom-admission/v1",
+        "action_id": ACTION_ID,
+        "evidence_id": ACTION_EVIDENCE_SHA256,
+        "evidence_class": EVIDENCE_CLASS,
+        "source_path": EVIDENCE_SOURCE_PATH,
+        "source_contract_version": package.evidence.document["source_contract_version"],
+        "source_package": dict(package.package_binding),
+        "parent_snapshot_id": PARENT_SNAPSHOT_ID,
+        "snapshot_id": ACTION_SNAPSHOT_ID,
+        "schema_version": 4,
+        "canonical_sha256": child_manifest["canonical_sha256"],
+        "parent_parquet_sha256": PARENT_PARQUET_SHA256,
+        "child_parquet_sha256": PARENT_PARQUET_SHA256,
+        "parent_child_byte_equal": True,
+        "dataset_current_changed": False,
+        "replay_performed": False,
+        "signal_or_trading_effect": False,
+    }
+    evidence_members = dict(package.accepted_members)
+    evidence_members["evidence.json"] = ("application/json", package.evidence.json_bytes())
+    evidence_members["ADMISSION.json"] = (
+        "application/json",
+        canonical_json_bytes(receipt) + b"\n",
+    )
+    for artifact in package.evidence.document["artifacts"]:
+        artifact_id = artifact["artifact_id"]
+        evidence_members[artifact["path"]] = (
+            artifact["media_type"],
+            package.evidence.artifact_bytes[artifact_id],
+        )
+    return BocomAdmissionPublication(
+        evidence_id=ACTION_EVIDENCE_SHA256,
+        evidence_class=EVIDENCE_CLASS,
+        source_path=EVIDENCE_SOURCE_PATH,
+        evidence_members=evidence_members,
+        snapshot_path=child,
+        snapshot_manifest=child_manifest,
+        receipt=receipt,
+    )
+
+
+def admit_bocom_package(source_root: Path | str) -> dict[str, Any]:
+    """Construct and atomically publish the exact reviewed BOCOM admission graph."""
+
+    from .full_persistence import FullPostgresPersistence
+
+    package = load_bocom_admission_package(source_root)
+    persistence = FullPostgresPersistence.from_environment()
+    with (
+        persistence.materialize_dataset_snapshot("601328.SS", PARENT_SNAPSHOT_ID) as parent,
+        tempfile.TemporaryDirectory(prefix="bocom-admission-") as temporary,
+    ):
+        built = build_bocom_action_snapshot(parent, Path(temporary), package)
+        return persistence.publish_bocom_admission(
+            parent_snapshot_path=parent,
+            snapshot_path=Path(built["path"]),
+            package=package,
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Admit reviewed BOCOM corporate-action evidence")
+    parser.add_argument("--source-package", required=True, type=Path)
+    args = parser.parse_args()
+    print(json.dumps(admit_bocom_package(args.source_package), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1646,8 +1646,247 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         return {
             "evidence_id": evidence_id,
             "evidence_class": row["evidence_class"],
+            "artifact_set_id": row["artifact_set_id"].strip(),
             "source_path": row["source_path"],
             "members": self.read_artifact_set(row["artifact_set_id"].strip()),
+        }
+
+    def publish_bocom_admission(
+        self,
+        *,
+        parent_snapshot_path: Path,
+        snapshot_path: Path,
+        package: Any,
+    ) -> dict[str, Any]:
+        """Publish the reviewed BOCOM evidence and Snapshot without moving current."""
+
+        from .bocom_admission import (
+            ACTION_EVIDENCE_SHA256,
+            ACTION_SNAPSHOT_ID,
+            EVIDENCE_CLASS,
+            PARENT_SNAPSHOT_ID,
+            prepare_bocom_admission,
+        )
+
+        publication = prepare_bocom_admission(
+            parent_snapshot_path, snapshot_path, package
+        )
+        with self.config.connect() as connection:
+            existing = connection.execute(
+                "SELECT evidence_id FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
+                (ACTION_EVIDENCE_SHA256,),
+            ).fetchone()
+        if existing is not None:
+            return self.bocom_admission()
+        verified = dict(publication.snapshot_manifest)
+        snapshot_members = {
+            path.name: _read_regular(path, maximum=MAX_BYTEA_ARTIFACT)[0]
+            for path in publication.snapshot_path.iterdir()
+            if path.name != "data.parquet"
+        }
+        parquet, _ = _read_regular(publication.snapshot_path / "data.parquet")
+        parquet_sha256, residual_key = self._runtime_residual(parquet)
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (ACTION_EVIDENCE_SHA256,),
+                    )
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (ACTION_SNAPSHOT_ID,),
+                    )
+                    parent = connection.execute(
+                        "SELECT instrument, canonical_sha256, parquet_sha256 "
+                        "FROM qr.dataset_snapshots WHERE snapshot_id=%s",
+                        (PARENT_SNAPSHOT_ID,),
+                    ).fetchone()
+                    if parent is None or (
+                        parent["instrument"],
+                        parent["canonical_sha256"].strip(),
+                        parent["parquet_sha256"].strip(),
+                    ) != (
+                        "601328.SS",
+                        verified["canonical_sha256"],
+                        parquet_sha256,
+                    ):
+                        raise PersistenceConflict("BOCOM parent Snapshot identity conflicts")
+                    current = connection.execute(
+                        "SELECT snapshot_id, generation FROM qr.dataset_current "
+                        "WHERE instrument='601328.SS'"
+                    ).fetchone()
+                    current_identity = None if current is None else (
+                        current["snapshot_id"].strip(),
+                        current["generation"],
+                    )
+
+                    artifact_set_id = self._publish_artifact_set_in_transaction(
+                        connection,
+                        kind=EVIDENCE_CLASS,
+                        members=publication.evidence_members,
+                    )
+                    connection.execute(
+                        "INSERT INTO qr.accepted_evidence_packages("
+                        "evidence_id, evidence_class, artifact_set_id, source_path) "
+                        "VALUES (%s,%s,%s,%s) ON CONFLICT (evidence_id) DO NOTHING",
+                        (
+                            publication.evidence_id,
+                            publication.evidence_class,
+                            artifact_set_id,
+                            publication.source_path,
+                        ),
+                    )
+                    stored_evidence = connection.execute(
+                        "SELECT evidence_class, artifact_set_id, source_path "
+                        "FROM qr.accepted_evidence_packages WHERE evidence_id=%s",
+                        (publication.evidence_id,),
+                    ).fetchone()
+                    if stored_evidence is None or (
+                        stored_evidence["evidence_class"],
+                        stored_evidence["artifact_set_id"].strip(),
+                        stored_evidence["source_path"],
+                    ) != (publication.evidence_class, artifact_set_id, publication.source_path):
+                        raise PersistenceConflict("BOCOM evidence publication conflicts")
+
+                    connection.execute(
+                        "INSERT INTO qr.residual_artifacts(artifact_sha256, byte_size, media_type, "
+                        "residual_class, residual_key) VALUES (%s,%s,'application/octet-stream',"
+                        "'DATASET_PARQUET',%s) ON CONFLICT (artifact_sha256) DO NOTHING",
+                        (parquet_sha256, len(parquet), residual_key),
+                    )
+                    stored_residual = connection.execute(
+                        "SELECT byte_size, residual_class, residual_key "
+                        "FROM qr.residual_artifacts WHERE artifact_sha256=%s",
+                        (parquet_sha256,),
+                    ).fetchone()
+                    if stored_residual is None or (
+                        stored_residual["byte_size"],
+                        stored_residual["residual_class"],
+                        stored_residual["residual_key"],
+                    ) != (len(parquet), "DATASET_PARQUET", residual_key):
+                        raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+                    prefix = f"platform/datasets/601328.SS/{ACTION_SNAPSHOT_ID}"
+                    self._insert_runtime_file(
+                        connection,
+                        relative_path=f"{prefix}/data.parquet",
+                        file_class="DATASET_PARQUET",
+                        payload=parquet,
+                        residual_sha256=parquet_sha256,
+                    )
+                    for name, payload in snapshot_members.items():
+                        self._insert_runtime_file(
+                            connection,
+                            relative_path=f"{prefix}/{name}",
+                            file_class="DATASET_METADATA",
+                            payload=payload,
+                        )
+                    connection.execute(
+                        "INSERT INTO qr.dataset_snapshots(snapshot_id, instrument, schema_version, "
+                        "canonical_sha256, parquet_sha256, manifest_sha256, "
+                        "parquet_artifact_sha256, manifest) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT (snapshot_id) DO NOTHING",
+                        (
+                            ACTION_SNAPSHOT_ID,
+                            "601328.SS",
+                            verified["schema_version"],
+                            verified["canonical_sha256"],
+                            parquet_sha256,
+                            _sha256_bytes(snapshot_members["manifest.json"]),
+                            parquet_sha256,
+                            Jsonb(verified),
+                        ),
+                    )
+                    stored_snapshot = connection.execute(
+                        "SELECT instrument, schema_version, canonical_sha256, parquet_sha256, "
+                        "manifest FROM qr.dataset_snapshots WHERE snapshot_id=%s",
+                        (ACTION_SNAPSHOT_ID,),
+                    ).fetchone()
+                    if stored_snapshot is None or (
+                        stored_snapshot["instrument"],
+                        stored_snapshot["schema_version"],
+                        stored_snapshot["canonical_sha256"].strip(),
+                        stored_snapshot["parquet_sha256"].strip(),
+                        stored_snapshot["manifest"],
+                    ) != (
+                        "601328.SS",
+                        4,
+                        verified["canonical_sha256"],
+                        parquet_sha256,
+                        verified,
+                    ):
+                        raise PersistenceConflict("BOCOM Snapshot publication conflicts")
+                    current_after = connection.execute(
+                        "SELECT snapshot_id, generation FROM qr.dataset_current "
+                        "WHERE instrument='601328.SS'"
+                    ).fetchone()
+                    after_identity = None if current_after is None else (
+                        current_after["snapshot_id"].strip(),
+                        current_after["generation"],
+                    )
+                    if after_identity != current_identity:
+                        raise PersistenceConflict("BOCOM admission changed dataset current")
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+        return self.bocom_admission()
+
+    def bocom_admission(self) -> dict[str, Any]:
+        """Read back and verify the authoritative additive BOCOM admission."""
+
+        from .bocom_admission import (
+            ACTION_EVIDENCE_SHA256,
+            ACTION_SNAPSHOT_ID,
+            EVIDENCE_CLASS,
+            PARENT_PARQUET_SHA256,
+            PARENT_SNAPSHOT_ID,
+        )
+        from .corporate_actions import admit_corporate_action_evidence, load_strict_json
+        from .datasets import _verify_snapshot
+
+        package = self.accepted_evidence_package(
+            ACTION_EVIDENCE_SHA256, expected_class=EVIDENCE_CLASS
+        )
+        members = package["members"]
+        receipt = load_strict_json(members["ADMISSION.json"])
+        document = load_strict_json(members["evidence.json"])
+        artifacts = {
+            item["artifact_id"]: members[item["path"]]
+            for item in document["artifacts"]
+        }
+        evidence = admit_corporate_action_evidence(document, artifacts)
+        package_index = load_strict_json(members["PACKAGE-INDEX.json"])
+        indexed = {
+            item["logical_name"]: item for item in package_index["members"]
+        }
+        if (
+            evidence.digest != ACTION_EVIDENCE_SHA256
+            or receipt.get("evidence_id") != ACTION_EVIDENCE_SHA256
+            or receipt.get("parent_snapshot_id") != PARENT_SNAPSHOT_ID
+            or receipt.get("snapshot_id") != ACTION_SNAPSHOT_ID
+            or len(indexed) != 29
+            or any(
+                name not in members
+                or item["sha256"] != _sha256_bytes(members[name])
+                or item["byte_size"] != len(members[name])
+                for name, item in indexed.items()
+            )
+        ):
+            raise PersistenceUnavailableError("BOCOM evidence read-back mismatch")
+        with self.materialize_dataset_snapshot("601328.SS", ACTION_SNAPSHOT_ID) as path:
+            verified = _verify_snapshot(path, ACTION_SNAPSHOT_ID, verify_parent=False)
+            parquet, _ = _read_regular(path / "data.parquet")
+        if (
+            not isinstance(verified, dict)
+            or verified["schema_version"] != 4
+            or verified["corporate_action_evidence_sha256"] != ACTION_EVIDENCE_SHA256
+            or _sha256_bytes(parquet) != PARENT_PARQUET_SHA256
+        ):
+            raise PersistenceUnavailableError("BOCOM Snapshot read-back mismatch")
+        return {
+            **dict(receipt),
+            "artifact_set_id": package["artifact_set_id"],
+            "artifact_member_count": len(members),
+            "dataset_current_snapshot_id": self.dataset_current_snapshot("601328.SS"),
         }
 
     def production_result(self, result_id: str) -> dict[str, Any]:
