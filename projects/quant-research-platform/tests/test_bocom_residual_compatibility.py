@@ -33,6 +33,16 @@ class _Connection:
         return _Rows(self._rows)
 
 
+class _RuntimeFileSetConnection:
+    def __init__(self, paths: list[str]) -> None:
+        self._paths = paths
+
+    def execute(self, statement: str, parameters: tuple[object, ...]) -> _Rows:
+        assert "SELECT relative_path FROM qr.source_files" in statement
+        assert parameters == ("platform/datasets/601328.SS/snapshot/%",)
+        return _Rows([{"relative_path": path} for path in self._paths])
+
+
 class _RejectingConnection:
     @contextmanager
     def transaction(self) -> Iterator[_RejectingConnection]:
@@ -124,6 +134,28 @@ def test_exact_bocom_repeat_reads_back_without_runtime_mutation(
         snapshot_path=tmp_path / "child",
         package=object(),
     ) == receipt
+
+
+def test_bocom_runtime_file_set_accepts_only_the_exact_canonical_paths() -> None:
+    prefix = "platform/datasets/601328.SS/snapshot"
+    expected = {f"{prefix}/data.parquet", f"{prefix}/manifest.json"}
+    FullPostgresPersistence._require_runtime_file_set(
+        _RuntimeFileSetConnection(sorted(expected)),
+        prefix=prefix,
+        expected_paths=expected,
+    )
+
+    for paths in (
+        [f"{prefix}/data.parquet"],
+        sorted(expected | {f"{prefix}/alias/manifest.json"}),
+        [f"{prefix}/data.parquet", f"{prefix}/manifest.json", f"{prefix}/manifest.json"],
+    ):
+        with pytest.raises(PersistenceConflict, match="runtime file path set conflicts"):
+            FullPostgresPersistence._require_runtime_file_set(
+                _RuntimeFileSetConnection(paths),
+                prefix=prefix,
+                expected_paths=expected,
+            )
 
 
 @pytest.mark.parametrize("legacy", [False, True])

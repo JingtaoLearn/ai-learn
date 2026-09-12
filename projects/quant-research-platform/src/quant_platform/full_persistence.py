@@ -2260,6 +2260,14 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 (ACTION_SNAPSHOT_ID, child_members, parquet),
             ):
                 prefix = f"platform/datasets/601328.SS/{snapshot_id}"
+                self._require_runtime_file_set(
+                    connection,
+                    prefix=prefix,
+                    expected_paths={
+                        f"{prefix}/data.parquet",
+                        *(f"{prefix}/{name}" for name in snapshot_members),
+                    },
+                )
                 self._require_runtime_file(
                     connection,
                     relative_path=f"{prefix}/data.parquet",
@@ -2539,6 +2547,22 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
                     continue
                 raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
+
+    @staticmethod
+    def _require_runtime_file_set(
+        connection: Any,
+        *,
+        prefix: str,
+        expected_paths: set[str],
+    ) -> None:
+        stored = connection.execute(
+            "SELECT relative_path FROM qr.source_files "
+            "WHERE relative_path LIKE %s ORDER BY relative_path",
+            (prefix + "/%",),
+        ).fetchall()
+        actual_paths = [row["relative_path"] for row in stored]
+        if actual_paths != sorted(expected_paths):
+            raise PersistenceConflict("runtime file path set conflicts")
 
     @staticmethod
     def _require_runtime_file(
