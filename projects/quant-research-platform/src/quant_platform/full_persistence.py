@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import io
 import json
@@ -54,6 +55,13 @@ class MigrationRejected(FullPersistenceError):
 
 class PersistenceConflict(FullPersistenceError):
     """An immutable identity already exists with different content."""
+
+
+@dataclass(frozen=True)
+class _RuntimeResidualCreation:
+    path: Path
+    file_identity: tuple[int, int] | None
+    directories: tuple[Path, ...]
 
 
 # Existing domain code stores canonical JSON and UTC timestamps as TEXT. Keeping those
@@ -1751,6 +1759,48 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             raise PersistenceConflict("BOCOM Snapshot row identity conflicts")
 
     @staticmethod
+    def _require_bocom_dataset_residual(connection: Any, *, payload: bytes) -> None:
+        digest = _sha256_bytes(payload)
+        legacy_key = f"{digest[:2]}/{digest}"
+        current_key = f"runtime/{digest[:2]}/{digest}"
+        rows = connection.execute(
+            "SELECT artifact_sha256, byte_size, media_type, residual_class, residual_key "
+            "FROM qr.residual_artifacts WHERE artifact_sha256=%s "
+            "OR residual_key IN (%s,%s) ORDER BY artifact_sha256, residual_key",
+            (digest, legacy_key, current_key),
+        ).fetchall()
+        if len(rows) != 1:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        row = rows[0]
+        residual_key = row["residual_key"]
+        if (
+            row["artifact_sha256"].strip(),
+            row["byte_size"],
+            row["media_type"],
+            row["residual_class"],
+        ) != (digest, len(payload), "application/octet-stream", "DATASET_PARQUET") or residual_key not in {
+            legacy_key,
+            current_key,
+        }:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        residual_root = os.environ.get("QUANT_RESIDUAL_ROOT")
+        if not residual_root:
+            raise PersistenceUnavailableError("QUANT_RESIDUAL_ROOT is required")
+        root = Path(residual_root).absolute()
+        try:
+            metadata = os.stat(root, follow_symlinks=False)
+        except (OSError, MigrationRejected) as exc:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts") from exc
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+        try:
+            stored, _ = _read_regular(root / residual_key)
+        except (OSError, MigrationRejected) as exc:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts") from exc
+        if stored != payload:
+            raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+
+    @staticmethod
     def _bocom_members_from_readback(
         members: Mapping[str, bytes],
         *,
@@ -1908,8 +1958,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             if path.name != "data.parquet"
         }
         parquet, _ = _read_regular(publication.snapshot_path / "data.parquet")
-        parquet_sha256, residual_key = self._runtime_residual(parquet)
+        residual_creation: _RuntimeResidualCreation | None = None
         try:
+            parquet_sha256, residual_key, residual_creation = self._runtime_residual_with_creation(
+                parquet
+            )
             with self.config.connect() as connection:
                 with connection.transaction():
                     connection.execute(
@@ -2001,17 +2054,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         "'DATASET_PARQUET',%s) ON CONFLICT (artifact_sha256) DO NOTHING",
                         (parquet_sha256, len(parquet), residual_key),
                     )
-                    stored_residual = connection.execute(
-                        "SELECT byte_size, residual_class, residual_key "
-                        "FROM qr.residual_artifacts WHERE artifact_sha256=%s",
-                        (parquet_sha256,),
-                    ).fetchone()
-                    if stored_residual is None or (
-                        stored_residual["byte_size"],
-                        stored_residual["residual_class"],
-                        stored_residual["residual_key"],
-                    ) != (len(parquet), "DATASET_PARQUET", residual_key):
-                        raise PersistenceConflict("BOCOM dataset residual registry conflicts")
+                    self._require_bocom_dataset_residual(connection, payload=parquet)
                     prefix = f"platform/datasets/601328.SS/{ACTION_SNAPSHOT_ID}"
                     self._insert_runtime_file(
                         connection,
@@ -2060,8 +2103,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                     )
                     if after_identity != current_identity:
                         raise PersistenceConflict("BOCOM admission changed dataset current")
-        except psycopg.Error as exc:
-            raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+        except BaseException as exc:
+            self._discard_runtime_residual_creation(residual_creation)
+            if isinstance(exc, psycopg.Error):
+                raise PersistenceUnavailableError("BOCOM admission publication failed") from exc
+            raise
         return self.bocom_admission()
 
     def bocom_admission(self) -> dict[str, Any]:
@@ -2189,6 +2235,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                 manifest_payload=child_manifest_payload,
                 parquet_payload=parquet,
             )
+            self._require_bocom_dataset_residual(connection, payload=parquet)
         return {
             **dict(receipt),
             "artifact_set_id": artifact_set_id,
@@ -2330,6 +2377,13 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
 
     @staticmethod
     def _runtime_residual(payload: bytes) -> tuple[str, str]:
+        digest, relative, _ = FullPostgresPersistence._runtime_residual_with_creation(payload)
+        return digest, relative
+
+    @staticmethod
+    def _runtime_residual_with_creation(
+        payload: bytes,
+    ) -> tuple[str, str, _RuntimeResidualCreation | None]:
         residual_root = os.environ.get("QUANT_RESIDUAL_ROOT")
         if not residual_root:
             raise PersistenceUnavailableError("QUANT_RESIDUAL_ROOT is required")
@@ -2343,21 +2397,109 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
         digest = _sha256_bytes(payload)
         relative = f"runtime/{digest[:2]}/{digest}"
         target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if target.exists():
+        created_directories: list[Path] = []
+        creation: _RuntimeResidualCreation | None = None
+        try:
+            # A successful exclusive mkdir is the only evidence that this call owns a directory.
+            for directory in (root / "runtime", target.parent):
+                try:
+                    directory.mkdir(mode=0o700)
+                except FileExistsError:
+                    metadata = os.stat(directory, follow_symlinks=False)
+                    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                        raise PersistenceUnavailableError("runtime residual directory is unsafe")
+                else:
+                    created_directories.insert(0, directory)
+                    creation = _RuntimeResidualCreation(
+                        target,
+                        None,
+                        tuple(created_directories),
+                    )
+            try:
+                stream = target.open("xb+")
+            except FileExistsError:
+                stored, _ = _read_regular(target)
+                if stored != payload:
+                    raise PersistenceConflict("runtime residual digest path conflicts")
+                creation = None
+            else:
+                with stream:
+                    metadata = os.fstat(stream.fileno())
+                    creation = _RuntimeResidualCreation(
+                        target,
+                        (metadata.st_dev, metadata.st_ino),
+                        tuple(created_directories),
+                    )
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    os.fchmod(stream.fileno(), 0o444)
             stored, _ = _read_regular(target)
             if stored != payload:
-                raise PersistenceConflict("runtime residual digest path conflicts")
-        else:
-            with target.open("xb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            target.chmod(0o444)
-        stored, _ = _read_regular(target)
-        if stored != payload:
-            raise PersistenceUnavailableError("runtime residual read-back mismatch")
-        return digest, relative
+                raise PersistenceUnavailableError("runtime residual read-back mismatch")
+        except BaseException:
+            FullPostgresPersistence._discard_runtime_residual_creation(creation)
+            raise
+        return digest, relative, creation
+
+    @staticmethod
+    def _discard_runtime_residual_creation(
+        creation: _RuntimeResidualCreation | None,
+    ) -> None:
+        if creation is None:
+            return
+        if creation.file_identity is not None:
+            try:
+                # Capture the public name before inspecting it. Only the entry inside this
+                # invocation-exclusive directory is ever unlinked.
+                quarantine = Path(
+                    tempfile.mkdtemp(prefix=".cleanup-", dir=creation.path.parent)
+                )
+            except OSError as exc:
+                raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
+            captured = quarantine / "residual"
+            try:
+                try:
+                    creation.path.rename(captured)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise PersistenceUnavailableError(
+                        "new runtime residual cleanup failed"
+                    ) from exc
+                else:
+                    metadata = os.stat(captured, follow_symlinks=False)
+                    if (
+                        not stat.S_ISREG(metadata.st_mode)
+                        or (metadata.st_dev, metadata.st_ino) != creation.file_identity
+                    ):
+                        try:
+                            os.link(captured, creation.path, follow_symlinks=False)
+                            captured.unlink()
+                        except OSError as exc:
+                            raise PersistenceUnavailableError(
+                                "new runtime residual cleanup failed"
+                            ) from exc
+                        raise PersistenceUnavailableError(
+                            "new runtime residual changed before cleanup"
+                        )
+                    captured.unlink()
+            finally:
+                try:
+                    quarantine.rmdir()
+                except OSError as exc:
+                    raise PersistenceUnavailableError(
+                        "new runtime residual cleanup failed"
+                    ) from exc
+        for directory in creation.directories:
+            try:
+                directory.rmdir()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    continue
+                raise PersistenceUnavailableError("new runtime residual cleanup failed") from exc
 
     @staticmethod
     def _insert_runtime_file(
