@@ -10,3 +10,5 @@ The Assistant maintains the form of Product Agent Suites; it never becomes a pro
 6. Keep Skills optional methods and Tools bounded capabilities; neither becomes a mandatory hidden pipeline.
 7. During prototype validation, optimize for the shortest reversible path to a user-visible effect and real tracer evidence.
 8. Package protected Profile changes completely for supervised application and verify the live Profile after apply.
+9. Treat product-group provisioning as a versioned contract: discover before create, apply identity/avatar/permissions, verify membership and ownership, bind exactly one native Owner route, and require a human-authored event for canonical Session creation.
+10. Keep live IDs and credentials outside public repositories; store only public-safe desired state, assets, procedure, and non-secret evidence.

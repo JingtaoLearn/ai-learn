@@ -2,37 +2,48 @@
 
 ## Phase
 
-Principle-aware functional prototype validation.
+`V2_NATIVE_RUNTIME_READY / WAITING_HUMAN_GROUP_ACTIVATION`
 
-## Current design
+## Canonical design
 
-- Goal, Principles, and Validation are distinct first-class elements.
-- Every Action resolves `Hard Boundaries -> Default Principles -> Product Principles -> Role Principles -> Task Constraints`.
-- Default and Role Principles are canonical files; Product Principles remain Jingtao-owned.
-- Formal Handoffs bind exact Default/Product/Role content identities and observable Validation.
-- One stable Profile represents one Role. Safe concurrency uses up to three isolated task Sessions under that Profile; numbered duplicate Profiles are superseded.
-- Product Owner remains singleton with one canonical persistent Session.
-- Skills are optional professional methods and Tools are bounded capabilities; neither is a mandatory workflow stage.
-- Operational mechanics live in Portfolio, Execution, communication, and task contracts rather than being copied into Principles or every SOUL.
+- Agent decisions are driven by Goal, current evidence, uncertainty, risk, budget, Prompt/SOUL/Skills and supported Hermes native capabilities.
+- There is no custom workflow engine, rules-based planner, callback service, second task store or custom Kanban UI.
+- The Product Owner is the persistent accountable product brain. It chooses coherent Outcomes, completes short clear low-risk work directly, and delegates only when specialist value exceeds coordination cost.
+- Stable Roles use one Profile each; compatible concurrent work uses isolated Sessions rather than numbered Profile replicas.
+- Formal durable work uses native Kanban. Lightweight specialist consultation may use native `message_agent`.
 
-## Prototype posture
+## Live V2 instance
 
-The whole current environment is a validation environment, including services on hosts named as production machines. The preferred path is the smallest reversible user-visible prototype followed by direct observation of actual effect.
+- Hermes release: `v0.21.2 / v2026.9.11`.
+- Feishu group desired state: [`deployment/feishu-group.desired.yaml`](deployment/feishu-group.desired.yaml).
+- Live group name and avatar: `Agentic Workflow V2` plus [`assets/group-avatar-v2.png`](assets/group-avatar-v2.png).
+- Existing private group is reused; the public repository intentionally omits its live ID.
+- Default Gateway is the sole Feishu credential owner.
+- The single product route targets `productowneragentagenticworkflow`.
+- Native same-card Implementation → independent Review canary: `PASS`.
+- Native Dashboard was validated as the preferred Kanban surface; the one-shot validation process is not a persistent service.
 
-Architecture completeness, broad hardening, abstraction, and large test suites are deferred unless they are required to validate the claim or protect a Hard Boundary. Tests are evidence tools, not progress metrics.
+## Superseded runtime
 
-## Verified history
+The legacy QuantResearch Agentic orchestration suite was sealed on 2026-09-13 rather than upgraded in parallel:
 
-The first product-level persistent Owner-to-Specialist-to-Owner tracer remains historical evidence in `VALIDATION.md`. Its original topology statements describe what was tested at that time and are superseded where the current README and templates now define one Profile per Role plus isolated task Sessions.
+- five legacy Profiles removed from active runtime after verified sanitized export;
+- 238 legacy QuantResearch boards archived;
+- legacy workflow home removed from active discovery;
+- QuantResearch Owner route, standalone Gateway and custom Owner Pulse removed;
+- production, market-signal and monitoring jobs left unchanged.
 
-## Current frontier
+The archive remains audit evidence, not a second executable workflow system.
 
-Apply the principle hierarchy to the live `AgenticWorkflow-Assistant` and QuantResearch Product Agent Suite, then run one bounded real tracer proving:
+## Current gate
 
-1. common Principle revision resolution;
-2. independent Role judgment;
-3. user-visible or decision-relevant effect;
-4. stale/conflicting context rejection;
-5. Result-driven Owner replanning.
+The human owner must send `AW-SUITE-ACTIVATE-002` in the V2 group. Acceptance then requires:
 
-Do not add a Principle engine, database, fixed pipeline, or large test framework.
+1. one group-derived canonical Owner Session;
+2. reply to the same group;
+3. duplicate-signal safety;
+4. continuity across Gateway restart;
+5. one coherent user-visible Outcome with direct read-back;
+6. a bounded seven-day observation period.
+
+Until that event occurs, the honest verdict is `NATIVE_RUNTIME_READY / END_TO_END_NOT_YET_ACCEPTED`.

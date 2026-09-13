@@ -1,6 +1,6 @@
-# Agentic Workflow
+# Agentic Workflow V2
 
-This project validates product-level suites of real Hermes Agents. AI Agents own judgments and bounded actions; shared context connects them. It does not build a workflow engine.
+This repository is the durable, public, non-secret source for Agentic Workflow V2. It validates product-level suites of real Hermes Agents. AI Agents own judgments and bounded actions; Prompt, SOUL, Skills, shared context and native Hermes capabilities connect them. It does not build a workflow engine.
 
 ## Core model
 
@@ -67,6 +67,12 @@ Each product has:
 4. one shared product space containing Goal, Product Principles, State, contracts, and run evidence.
 
 Display names use exactly `<RoleAgent>-<Product>` with two UpperCamelCase segments. The default user-facing Profile is not reused as a Specialist.
+
+## Feishu product group
+
+The product's single user-facing entry point is a private Feishu group. Its public-repository-safe desired state and setup procedure live in [`deployment/`](deployment/README.md); the versioned avatar lives in [`assets/`](assets/).
+
+The group routes to `ProductOwnerAgent-AgenticWorkflow`, never to `AgenticWorkflow-Assistant`. The Assistant provisions and validates the suite; the Owner remains responsible for product outcomes. Live chat IDs, user IDs, application IDs, tokens and credentials stay in protected Hermes runtime configuration and are never committed to this public repository.
 
 ## Context stack
 

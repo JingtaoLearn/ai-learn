@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="42" y1="36" x2="470" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#07182F"/>
+      <stop offset="1" stop-color="#102A56"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="92" y1="132" x2="415" y2="365" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#25D5FF"/>
+      <stop offset="0.52" stop-color="#5F7CFF"/>
+      <stop offset="1" stop-color="#A966FF"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="184" fill="none" stroke="#5ACDFF" stroke-opacity="0.12" stroke-width="2"/>
+  <circle cx="256" cy="256" r="144" fill="none" stroke="#8D79FF" stroke-opacity="0.14" stroke-width="2"/>
+  <g fill="none" stroke="url(#flow)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M112 318 L188 188 L257 306 L330 168 L401 292"/>
+    <path d="M112 318 L257 306 L401 292" opacity="0.75"/>
+  </g>
+  <g fill="#EAF8FF" stroke="url(#flow)" stroke-width="9">
+    <circle cx="112" cy="318" r="22"/>
+    <circle cx="188" cy="188" r="22"/>
+    <circle cx="257" cy="306" r="22"/>
+    <circle cx="330" cy="168" r="22"/>
+    <circle cx="401" cy="292" r="22"/>
+  </g>
+  <rect x="313" y="338" width="122" height="70" rx="35" fill="#ECF5FF"/>
+  <text x="374" y="386" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="39" font-weight="800" fill="#173B77">V2</text>
+</svg>
