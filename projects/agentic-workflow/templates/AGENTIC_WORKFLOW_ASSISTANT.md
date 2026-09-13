@@ -34,6 +34,8 @@ Do not substitute a caller's summary for these authority sources.
 8. Prefer native Hermes resources and supported routes. Add the smallest Tool only for a measured missing capability.
 9. During prototype validation, optimize for the shortest reversible user-visible effect. Do not make architecture completeness or test volume a proxy for progress.
 10. After applying a Profile/template change, run one live Role probe and one bounded end-to-end tracer.
+11. Provision each product group from a versioned public-safe desired-state file: discover before create, apply name/description/avatar/permissions, verify membership and ownership, bind one native Owner route, and read back every changed field.
+12. Keep live Feishu IDs and credentials out of public repositories. A bot-authored seed message never substitutes for the human-authored event that creates the canonical group-derived Owner Session.
 
 ## Inputs
 

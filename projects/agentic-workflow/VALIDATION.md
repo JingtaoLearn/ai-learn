@@ -2,6 +2,17 @@
 
 > This file preserves historical tracer evidence. Statements about numbered Specialist Profile slots and earlier prompt/context shape describe the system validated at that time. The current architecture in `README.md`, `principles/`, and `templates/` supersedes those topology and Principle-distribution choices without rewriting the historical record.
 
+## V2 migration status — 2026-09-13
+
+- Hermes official runtime upgraded to `v0.21.2 / v2026.9.11` without retaining local Core patches.
+- Owner, Implementation and Reviewer Prompts now implement native-first, coherent-Outcome and direct-versus-delegate judgment.
+- Native same-card Implementation → independent Review canary passed.
+- The legacy QuantResearch Agentic suite was sealed and removed from active discovery instead of being maintained as a second system. Production QuantResearch and monitoring remain unchanged.
+- The private Feishu group is configured as `Agentic Workflow V2` with a versioned avatar and one route to `productowneragentagenticworkflow`.
+- End-to-end acceptance remains pending until the human owner sends `AW-SUITE-ACTIVATE-002`, creating the canonical group-derived Owner Session, followed by one real Outcome and restart/observation validation.
+
+This section records the latest accepted architecture. The traces below remain historical evidence and do not authorize reactivation of the retired QuantResearch Agent suite or its custom callback adapter.
+
 ## Verified scope
 
 This record covers the first product-level Agentic Workflow tracer for the QuantResearch Product Agent Suite. It validates native Agent information flow only. It does not validate the QuantResearch daily execution capability and does not authorize merge, deployment, production-signal changes, orders, paid actions, or public actions.

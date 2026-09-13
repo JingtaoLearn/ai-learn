@@ -1,0 +1,41 @@
+version: 2
+kind: FeishuProductGroup
+metadata:
+  product: agentic-workflow
+  public_repository_safe: true
+spec:
+  group:
+    name: Agentic Workflow V2
+    description: "Agentic Workflow V2 产品群：唯一原生 AI Owner 入口，用于目标、决策、里程碑、风险与结果验收。"
+    avatar_source: ../assets/group-avatar-v2.png
+    chat_type: private
+    message_type: chat
+  membership:
+    human_owner: "<FEISHU_OWNER_OPEN_ID>"
+    bot_member: "<FEISHU_BOT_APP_ID>"
+    expected_human_count: 1
+    expected_bot_count: 1
+    bot_is_manager: true
+  permissions:
+    add_member_permission: only_owner
+    share_card_permission: not_allowed
+    edit_permission: only_owner
+    at_all_permission: only_owner
+    urgent_setting: only_owner
+    membership_approval: approval_required
+    join_message_visibility: only_owner
+    leave_message_visibility: only_owner
+  routing:
+    chat_id: "<FEISHU_CHAT_ID>"
+    route_name: agentic-workflow-feishu-group
+    target_profile: productowneragentagenticworkflow
+    canonical_owner_session_source: first_human_group_message
+    activation_probe: AW-SUITE-ACTIVATE-002
+  invariants:
+    - The public repository never stores live Feishu IDs, tokens, or credentials.
+    - The default Gateway is the sole owner of Feishu credentials.
+    - The group routes to ProductOwnerAgent-AgenticWorkflow, not AgenticWorkflow-Assistant.
+    - AgenticWorkflow-Assistant configures and validates the suite but never becomes the product Owner.
+    - Reuse the existing group; do not create a duplicate during upgrades.
+    - A bot-authored message cannot establish the canonical human-derived Owner Session.
+    - Read back group state and Gateway routing after every change.

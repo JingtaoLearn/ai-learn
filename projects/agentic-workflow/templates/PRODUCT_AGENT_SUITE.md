@@ -15,6 +15,7 @@ Instantiate this document for one product. It defines authority and information 
 - Execution contract: `<path>`
 - Canonical Owner: `ProductOwnerAgent-<Product>` / `<Profile ID>` / `<exact persistent Session>`
 - Signal/result routes: `<verified native or narrow supported routes>`
+- Feishu product-group desired state: `<public-safe desired-state path; live IDs remain protected>`
 - Temporary backstop: `<none or exact removal condition>`
 
 The Owner Session is the living product decision brain. Goal, Principles, State, Handoffs, Results, and Reviews are inspectable shared sources; none replaces that Session.
@@ -65,13 +66,14 @@ Do not copy complete Principle text, current Session IDs, host inventory, retry 
 On every material Signal, Result, Review, Decision, or recovery Pulse, the Owner:
 
 1. reads Goal, effective Principles, State, and decision-relevant evidence;
-2. identifies the highest-value Gaps, including user-visible unmet effects;
-3. selects the largest safe bounded Action set;
-4. creates complete Handoffs with frozen Principle Context and Validation;
-5. delegates to the exact Role Profile in isolated task Sessions;
-6. reads returned evidence and any independent Review;
-7. validates the actual effect in the owning system or user surface;
-8. replans, stops, waits, or dispatches the next Action set.
+2. identifies the highest-value coherent Outcome and the Gaps preventing it;
+3. chooses `DIRECT`, `DELEGATE`, `PARALLELIZE`, `WAIT`, or `STOP` from current evidence, uncertainty, risk and budget;
+4. performs short, clear, low-risk and reversible work directly when delegation costs more than it adds;
+5. delegates only when specialist judgment, isolation, parallelism, durable recovery or independent review materially improves the Outcome;
+6. creates complete Handoffs with frozen Principle Context and Validation for formal delegated work;
+7. reads returned evidence and any independent Review;
+8. validates the actual effect in the owning system or user surface;
+9. replans while retaining product responsibility.
 
 This is a reasoning loop, not a fixed sequence of Skills or implementation stages.
 
@@ -107,3 +109,17 @@ A product iteration is complete only when:
 - the Owner uses the evidence to update the next decision.
 
 Test count, document count, task completion, deployment status, and Agent confidence are not substitutes for this validation.
+
+## Feishu group configuration
+
+Every user-facing suite declares and verifies:
+
+- one existing-or-new private group, discovered before creation to prevent duplicates;
+- versioned name, description and repository-owned avatar source;
+- human ownership, bot membership/management and owner-controlled permissions;
+- exactly one native Gateway route to the Product Owner Profile;
+- a human-authored activation message that creates the canonical group-derived Owner Session;
+- reply routing, duplicate-signal behavior and restart continuity;
+- read-back evidence for every externally changed group field.
+
+The public repository stores placeholders and procedure, never live chat/user/app IDs or credentials.
