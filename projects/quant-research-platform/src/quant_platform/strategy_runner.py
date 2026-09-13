@@ -30,6 +30,10 @@ from .corporate_actions import (
     tax_policy_identity,
 )
 from .datasets import _verified_action_evidence, _verified_scoring_bounds, _verify_snapshot
+from .execution_compatibility import (
+    ExecutionInputCompatibilityError,
+    require_execution_input_compatibility,
+)
 from .strategy_config import ValidatedStrategyConfig, load_strategy_config
 from .strategy_replay import replay_strategy
 from .strategy_report import render_report, verified_cjk_font_identity
@@ -59,6 +63,7 @@ PACKAGE_SOURCE_PATHS = (
     ("src/quant_platform/composition_worker.py", "composition_worker.py"),
     ("src/quant_platform/corporate_actions.py", "corporate_actions.py"),
     ("src/quant_platform/datasets.py", "datasets.py"),
+    ("src/quant_platform/execution_compatibility.py", "execution_compatibility.py"),
     ("src/quant_platform/experiment_service.py", "experiment_service.py"),
     ("src/quant_platform/__init__.py", "__init__.py"),
     ("src/quant_platform/cli.py", "cli.py"),
@@ -905,17 +910,17 @@ def run_strategy_config(
     dataset_path, dataset_manifest, frame = _bound_snapshot(config)
     action_evidence = None
     accounting = None
-    if dataset_manifest["schema_version"] in {4, 5}:
-        if settlement_schedule is None:
-            raise StrategyRunError(
-                "action-aware dataset requires an explicit transfer-settlement mapping"
-            )
-        action_evidence = _verified_action_evidence(dataset_path, dataset_manifest)
-        accounting = _settlement_accounting(action_evidence, settlement_schedule)
-    elif settlement_schedule is not None:
-        raise StrategyRunError(
-            "settlement schedule cannot be applied without admitted corporate-action evidence"
+    try:
+        require_execution_input_compatibility(
+            dataset_manifest,
+            settlement_schedule_present=settlement_schedule is not None,
         )
+    except ExecutionInputCompatibilityError as exc:
+        raise StrategyRunError(str(exc)) from exc
+    if dataset_manifest["schema_version"] in {4, 5}:
+        action_evidence = _verified_action_evidence(dataset_path, dataset_manifest)
+        assert settlement_schedule is not None
+        accounting = _settlement_accounting(action_evidence, settlement_schedule)
     source_identity = (
         _effective_source_identity(project_root=project_root)
         if project_root is not None
