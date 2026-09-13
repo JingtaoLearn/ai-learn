@@ -1,6 +1,6 @@
 # Agentic Workflow V2
 
-This repository is the durable, public, non-secret source for Agentic Workflow V2. It validates product-level suites of real Hermes Agents. AI Agents own judgments and bounded actions; Prompt, SOUL, Skills, shared context and native Hermes capabilities connect them. It does not build a workflow engine.
+This project versions the reusable Agentic Workflow V2 framework: code, prompts, principles, templates, procedures and assets. AI Agents run normally through installed Hermes capabilities; this source checkout is not their live state store or a workflow engine. Concrete runtime data stays outside this framework project. GitHub Issues/PRs remain usable, and products continue developing their own code normally.
 
 ## Core model
 
@@ -70,9 +70,9 @@ Display names use exactly `<RoleAgent>-<Product>` with two UpperCamelCase segmen
 
 ## Feishu product group
 
-The product's single user-facing entry point is a private Feishu group. Its public-repository-safe desired state and setup procedure live in [`deployment/`](deployment/README.md); the versioned avatar lives in [`assets/`](assets/).
+Each product uses its dedicated private Feishu group. A reusable setup example lives in [`deployment/`](deployment/README.md); the reference avatar lives in [`assets/`](assets/). These are framework sources, not a live deployment registry.
 
-The group routes to `ProductOwnerAgent-AgenticWorkflow`, never to `AgenticWorkflow-Assistant`. The Assistant provisions and validates the suite; the Owner remains responsible for product outcomes. Live chat IDs, user IDs, application IDs, tokens and credentials stay in protected Hermes runtime configuration and are never committed to this public repository.
+Each group routes to its own `ProductOwnerAgent-<Product>`; the configuration example uses `ProductOwnerAgent-AgenticWorkflow`. The Assistant provisions and validates suites; product Owners remain responsible for outcomes and report discussions. Concrete runtime records stay outside the framework source tree; secrets stay in credential stores.
 
 ## Context stack
 
@@ -101,13 +101,13 @@ SOUL and AGENTS files hold strong pointers into this hierarchy. Operational mech
 
 A principle-aware tracer is complete only when:
 
-1. Owner and Specialist resolve the same exact Default/Product/Role revisions;
-2. the selected Role makes a professional choice that is not merely the Owner's wording;
+1. the Owner resolves the applicable Default/Product/Role revisions; Specialists share the governing context only when work is actually delegated;
+2. direct work uses Owner judgment; delegated work includes the selected Specialist's independent professional judgment;
 3. the Result contains observable effect evidence;
 4. a Reviewer, when required, judges that effect against the same frozen context;
 5. stale or conflicting Principle Context fails closed;
 6. the Owner uses the Result to change or reaffirm the next decision.
 
-Do not create a Principle engine, database, fixed pipeline, or large test framework for this validation. Use real Agent turns, a real bounded effect, and direct read-back.
+Owner-direct Outcomes do not need a Specialist merely to pass validation. Do not create a Principle engine, database, fixed pipeline, or large test framework for this validation. Use real Agent turns, a real bounded effect, and direct read-back.
 
-Historical functional traces remain in [`VALIDATION.md`](VALIDATION.md). Canonical vocabulary is in [`CONTEXT.md`](CONTEXT.md).
+Read [`VALIDATION.md`](VALIDATION.md) for real-product acceptance and [`REPORTING.md`](REPORTING.md) before preparing or discussing an Outcome report. Acceptance uses an actual product such as QuantResearch, not a separate framework self-demo or a mandatory seven-day wait. Historical traces formerly in this checkout remain in Git history; no new concrete run data is stored here. Canonical vocabulary is in [`CONTEXT.md`](CONTEXT.md).

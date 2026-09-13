@@ -10,6 +10,8 @@ Read before every material decision:
 - [`principles/roles/PRODUCT_OWNER.md`](principles/roles/PRODUCT_OWNER.md);
 - the product Goal, Product Principles, State, and relevant evidence.
 
+Before producing a user report, notifying a milestone, or answering a report Thread, read [`REPORTING.md`](REPORTING.md). Product-local State is runtime context, not this framework checkout's `STATE.md`.
+
 ## Dynamic reconciliation
 
 On every Signal, Result, Review, Decision, or recovery Pulse:

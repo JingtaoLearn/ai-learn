@@ -1,10 +1,10 @@
 # Feishu Product Group Setup
 
-This runbook turns an existing private Feishu group into the single user-facing entry point for an Agentic Workflow product suite. `AgenticWorkflow-Assistant` owns setup and conformance; `ProductOwnerAgent-AgenticWorkflow` owns product decisions after activation.
+This reusable runbook turns an existing private Feishu group into the user-facing entry point for a product suite. `AgenticWorkflow-Assistant` owns setup and conformance; `ProductOwnerAgent-<Product>` owns that product's decisions. Apply the example to the chosen product; it is not a mandatory self-demo before real-product testing.
 
-The checked-in desired state is [`feishu-group.desired.yaml`](feishu-group.desired.yaml). Live chat IDs, user IDs, application IDs and credentials remain in the Hermes runtime configuration because this repository is public.
+The checked-in configuration example is [`feishu-group.desired.yaml`](feishu-group.desired.yaml). Instantiate it outside the framework checkout. Concrete runtime data stays in the installed Agent/product environment, including non-secret run state; credentials remain in their protected stores. GitHub Issues and product code repositories remain usable.
 
-## Desired group
+## Configuration example (not live state)
 
 - Name: `Agentic Workflow V2`
 - Description: `Agentic Workflow V2 产品群：唯一原生 AI Owner 入口，用于目标、决策、里程碑、风险与结果验收。`
@@ -57,13 +57,13 @@ Do not remove or impersonate the human owner.
 
 ### 6. Bind the native Hermes route
 
-The default Gateway retains the sole Feishu credential. Configure exactly one route from the live group ID to `productowneragentagenticworkflow`. Do not route the group to `AgenticWorkflow-Assistant`; the Assistant is the suite maintainer, not the product brain.
+The default Gateway retains the sole Feishu credential. Configure exactly one route from the product group ID to its Product Owner Profile (the example uses `productowneragentagenticworkflow`; another product needs its own Owner). The Assistant maintains suite form, not product decisions.
 
 Verify both the route and the multiplexer allowlist by reading them back. Do not add a second Gateway, callback daemon, message bus or workflow engine.
 
 ### 7. Establish the canonical Owner Session
 
-The human owner sends `AW-SUITE-ACTIVATE-002` in the group. This real inbound message creates the canonical group-derived Owner Session. A bot-authored seed message is insufficient and must not be treated as activation.
+Use a real human message in the product group to verify ingress and Owner identity. `AW-SUITE-ACTIVATE-002` is the reference probe, not a universal password or product requirement. Reuse an already verified native Owner context; do not demand repeat activation. A bot-authored seed message proves outbound delivery only.
 
 Read back the Product Owner Session list and verify:
 
@@ -74,13 +74,13 @@ Read back the Product Owner Session list and verify:
 
 ### 8. Validate one real Outcome
 
-The Owner chooses one coherent, reversible, user-visible Outcome. It performs short, clear, low-risk work directly and delegates only when specialist judgment, isolation, parallelism, durable recovery or independent review materially outweighs coordination cost.
+Follow [`../VALIDATION.md`](../VALIDATION.md): an actual product Owner first supplies a baseline report in its product group and discusses it with the human, then independently chooses and delivers a real Outcome. Follow [`../REPORTING.md`](../REPORTING.md) for report-Thread behavior and non-blocking updates. The Owner may work directly or delegate preparation and execution.
 
 For delegated work, use native Kanban or `message_agent` according to the task's durability needs. Completion is the observed product effect and owning-system read-back, not task-state transition alone.
 
 ### 9. Record evidence
 
-Update repository `STATE.md` with non-secret durable state. Keep live IDs, Session IDs and credentials in protected runtime state. Preserve failures and platform limitations rather than rewriting them as successful checks.
+Keep concrete execution and verification data in the existing Agent/product runtime, not in this framework repository. Preserve failures and limitations. Commit only reusable framework improvements; use Issues/PRs normally for collaboration and product code changes.
 
 ## Deprovisioning or replacement
 

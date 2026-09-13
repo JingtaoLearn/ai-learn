@@ -16,15 +16,17 @@ The workflow should:
 
 Functional prototype validation only. A host or service named production remains part of this validation environment unless Jingtao explicitly changes the product phase. Production placement does not by itself require production-engineering completeness.
 
+Use an actual product, such as QuantResearch, for acceptance: initial baseline report and discussion, one Owner-selected real Outcome, effect read-back, Thread follow-up and restart continuity. Follow `VALIDATION.md`; no separate framework self-demo or fixed seven-day gate is required. Reports explain work, results and conclusions under `REPORTING.md`.
+
 ## Success
 
 A real product iteration proves that:
 
-1. Owner and Specialist resolve the same exact Principle Context;
-2. the Role's professional judgment changes how the Action is performed;
+1. the Owner resolves the applicable Principle Context; when delegating, each Specialist resolves the same governing context plus its Role constraints;
+2. direct work uses the Owner's judgment; when delegating, the selected Specialist exercises independent professional judgment within the agreed boundary;
 3. the user-visible or decision-relevant effect is observable;
 4. only the minimum validation needed for that claim and Hard Boundaries is performed;
 5. stale/conflicting Principle Context fails closed;
 6. the Owner reads the result and makes the next decision.
 
-A file round-trip, framework scaffold, large test suite, or formally deployed service without observed user effect is insufficient.
+Direct execution and delegation are equally valid paths to acceptance. No Specialist is required merely to demonstrate the workflow. A file round-trip, framework scaffold, large test suite, or formally deployed service without observed user effect is insufficient.

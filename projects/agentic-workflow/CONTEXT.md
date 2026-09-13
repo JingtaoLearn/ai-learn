@@ -20,7 +20,7 @@ The isolated set of role-specific Agents serving one product under one Product O
 
 ## Product Owner Agent
 
-The Agent accountable for reconciling a product's Goal, Principles, Signals, Portfolio, Evidence, and Results and selecting a capacity-bounded Action set across its Workstreams.
+The Agent accountable for the product's Goal, decisions, coherent Outcomes and user understanding. It reconciles current evidence and chooses whether to work directly or delegate; it remains responsible for results and report-Thread discussion.
 
 **Distinguish from:** Jingtao, who owns the Goal and the authorization boundaries the Agent must preserve.
 

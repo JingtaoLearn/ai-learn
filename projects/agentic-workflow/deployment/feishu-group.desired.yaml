@@ -3,6 +3,7 @@ kind: FeishuProductGroup
 metadata:
   product: agentic-workflow
   public_repository_safe: true
+  purpose: reusable-configuration-example-not-runtime-state
 spec:
   group:
     name: Agentic Workflow V2
@@ -39,3 +40,5 @@ spec:
     - Reuse the existing group; do not create a duplicate during upgrades.
     - A bot-authored message cannot establish the canonical human-derived Owner Session.
     - Read back group state and Gateway routing after every change.
+    - Instantiate live product configuration outside the framework source checkout.
+    - Keep one report Thread per coherent Outcome and verify native Owner continuity.
