@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Example · Built by Zhang</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #7c9eff;
+    --accent2: #ff7ce5;
+    --card: #131a26;
+    --border: #1f2937;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  .glow {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(600px at 20% 10%, rgba(124,158,255,.18), transparent 60%),
+      radial-gradient(500px at 80% 90%, rgba(255,124,229,.14), transparent 60%);
+  }
+  main { position: relative; z-index: 1; max-width: 880px; margin: 0 auto;
+    padding: 64px 24px 96px; width: 100%; }
+  .badge { display: inline-block; padding: 4px 10px; border: 1px solid var(--border);
+    border-radius: 999px; color: var(--muted); font-size: 12px; letter-spacing: .04em; }
+  h1 { font-size: clamp(36px, 6vw, 64px); line-height: 1.05; margin: 18px 0 10px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { color: var(--muted); font-size: 18px; max-width: 60ch; margin: 0 0 36px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px; transition: transform .15s ease, border-color .15s ease; }
+  .card:hover { transform: translateY(-2px); border-color: #2d3a52; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; color: var(--fg); }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .meta { margin-top: 40px; color: var(--muted); font-size: 13px; display: flex;
+    flex-wrap: wrap; gap: 16px; align-items: center; }
+  .meta code { background: #0e141d; border: 1px solid var(--border); padding: 2px 8px;
+    border-radius: 6px; color: var(--accent); font-size: 12px; }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: #4ade80;
+    box-shadow: 0 0 0 0 rgba(74,222,128,.7); animation: pulse 2s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(74,222,128,.7); }
+    70% { box-shadow: 0 0 0 12px rgba(74,222,128,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+  }
+  footer { position: relative; z-index: 1; text-align: center; color: var(--muted);
+    padding: 24px; font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<main>
+  <span class="badge">CAPABILITY DEMO</span>
+  <h1>Hello from Zhang.</h1>
+  <p class="lede">
+    This page exists because Jingtao asked for an example site to prove the agent can ship.
+    From "做一个 example 网站" to a live HTTPS endpoint — one shot, no hand-holding.
+  </p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>① Scaffolded</h3>
+      <p>Created <code>projects/example/</code> in the ai-learn monorepo with Dockerfile, docker-compose, and a static frontend.</p>
+    </div>
+    <div class="card">
+      <h3>② Containerized</h3>
+      <p>nginx:alpine image, wired into the <code>nginx-proxy</code> network with VIRTUAL_HOST + LETSENCRYPT_HOST envs.</p>
+    </div>
+    <div class="card">
+      <h3>③ Deployed</h3>
+      <p>Built and started via <code>docker compose up -d --build</code>. acme-companion handles TLS automatically.</p>
+    </div>
+    <div class="card">
+      <h3>④ Verified</h3>
+      <p>You're reading this page — that <em>is</em> the verification. <span class="pulse" style="display:inline-block;margin-left:6px;vertical-align:middle"></span></p>
+    </div>
+  </div>
+
+  <div class="meta">
+    <span class="pulse"></span>
+    <span>Live at <code>example.ai.jingtao.fun</code></span>
+    <span>· Built <span id="ts"></span></span>
+  </div>
+</main>
+<footer>© Zhang · ai-learn/projects/example</footer>
+
+<script>
+  document.getElementById('ts').textContent = new Date().toISOString().replace('T',' ').slice(0,16) + ' UTC';
+</script>
+</body>
+</html>
