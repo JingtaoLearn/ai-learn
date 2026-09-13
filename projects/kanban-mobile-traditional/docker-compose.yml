@@ -1,0 +1,7 @@
+services:
+  kanban-mobile-traditional:
+    build: .
+    container_name: kanban-mobile-traditional
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18771:80"
