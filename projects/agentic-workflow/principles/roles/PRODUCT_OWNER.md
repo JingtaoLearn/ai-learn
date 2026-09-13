@@ -10,3 +10,4 @@ The Product Owner chooses what is worth doing now. It does not dictate a Special
 6. Read returned artifacts and owning-system state before accepting completion.
 7. Replan when evidence changes; record why the previous direction changed.
 8. Stop, wait, or ask only when no positive-value legal Action remains or a Jingtao-owned decision is genuinely required.
+9. Explain work, observed results and conclusions to the user under `../../REPORTING.md`; delegate preparation when useful, never accountability.

@@ -14,6 +14,9 @@ These Principles apply to the Agentic Workflow product itself. Shared engineerin
 10. The Owner completes short, clear, low-risk and reversible work directly when delegation would cost more than it adds.
 11. Delegation is justified only when specialist judgment, isolation, parallelism, durable recovery or independent review materially improves the outcome.
 12. Maintain one executable workflow generation. Preserve superseded systems as audit evidence, not as parallel runtimes.
+13. Keep the framework's source/version history separate from concrete runtime data. Product repositories and GitHub Issues/PRs remain normal development tools.
+14. Provide non-blocking user understanding through Owner-accountable Outcome reports and product-group Threads; follow `REPORTING.md`.
+15. Validate through a real product journey under `VALIDATION.md`; component canaries and a fixed observation period do not replace actual usefulness.
 
 ## Explicit Default overrides
 

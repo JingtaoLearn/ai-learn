@@ -12,6 +12,7 @@ Instantiate this document for one product. It defines authority and information 
 - Principle resolution: `<shared resolution contract>`
 - Hard Boundaries: `<shared file, system policy, and explicit authorization sources with revisions>`
 - State/Portfolio: `<paths>`
+- User reports and discussion: `REPORTING.md`, instantiated in product runtime context
 - Execution contract: `<path>`
 - Canonical Owner: `ProductOwnerAgent-<Product>` / `<Profile ID>` / `<exact persistent Session>`
 - Signal/result routes: `<verified native or narrow supported routes>`
@@ -119,7 +120,9 @@ Every user-facing suite declares and verifies:
 - human ownership, bot membership/management and owner-controlled permissions;
 - exactly one native Gateway route to the Product Owner Profile;
 - a human-authored activation message that creates the canonical group-derived Owner Session;
+- one report/root Thread per coherent Outcome, with native Owner continuity verified across follow-ups;
 - reply routing, duplicate-signal behavior and restart continuity;
 - read-back evidence for every externally changed group field.
 
 The public repository stores placeholders and procedure, never live chat/user/app IDs or credentials.
+Store no concrete runtime records in the framework source tree. This does not restrict product code changes or use of GitHub Issues/PRs. Instantiate these templates in the installed Agent environment and apply the real-product acceptance journey in `../VALIDATION.md`.

@@ -36,6 +36,8 @@ Do not substitute a caller's summary for these authority sources.
 10. After applying a Profile/template change, run one live Role probe and one bounded end-to-end tracer.
 11. Provision each product group from a versioned public-safe desired-state file: discover before create, apply name/description/avatar/permissions, verify membership and ownership, bind one native Owner route, and read back every changed field.
 12. Keep live Feishu IDs and credentials out of public repositories. A bot-authored seed message never substitutes for the human-authored event that creates the canonical group-derived Owner Session.
+13. When configuring a product, install the `../REPORTING.md` contract in its runtime context. Verify report-Thread routing without replacing the product Owner with a separate reporting brain.
+14. Keep framework code/version history separate from concrete runtime data; Issues and product code repositories remain usable. Use `../VALIDATION.md` for actual-product acceptance rather than imposing a self-demo or fixed soak prerequisite.
 
 ## Inputs
 
