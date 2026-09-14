@@ -144,6 +144,13 @@ def test_client_static_import_surface_has_no_compute_renderer_or_fallback() -> N
     assert "fallback" not in source.casefold()
 
 
+def test_nginx_accepts_exact_mtls_study_collection_path() -> None:
+    nginx = (PRODUCTION / "nginx.conf").read_text()
+    assert "location = /api/v1/studies {" in nginx
+    assert "location /api/v1/studies/ {" in nginx
+    assert "location /api/v1/studies {" not in nginx
+
+
 def test_nginx_has_fixed_routes_and_private_mtls_identity_rebuild() -> None:
     nginx = (PRODUCTION / "nginx.conf").read_text()
     assert nginx.count("8991e9a8-1caa-41f5-b76b-6368259db5b4.html") >= 2
