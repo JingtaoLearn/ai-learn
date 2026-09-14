@@ -1,7 +1,7 @@
 ---
 name: agentic-workflow-maintainer
 description: Use when provisioning, operating, recovering, or improving Agentic Workflow suites.
-version: 1.0.1
+version: 1.0.2
 ---
 
 # Agentic Workflow maintainer
@@ -27,6 +27,8 @@ Done: the intended Profile actually starts in the intended workspace with the ex
 Use `message_agent` for appropriate short consultation and native Kanban for durable work/review. Check that result, failure, block and review events re-enter the intended Owner Profile and Thread. Persist evidence before wake. A notification receipt is not a new Owner turn; a new turn is not an accepted product result.
 
 Recover already-completed scouts by reading their real final outputs, preserving their bytes and delivering references through a native recovery event. Do not repeat healthy research or use CLI resume against a gateway-owned Owner. Never add a custom callback adapter to conceal an unproven native edge.
+
+If a push-platform `notify+wake` subscription repeatedly fails its passive-send leg and is dropped, preserve the completed result and issue one bounded native recovery event with `delivery_mode=wake` to the same Profile, chat and Thread. For later tasks returning to that same proven-incompatible route, inspect the auto-subscription while the task is active and change only its delivery mode to `wake` before the terminal event, preserving its route and cursor. Verify subscription cursor advance, the existing Session's new turn, evidence inspection and the Owner's decision; then keep the recovery artifact finite. Do not rerun the product task or treat wake admission as acceptance.
 
 Done: a real terminal event caused the same responsible Owner to inspect evidence and choose its next action or a legitimate wait, without human nudging.
 
