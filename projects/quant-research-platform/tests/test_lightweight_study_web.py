@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from quant_platform.lightweight_study import LightweightStudyService
+from quant_platform.msft_trend_study import PROXY_RESULT_SCHEMA
 from quant_platform.postgres_persistence import PostgresOperatorPersistence
 from quant_platform.settings import Settings
+from quant_platform.study_remote import StudyPostgresStore, freeze_synthetic_request
 from quant_platform.web import create_app
 
 from test_auth import AUDIENCE, NOW, SESSION, SHARED
@@ -62,6 +65,66 @@ def test_lightweight_submission_identity_converges_without_local_compute() -> No
     assert first["local_compute_attempted"] is False
 
 
+def test_lightweight_list_is_one_bounded_newest_first_postgres_projection() -> None:
+    executed: list[tuple[str, tuple[object, ...]]] = []
+    updated_at = datetime(2026, 9, 10, 6, 0, 1, tzinfo=UTC)
+
+    class Result:
+        def fetchall(self):
+            return [
+                {
+                    "study_id": STUDY_ID,
+                    "kind": "SYNTHETIC_TRAINING",
+                    "status": "SUCCEEDED",
+                    "progress": {"completed_trials": 32, "total_trials": 32},
+                    "updated_at": updated_at,
+                    "failure": None,
+                    "report_state": "NOT_APPLICABLE",
+                }
+            ]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, query, parameters):
+            executed.append((query, parameters))
+            return Result()
+
+    class Config:
+        def validated(self):
+            return self
+
+        def connect(self):
+            return Connection()
+
+    rows = StudyPostgresStore(Config()).list_summaries()
+
+    assert rows == [
+        {
+            "study_id": STUDY_ID,
+            "kind": "SYNTHETIC_TRAINING",
+            "status": "SUCCEEDED",
+            "progress": {"completed_trials": 32, "total_trials": 32},
+            "updated_at": "2026-09-10T06:00:01Z",
+            "failure": None,
+            "report_state": "NOT_APPLICABLE",
+        }
+    ]
+    assert len(executed) == 1
+    query, parameters = executed[0]
+    assert "SELECT *" not in query.upper()
+    assert "ORDER BY updated_at DESC, study_id DESC" in query
+    assert "LIMIT %s" in query
+    assert "deterministic-synthetic-search-v1" in query
+    assert "optuna-tpe-synthetic-objective-v1" in query
+    assert "NON_CONFIRMATORY_PROXY_EXECUTION_FAILED" in query
+    assert parameters == (50,)
+
+
 class OperatorPersistence(PostgresOperatorPersistence):
     def __init__(self) -> None:
         pass
@@ -102,6 +165,38 @@ class FakeLightweightStudies:
             "sync_error": None,
             "local_compute_attempted": False,
         }
+
+    def list_summaries(self) -> list[dict]:
+        self.calls.append(("list_summaries",))
+        return [
+            {
+                "study_id": STUDY_ID,
+                "kind": "SYNTHETIC_TRAINING",
+                "status": "SUCCEEDED",
+                "progress": {"completed_trials": 32, "total_trials": 32},
+                "updated_at": "2026-09-10T06:00:01Z",
+                "failure": None,
+                "report_state": "NOT_APPLICABLE",
+            },
+            {
+                "study_id": "b" * 64,
+                "kind": "SYNTHETIC_ITERATIONS",
+                "status": "RUNNING",
+                "progress": {"completed_iterations": 8, "total_iterations": 10},
+                "updated_at": "2026-09-10T05:00:01Z",
+                "failure": None,
+                "report_state": "NOT_APPLICABLE",
+            },
+            {
+                "study_id": "c" * 64,
+                "kind": "MSFT_YAHOO_ADJUSTED_OHLC_PROXY",
+                "status": "RUNNING",
+                "progress": {"completed_candidates": 5, "total_candidates": 15},
+                "updated_at": "2026-09-10T04:00:01Z",
+                "failure": None,
+                "report_state": "PENDING",
+            },
+        ]
 
     def submit(self, *, action_id: str, trial_budget: int) -> dict:
         self.calls.append(("submit", action_id, trial_budget))
@@ -206,3 +301,156 @@ def test_signed_in_lightweight_study_journey_is_explicit_and_aggregate_only(
         ("submit", action_id, 32),
         ("submit", action_id, 32),
     ]
+
+
+def test_signed_in_user_rediscovers_lightweight_study_in_ui_and_api(tmp_path: Path) -> None:
+    client, _, service = _application(tmp_path)
+
+    page = client.get("/studies")
+    api = client.get("/api/studies")
+
+    assert page.status_code == api.status_code == 200
+    assert 'data-testid="lightweight-study-list"' in page.text
+    assert f'href="/studies/lightweight/{STUDY_ID}"' in page.text
+    assert "SYNTHETIC_TRAINING" in page.text
+    assert "32 / 32" in page.text
+    assert "SYNTHETIC_ITERATIONS" in page.text
+    assert "8 / 10" in page.text
+    assert "MSFT_YAHOO_ADJUSTED_OHLC_PROXY" in page.text
+    assert "5 / 15" in page.text
+    assert api.json()["lightweight_studies"] == service.list_summaries()
+    assert service.calls == [
+        ("list_summaries",),
+        ("list_summaries",),
+        ("list_summaries",),
+    ]
+
+
+def test_signed_in_discovery_reports_unavailable_authority_instead_of_empty_list(
+    tmp_path: Path,
+) -> None:
+    client, _, _ = _application(tmp_path)
+    client.app.state.lightweight_studies = None
+
+    page = client.get("/studies")
+    api = client.get("/api/studies")
+
+    assert page.status_code == 200
+    assert 'data-testid="lightweight-study-unavailable"' in page.text
+    assert "No Lightweight Studies have been submitted" not in page.text
+    assert api.status_code == 503
+    assert api.json()["error"]["code"] == "LIGHTWEIGHT_STUDY_LIST_UNAVAILABLE"
+
+
+def test_rediscovered_legacy_synthetic_study_has_a_renderable_detail(tmp_path: Path) -> None:
+    request = freeze_synthetic_request(
+        iterations=10,
+        seed=7,
+        checkpoint_count=2,
+        source_commit="c" * 40,
+        source_tree="d" * 40,
+        worker_image="sha256:" + "e" * 64,
+    )
+    view = LightweightStudyService._view(
+        {
+            "study_id": request["job_id"],
+            "status": "SUCCEEDED",
+            "created_at": "2026-09-10T06:00:00Z",
+            "updated_at": "2026-09-10T06:00:01Z",
+            "worker_endpoint": "https://flearn.example.test",
+            "worker_image": request["worker_image"],
+            "source_commit": request["source_commit"],
+            "source_tree": request["source_tree"],
+            "frozen_request": request,
+            "latest_progress": {
+                "completed_iterations": 10,
+                "total_iterations": 10,
+                "checkpoint_sequence": 2,
+            },
+            "final_result": {
+                "conclusion": "SYNTHETIC_MINIMUM_FOUND",
+                "iterations": 10,
+                "best_parameter": 0.618,
+                "best_score": 0.00001,
+                "checkpoint_count": 2,
+            },
+            "failure": None,
+        }
+    )
+    client, _, service = _application(tmp_path)
+    service.view = view
+
+    detail = client.get(f"/studies/lightweight/{request['job_id']}")
+
+    assert view["kind"] == "SYNTHETIC_ITERATIONS"
+    assert view["objective"] == {"data_classification": "SYNTHETIC_NON_MARKET"}
+    assert detail.status_code == 200
+    assert "Completed work units</span><strong>10" in detail.text
+    assert "Bounded budget</span><strong>10" in detail.text
+    assert "SYNTHETIC_MINIMUM_FOUND" in detail.text
+    assert "Iterations" in detail.text
+
+
+def test_rediscovered_msft_proxy_study_keeps_market_detail_and_report_link(tmp_path: Path) -> None:
+    client, _, service = _application(tmp_path)
+    service.view = {
+        **service.view,
+        "kind": "MSFT_YAHOO_ADJUSTED_OHLC_PROXY",
+        "market": True,
+        "classification": "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY",
+        "objective": {
+            "data_classification": "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY"
+        },
+        "snapshot_id": "b" * 64,
+        "progress": {"completed_candidates": 15, "total_candidates": 15},
+        "report_available": True,
+        "result": {
+            "schema": PROXY_RESULT_SCHEMA,
+            "conclusion": "NO_QUALIFIED_CANDIDATE",
+            "verdict": "REJECTED_VALIDATION",
+            "candidate_count": 15,
+        },
+    }
+
+    detail = client.get(f"/studies/lightweight/{STUDY_ID}")
+
+    assert detail.status_code == 200
+    assert "XNYS MSFT RESEARCH" in detail.text
+    assert "Completed work units</span><strong>15" in detail.text
+    assert "Bounded budget</span><strong>15" in detail.text
+    assert "Candidate count</dt><dd>15" in detail.text
+    assert f'href="/studies/{STUDY_ID}/report"' in detail.text
+    assert "synthetic non-market objective" not in detail.text
+
+
+def test_proxy_execution_failure_does_not_advertise_an_unrenderable_report(
+    tmp_path: Path,
+) -> None:
+    client, _, service = _application(tmp_path)
+    service.view = {
+        **service.view,
+        "kind": "MSFT_YAHOO_ADJUSTED_OHLC_PROXY",
+        "market": True,
+        "classification": "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY",
+        "objective": {
+            "data_classification": "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY"
+        },
+        "snapshot_id": "b" * 64,
+        "progress": {"completed_candidates": 0, "total_candidates": 15},
+        "report_available": False,
+        "result": {
+            "schema": PROXY_RESULT_SCHEMA,
+            "conclusion": "YAHOO_ADJUSTED_OHLC_PROXY_UNQUALIFIED_NON_CONFIRMATORY",
+            "verdict": "NON_CONFIRMATORY_PROXY_EXECUTION_FAILED",
+            "candidate_count": 0,
+            "reason": "insufficient proxy history",
+        },
+    }
+
+    detail = client.get(f"/studies/lightweight/{STUDY_ID}")
+
+    assert detail.status_code == 200
+    assert "Candidate count</dt><dd>0" in detail.text
+    assert "insufficient proxy history" in detail.text
+    assert "Immutable report unavailable for this terminal result" in detail.text
+    assert f'href="/studies/{STUDY_ID}/report"' not in detail.text

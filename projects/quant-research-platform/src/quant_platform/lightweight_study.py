@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from .study_remote import (
+    JOB_TYPE,
     TERMINAL_STATES,
+    TRAINING_JOB_TYPE,
     SignedStudyClient,
     StudyDispatcher,
     StudyPostgresStore,
@@ -122,6 +124,9 @@ class LightweightStudyService:
                 )
         return self._view(row, sync_error=sync_error)
 
+    def list_summaries(self) -> list[dict[str, Any]]:
+        return self.store.list_summaries()
+
     def report(self, study_id: str) -> dict[str, Any]:
         detail = self.detail(study_id)
         if detail["status"] != "SUCCEEDED" or detail["result"] is None:
@@ -171,9 +176,21 @@ class LightweightStudyService:
     @staticmethod
     def _view(row: dict[str, Any], *, sync_error: str | None = None) -> dict[str, Any]:
         request = row["frozen_request"]
-        market = request.get("job_type") == "xnys-msft-trend-study-v1"
+        job_type = request.get("job_type")
+        market = job_type == "xnys-msft-trend-study-v1"
+        synthetic_iterations = job_type == JOB_TYPE
+        synthetic_training = job_type == TRAINING_JOB_TYPE
+        if not (market or synthetic_iterations or synthetic_training):
+            raise StudyRemoteError("lightweight Study job type is unsupported")
         spec = request.get("training_spec")
         market_snapshot = request.get("snapshot") if market else None
+        result = row.get("final_result")
+        report_available = bool(
+            market
+            and row["status"] == "SUCCEEDED"
+            and result
+            and result.get("verdict") != "NON_CONFIRMATORY_PROXY_EXECUTION_FAILED"
+        )
         classification = (
             market_snapshot.get("classification")
             if isinstance(market_snapshot, dict)
@@ -195,19 +212,29 @@ class LightweightStudyService:
                 if market and isinstance(market_snapshot, dict) and market_snapshot.get("classification")
                 else "MSFT_MARKET"
                 if market
+                else "SYNTHETIC_ITERATIONS"
+                if synthetic_iterations
                 else "SYNTHETIC_TRAINING"
             ),
+            "market": market,
             "classification": classification,
             "objective": (
                 {"data_classification": classification}
-                if market
+                if market or synthetic_iterations
                 else spec["objective"]
             ),
-            "trial_budget": 15 if market else spec["search"]["trial_budget"],
+            "trial_budget": (
+                15
+                if market
+                else request["iterations"]
+                if synthetic_iterations
+                else spec["search"]["trial_budget"]
+            ),
             "snapshot_id": request["snapshot"]["snapshot_id"] if market else None,
             "progress": row.get("latest_progress"),
-            "result": row.get("final_result"),
+            "result": result,
             "failure": row.get("failure"),
+            "report_available": report_available,
             "sync_error": sync_error,
             "local_compute_attempted": False,
         }

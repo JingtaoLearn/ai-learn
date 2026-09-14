@@ -183,6 +183,13 @@ def create_production_app(
             return _error(404, "MSFT_SNAPSHOT_NOT_FOUND", str(exc))
         return _response(200, {"ok": True, "snapshot": value})
 
+    @app.get("/api/v1/studies")
+    async def list_studies():
+        if studies is None:
+            return _error(503, "STUDY_LIST_UNAVAILABLE", "Study service is unavailable")
+        value = await run_in_threadpool(studies.list_summaries)
+        return _response(200, {"ok": True, "studies": value})
+
     @app.post("/api/v1/studies/msft")
     async def create_msft_study(request: Request):
         if studies is None:
