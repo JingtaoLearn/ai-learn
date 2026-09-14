@@ -184,11 +184,14 @@ def create_production_app(
         return _response(200, {"ok": True, "snapshot": value})
 
     @app.get("/api/v1/studies")
-    async def list_studies():
+    async def list_studies(cursor: str | None = None):
         if studies is None:
             return _error(503, "STUDY_LIST_UNAVAILABLE", "Study service is unavailable")
-        value = await run_in_threadpool(studies.list_summaries)
-        return _response(200, {"ok": True, "studies": value})
+        try:
+            value = await run_in_threadpool(studies.list_summaries, cursor)
+        except StudyRemoteError as exc:
+            return _error(422, "STUDY_LIST_CURSOR_REJECTED", str(exc))
+        return _response(200, {"ok": True, **value})
 
     @app.post("/api/v1/studies/msft")
     async def create_msft_study(request: Request):

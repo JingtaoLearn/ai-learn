@@ -1606,12 +1606,29 @@ class StudyPostgresStore:
             ).fetchone()
             return None if row is None else self._normalized(row)
 
-    def list_summaries(self) -> list[dict[str, Any]]:
-        """Return one bounded local projection without contacting the compute worker."""
+    def list_summaries(self, cursor: str | None = None) -> dict[str, Any]:
+        """Return one bounded keyset page without contacting the compute worker."""
+
+        parameters: tuple[object, ...]
+        cursor_clause = ""
+        if cursor is None:
+            parameters = (51,)
+        else:
+            timestamp_text, separator, study_id = cursor.rpartition("~")
+            if separator != "~" or HEX_64.fullmatch(study_id) is None:
+                raise StudyValidationError("Lightweight Study list cursor is invalid")
+            try:
+                timestamp = datetime.fromisoformat(timestamp_text.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise StudyValidationError("Lightweight Study list cursor is invalid") from exc
+            if timestamp.tzinfo is None:
+                raise StudyValidationError("Lightweight Study list cursor is invalid")
+            cursor_clause = "WHERE (updated_at, study_id) < (%s, %s)"
+            parameters = (timestamp, study_id, 51)
 
         with self.config.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     study_id,
                     CASE
@@ -1619,7 +1636,7 @@ class StudyPostgresStore:
                             THEN 'SYNTHETIC_ITERATIONS'
                         WHEN frozen_request->>'job_type' = 'optuna-tpe-synthetic-objective-v1'
                             THEN 'SYNTHETIC_TRAINING'
-                        WHEN coalesce(frozen_request #>> '{snapshot,classification}', '') <> ''
+                        WHEN coalesce(frozen_request #>> '{{snapshot,classification}}', '') <> ''
                             THEN 'MSFT_YAHOO_ADJUSTED_OHLC_PROXY'
                         WHEN frozen_request->>'job_type' = 'xnys-msft-trend-study-v1'
                             THEN 'MSFT_MARKET'
@@ -1639,12 +1656,19 @@ class StudyPostgresStore:
                         ELSE 'PENDING'
                     END AS report_state
                 FROM qr_study.jobs
+                {cursor_clause}
                 ORDER BY updated_at DESC, study_id DESC
                 LIMIT %s
                 """,
-                (50,),
+                parameters,
             ).fetchall()
-        return [self._normalized(row) for row in rows]
+        normalized = [self._normalized(row) for row in rows]
+        studies = normalized[:50]
+        next_cursor = None
+        if len(normalized) > 50:
+            boundary = studies[-1]
+            next_cursor = f"{boundary['updated_at']}~{boundary['study_id']}"
+        return {"studies": studies, "next_cursor": next_cursor}
 
     def mark_dispatched(
         self, study_id: str, remote: Mapping[str, Any], dispatch_claim_id: str

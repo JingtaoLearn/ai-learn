@@ -124,8 +124,8 @@ class LightweightStudyService:
                 )
         return self._view(row, sync_error=sync_error)
 
-    def list_summaries(self) -> list[dict[str, Any]]:
-        return self.store.list_summaries()
+    def list_summaries(self, cursor: str | None = None) -> dict[str, Any]:
+        return self.store.list_summaries(cursor=cursor)
 
     def report(self, study_id: str) -> dict[str, Any]:
         detail = self.detail(study_id)

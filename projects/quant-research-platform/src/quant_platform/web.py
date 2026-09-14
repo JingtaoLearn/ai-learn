@@ -1113,9 +1113,9 @@ def create_app(
             raise StudyRemoteError("Lightweight Study training is not enabled")
         return service
 
-    def lightweight_summaries() -> list[dict[str, Any]] | None:
+    def lightweight_summaries(cursor: str | None = None) -> dict[str, Any] | None:
         service = app.state.lightweight_studies
-        return None if service is None else service.list_summaries()
+        return None if service is None else service.list_summaries(cursor=cursor)
 
     app.mount(
         "/static",
@@ -1567,14 +1567,20 @@ def create_app(
     async def api_studies(request: Request):
         _session(request)
         legacy = await run_in_threadpool(studies.list)
-        lightweight = await run_in_threadpool(lightweight_summaries)
-        if lightweight is None:
+        lightweight_page = await run_in_threadpool(
+            lightweight_summaries, request.query_params.get("cursor")
+        )
+        if lightweight_page is None:
             return _json_error(
                 503,
                 "LIGHTWEIGHT_STUDY_LIST_UNAVAILABLE",
                 "Lightweight Study authority is unavailable",
             )
-        return {"studies": legacy, "lightweight_studies": lightweight}
+        return {
+            "studies": legacy,
+            "lightweight_studies": lightweight_page["studies"],
+            "lightweight_studies_next_cursor": lightweight_page["next_cursor"],
+        }
 
     @app.post("/api/lightweight-studies")
     async def api_lightweight_study_submit(request: Request):
@@ -2010,13 +2016,20 @@ def create_app(
     async def study_list(request: Request):
         session = _session(request)
         legacy = await run_in_threadpool(studies.list_summaries)
-        lightweight = await run_in_threadpool(lightweight_summaries)
+        lightweight_page = await run_in_threadpool(
+            lightweight_summaries, request.query_params.get("cursor")
+        )
+        lightweight = None if lightweight_page is None else lightweight_page["studies"]
+        next_cursor = None if lightweight_page is None else lightweight_page["next_cursor"]
         return _render(
             request,
             "studies.html",
             session=session,
             studies=legacy,
             lightweight_studies=lightweight,
+            lightweight_next_href=(
+                None if next_cursor is None else f"/studies?{urlencode({'cursor': next_cursor})}"
+            ),
         )
 
     async def study_form_context(

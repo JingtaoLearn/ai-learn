@@ -116,9 +116,9 @@ def test_mtls_client_rediscovers_lightweight_studies_without_detail_reads(tmp_pa
         def __init__(self):
             self.calls = []
 
-        def list_summaries(self):
-            self.calls.append("list_summaries")
-            return [summary]
+        def list_summaries(self, cursor=None):
+            self.calls.append(("list_summaries", cursor))
+            return {"studies": [summary], "next_cursor": "older-page"}
 
         def detail(self, _study_id):
             raise AssertionError("list discovery must not read Feng-backed detail")
@@ -128,14 +128,14 @@ def test_mtls_client_rediscovers_lightweight_studies_without_detail_reads(tmp_pa
 
     denied = client.get("/api/v1/studies")
     listed = client.get(
-        "/api/v1/studies",
+        "/api/v1/studies?cursor=current-page",
         headers={VERIFIED_CLIENT_HEADER: IDENTITY},
     )
 
     assert denied.status_code == 403
     assert listed.status_code == 200
-    assert listed.json() == {"ok": True, "studies": [summary]}
-    assert studies.calls == ["list_summaries"]
+    assert listed.json() == {"ok": True, "studies": [summary], "next_cursor": "older-page"}
+    assert studies.calls == [("list_summaries", "current-page")]
 
 
 def request() -> ProductionRequest:

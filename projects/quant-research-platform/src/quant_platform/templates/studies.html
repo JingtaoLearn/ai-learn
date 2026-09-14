@@ -29,6 +29,7 @@
     </article>
     {% endfor %}
   </div>
+  {% if lightweight_next_href %}<div class="actions"><a class="button secondary" href="{{ lightweight_next_href }}">Older Lightweight Studies</a></div>{% endif %}
   {% else %}
   <div class="empty" data-testid="lightweight-study-empty">No Lightweight Studies have been submitted.</div>
   {% endif %}
