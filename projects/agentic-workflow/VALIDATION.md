@@ -48,3 +48,21 @@ A negative research conclusion can be a valid real Outcome when the question
 was meaningfully investigated and the limitations are clear. Runtime limitations
 or failed checks remain open; they are never converted into a full PASS.
 Optional longer observation can add confidence after this journey.
+
+## Assistant operations acceptance
+
+The suite Assistant records all six responsibilities in
+[`templates/ASSISTANT_MAINTENANCE_MATRIX.md`](templates/ASSISTANT_MAINTENANCE_MATRIX.md).
+Do not mark them verified from configuration or prose alone. Require:
+
+1. a bounded Role turn that starts in the intended isolated workspace;
+2. a terminal task event followed by a new responsible Owner turn;
+3. one real scheduled Assistant maintenance invocation under the served Profile;
+4. one benign ordinary fault recovered in place while preserving task history;
+5. contextual Thread follow-up and an approved restart/later-message continuity tracer;
+6. a reviewed framework improvement with exact source read-back.
+
+Use `IMPLEMENTED_NOT_VERIFIED` or `BLOCKED` when a protected restart, organic
+human message, provider access or other real boundary prevents observation.
+Never convert a configured timer, delivery receipt, task label or matching
+display name into a successful runtime claim.

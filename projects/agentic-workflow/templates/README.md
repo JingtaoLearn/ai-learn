@@ -18,5 +18,6 @@ These templates define a principle-aware Product Agent Suite using native Hermes
 - [`VALIDATION.md`](VALIDATION.md) — observable effect, falsification, and minimum boundary evidence;
 - [`PORTFOLIO_STATE.md`](PORTFOLIO_STATE.md) — compact dynamic Portfolio projection;
 - [`EXECUTION_POOL.md`](EXECUTION_POOL.md) — Role task Sessions, workspaces, hosts, and conflicts.
+- [`ASSISTANT_MAINTENANCE_MATRIX.md`](ASSISTANT_MAINTENANCE_MATRIX.md) — six-duty runtime acceptance and blocker evidence.
 
 Templates do not authorize live side effects. They deliberately optimize the current validation environment for reversible user-visible prototypes and real effect evidence rather than production-engineering completeness or test volume.

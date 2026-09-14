@@ -57,7 +57,7 @@ Profile-private memory is learned context, not shared product truth.
 
 ## Product-level topology
 
-`AgenticWorkflow-Assistant` maintains suite form and Default/Role templates. It never owns a product Goal or decision.
+`AgenticWorkflow-Assistant` provisions, operates, recovers and improves suite form and Default/Role templates. It maintains native collaboration between human messages but never owns a product Goal or decision. Its reusable operating method is [`skills/agentic-workflow-maintainer/`](skills/agentic-workflow-maintainer/).
 
 Each product has:
 
@@ -96,6 +96,7 @@ SOUL and AGENTS files hold strong pointers into this hierarchy. Operational mech
 - [`templates/VALIDATION.md`](templates/VALIDATION.md)
 - [`templates/PORTFOLIO_STATE.md`](templates/PORTFOLIO_STATE.md)
 - [`templates/EXECUTION_POOL.md`](templates/EXECUTION_POOL.md)
+- [`templates/ASSISTANT_MAINTENANCE_MATRIX.md`](templates/ASSISTANT_MAINTENANCE_MATRIX.md)
 
 ## Validation boundary
 
