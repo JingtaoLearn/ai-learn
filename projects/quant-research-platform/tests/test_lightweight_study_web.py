@@ -10,7 +10,11 @@ from quant_platform.lightweight_study import LightweightStudyService
 from quant_platform.msft_trend_study import PROXY_RESULT_SCHEMA
 from quant_platform.postgres_persistence import PostgresOperatorPersistence
 from quant_platform.settings import Settings
-from quant_platform.study_remote import StudyPostgresStore, freeze_synthetic_request
+from quant_platform.study_remote import (
+    StudyPostgresStore,
+    StudyValidationError,
+    freeze_synthetic_request,
+)
 from quant_platform.web import create_app
 
 from test_auth import AUDIENCE, NOW, SESSION, SHARED
@@ -101,9 +105,9 @@ def test_lightweight_list_is_one_bounded_newest_first_postgres_projection() -> N
         def connect(self):
             return Connection()
 
-    rows = StudyPostgresStore(Config()).list_summaries()
+    page = StudyPostgresStore(Config()).list_summaries()
 
-    assert rows == [
+    assert page == {"studies": [
         {
             "study_id": STUDY_ID,
             "kind": "SYNTHETIC_TRAINING",
@@ -113,7 +117,7 @@ def test_lightweight_list_is_one_bounded_newest_first_postgres_projection() -> N
             "failure": None,
             "report_state": "NOT_APPLICABLE",
         }
-    ]
+    ], "next_cursor": None}
     assert len(executed) == 1
     query, parameters = executed[0]
     assert "SELECT *" not in query.upper()
@@ -122,7 +126,68 @@ def test_lightweight_list_is_one_bounded_newest_first_postgres_projection() -> N
     assert "deterministic-synthetic-search-v1" in query
     assert "optuna-tpe-synthetic-objective-v1" in query
     assert "NON_CONFIRMATORY_PROXY_EXECUTION_FAILED" in query
-    assert parameters == (50,)
+    assert parameters == (51,)
+
+
+def test_lightweight_list_cursor_reaches_rows_older_than_first_page() -> None:
+    executed: list[tuple[str, tuple[object, ...]]] = []
+    rows = [
+        {
+            "study_id": f"{index:064x}",
+            "kind": "SYNTHETIC_TRAINING",
+            "status": "SUCCEEDED",
+            "progress": {"completed_trials": 1, "total_trials": 1},
+            "updated_at": datetime(2026, 9, 10, 6, 0, 59 - index, tzinfo=UTC),
+            "failure": None,
+            "report_state": "NOT_APPLICABLE",
+        }
+        for index in range(51)
+    ]
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def fetchall(self):
+            return self.values
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, query, parameters):
+            executed.append((query, parameters))
+            return Result(rows if len(executed) == 1 else [rows[-1]])
+
+    class Config:
+        def validated(self):
+            return self
+
+        def connect(self):
+            return Connection()
+
+    store = StudyPostgresStore(Config())
+    first = store.list_summaries()
+    second = store.list_summaries(cursor=first["next_cursor"])
+
+    assert len(first["studies"]) == 50
+    assert first["studies"][-1]["study_id"] == f"{49:064x}"
+    assert first["next_cursor"] is not None
+    assert second == {
+        "studies": [
+            {
+                **rows[-1],
+                "updated_at": rows[-1]["updated_at"].isoformat().replace("+00:00", "Z"),
+            }
+        ],
+        "next_cursor": None,
+    }
+    query, parameters = executed[1]
+    assert "WHERE (updated_at, study_id) < (%s, %s)" in query
+    assert parameters[1:] == (f"{49:064x}", 51)
 
 
 class OperatorPersistence(PostgresOperatorPersistence):
@@ -166,37 +231,40 @@ class FakeLightweightStudies:
             "local_compute_attempted": False,
         }
 
-    def list_summaries(self) -> list[dict]:
-        self.calls.append(("list_summaries",))
-        return [
-            {
-                "study_id": STUDY_ID,
-                "kind": "SYNTHETIC_TRAINING",
-                "status": "SUCCEEDED",
-                "progress": {"completed_trials": 32, "total_trials": 32},
-                "updated_at": "2026-09-10T06:00:01Z",
-                "failure": None,
-                "report_state": "NOT_APPLICABLE",
-            },
-            {
-                "study_id": "b" * 64,
-                "kind": "SYNTHETIC_ITERATIONS",
-                "status": "RUNNING",
-                "progress": {"completed_iterations": 8, "total_iterations": 10},
-                "updated_at": "2026-09-10T05:00:01Z",
-                "failure": None,
-                "report_state": "NOT_APPLICABLE",
-            },
-            {
-                "study_id": "c" * 64,
-                "kind": "MSFT_YAHOO_ADJUSTED_OHLC_PROXY",
-                "status": "RUNNING",
-                "progress": {"completed_candidates": 5, "total_candidates": 15},
-                "updated_at": "2026-09-10T04:00:01Z",
-                "failure": None,
-                "report_state": "PENDING",
-            },
-        ]
+    def list_summaries(self, cursor: str | None = None) -> dict:
+        self.calls.append(("list_summaries", cursor))
+        return {
+            "studies": [
+                {
+                    "study_id": STUDY_ID,
+                    "kind": "SYNTHETIC_TRAINING",
+                    "status": "SUCCEEDED",
+                    "progress": {"completed_trials": 32, "total_trials": 32},
+                    "updated_at": "2026-09-10T06:00:01Z",
+                    "failure": None,
+                    "report_state": "NOT_APPLICABLE",
+                },
+                {
+                    "study_id": "b" * 64,
+                    "kind": "SYNTHETIC_ITERATIONS",
+                    "status": "RUNNING",
+                    "progress": {"completed_iterations": 8, "total_iterations": 10},
+                    "updated_at": "2026-09-10T05:00:01Z",
+                    "failure": None,
+                    "report_state": "NOT_APPLICABLE",
+                },
+                {
+                    "study_id": "c" * 64,
+                    "kind": "MSFT_YAHOO_ADJUSTED_OHLC_PROXY",
+                    "status": "RUNNING",
+                    "progress": {"completed_candidates": 5, "total_candidates": 15},
+                    "updated_at": "2026-09-10T04:00:01Z",
+                    "failure": None,
+                    "report_state": "PENDING",
+                },
+            ],
+            "next_cursor": "older-page" if cursor is None else None,
+        }
 
     def submit(self, *, action_id: str, trial_budget: int) -> dict:
         self.calls.append(("submit", action_id, trial_budget))
@@ -307,7 +375,7 @@ def test_signed_in_user_rediscovers_lightweight_study_in_ui_and_api(tmp_path: Pa
     client, _, service = _application(tmp_path)
 
     page = client.get("/studies")
-    api = client.get("/api/studies")
+    api = client.get("/api/studies?cursor=current-page")
 
     assert page.status_code == api.status_code == 200
     assert 'data-testid="lightweight-study-list"' in page.text
@@ -318,12 +386,29 @@ def test_signed_in_user_rediscovers_lightweight_study_in_ui_and_api(tmp_path: Pa
     assert "8 / 10" in page.text
     assert "MSFT_YAHOO_ADJUSTED_OHLC_PROXY" in page.text
     assert "5 / 15" in page.text
-    assert api.json()["lightweight_studies"] == service.list_summaries()
+    assert 'href="/studies?cursor=older-page"' in page.text
+    assert api.json()["lightweight_studies"][0]["study_id"] == STUDY_ID
+    assert api.json()["lightweight_studies_next_cursor"] is None
     assert service.calls == [
-        ("list_summaries",),
-        ("list_summaries",),
-        ("list_summaries",),
+        ("list_summaries", None),
+        ("list_summaries", "current-page"),
     ]
+
+
+def test_signed_in_api_rejects_an_invalid_lightweight_study_cursor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, _, service = _application(tmp_path)
+
+    def reject_cursor(*, cursor: str | None = None):
+        raise StudyValidationError("Lightweight Study list cursor is invalid")
+
+    monkeypatch.setattr(service, "list_summaries", reject_cursor)
+
+    response = client.get("/api/studies?cursor=invalid")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_signed_in_discovery_reports_unavailable_authority_instead_of_empty_list(
