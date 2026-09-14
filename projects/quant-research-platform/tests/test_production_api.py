@@ -61,7 +61,7 @@ def release() -> ProductionRelease:
     )
 
 
-def runtime(tmp_path, *, crash=lambda _point: None, clock=None):
+def runtime(tmp_path, *, crash=lambda _point: None, clock=None, studies=None):
     now = datetime(2026, 3, 9, 0, 40, tzinfo=UTC)
     clock = clock or (lambda: now)
     store = ProductionStore(tmp_path / "state")
@@ -95,9 +95,47 @@ def runtime(tmp_path, *, crash=lambda _point: None, clock=None):
         service,
         results,
         verified_client_identity=IDENTITY,
+        studies=studies,
         cron_receipts=CronReceiptStore(tmp_path / "cron-receipts.json"),
     )
     return store, results, service, provider, worker, TestClient(app)
+
+
+def test_mtls_client_rediscovers_lightweight_studies_without_detail_reads(tmp_path) -> None:
+    summary = {
+        "study_id": "a" * 64,
+        "kind": "SYNTHETIC_TRAINING",
+        "status": "RUNNING",
+        "progress": {"completed_trials": 8, "total_trials": 32},
+        "updated_at": "2026-09-10T06:00:01Z",
+        "failure": None,
+        "report_state": "NOT_APPLICABLE",
+    }
+
+    class Studies:
+        def __init__(self):
+            self.calls = []
+
+        def list_summaries(self):
+            self.calls.append("list_summaries")
+            return [summary]
+
+        def detail(self, _study_id):
+            raise AssertionError("list discovery must not read Feng-backed detail")
+
+    studies = Studies()
+    *_, client = runtime(tmp_path, studies=studies)
+
+    denied = client.get("/api/v1/studies")
+    listed = client.get(
+        "/api/v1/studies",
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+
+    assert denied.status_code == 403
+    assert listed.status_code == 200
+    assert listed.json() == {"ok": True, "studies": [summary]}
+    assert studies.calls == ["list_summaries"]
 
 
 def request() -> ProductionRequest:

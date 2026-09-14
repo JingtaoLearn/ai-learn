@@ -6,6 +6,35 @@
   <div><p class="eyebrow">PRE-REGISTERED RESEARCH</p><h1>Parameter Studies</h1><p>Search immutable strategy configurations with chronological validation and one separately governed terminal holdout.</p></div>
   <a class="button" href="/studies/new" data-testid="new-study">New Study</a>
 </section>
+<section class="panel" aria-labelledby="lightweight-studies-heading">
+  <p class="eyebrow">LIGHTWEIGHT TRAINING · POSTGRESQL AUTHORITY</p>
+  <h2 id="lightweight-studies-heading">Lightweight Studies</h2>
+  {% if lightweight_studies is none %}
+  <div class="notice" role="status" data-testid="lightweight-study-unavailable">Lightweight Study authority is unavailable.</div>
+  {% elif lightweight_studies %}
+  <div class="rows" data-testid="lightweight-study-list">
+    {% for study in lightweight_studies %}
+    <article class="row study-row">
+      <span>
+        <strong><a href="/studies/lightweight/{{ study.study_id }}">{{ study.kind }}</a></strong>
+        <small class="mono">{{ study.study_id[:12] }}… · updated {{ study.updated_at }}</small>
+        <button class="quiet copy-button" type="button" data-copy-value="{{ study.study_id }}" aria-label="Copy full Lightweight Study ID">Copy ID</button>
+        <details><summary>Full Lightweight Study ID</summary><code>{{ study.study_id }}</code></details>
+      </span>
+      <span class="chips">
+        <span class="badge">{{ study.status }}</span>
+        {% if study.progress %}<span class="badge">{{ study.progress.completed_trials or study.progress.completed_iterations or study.progress.completed_candidates or 0 }} / {{ study.progress.total_trials or study.progress.total_iterations or study.progress.total_candidates }}</span>{% endif %}
+        {% if study.failure %}<span class="badge">{{ study.failure.code }}</span>{% else %}<span class="badge">Report {{ study.report_state }}</span>{% endif %}
+      </span>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty" data-testid="lightweight-study-empty">No Lightweight Studies have been submitted.</div>
+  {% endif %}
+</section>
+<section aria-labelledby="parameter-studies-heading">
+<h2 id="parameter-studies-heading">Legacy Parameter Studies</h2>
 {% if studies %}
 <div class="rows" data-testid="study-list">
   {% for study in studies %}
@@ -18,4 +47,5 @@
 {% else %}
 <div class="empty" data-testid="study-empty">No Parameter Studies have been submitted.</div>
 {% endif %}
+</section>
 {% endblock %}

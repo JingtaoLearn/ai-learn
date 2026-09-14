@@ -1606,6 +1606,46 @@ class StudyPostgresStore:
             ).fetchone()
             return None if row is None else self._normalized(row)
 
+    def list_summaries(self) -> list[dict[str, Any]]:
+        """Return one bounded local projection without contacting the compute worker."""
+
+        with self.config.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    study_id,
+                    CASE
+                        WHEN frozen_request->>'job_type' = 'deterministic-synthetic-search-v1'
+                            THEN 'SYNTHETIC_ITERATIONS'
+                        WHEN frozen_request->>'job_type' = 'optuna-tpe-synthetic-objective-v1'
+                            THEN 'SYNTHETIC_TRAINING'
+                        WHEN coalesce(frozen_request #>> '{snapshot,classification}', '') <> ''
+                            THEN 'MSFT_YAHOO_ADJUSTED_OHLC_PROXY'
+                        WHEN frozen_request->>'job_type' = 'xnys-msft-trend-study-v1'
+                            THEN 'MSFT_MARKET'
+                        ELSE frozen_request->>'job_type'
+                    END AS kind,
+                    status,
+                    latest_progress AS progress,
+                    updated_at,
+                    failure,
+                    CASE
+                        WHEN frozen_request->>'job_type' <> 'xnys-msft-trend-study-v1'
+                            THEN 'NOT_APPLICABLE'
+                        WHEN final_result->>'verdict' = 'NON_CONFIRMATORY_PROXY_EXECUTION_FAILED'
+                            THEN 'UNAVAILABLE'
+                        WHEN status = 'SUCCEEDED' THEN 'AVAILABLE'
+                        WHEN status = 'FAILED' THEN 'UNAVAILABLE'
+                        ELSE 'PENDING'
+                    END AS report_state
+                FROM qr_study.jobs
+                ORDER BY updated_at DESC, study_id DESC
+                LIMIT %s
+                """,
+                (50,),
+            ).fetchall()
+        return [self._normalized(row) for row in rows]
+
     def mark_dispatched(
         self, study_id: str, remote: Mapping[str, Any], dispatch_claim_id: str
     ) -> dict[str, Any]:
