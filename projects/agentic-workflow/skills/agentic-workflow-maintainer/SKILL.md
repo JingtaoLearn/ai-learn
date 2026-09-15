@@ -1,7 +1,7 @@
 ---
 name: agentic-workflow-maintainer
 description: Use when provisioning, operating, recovering, or improving Agentic Workflow suites.
-version: 1.0.3
+version: 1.0.4
 ---
 
 # Agentic Workflow maintainer
@@ -47,6 +47,8 @@ Done: at least one real scheduled invocation under the Assistant or Owner identi
 Handle ordinary workspaces, role assignments, credentials availability, tools and routing gaps within the authorized operational scope. A headless protected write returns one complete proposed file, expected predecessor identity, allowed commands and exact verification steps for supervision. Do not reinterpret denial as permission or leave a vague blocked card that nobody owns.
 
 Read back the corrected component, reuse the same bounded task when its Outcome has not changed, restore its native return route, and verify an actual new worker claim/start. Limit retries for a diagnosed repeated failure; repair its cause before another attempt. Preserve healthy parallel lanes.
+
+When a long-lived reverse proxy survives recreation of named upstream containers, treat wrong-service responses after deployment as possible stale proxy DNS rather than changing application authorization first. Compare proxy/upstream start times, network identities and the observed response boundary; if confirmed and authorized, reload only the proxy configuration, then rerun the original bounded client and read back its exact target. Do not redeploy healthy upstreams or broaden allowed hosts to mask stale routing.
 
 Done: the prior fault no longer blocks the intended native path, or one precise external/tool-authorization boundary remains with preserved resumable work.
 
