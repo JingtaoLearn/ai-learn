@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot, snapshot_status
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
@@ -38,7 +39,12 @@ def make_app(tmp_path: Path):
         password_scrypt_hash=None,
         secure_cookies=True,
     ).validated()
-    app = create_app(settings, clock=lambda: NOW)
+    operator_persistence = initialize_catalog(settings.state_root, include_operators=True)
+    app = create_app(
+        settings,
+        clock=lambda: NOW,
+        operator_persistence=operator_persistence,
+    )
     client = TestClient(
         app,
         base_url="https://quant.ai.jingtao.fun",
