@@ -48,6 +48,16 @@ Hermes version. A Thread must not silently become an uncoordinated new product
 Owner. Carry accepted product decisions into the responsible Owner's context
 using supported native mechanisms, without assuming every reply is approval.
 
+## Automatic event delivery and decisions
+
+For an automatic Kanban, Heartbeat or delayed-result turn, use the supported routing in ROUTING.md. If a report is warranted, send it explicitly with the official Lark CLI to the verified report/root message using `+messages-reply --reply-in-thread`; read back the actual returned message ID. Return `NO_REPLY` after a successful explicit send so the gateway does not publish a duplicate. A final answer stored in a Session is not evidence of delivery.
+
+A genuine human decision needs a short top-level alert in the product group, mentioning the intended human and linking the Outcome discussion. State the decision, recommendation, impact and what can continue meanwhile. Keep ordinary engineering repairs within existing authority; do not manufacture another approval just because an artifact hash changed. Actual tool safety gates still apply and must not be bypassed.
+
+Use an idempotency key for each decision or report revision. Store the sent message ID and disposition in live State only after successful send and read-back. Before reissuing a pending request, check whether a newer user instruction or Goal change superseded it. Do not revive obsolete data-inquiry requests from a late scout callback.
+
+If sending fails, retain an explicit delivery failure and use an available supported product-group send path; do not mark the human notified or quietly wait for approval that was never delivered. No separate report daemon or Assistant patrol is needed.
+
 ## Inform without blocking
 
 Proactively notify only for result milestones, major direction changes,

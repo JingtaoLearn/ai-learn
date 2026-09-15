@@ -1,61 +1,47 @@
 ---
 name: agentic-workflow-maintainer
-description: Use when provisioning, operating, recovering, or improving Agentic Workflow suites.
-version: 1.0.1
+description: Use for requested Flow creation or maintenance work.
+version: 2.0.0
 ---
 
-# Agentic Workflow maintainer
+# On-demand Agentic Workflow maintenance
 
-Use for the Assistant's six responsibilities: team provisioning, collaboration paths, continuous checks, fault recovery, continuity and framework improvement. Product Owners decide product Outcomes; the Assistant keeps the machinery and role contracts usable. Load the installed Assistant Role contract and affected product contracts before changing state.
+The Assistant helps create and maintain the Flow in response to a bounded request from Jingtao or the responsible Product Owner. It does not periodically inspect products or autonomously choose repairs. This version supersedes the earlier recurring Assistant maintenance assignment.
 
-## Establish the current truth
+## Establish scope
 
-Inspect native Profile/tool/skill configuration, Owner routes and Sessions, relevant Kanban runs/subscriptions, current workspaces, existing timers and source artifacts. Scope inspection to facts that can change the current maintenance decision. Distinguish configured, started, completed, accepted and observed user effect. Preserve active writers and valid evidence; repair exact failed edges, not the whole system.
+Read the requested task, shared Hard Boundaries, current Assistant Role contract and the affected product's Goal and operating contracts. Identify the exact Flow capability to create or change and existing writers. Preserve valid resources, product decisions and historical evidence. Do not widen a workspace or notification repair into a product-wide intervention.
 
-Done: every affected component is either usable, missing, failed or genuinely waiting, with owning-system evidence. A stale State file or a launch message is not live truth.
+Done: a concrete authorized request and an explicit read/write boundary, not a standing repair mandate.
 
-## Provision before dispatch
+## Provision a usable Flow
 
-For a new or expanded product, reuse its group and valid context, create only needed product-specific Roles, install narrow Skills/toolsets and working environments, and test a real bounded Role turn. Verify runtime credentials without exposing them. Make foreseeable protected configuration changes part of initial supervised setup. Keep one Owner; isolated concurrent task Sessions are not extra role Profiles.
+Reuse the product group and current Owner. Configure only needed product-specific Roles, Skills, tools, workspaces and permissions. Verify them with a real bounded role turn. Protect credentials and respect supervised protected-file application. One stable Role uses isolated task Sessions, not numbered Profile replicas.
 
-For durable tasks verify the exact assignee, valid Git/directory workspace, Scope and completion path before runnable status. Install the native return subscription before dispatch. When preparing a reviewer, match product and role; the producer cannot approve itself.
+Before any durable card becomes runnable, verify its role/workspace and install its native Owner return subscription. Include implementation dependencies, reviews and correction cards; a parent's subscription does not cover a child's decision request. Where the CLI requires it, create initially blocked, subscribe, then unblock after preflight.
 
-Done: the intended Profile actually starts in the intended workspace with the expected role/tool boundary and returns attributable evidence.
+Done: the intended role starts in the intended environment and the configured return path is actually exercised.
 
-## Close collaboration paths
+## Keep execution and user delivery separate
 
-Use `message_agent` for appropriate short consultation and native Kanban for durable work/review. Check that result, failure, block and review events re-enter the intended Owner Profile and Thread. Persist evidence before wake. A notification receipt is not a new Owner turn; a new turn is not an accepted product result.
+Use native Kanban for durable work and native conversation for appropriate short consultation. Route automatic product events into the existing canonical steering Owner. Report discussions remain in their real Outcome Threads. For a Feishu release with a broken no-anchor Thread path, use an existing supported top-level event route and official explicit message.reply against a verified message ID; do not add a courier or patch core source.
 
-Recover already-completed scouts by reading their real final outputs, preserving their bytes and delivering references through a native recovery event. Do not repeat healthy research or use CLI resume against a gateway-owned Owner. Never add a custom callback adapter to conceal an unproven native edge.
+A real verification must prove event admission, a new turn in the correct Owner, and the expected message on the user surface. A callback counter, task status or internally generated final answer does not prove delivery. Preserve valid outputs when repairing a failed edge; do not rerun completed scouts or revive superseded decisions.
 
-Done: a real terminal event caused the same responsible Owner to inspect evidence and choose its next action or a legitimate wait, without human nudging.
+Done: the requested native route produces the externally observed result, with any native limitation stated honestly.
 
-## Remain operational between messages
+## Product-owned autonomy
 
-Use the native mechanism appropriate to identity: same-session Heartbeat for a continuing Owner; a native profile-owned routine can perform self-contained Assistant maintenance. Verify the scheduler actually serves that Profile, not merely that a job file exists. Reuse an equivalent active task/timer; no duplicate clocks or permanently running custom supervisor scripts.
+The Product Owner has the full product context and owns routine progress, idle checks and requests for human decisions. Configure one native Owner Heartbeat only when that is part of the requested Flow setup, with a sensible steady cadence and quiet no-op behavior. Verify an actual timed turn, then remove temporary test schedules. The Assistant itself has no maintenance Cron, Heartbeat, broad subscription or autonomous patrol.
 
-Default to a bounded quiet cadence proportionate to active work. The clock supplies a signal, not product priorities. Inspect missing starts, lost returns, stuck runs and dependency changes; act only where current evidence justifies it. Let ongoing work run. A due tick or fire count is not proof: verify a later native Session turn and a real bounded maintenance result. Use `NO_REPLY` when no material user report is warranted and the gateway supports that marker.
+A genuine human decision is actively delivered to the intended product group with a mention, recommendation and discussion link. Ordinary checks and tool progress stay local; important messages must not be hidden behind local-only delivery. The Owner tracks verified sent IDs and superseded requests in runtime context, not framework source.
 
-Done: at least one real scheduled invocation under the Assistant or Owner identity ran with correct scope and no duplicate work, followed by a finite normal cadence. Keep test timers distinct and retire or reconfigure them after validation.
+## Requested maintenance and recovery
 
-## Repair and resume
+Diagnose and repair only the named Flow issue within existing authority. Reuse the original task and preserve failure evidence. A denied protected write is not permission to attempt another write path: return one exact supervised package. Stop when the requested change is complete; unrelated product faults belong to the Product Owner.
 
-Handle ordinary workspaces, role assignments, credentials availability, tools and routing gaps within the authorized operational scope. A headless protected write returns one complete proposed file, expected predecessor identity, allowed commands and exact verification steps for supervision. Do not reinterpret denial as permission or leave a vague blocked card that nobody owns.
+For continuity changes, verify actual session/thread routing and behavior after an allowed interruption or restart. Never create a replacement Owner or use one-shot CLI resume against a gateway-owned Owner merely to manufacture progress. Do not claim fully autonomous recovery from a single successful canary.
 
-Read back the corrected component, reuse the same bounded task when its Outcome has not changed, restore its native return route, and verify an actual new worker claim/start. Limit retries for a diagnosed repeated failure; repair its cause before another attempt. Preserve healthy parallel lanes.
+## Version and report
 
-Done: the prior fault no longer blocks the intended native path, or one precise external/tool-authorization boundary remains with preserved resumable work.
-
-## Restore continuity
-
-After a restart/interruption, compare real processes, task/run state, artifacts and current Session routing before resuming. Never assume disappearance or success. Native Feishu Threads may be separate Sessions under one Owner Profile: verify shared product decisions and contextual replies, not a fictional shared transcript. Use supported Session/Heartbeat APIs only; no raw database injection, custom flattening plugin or fresh replacement Owner.
-
-Done: the same conversation lineage or documented native continuation resumes valid work without duplicate effects and answers the existing Thread with its accepted product context. If a required restart is tool-blocked, leave this capability explicitly not verified; do not force it through another execution route.
-
-## Improve and verify all six responsibilities
-
-Move reusable lessons into the appropriate Prompt, Skill, template or native config. Keep actual task IDs, private chat IDs, runtime logs, experiment data and credentials outside the framework source tree. GitHub Issues and PRs remain normal collaboration tools. Update the existing framework project rather than a second repository or a copied engine.
-
-Maintain a small runtime acceptance matrix with each responsibility, observed gap, applied change, evidence and status: `VERIFIED`, `IMPLEMENTED_NOT_VERIFIED`, `BLOCKED` or `NOT_APPLICABLE`. Use an actual product and existing task paths where possible. A disposable, explicitly labelled operational canary may validate fault recovery; it must not alter domain evidence or masquerade as a business result.
-
-Done means the whole native collaboration can proceed without the foreground supervisor fixing each routine edge. Do not declare global autonomy from Profile creation, a single successful wake, merged documentation or task counts. Report remaining gaps honestly, including authority/tool boundaries, and leave durable native work for the next safe step.
+Update reusable framework code, prompts, Skills and templates in the existing repository. Keep private IDs, runtime data and credentials outside it. Product Issues/PRs remain ordinary collaboration tools. Report what was changed, actual evidence, and any blocked or unverified requirement. Do not create recurring work as a side effect of a completed maintenance request.

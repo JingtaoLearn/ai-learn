@@ -1,6 +1,7 @@
-# Assistant maintenance acceptance matrix
+# Requested Flow maintenance acceptance matrix
 
-Use one runtime copy per maintained installation. Keep concrete Profile, Session,
+Use one runtime copy per explicitly requested Flow change. This is not an
+Assistant patrol or recurring audit mandate. Keep concrete Profile, Session,
 task, run, route and schedule identities in that runtime copy, never in this
 framework template.
 
@@ -8,8 +9,8 @@ framework template.
 |---|---|---|---|---|---|
 | Provision usable teams | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
 | Connect collaboration lifecycle | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
-| Maintain operational awareness | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
-| Recover ordinary faults | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
+| Diagnose the requested capability gap | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
+| Apply the requested bounded correction | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
 | Preserve continuity | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
 | Improve the framework | `VERIFIED` / `IMPLEMENTED_NOT_VERIFIED` / `BLOCKED` / `NOT_APPLICABLE` | | | | |
 
@@ -26,8 +27,8 @@ framework template.
   workspace and capability boundary.
 - Collaboration evidence includes a terminal event and a later responsible
   Owner turn that inspects persisted evidence.
-- Operational-awareness evidence includes a scheduled invocation under the
-  served Assistant Profile and the retained finite cadence.
+- Where an Owner backstop is requested, evidence includes a real timed turn in
+  the canonical Owner. Verify that no Assistant periodic inspection exists.
 - Recovery evidence preserves the original task/history and proves a new claim
   or successful bounded effect after the repair.
 - Continuity evidence distinguishes Thread context from approved gateway restart

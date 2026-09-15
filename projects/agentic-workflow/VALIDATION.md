@@ -49,7 +49,7 @@ was meaningfully investigated and the limitations are clear. Runtime limitations
 or failed checks remain open; they are never converted into a full PASS.
 Optional longer observation can add confidence after this journey.
 
-## Assistant operations acceptance
+## Requested Flow maintenance and Owner autonomy acceptance
 
 The suite Assistant records all six responsibilities in
 [`templates/ASSISTANT_MAINTENANCE_MATRIX.md`](templates/ASSISTANT_MAINTENANCE_MATRIX.md).
@@ -57,8 +57,8 @@ Do not mark them verified from configuration or prose alone. Require:
 
 1. a bounded Role turn that starts in the intended isolated workspace;
 2. a terminal task event followed by a new responsible Owner turn;
-3. one real scheduled Assistant maintenance invocation under the served Profile;
-4. one benign ordinary fault recovered in place while preserving task history;
+3. one real scheduled Owner turn when an Owner backstop is part of the accepted scope, with no Assistant maintenance timer;
+4. the requested benign fault recovery in place while preserving task history;
 5. contextual Thread follow-up and an approved restart/later-message continuity tracer;
 6. a reviewed framework improvement with exact source read-back.
 
@@ -66,3 +66,10 @@ Use `IMPLEMENTED_NOT_VERIFIED` or `BLOCKED` when a protected restart, organic
 human message, provider access or other real boundary prevents observation.
 Never convert a configured timer, delivery receipt, task label or matching
 display name into a successful runtime claim.
+
+For automatic messages, verify the complete path through external read-back:
+task event -> existing Owner turn -> actual Thread report or product-group
+decision alert. A non-empty final answer in Session storage is not notification
+success. Human-decision alerts must identify their recipient and superseded
+requests must not be revived by delayed callbacks. Tool progress is not a
+substitute for these messages.
