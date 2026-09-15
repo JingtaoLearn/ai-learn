@@ -1,7 +1,7 @@
 ---
 name: agentic-workflow-maintainer
 description: Use when provisioning, operating, recovering, or improving Agentic Workflow suites.
-version: 1.0.1
+version: 1.0.4
 ---
 
 # Agentic Workflow maintainer
@@ -28,6 +28,10 @@ Use `message_agent` for appropriate short consultation and native Kanban for dur
 
 Recover already-completed scouts by reading their real final outputs, preserving their bytes and delivering references through a native recovery event. Do not repeat healthy research or use CLI resume against a gateway-owned Owner. Never add a custom callback adapter to conceal an unproven native edge.
 
+Treat delayed async delegation completions as stale candidates. Before the Owner acts, compare the dispatch context with current State, tasks and accepted artifacts; if the output was already consumed, do not revive its obsolete next step. If a stale return already caused a wrong human-facing statement, use the same Owner Profile to publish one additive correction in the same product Thread, verify the exact message by read-back, and leave completed work untouched.
+
+If a push-platform `notify+wake` subscription repeatedly fails its passive-send leg and is dropped, preserve the completed result and issue one bounded native recovery event with `delivery_mode=wake` to the same Profile, chat and Thread. For later tasks returning to that same proven-incompatible route, inspect the auto-subscription while the task is active and change only its delivery mode to `wake` before the terminal event, preserving its route and cursor. Verify subscription cursor advance, the existing Session's new turn, evidence inspection and the Owner's decision; then keep the recovery artifact finite. Do not rerun the product task or treat wake admission as acceptance.
+
 Done: a real terminal event caused the same responsible Owner to inspect evidence and choose its next action or a legitimate wait, without human nudging.
 
 ## Remain operational between messages
@@ -43,6 +47,8 @@ Done: at least one real scheduled invocation under the Assistant or Owner identi
 Handle ordinary workspaces, role assignments, credentials availability, tools and routing gaps within the authorized operational scope. A headless protected write returns one complete proposed file, expected predecessor identity, allowed commands and exact verification steps for supervision. Do not reinterpret denial as permission or leave a vague blocked card that nobody owns.
 
 Read back the corrected component, reuse the same bounded task when its Outcome has not changed, restore its native return route, and verify an actual new worker claim/start. Limit retries for a diagnosed repeated failure; repair its cause before another attempt. Preserve healthy parallel lanes.
+
+When a long-lived reverse proxy survives recreation of named upstream containers, treat wrong-service responses after deployment as possible stale proxy DNS rather than changing application authorization first. Compare proxy/upstream start times, network identities and the observed response boundary; if confirmed and authorized, reload only the proxy configuration, then rerun the original bounded client and read back its exact target. Do not redeploy healthy upstreams or broaden allowed hosts to mask stale routing.
 
 Done: the prior fault no longer blocks the intended native path, or one precise external/tool-authorization boundary remains with preserved resumable work.
 
