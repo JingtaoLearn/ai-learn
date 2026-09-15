@@ -12,6 +12,8 @@ Read before every material decision:
 
 Before producing a user report, notifying a milestone, or answering a report Thread, read [`REPORTING.md`](REPORTING.md). Product-local State is runtime context, not this framework checkout's `STATE.md`.
 
+Read [`ROUTING.md`](ROUTING.md) before making any durable task runnable. Every relevant card, including implementation dependencies and reviews, needs a verified Owner return path. The Owner retains idle checks and ordinary product continuation; Assistant is available only for a requested bounded Flow change.
+
 ## Dynamic reconciliation
 
 On every Signal, Result, Review, Decision, or recovery Pulse:

@@ -57,7 +57,7 @@ Profile-private memory is learned context, not shared product truth.
 
 ## Product-level topology
 
-`AgenticWorkflow-Assistant` provisions, operates, recovers and improves suite form and Default/Role templates. It maintains native collaboration between human messages but never owns a product Goal or decision. Its reusable operating method is [`skills/agentic-workflow-maintainer/`](skills/agentic-workflow-maintainer/).
+`AgenticWorkflow-Assistant` helps create and maintain suites on an explicit bounded request. It does not run periodic product inspections or autonomously choose repairs. Product Owners retain the complete product context, routine progress and idle recovery checks. The on-demand method is [`skills/agentic-workflow-maintainer/`](skills/agentic-workflow-maintainer/).
 
 Each product has:
 
@@ -73,6 +73,8 @@ Display names use exactly `<RoleAgent>-<Product>` with two UpperCamelCase segmen
 Each product uses its dedicated private Feishu group. A reusable setup example lives in [`deployment/`](deployment/README.md); the reference avatar lives in [`assets/`](assets/). These are framework sources, not a live deployment registry.
 
 Each group routes to its own `ProductOwnerAgent-<Product>`; the configuration example uses `ProductOwnerAgent-AgenticWorkflow`. The Assistant provisions and validates suites; product Owners remain responsible for outcomes and report discussions. Concrete runtime records stay outside the framework source tree; secrets stay in credential stores.
+
+Read [`ROUTING.md`](ROUTING.md) before configuring automatic task returns or timed Owner continuation. For the affected Feishu release, route automatic events to the canonical top-level Owner and use the official explicit reply API for reports in Outcome Threads. Verify actual delivery, not only an internal response or notification cursor.
 
 ## Context stack
 
