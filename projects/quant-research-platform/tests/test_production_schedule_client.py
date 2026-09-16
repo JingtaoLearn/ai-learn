@@ -118,13 +118,7 @@ class FakeClient:
             "model_id": self.job.model_id,
             "production_manifest_sha256": self.job.production_manifest_sha256,
             "report_filename": self.job.report_filename,
-            "report_operator": {
-                "api_version": 2,
-                "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
-                "operator_id": "canonical_attempt_report",
-                "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
-                "version": "1.0.0",
-            },
+            "report_operator": dict(self.computation.report_operator),
             "report_document_sha256": files["report-document.json"]["sha256"],
             "automatic_ordering": False,
             "attempt_id": self.computation.attempt_id,
@@ -209,15 +203,23 @@ def fake_report_document(job):
         "template_parameters": (
             {"current_action": action}, "bundle/config.json", "/template/parameters"
         ),
-        "operator_id": ("canonical_attempt_report", "operator-manifest", "/operator_id"),
-        "operator_version": ("1.0.0", "operator-manifest", "/semantic_version"),
+        "operator_id": (
+            schedule_client.REPORT_OPERATOR["operator_id"],
+            "operator-manifest",
+            "/operator_id",
+        ),
+        "operator_version": (
+            schedule_client.REPORT_OPERATOR["version"],
+            "operator-manifest",
+            "/semantic_version",
+        ),
         "operator_source_sha256": (
-            "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+            schedule_client.REPORT_OPERATOR["source_sha256"],
             "operator-manifest",
             "/source/sha256",
         ),
         "operator_content_digest": (
-            "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            schedule_client.REPORT_OPERATOR["content_digest"],
             "operator-manifest",
             "/content_digest",
         ),
@@ -317,13 +319,13 @@ def fake_report_evidence(job):
         ),
         "operator-manifest.json": encoded(
             {
-                "api_version": 2,
-                "operator_id": "canonical_attempt_report",
-                "semantic_version": "1.0.0",
+                "api_version": schedule_client.REPORT_OPERATOR["api_version"],
+                "operator_id": schedule_client.REPORT_OPERATOR["operator_id"],
+                "semantic_version": schedule_client.REPORT_OPERATOR["version"],
                 "source": {
-                    "sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8"
+                    "sha256": schedule_client.REPORT_OPERATOR["source_sha256"]
                 },
-                "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+                "content_digest": schedule_client.REPORT_OPERATOR["content_digest"],
             }
         ),
         "report-document.json": fake_report_document(job),
@@ -828,7 +830,7 @@ def test_result_and_report_operator_identity_drift_fail_closed(tmp_path: Path) -
             payload = super().fetch_verified_file(manifest, name)
             if name == "report.html":
                 payload = payload.replace(
-                    b"11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+                    schedule_client.REPORT_OPERATOR["source_sha256"].encode(),
                     b"0" * 64,
                 )
             return payload
@@ -898,8 +900,8 @@ def test_report_html_must_equal_deterministic_canonical_rendering(tmp_path: Path
             payload = super().fetch_verified_file(manifest, name)
             if name == "report.html":
                 return payload.replace(
-                    b"This document presents sealed evidence.",
-                    b"This document presents fabricated evidence.",
+                    b'class="decision-header"',
+                    b'class="fabricated-header"',
                 )
             return payload
 
@@ -1046,6 +1048,7 @@ def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None
     assert runtime_files == [
         "src/quant_platform/__init__.py",
         "src/quant_platform/schemas.py",
+        "src/quant_platform/canonical_report_renderer.py",
         "src/quant_platform/attempt_report.py",
         "src/quant_platform/production_contract.py",
         "src/quant_platform/production_client.py",
@@ -1063,7 +1066,7 @@ def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None
     )
     assert 'install -m 0444 /dev/null "$runtime/__init__.py"' in recipe
     assert (
-        "for name in schemas.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do"
+        "for name in schemas.py canonical_report_renderer.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do"
         in recipe
     )
 

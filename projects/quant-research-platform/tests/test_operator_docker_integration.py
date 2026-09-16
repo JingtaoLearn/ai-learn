@@ -6,7 +6,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant_platform.attempt_report import REPORT_OPERATOR_ID, render_report_document
+from quant_platform.attempt_report import (
+    REPORT_OPERATOR_ID,
+    REPORT_OPERATOR_VERSION,
+    render_report_document,
+)
 from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot
 from quant_platform.experiment_service import ExperimentService
@@ -99,7 +103,7 @@ def test_canonical_report_renders_in_network_denied_container_without_state_moun
     runner_image = os.environ["QUANT_TEST_RUNNER_IMAGE"]
     project_root = Path(__file__).resolve().parents[1]
     catalog = initialize_catalog(tmp_path / "state")
-    detail = catalog.operator_detail(REPORT_OPERATOR_ID, "1.0.0")
+    detail = catalog.operator_detail(REPORT_OPERATOR_ID, REPORT_OPERATOR_VERSION)
     bundle = catalog.state_root / detail["bundle_path"]
     document = json.loads(ATTEMPT_REPORT_FIXTURE.read_text(encoding="utf-8"))[
         "report_documents"

@@ -13,7 +13,7 @@ test -f "$project_root/production/ailearn-schedule-cutover.json"
 runtime="$HOME/.hermes/lib/quantresearch-production-client/quant_platform"
 install -d -m 0755 "$runtime" "$HOME/.hermes/scripts"
 install -m 0444 /dev/null "$runtime/__init__.py"
-for name in schemas.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do
+for name in schemas.py canonical_report_renderer.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do
   install -m 0444 "$project_root/src/quant_platform/$name" "$runtime/$name"
 done
 install -m 0555 "$project_root/scripts/gold_production_api_action.py" "$HOME/.hermes/scripts/gold_production_api_action.py"

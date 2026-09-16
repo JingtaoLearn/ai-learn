@@ -4,7 +4,6 @@ import copy
 import csv
 import fcntl
 import hashlib
-import html
 import io
 import json
 import math
@@ -17,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from .canonical_report_renderer import apply as _render_visual_report
 from .schemas import canonical_json_bytes
 
 
@@ -30,7 +30,8 @@ class _CapturedAuthorityAttachment(dict[str, Any]):
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPORT_OPERATOR_ID = "canonical_attempt_report"
-REPORT_OPERATOR_VERSION = "1.0.0"
+REPORT_OPERATOR_VERSION = "1.1.1"
+SUPPORTED_REPORT_OPERATOR_VERSIONS = frozenset({"1.0.0", "1.1.0", REPORT_OPERATOR_VERSION})
 REPORT_OPERATOR_API_VERSION = 2
 REPORT_DOCUMENT_SCHEMA_ID = "quant-platform/report-document/v1"
 REPORT_MANIFEST_SCHEMA_ID = "quant-platform/report-manifest/v1"
@@ -43,7 +44,7 @@ DOMAIN_ARTIFACT = b"quant-platform/attempt-report-artifact/v1\0"
 DOMAIN_POINTER = b"quant-platform/attempt-report-latest-pointer/v1\0"
 DOMAIN_OPERATOR_CONTENT = b"quant-platform/operator-content/v2\0"
 MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_REPORT_BYTES = 1_000_000
+MAX_REPORT_BYTES = 16 * 1024 * 1024
 MATCHED_EXPOSURE_SOURCE_SHA256 = (
     "8cc91f7926bffa99bb07ac14cc30222e9151344da02a310e99d750f0c91d3896"
 )
@@ -252,50 +253,9 @@ FIELD_SOURCE_AND_UNIT = {
     "operator_content_digest": ("operator-manifest", "/content_digest", "IDENTITY"),
 }
 
-CANONICAL_REPORT_OPERATOR_SOURCE = """OPERATOR_API_VERSION = 2
-SLOT = \"report\"
-
-def _escape(value):
-    text = str(value)
-    return (text.replace(\"&\", \"&amp;\").replace(\"<\", \"&lt;\")
-                .replace(\">\", \"&gt;\").replace(chr(34), \"&quot;\")
-                .replace(chr(39), \"&#x27;\"))
-
-def apply(payload, parameters):
-    if parameters != {}:
-        raise ValueError(\"canonical report parameters must be empty\")
-    labels = {
-        \"identity_and_purpose\": \"Identity and purpose\",
-        \"evidence_status\": \"Evidence status\",
-        \"account_summary\": \"Account summary\",
-        \"configuration\": \"Configuration\",
-        \"price_equity_path\": \"Price and equity path\",
-        \"events_trades_holdings\": \"Events, trades, and holdings\",
-        \"costs_and_accounting\": \"Costs and accounting\",
-        \"total_return_claim\": \"Total-return claim\",
-        \"matched_exposure_qualification\": \"Matched-exposure qualification\",
-        \"limitations\": \"Limitations\",
-        \"provenance\": \"Provenance\",
-    }
-    parts = [\"<!doctype html><html lang=\\\"en\\\"><head><meta charset=\\\"utf-8\\\">\",
-             \"<meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\">\",
-             \"<title>Canonical Attempt Report</title><style>\",
-             \"body{font:16px system-ui;margin:0;padding:1rem;color:#17202a;background:#fff}main{max-width:76rem;margin:auto}h1{font-size:1.5rem}section{margin:1rem 0;padding:1rem;border:1px solid #ccd6dd;border-radius:.5rem}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;vertical-align:top;padding:.5rem;border-bottom:1px solid #dde4e8}th{width:18rem}code,pre{white-space:pre-wrap;word-break:break-word}@media(max-width:420px){body{padding:.5rem}section{padding:.65rem}th{width:auto}}\",
-             \"</style></head><body><main><h1>Canonical Attempt Report</h1>\",
-             \"<p>This document presents sealed evidence. It does not recompute research facts or authorize deployment or trading.</p>\"]
-    for section in payload[\"sections\"]:
-        section_id = section[\"section_id\"]
-        parts.append(\"<section aria-labelledby=\\\"section-\" + _escape(section_id) + \"\\\"><h2 id=\\\"section-\" + _escape(section_id) + \"\\\">\" + _escape(labels[section_id]) + \"</h2><div class=\\\"table-wrap\\\"><table><tbody>\")
-        for field in section[\"fields\"]:
-            raw = field[\"raw\"]
-            shown = field[\"display\"] if field[\"display\"] is not None else raw
-            if type(shown) in (dict, list):
-                shown = str(shown)
-            parts.append(\"<tr><th scope=\\\"row\\\">\" + _escape(field[\"field_id\"].replace(\"_\", \" \")) + \"</th><td><span>\" + _escape(field[\"availability\"]) + \"</span><br><code>\" + _escape(shown) + \"</code></td></tr>\")
-        parts.append(\"</tbody></table></div></section>\")
-    parts.append(\"</main></body></html>\\n\")
-    return \"\".join(parts)
-"""
+CANONICAL_REPORT_OPERATOR_SOURCE = (
+    Path(__file__).with_name("canonical_report_renderer.py").read_text(encoding="utf-8")
+)
 REPORT_PARAMETER_SCHEMA = {
     "type": "object",
     "properties": {},
@@ -1398,7 +1358,10 @@ def validate_report_document(
             raise AttemptReportError(f"ReportDocument identity field is invalid: {field_id}")
     if fields["purpose"]["raw"] != "PRESENTATION_ONLY" or fields["bundle_integrity"]["raw"] != "VERIFIED":
         raise AttemptReportError("ReportDocument authority labels are invalid")
-    if fields["operator_id"]["raw"] != REPORT_OPERATOR_ID or fields["operator_version"]["raw"] != REPORT_OPERATOR_VERSION:
+    if (
+        fields["operator_id"]["raw"] != REPORT_OPERATOR_ID
+        or fields["operator_version"]["raw"] not in SUPPORTED_REPORT_OPERATOR_VERSIONS
+    ):
         raise AttemptReportError("ReportDocument operator identity is invalid")
     registry = dict(attachment_registry or {})
     attachment_specs = (
@@ -1476,29 +1439,7 @@ def validate_report_document(
 
 
 def _native_render(document: Mapping[str, Any]) -> str:
-    parts = [
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width,initial-scale=1">',
-        '<title>Canonical Attempt Report</title><style>',
-        "body{font:16px system-ui;margin:0;padding:1rem;color:#17202a;background:#fff}main{max-width:76rem;margin:auto}h1{font-size:1.5rem}section{margin:1rem 0;padding:1rem;border:1px solid #ccd6dd;border-radius:.5rem}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;vertical-align:top;padding:.5rem;border-bottom:1px solid #dde4e8}th{width:18rem}code,pre{white-space:pre-wrap;word-break:break-word}@media(max-width:420px){body{padding:.5rem}section{padding:.65rem}th{width:auto}}",
-        "</style></head><body><main><h1>Canonical Attempt Report</h1>",
-        "<p>This document presents sealed evidence. It does not recompute research facts or authorize deployment or trading.</p>",
-    ]
-    for section in document["sections"]:
-        section_id = section["section_id"]
-        parts.append(
-            f'<section aria-labelledby="section-{html.escape(section_id)}"><h2 id="section-{html.escape(section_id)}">{html.escape(SECTION_LABELS[section_id])}</h2><div class="table-wrap"><table><tbody>'
-        )
-        for field in section["fields"]:
-            shown = field["display"] if field["display"] is not None else field["raw"]
-            if isinstance(shown, (dict, list)):
-                shown = str(shown)
-            parts.append(
-                f'<tr><th scope="row">{html.escape(field["field_id"].replace("_", " "))}</th><td><span>{html.escape(field["availability"])}</span><br><code>{html.escape(str(shown))}</code></td></tr>'
-            )
-        parts.append("</tbody></table></div></section>")
-    parts.append("</main></body></html>\n")
-    return "".join(parts)
+    return _render_visual_report(document, {})
 
 
 def render_report_document(

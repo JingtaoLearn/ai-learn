@@ -15,6 +15,8 @@ from typing import Any, Callable
 
 from .attempt_report import (
     REPORT_BUNDLE_FILES,
+    REPORT_OPERATOR_ID,
+    REPORT_OPERATOR_VERSION,
     canonical_report_operator_bundle,
     verify_report_operator_bundle,
 )
@@ -76,7 +78,7 @@ def write_canonical_report_bundle(catalog: Catalog) -> tuple[str, dict[str, Any]
     """Materialize and verify the immutable API-v2 built-in report bundle."""
 
     bundle = canonical_report_operator_bundle()
-    relative = Path("operators/canonical_attempt_report/1.0.0")
+    relative = Path("operators") / REPORT_OPERATOR_ID / REPORT_OPERATOR_VERSION
     target = catalog.state_root / relative
     if target.exists():
         identity = verify_report_operator_bundle(
@@ -85,7 +87,9 @@ def write_canonical_report_bundle(catalog: Catalog) -> tuple[str, dict[str, Any]
         )
         return relative.as_posix(), identity
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".1.0.0-report-", dir=target.parent))
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{REPORT_OPERATOR_VERSION}-report-", dir=target.parent)
+    )
     try:
         for name, payload in bundle["content"].items():
             (staging / name).write_bytes(payload)
