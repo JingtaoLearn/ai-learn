@@ -22,6 +22,16 @@ from test_parameter_study import (
 
 
 def make_app(tmp_path: Path):
+    class OperatorPersistence:
+        def __init__(self, catalog):
+            self._catalog = catalog
+
+        def verify_schema(self):
+            return None
+
+        def __getattr__(self, name):
+            return getattr(self._catalog, name)
+
     allowlist = tmp_path / "allowed.txt"
     allowlist.write_text("researcher@example.com\n", encoding="utf-8")
     settings = Settings(
@@ -39,7 +49,9 @@ def make_app(tmp_path: Path):
         password_scrypt_hash=None,
         secure_cookies=True,
     ).validated()
-    operator_persistence = initialize_catalog(settings.state_root, include_operators=True)
+    operator_persistence = OperatorPersistence(
+        initialize_catalog(settings.state_root, include_operators=True)
+    )
     app = create_app(
         settings,
         clock=lambda: NOW,
