@@ -446,6 +446,29 @@ def test_crash_after_terminal_is_reconciled_from_durable_success_manifest(tmp_pa
     assert client.get(url).status_code == 200
 
 
+def test_legacy_success_does_not_block_new_canonical_result(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _, service, _, worker, _ = runtime(tmp_path)
+    legacy = {
+        "schema": "quantresearch-production-result/v1",
+        "files": {
+            "provider-response.bin": {"sha256": "0" * 64, "size": 1},
+            "normalized-snapshot.json": {"sha256": "1" * 64, "size": 1},
+            "action.json": {"sha256": "2" * 64, "size": 1},
+            "report.html": {"sha256": "3" * 64, "size": 1},
+            "notification.txt": {"sha256": "4" * 64, "size": 1},
+        },
+    }
+    monkeypatch.setattr(store, "successful_result_manifests", lambda: [legacy])
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+
+    terminal = worker.run_once()
+
+    assert terminal is not None and terminal["status"] == "SUCCEEDED"
+
+
 def test_tampered_crash_reconciliation_preserves_prior_stable_report(tmp_path) -> None:
     current = [datetime(2026, 3, 9, 0, 40, tzinfo=UTC)]
     armed = [False]

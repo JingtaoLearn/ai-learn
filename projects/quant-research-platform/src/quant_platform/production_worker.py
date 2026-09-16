@@ -135,7 +135,10 @@ class ProductionWorker:
 
     def run_once(self) -> dict[str, Any] | None:
         for manifest in self.store.successful_result_manifests():
-            if manifest.get("schema") == "quantresearch-production-result/v1":
+            if (
+                manifest.get("schema") == "quantresearch-production-result/v1"
+                and "report_operator" in manifest
+            ):
                 self.results.complete_stable_report(manifest)
         row = self.store.claim(self.owner, now=self.clock())
         if row is None:
