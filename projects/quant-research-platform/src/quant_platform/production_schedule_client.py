@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from .attempt_report import (
     AttemptReportError,
+    canonical_report_operator_bundle,
     render_report_document,
     validate_report_document,
 )
@@ -46,12 +47,13 @@ TIMEZONE = ZoneInfo("Asia/Shanghai")
 DELIVERY = "feishu:oc_33bdb4845220ee3788fe50c50cf333ed"
 DEFAULT_BASE_URL = "https://127.0.0.1:8443"
 REPORT_BASE_URL = "https://share.ai.jingtao.fun"
+_REPORT_OPERATOR_BUNDLE = canonical_report_operator_bundle()
 REPORT_OPERATOR = {
-    "api_version": 2,
-    "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
-    "operator_id": "canonical_attempt_report",
-    "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
-    "version": "1.0.0",
+    "api_version": _REPORT_OPERATOR_BUNDLE["manifest"]["api_version"],
+    "content_digest": _REPORT_OPERATOR_BUNDLE["content_digest"],
+    "operator_id": _REPORT_OPERATOR_BUNDLE["manifest"]["operator_id"],
+    "source_sha256": _REPORT_OPERATOR_BUNDLE["source_sha256"],
+    "version": _REPORT_OPERATOR_BUNDLE["manifest"]["semantic_version"],
 }
 
 
@@ -81,7 +83,7 @@ def _audit_prompt(
         f"job_id={job_id}; model_id={model_id}; schedule={schedule} Asia/Shanghai; "
         "transport=loopback HTTPS mTLS via host-managed tunnel; "
         "behavior=trigger, verify immutable result/files and read back the zhlearn-owned stable report, "
-        "verify canonical_attempt_report@1.0.0 identity and bound ReportDocument evidence, "
+        f"verify canonical_attempt_report@{REPORT_OPERATOR['version']} identity and bound ReportDocument evidence, "
         "render from the verified source "
         "notification, then emit notification only; "
         "local_compute=false; flearn_fallback=false; automatic_ordering=false; "

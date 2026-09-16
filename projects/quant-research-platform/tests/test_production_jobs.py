@@ -17,6 +17,11 @@ from referencing.jsonschema import DRAFT202012
 
 from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_gold import GoldProductionJob
+from quant_platform.attempt_report import (
+    MAX_REPORT_BYTES,
+    REPORT_OPERATOR_VERSION,
+    canonical_report_operator_bundle,
+)
 from quant_platform.production_contract import canonical_json_bytes
 from quant_platform.production_jobs import (
     CanonicalJsonBytes,
@@ -141,11 +146,11 @@ def test_synthetic_jobs_preserve_frozen_action_cost_and_route(job, raw_name, exp
     assert first.report_uuid.encode() in first.report_html
     assert b"automatic_ordering=false" in first.report_html
     assert first.report_operator["operator_id"] == "canonical_attempt_report"
-    assert first.report_operator["version"] == "1.0.0"
+    operator_bundle = canonical_report_operator_bundle()
+    assert first.report_operator["version"] == REPORT_OPERATOR_VERSION
     assert first.report_operator["api_version"] == 2
-    assert first.report_operator["source_sha256"] == (
-        "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8"
-    )
+    assert first.report_operator["source_sha256"] == operator_bundle["source_sha256"]
+    assert first.report_operator["content_digest"] == operator_bundle["content_digest"]
     assert expected["latest_market_date"].encode() in first.report_html
     assert expected["action"].encode() in first.report_html
     assert b"Buy-and-hold is a period-dependent reference" in first.report_html
@@ -168,7 +173,39 @@ def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
     ]
 
     assert computations[0].report_operator == computations[1].report_operator
-    assert all(b"Canonical Attempt Report" in item.report_html for item in computations)
+    sample_directory = os.environ.get("QR_VISUAL_REPORT_SAMPLE_DIR")
+    if sample_directory:
+        destination = Path(sample_directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "bocom-canonical-report.html").write_bytes(
+            computations[0].report_html
+        )
+        (destination / "gold-canonical-report.html").write_bytes(
+            computations[1].report_html
+        )
+        (destination / "operator-identity.json").write_bytes(
+            canonical_json_bytes(computations[0].report_operator)
+        )
+    assert all(b'class="decision-header"' in item.report_html for item in computations)
+    for item in computations:
+        document = json.loads(item.report_evidence["report-document.json"])
+        fields = {
+            field["field_id"]: field
+            for section in document["sections"]
+            for field in section["fields"]
+        }
+        events = fields["events"]["raw"]
+        trades = fields["trades"]["raw"]
+        html = item.report_html.decode("utf-8")
+        assert html.count('<svg class="chart ') == 4
+        assert f'data-event-count="{len(events)}"' in html
+        assert f'data-trade-count="{len(trades)}"' in html
+        assert html.count('<g class="event-marker ') == len(events)
+        if events:
+            assert f'data-date="{events[0]["Date"]}" data-side="{events[0]["side"]}"' in html
+            assert f'data-date="{events[-1]["Date"]}" data-side="{events[-1]["side"]}"' in html
+        assert f'data-ledger="events" data-row-count="{len(events)}"' in html
+        assert f'data-ledger="trades" data-row-count="{len(trades)}"' in html
     assert all(b'data-action="canonical"' not in item.report_html for item in computations)
 
 
@@ -767,7 +804,7 @@ def test_canonical_production_adapter_preserves_next_open_events_and_open_trade(
     assert fields["closed_trades"]["raw"] == 1
     assert fields["open_trades"]["raw"] == 1
     assert fields["operator_id"]["raw"] == "canonical_attempt_report"
-    assert fields["operator_version"]["raw"] == "1.0.0"
+    assert fields["operator_version"]["raw"] == REPORT_OPERATOR_VERSION
     assert b"2024-01-03" in report.html and b"2024-01-04" in report.html
     assert b"fixture limitation" in report.html
 
@@ -877,7 +914,7 @@ def test_canonical_production_report_keeps_a_complete_large_price_path(
     assert f"{rows[-1]['date'].isoformat()}\t0\t0".encode() in report.html
     assert rows[0]["date"].isoformat().encode() in report.html
     assert rows[-1]["date"].isoformat().encode() in report.html
-    assert len(report.html) < 700_000
+    assert len(report.html) < MAX_REPORT_BYTES
     assert len(report.evidence_files["report-document.json"]) > 1_048_576
     required_artifacts = {
         **report.evidence_files,

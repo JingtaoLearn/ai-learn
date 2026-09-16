@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from quant_platform.attempt_report import (
     DOMAIN_POINTER,
     REPORT_BUNDLE_FILES,
     REPORT_OPERATOR_ID,
+    REPORT_OPERATOR_VERSION,
     _attachment_payload,
     _check_attachment_identity,
     _identity,
@@ -60,6 +62,98 @@ def _reseal_document(document: dict) -> None:
         attempt_report_module.DOMAIN_DOCUMENT,
         {key: value for key, value in document.items() if key != "document_id"},
     )
+
+
+def _use_current_operator_identity(document: dict) -> dict:
+    current = copy.deepcopy(document)
+    fields = _document_fields(current)
+    bundle = canonical_report_operator_bundle()
+    for field_id, value in (
+        ("operator_version", REPORT_OPERATOR_VERSION),
+        ("operator_source_sha256", bundle["source_sha256"]),
+        ("operator_content_digest", bundle["content_digest"]),
+    ):
+        fields[field_id]["raw"] = value
+        fields[field_id]["display"] = value
+    _reseal_document(current)
+    return current
+
+
+def _visual_document() -> dict:
+    document = _use_current_operator_identity(
+        _fixture()["report_documents"]["TOTAL_RETURN_READ_TIME"]
+    )
+    fields = _document_fields(document)
+    fields["template_parameters"]["raw"] = {
+        "display_name": "黄金（Au99.99）",
+        "qualification": "OVERFIT_RISK_SUBSTANTIATED",
+        "current_action": {
+            "action": "HOLD",
+            "reason": "signal did not cross the frozen sell line",
+            "latest_market_date": "2026-09-15",
+        },
+        "performance_summary": {
+            "buy_and_hold_return": 0.2,
+            "exposure": 0.5,
+        },
+    }
+    fields["template_parameters"]["display"] = "visual fixture"
+    fields["price_equity_rows"]["raw"] = [
+        {"date": "2026-09-10", "price": 100.0, "close": 100.0, "equity": 1000.0},
+        {"date": "2026-09-11", "price": 102.0, "close": 102.0, "equity": 1010.0},
+        {"date": "2026-09-12", "price": 104.0, "close": 104.0, "equity": 980.0},
+        {"date": "2026-09-15", "price": 106.0, "close": 106.0, "equity": 1050.0},
+    ]
+    fields["price_equity_rows"]["display"] = "4 rows"
+    fields["holdings"]["raw"] = [
+        {"date": "2026-09-10", "holdings": 0, "position_after": 0},
+        {"date": "2026-09-11", "holdings": 9, "position_after": 1},
+        {"date": "2026-09-12", "holdings": 9, "position_after": 1},
+        {"date": "2026-09-15", "holdings": 0, "position_after": 0},
+    ]
+    fields["holdings"]["display"] = "4 rows"
+    fields["events"]["raw"] = [
+        {
+            "Date": "2026-09-11", "side": "BUY", "price": 102.0, "quantity": 9,
+            "notional_cny": 918.0, "commission_cny": 1.0, "transfer_fee_cny": 0.0,
+            "stamp_tax_cny": 0.0, "slippage_cny": 0.0, "total_cost_cny": 1.0,
+            "cash_before_cny": 1000.0, "cash_after_cny": 81.0,
+            "holdings_before": 0, "holdings_after": 9, "reason": "upward crossing",
+        },
+        {
+            "Date": "2026-09-15", "side": "SELL", "price": 106.0, "quantity": 9,
+            "notional_cny": 954.0, "commission_cny": 1.0, "transfer_fee_cny": 0.0,
+            "stamp_tax_cny": 0.0, "slippage_cny": 0.0, "total_cost_cny": 1.0,
+            "cash_before_cny": 81.0, "cash_after_cny": 1034.0,
+            "holdings_before": 9, "holdings_after": 0, "reason": "downward crossing",
+        },
+    ]
+    fields["events"]["display"] = "2 rows"
+    fields["trades"]["raw"] = [
+        {
+            "entry_date": "2026-09-11", "entry_price": 102.0, "quantity": 9,
+            "entry_cost_cny": 1.0, "exit_date": "2026-09-15", "exit_price": 106.0,
+            "exit_cost_cny": 1.0, "status": "CLOSED", "gross_pnl_cny": 36.0,
+            "net_pnl_cny": 34.0, "return": 0.037,
+        },
+        {
+            "entry_date": "2026-09-15", "entry_price": 106.0, "quantity": 1,
+            "entry_cost_cny": 1.0, "exit_date": None, "exit_price": None,
+            "exit_cost_cny": 0.0, "status": "OPEN", "gross_pnl_cny": -2.0,
+            "net_pnl_cny": -3.0, "return": -0.028,
+        },
+    ]
+    fields["trades"]["display"] = "2 rows"
+    for field_id, value in (
+        ("period_start", "2026-09-10"), ("period_end", "2026-09-15"),
+        ("net_profit_cny", 50.0), ("current_position", "LONG"),
+        ("closed_trades", 1), ("open_trades", 1), ("net_return", 0.05),
+        ("max_drawdown", -0.029702970297), ("total_cost_cny", 3.0),
+    ):
+        fields[field_id]["raw"] = value
+        fields[field_id]["display"] = str(value)
+    _reseal_document(document)
+    return document
 
 
 def _embed_attachment(document: dict, field_id: str, attachment: dict) -> None:
@@ -347,6 +441,153 @@ def _patch(value, patch: dict) -> None:
         raise AssertionError(patch)
 
 
+def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_rows():
+    document = _visual_document()
+    before = canonical_json_bytes(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    assert canonical_json_bytes(document) == before
+    ordered_surfaces = (
+        'class="decision-header"',
+        'class="metric-cards"',
+        'class="chart chart-price"',
+        'class="chart chart-equity"',
+        'class="chart chart-drawdown"',
+        'class="chart chart-trade-pnl"',
+        'data-ledger="events"',
+        'data-ledger="trades"',
+        'class="evidence-details"',
+    )
+    offsets = [rendered.index(surface) for surface in ordered_surfaces]
+    assert offsets == sorted(offsets)
+    assert 'class="metric-cards"' in rendered
+    assert 'data-point-count="4"' in rendered
+    assert 'data-event-count="2"' in rendered
+    assert 'data-buy-count="1"' in rendered
+    assert 'data-sell-count="1"' in rendered
+    assert len(re.findall(r'<g class="event-marker (?:buy|sell)"', rendered)) == 2
+    assert 'data-closed-count="1"' in rendered
+    assert 'data-open-count="1"' in rendered
+    assert (
+        'class="event-marker buy" data-event-index="0" data-point-index="1" '
+        'data-date="2026-09-11" data-side="BUY"'
+    ) in rendered
+    assert (
+        'class="event-marker sell" data-event-index="1" data-point-index="3" '
+        'data-date="2026-09-15" data-side="SELL"'
+    ) in rendered
+    assert (
+        'class="holding-interval" data-start-index="1" data-end-index="2" '
+        'data-start-date="2026-09-11" data-end-date="2026-09-12"'
+    ) in rendered
+    assert 'class="trade-bar closed positive" data-trade-index="0"' in rendered
+    assert 'class="trade-bar open" data-trade-index="1"' in rendered
+    assert 'data-ledger="events" data-row-count="2"' in rendered
+    assert 'data-ledger="trades" data-row-count="2"' in rendered
+    assert 'data-ledger="price-equity" data-row-count="4"' in rendered
+    assert 'data-ledger="holdings" data-row-count="4"' in rendered
+    assert "BUY ▲" in rendered
+    assert "SELL ■" in rendered
+    assert "决策证据报告" in rendered
+    assert "research evidence / no automatic order" in rendered
+    assert "@media(max-width:640px)" in rendered
+    assert "http://" not in rendered.lower()
+    assert "https://" not in rendered.lower()
+    assert "<script" not in rendered.lower()
+
+
+def test_visual_report_escapes_hostile_human_text_in_headers_ledgers_and_evidence():
+    document = _visual_document()
+    fields = _document_fields(document)
+    hostile = '<script>alert("x")</script>&\'unsafe\''
+    fields["template_parameters"]["raw"]["display_name"] = hostile
+    fields["template_parameters"]["raw"]["current_action"]["action"] = (
+        'HOLD" onmouseover="alert(1)'
+    )
+    fields["template_parameters"]["raw"]["current_action"]["reason"] = hostile
+    fields["events"]["raw"][0]["reason"] = hostile
+    fields["integrity_not_qualification"]["display"] = hostile
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    assert hostile not in rendered
+    assert "<script" not in rendered.lower()
+    assert 'onmouseover="alert(1)' not in rendered
+    assert "HOLD&quot; onmouseover=&quot;alert(1)" in rendered
+    assert "Decision evidence report" in rendered
+    assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;&#x27;unsafe&#x27;" in rendered
+
+
+def test_visual_report_truthfully_labels_missing_reference_and_zero_closed_trades():
+    document = _visual_document()
+    fields = _document_fields(document)
+    del fields["template_parameters"]["raw"]["performance_summary"]["buy_and_hold_return"]
+    fields["trades"]["raw"] = [fields["trades"]["raw"][1]]
+    fields["trades"]["display"] = "1 row"
+    fields["closed_trades"]["raw"] = 0
+    fields["closed_trades"]["display"] = "0"
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    assert 'data-reference-count="0"' in rendered
+    assert "Reference series unavailable" in rendered
+    assert 'data-closed-count="0"' in rendered
+    assert 'data-open-count="1"' in rendered
+    assert "No closed trades" in rendered
+    assert 'class="trade-bar open" data-trade-index="0"' in rendered
+
+
+def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates():
+    document = _visual_document()
+    fields = _document_fields(document)
+    fields["events"]["raw"][0]["price"] = 500.0
+    unmatched = copy.deepcopy(fields["events"]["raw"][0])
+    unmatched["Date"] = "2026-09-14"
+    unmatched["reason"] = "event date absent from price rows"
+    fields["events"]["raw"].append(unmatched)
+    fields["events"]["display"] = "3 rows"
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    matched = re.search(
+        r'data-event-index="0"[^>]+transform="translate\([^ ]+ (?P<y>-?[0-9.]+)\)"',
+        rendered,
+    )
+    assert matched is not None
+    assert 28.0 <= float(matched.group("y")) <= 270.0
+    assert (
+        'data-event-index="2" data-point-index="-1" data-date="2026-09-14" '
+        'data-side="BUY" data-placement="unmapped"'
+    ) in rendered
+    assert "Unmatched event date" in rendered
+
+
+def test_visual_contract_advances_the_shared_operator_semantic_identity():
+    bundle = canonical_report_operator_bundle()
+
+    assert REPORT_OPERATOR_VERSION == "1.1.0"
+    assert bundle["manifest"]["semantic_version"] == REPORT_OPERATOR_VERSION
+    assert b'class="chart chart-price"' in bundle["content"]["operator.py"]
+    assert b'class="chart chart-equity"' in bundle["content"]["operator.py"]
+    assert b'class="chart chart-drawdown"' in bundle["content"]["operator.py"]
+    assert b'class="chart chart-trade-pnl"' in bundle["content"]["operator.py"]
+
+
+def test_visual_operator_source_invocation_matches_the_native_renderer(tmp_path: Path):
+    service, _ = _service(tmp_path)
+    detail = service.catalog.operator_detail(REPORT_OPERATOR_ID, REPORT_OPERATOR_VERSION)
+    bundle_path = service.catalog.state_root / detail["bundle_path"]
+    slot, invoke = load_published_operator(bundle_path)
+    document = _visual_document()
+
+    assert slot == "report"
+    assert invoke(document, {}).encode("utf-8") == render_report_document(document)
+
+
 def test_revision6_positive_authority_and_document_fixtures_validate():
     fixture = _fixture()
     registry = {
@@ -582,7 +823,7 @@ def test_revision6_rejects_all_35_directed_negative_classes(
 def test_canonical_operator_v2_bundle_and_resolved_identity_are_independent(tmp_path: Path):
     service, snapshot_id = _service(tmp_path)
     catalog = service.catalog
-    detail = catalog.operator_detail(REPORT_OPERATOR_ID, "1.0.0")
+    detail = catalog.operator_detail(REPORT_OPERATOR_ID, REPORT_OPERATOR_VERSION)
     bundle_path = catalog.state_root / detail["bundle_path"]
     identity = verify_report_operator_bundle(
         bundle_path,
@@ -603,7 +844,7 @@ def test_canonical_operator_v2_bundle_and_resolved_identity_are_independent(tmp_
     task = _task(snapshot_id)
     task["operators"]["report"] = {
         "operator_id": REPORT_OPERATOR_ID,
-        "version": "1.0.0",
+        "version": REPORT_OPERATOR_VERSION,
         "parameters": {},
     }
     resolved = service.resolve_task(task)
@@ -621,7 +862,7 @@ def test_second_stage_publishes_only_three_files_and_preserves_all_source_semant
     task = _task(snapshot_id)
     task["operators"]["report"] = {
         "operator_id": REPORT_OPERATOR_ID,
-        "version": "1.0.0",
+        "version": REPORT_OPERATOR_VERSION,
         "parameters": {},
     }
     created = service.submit(task, action_id="canonical-report")
@@ -729,7 +970,7 @@ def test_authority_bytes_and_digests_are_invariant_across_publication_reload_and
     before = _authority_snapshot(registry)
     document_before = canonical_json_bytes(document)
     service, _ = _service(tmp_path / "catalog")
-    detail = service.catalog.operator_detail(REPORT_OPERATOR_ID, "1.0.0")
+    detail = service.catalog.operator_detail(REPORT_OPERATOR_ID, REPORT_OPERATOR_VERSION)
     bundle_path = service.catalog.state_root / detail["bundle_path"]
     slot, invoke = load_published_operator(bundle_path)
     assert slot == "report"

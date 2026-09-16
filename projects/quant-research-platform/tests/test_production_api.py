@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from gold_research.focus_contract import Phase, canonical_json_bytes as focus_json, contract_document
 from gold_research.focus_runner import claim_phase
+from quant_platform.attempt_report import canonical_report_operator_bundle
 from quant_platform.daily_loop_status import CronReceiptStore
 from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_client import ProductionClient
@@ -229,12 +230,13 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
     )
     assert result.status_code == 200
     assert results.verify(terminal["result_id"]) == result.json()
+    operator = canonical_report_operator_bundle()
     assert result.json()["report_operator"] == {
-        "api_version": 2,
-        "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
-        "operator_id": "canonical_attempt_report",
-        "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
-        "version": "1.0.0",
+        "api_version": operator["manifest"]["api_version"],
+        "content_digest": operator["content_digest"],
+        "operator_id": operator["manifest"]["operator_id"],
+        "source_sha256": operator["source_sha256"],
+        "version": operator["manifest"]["semantic_version"],
     }
     assert REPORT_EVIDENCE_FILE_NAMES <= result.json()["files"].keys()
     report_document = client.get(

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from quant_platform.attempt_report import REPORT_OPERATOR_ID, REPORT_OPERATOR_VERSION
 from quant_platform.catalog import Catalog, initialize_catalog
 from quant_platform.seed import BUILTIN_OPERATOR_IDS, TEMPLATE_NAME, TEMPLATE_VERSION
 
@@ -80,7 +81,12 @@ def test_all_builtins_are_published_immutable_versions_with_bocom_defaults(tmp_p
     operators = catalog.list_operators()
 
     assert {operator["operator_id"] for operator in operators} == set(BUILTIN_OPERATOR_IDS)
-    assert all(operator["latest_version"] == "1.0.0" for operator in operators)
+    assert {
+        operator["operator_id"]: operator["latest_version"] for operator in operators
+    } == {
+        operator_id: REPORT_OPERATOR_VERSION if operator_id == REPORT_OPERATOR_ID else "1.0.0"
+        for operator_id in BUILTIN_OPERATOR_IDS
+    }
     fit = catalog.operator_detail("prior_log_ols", "1.0.0")
     assert fit["status"] == "PUBLISHED"
     assert fit["defaults"] == {"price_column": "AdjustedClose", "window_sessions": 20}

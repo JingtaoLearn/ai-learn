@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .attempt_report import (
+    MAX_REPORT_BYTES,
     render_report_document,
     validate_report_document,
     verify_report_operator_bundle,
@@ -187,7 +188,7 @@ def _validate_output(slot: str, value: Any, payload: dict[str, Any]) -> Any:
             raise ValueError("cost output total does not reconcile")
         return output
     if slot == "report":
-        if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 1_000_000:
+        if not isinstance(value, str) or not value or len(value.encode("utf-8")) > MAX_REPORT_BYTES:
             raise ValueError("report output must be bounded non-empty HTML")
         lowered = value.lower()
         if "http://" in lowered or "https://" in lowered:
@@ -399,7 +400,7 @@ def _load_published_report_operator(
         )
         first = apply(isolated_payload, validated_parameters)
         second = apply(copy.deepcopy(payload), dict(validated_parameters))
-        if not isinstance(first, str) or not first or len(first.encode("utf-8")) > 1_000_000:
+        if not isinstance(first, str) or not first or len(first.encode("utf-8")) > MAX_REPORT_BYTES:
             raise ValueError("report output must be bounded non-empty HTML")
         if first != second:
             raise ValueError("report operator is not deterministic")
