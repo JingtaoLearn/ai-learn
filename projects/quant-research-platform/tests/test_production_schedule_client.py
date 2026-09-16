@@ -682,6 +682,7 @@ def test_report_publication_is_exact_and_restores_previous_page_on_failed_https_
     job = JOBS["1cd5557264db"]
     target = tmp_path / job.report_filename
     target.write_bytes(b"previous report")
+    target.chmod(0o644)
     report = b"<html>2026-09-09 HOLD current report</html>"
     action = fake_action(job)
 
@@ -692,6 +693,99 @@ def test_report_publication_is_exact_and_restores_previous_page_on_failed_https_
     url = publish_report(job, report, action, report_root=tmp_path, readback=lambda _url: report)
     assert target.read_bytes() == report
     assert url == f"https://share.ai.jingtao.fun/{job.report_filename}"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "directory", "fifo", "unsafe-mode", "oversized"])
+def test_report_publication_rejects_unsafe_existing_targets(
+    tmp_path: Path, kind: str
+) -> None:
+    job = JOBS["1cd5557264db"]
+    target = tmp_path / job.report_filename
+    external = tmp_path / "external-report"
+    external.write_bytes(b"external bytes must not become rollback material")
+    external.chmod(0o644)
+    if kind == "symlink":
+        target.symlink_to(external)
+    elif kind == "hardlink":
+        os.link(external, target)
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(target)
+    else:
+        target.write_bytes(b"prior report")
+        target.chmod(0o644)
+        if kind == "unsafe-mode":
+            target.chmod(0o666)
+        else:
+            with target.open("r+b") as stream:
+                stream.truncate(16 * 1024 * 1024 + 1)
+    report = b"<html>2026-09-09 HOLD current report</html>"
+
+    with pytest.raises(ProductionClientError, match="unsafe|size"):
+        publish_report(
+            job,
+            report,
+            fake_action(job),
+            report_root=tmp_path,
+            readback=lambda _url: report,
+        )
+
+    assert external.read_bytes() == b"external bytes must not become rollback material"
+
+
+def test_report_publication_rejects_wrong_target_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = JOBS["1cd5557264db"]
+    target = tmp_path / job.report_filename
+    target.write_bytes(b"prior report")
+    target.chmod(0o644)
+    actual_owner = os.geteuid()
+    monkeypatch.setattr(schedule_client.os, "geteuid", lambda: actual_owner + 1)
+
+    with pytest.raises(ProductionClientError, match="owner|unsafe"):
+        publish_report(
+            job,
+            b"<html>2026-09-09 HOLD current report</html>",
+            fake_action(job),
+            report_root=tmp_path,
+            readback=lambda _url: b"unused",
+        )
+
+
+def test_report_publication_detects_target_swap_during_nofollow_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = JOBS["1cd5557264db"]
+    target = tmp_path / job.report_filename
+    target.write_bytes(b"prior report")
+    target.chmod(0o644)
+    real_open = os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == target and not swapped:
+            swapped = True
+            target.unlink()
+            target.write_bytes(b"attacker replacement")
+            target.chmod(0o644)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(schedule_client.os, "open", swap_before_open)
+
+    with pytest.raises(ProductionClientError, match="changed|unsafe") as raised:
+        publish_report(
+            job,
+            b"<html>2026-09-09 HOLD current report</html>",
+            fake_action(job),
+            report_root=tmp_path,
+            readback=lambda _url: b"unused",
+        )
+
+    assert swapped, str(raised.value)
+    assert target.read_bytes() == b"attacker replacement"
 
 
 def test_schedule_record_drift_and_unknown_outcome_fail_closed(tmp_path: Path) -> None:

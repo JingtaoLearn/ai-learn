@@ -37,6 +37,7 @@ from quant_platform.production_package_authority import (
     PackageIdentityAuthorityError,
 )
 from quant_platform.production_schedule_client import _verify_report_document_sources
+from quant_platform.production_client import MAX_RESULT_FILE_BYTES
 from quant_platform.production_worker import ProductionWorker
 
 
@@ -336,6 +337,123 @@ def test_bocom_split_and_dividend_accounting_preserves_equity_and_binds_revision
     assert attestation["status"] == "VERIFIED"
 
 
+def test_bocom_dividends_restore_all_strictly_later_split_factors_and_bind_source_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(production_bocom_module, "decision_points", _one_entry_points)
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    payload = json.loads((FIXTURES / "bocom-yahoo-chart.json").read_bytes())
+    result = payload["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    result["events"] = {
+        "dividends": {
+            str(timestamps[3]): {"amount": 0.5, "date": timestamps[3]},
+            str(timestamps[9]): {"amount": 1.25, "date": timestamps[9]},
+        },
+        "splits": {
+            str(timestamps[5]): {
+                "date": timestamps[5],
+                "numerator": 2.0,
+                "denominator": 1.0,
+            },
+            str(timestamps[7]): {
+                "date": timestamps[7],
+                "numerator": 3.0,
+                "denominator": 1.0,
+            },
+        },
+    }
+
+    rows = job._rows(canonical_json_bytes(payload))
+    dividends = [
+        action
+        for row in rows
+        for action in row["corporate_actions"]
+        if action["type"] == "DIVIDEND"
+    ]
+
+    assert [item["source_amount_per_share_cny"] for item in dividends] == [0.5, 1.25]
+    assert [item["source_dividend_split_adjustment_factor"] for item in dividends] == [6.0, 1.0]
+    assert [item["amount_per_share_cny"] for item in dividends] == [3.0, 1.25]
+    assert all(
+        item["recognition_basis"]
+        == "gross pre-tax ex-date receivable / total-return accrual"
+        for item in dividends
+    )
+
+    original = job.compute(
+        canonical_json_bytes(payload), "fixture://bocom-dividend-source-v1", SCHEDULED
+    )
+    revised_payload = deepcopy(payload)
+    revised_payload["chart"]["result"][0]["events"]["dividends"][
+        str(timestamps[3])
+    ]["amount"] = 0.6
+    revised = job.compute(
+        canonical_json_bytes(revised_payload), "fixture://bocom-dividend-source-v2", SCHEDULED
+    )
+
+    assert original.action["action"] == revised.action["action"]
+    assert hashlib.sha256(original.normalized_bytes).hexdigest() != hashlib.sha256(
+        revised.normalized_bytes
+    ).hexdigest()
+    assert hashlib.sha256(original.report_evidence["report-document.json"]).hexdigest() != (
+        hashlib.sha256(revised.report_evidence["report-document.json"]).hexdigest()
+    )
+
+
+def test_bocom_same_session_dividend_is_flat_at_buy_and_held_at_sell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def roundtrip_points(rows, _config):
+        slopes = [-1.0, 1.0, 1.0, -1.0]
+        points = [
+            {
+                "decision_date": row["date"],
+                "is_next_session": False,
+                "slope_pct": slopes[index] if index < len(slopes) else -1.0,
+            }
+            for index, row in enumerate(rows)
+        ]
+        points.append(
+            {
+                "decision_date": None,
+                "is_next_session": True,
+                "slope_pct": -1.0,
+                "raw_curve": rows[-1]["signal_close"],
+                "smooth_curve": rows[-1]["signal_close"],
+            }
+        )
+        return points
+
+    monkeypatch.setattr(production_bocom_module, "decision_points", roundtrip_points)
+    payload = json.loads((FIXTURES / "bocom-yahoo-chart.json").read_bytes())
+    result = payload["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    result["events"] = {
+        "dividends": {
+            str(timestamps[1]): {"amount": 1.0, "date": timestamps[1]},
+            str(timestamps[3]): {"amount": 2.0, "date": timestamps[3]},
+        }
+    }
+
+    computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+        canonical_json_bytes(payload), "fixture://bocom-same-session-dividends", SCHEDULED
+    )
+    parameters = json.loads(computation.report_evidence["config.json"])["template"][
+        "parameters"
+    ]
+    actions = parameters["corporate_action_ledger"]
+    trades = parameters["trade_ledger"]
+
+    assert [item["gross_cash_cny"] for item in actions] == [0.0, 2.0 * actions[1]["units_before"]]
+    assert [item["application_order"] for item in actions] == [
+        "before same-session open execution and close mark",
+        "before same-session open execution and close mark",
+    ]
+    assert trades[0]["status"] == "CLOSED"
+    assert trades[0]["gross_dividends_cny"] == actions[1]["gross_cash_cny"]
+
+
 def test_zhlearn_semantic_attestation_fails_closed_on_inconsistent_financial_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -615,7 +733,13 @@ def test_canonical_production_adapter_preserves_next_open_events_and_open_trade(
     assert pending_fields["template_parameters"]["raw"]["current_action"]["action"] == "SELL"
 
 
-def test_canonical_production_report_keeps_a_complete_large_price_path() -> None:
+@pytest.mark.parametrize(
+    ("display_name", "price_unit"),
+    [("Gold", "CNY_PER_G"), ("BOCOM", "CNY_PER_SHARE")],
+)
+def test_canonical_production_report_keeps_a_complete_large_price_path(
+    display_name: str, price_unit: str
+) -> None:
     start = datetime(2010, 1, 1, tzinfo=UTC).date()
     rows = [
         {
@@ -651,6 +775,7 @@ def test_canonical_production_report_keeps_a_complete_large_price_path() -> None
         "report_uuid": "large-fixture-report",
         "automatic_ordering": False,
     }
+    normalized = production_jobs.normalized_rows(rows).value
     report = build_canonical_production_report(
         rows=rows,
         points=points,
@@ -659,14 +784,14 @@ def test_canonical_production_report_keeps_a_complete_large_price_path() -> None
         experiment_id="5" * 64,
         attempt_id="6" * 64,
         provider_url="fixture://large-prices",
-        normalized_bytes=production_jobs.normalized_rows(rows).value,
+        normalized_bytes=normalized,
         spec=ProductionReportSpec(
-            display_name="Large fixture",
+            display_name=display_name,
             qualification="DESCRIPTIVE_ONLY",
             execution_price_key="open",
             mark_price_key="signal_close",
             execution_price_basis="observed next-session open",
-            price_unit="CNY_PER_UNIT",
+            price_unit=price_unit,
             buy_cost_bps=0.0,
             sell_cost_bps=0.0,
             completed_roundtrip_cost_per_unit=0.0,
@@ -686,6 +811,16 @@ def test_canonical_production_report_keeps_a_complete_large_price_path() -> None
     assert rows[0]["date"].isoformat().encode() in report.html
     assert rows[-1]["date"].isoformat().encode() in report.html
     assert len(report.html) < 700_000
+    assert len(report.evidence_files["report-document.json"]) > 1_048_576
+    required_artifacts = {
+        **report.evidence_files,
+        "normalized-snapshot.json": normalized,
+        "action.json": canonical_json_bytes(action),
+        "report.html": report.html,
+        "notification.txt": b"bounded fixture notification",
+        "provider-response.bin": normalized,
+    }
+    assert all(len(payload) <= MAX_RESULT_FILE_BYTES for payload in required_artifacts.values())
 
 
 @pytest.mark.parametrize(

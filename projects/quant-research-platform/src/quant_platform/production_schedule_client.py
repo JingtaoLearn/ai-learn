@@ -1019,18 +1019,133 @@ def _https_readback(url: str) -> bytes:
     return payload
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
+_PUBLICATION_MODE = 0o644
+_MAX_PUBLICATION_BYTES = 16 * 1024 * 1024
+
+
+def _publication_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
+    return metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns, metadata.st_size
+
+
+def _validate_publication_metadata(metadata: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != _PUBLICATION_MODE
+    ):
+        raise ProductionClientError("existing report publication target is unsafe")
+    if metadata.st_uid != os.geteuid():
+        raise ProductionClientError("existing report publication target owner is unsafe")
+    if metadata.st_size > _MAX_PUBLICATION_BYTES:
+        raise ProductionClientError("existing report publication target exceeds size limit")
+
+
+def _publication_metadata(path: Path) -> os.stat_result | None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ProductionClientError("report publication target is unsafe") from exc
+    _validate_publication_metadata(metadata)
+    return metadata
+
+
+def _read_existing_publication(path: Path) -> tuple[bytes, tuple[int, int, int, int]] | None:
+    before = _publication_metadata(path)
+    if before is None:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ProductionClientError("report publication target is unsafe") from exc
+    try:
+        opened = os.fstat(descriptor)
+        _validate_publication_metadata(opened)
+        if _publication_identity(opened) != _publication_identity(before):
+            raise ProductionClientError("report publication target changed during nofollow read")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(_MAX_PUBLICATION_BYTES + 1)
+        if len(payload) > _MAX_PUBLICATION_BYTES:
+            raise ProductionClientError("existing report publication target exceeds size limit")
+    finally:
+        os.close(descriptor)
+    after = _publication_metadata(path)
+    if after is None or _publication_identity(after) != _publication_identity(opened):
+        raise ProductionClientError("report publication target changed during nofollow read")
+    return payload, _publication_identity(opened)
+
+
+def _atomic_write(
+    path: Path,
+    payload: bytes,
+    *,
+    expected_target: tuple[int, int, int, int] | None,
+) -> tuple[int, int, int, int]:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as stream:
+        directory_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.chmod(0o644)
-        os.replace(temporary, path)
+        os.fchmod(descriptor, _PUBLICATION_MODE)
+        staged = os.fstat(descriptor)
+        _validate_publication_metadata(staged)
+        staged_path = os.stat(
+            temporary.name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        if _publication_identity(staged_path) != _publication_identity(staged):
+            raise ProductionClientError("report publication staging target changed")
+        try:
+            current = os.stat(
+                path.name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            current = None
+        if current is not None:
+            _validate_publication_metadata(current)
+        current_identity = _publication_identity(current) if current is not None else None
+        if current_identity != expected_target:
+            raise ProductionClientError("report publication target changed before replacement")
+        os.replace(
+            temporary.name,
+            path.name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        return _publication_identity(os.fstat(descriptor))
     finally:
-        temporary.unlink(missing_ok=True)
+        os.close(descriptor)
+        try:
+            os.unlink(temporary.name, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            pass
+        os.close(directory_descriptor)
+
+
+def _unlink_publication(path: Path, expected_target: tuple[int, int, int, int]) -> None:
+    current = _publication_metadata(path)
+    if current is None or _publication_identity(current) != expected_target:
+        raise ProductionClientError("report publication target changed before rollback")
+    path.unlink()
 
 
 def publish_report(
@@ -1048,20 +1163,27 @@ def publish_report(
     if market_date.encode() not in report or action_name.encode() not in report:
         raise ProductionClientError("report market date or action differs from the verified action")
     root_metadata = os.stat(report_root, follow_symlinks=False)
-    if not stat.S_ISDIR(root_metadata.st_mode):
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or root_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(root_metadata.st_mode) & 0o022
+    ):
         raise ProductionClientError("report publication root is unsafe")
     target = report_root / job.report_filename
-    prior = target.read_bytes() if target.exists() else None
+    prior = _read_existing_publication(target)
+    prior_payload = prior[0] if prior is not None else None
+    prior_identity = prior[1] if prior is not None else None
     url = f"{REPORT_BASE_URL}/{job.report_filename}"
-    _atomic_write(target, report)
+    published_identity = _atomic_write(target, report, expected_target=prior_identity)
     try:
-        if target.read_bytes() != report or readback(url) != report:
+        published = _read_existing_publication(target)
+        if published is None or published[0] != report or readback(url) != report:
             raise ProductionClientError("published report read-back does not verify")
     except Exception:
-        if prior is None:
-            target.unlink(missing_ok=True)
+        if prior_payload is None:
+            _unlink_publication(target, published_identity)
         else:
-            _atomic_write(target, prior)
+            _atomic_write(target, prior_payload, expected_target=published_identity)
         raise
     return url
 

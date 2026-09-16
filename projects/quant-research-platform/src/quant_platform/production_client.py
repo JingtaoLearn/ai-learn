@@ -47,6 +47,8 @@ RESULT_FILE_NAMES_BY_SCHEMA = {
     "quantresearch-production-formal-result/v1": FORMAL_RESULT_FILE_NAMES,
 }
 RESULT_FILE_NAMES = DAILY_RESULT_FILE_NAMES | FORMAL_RESULT_FILE_NAMES
+MAX_API_RESPONSE_BYTES = 1_048_576
+MAX_RESULT_FILE_BYTES = 16 * 1024 * 1024
 
 
 class ProductionClientError(RuntimeError):
@@ -160,11 +162,22 @@ class StdlibMTLSTransport:
         try:
             connection.request(method, path, body=body, headers=dict(headers))
             response = connection.getresponse()
+            parts = path.split("/")
+            is_result_file = (
+                method == "GET"
+                and len(parts) == 8
+                and parts[1:5] == ["api", "v1", "production", "results"]
+                and len(parts[5]) == 64
+                and all(character in "0123456789abcdef" for character in parts[5])
+                and parts[6] == "files"
+                and parts[7] in RESULT_FILE_NAMES
+            )
+            maximum_bytes = MAX_RESULT_FILE_BYTES if is_result_file else MAX_API_RESPONSE_BYTES
             content_length = response.getheader("content-length")
-            if content_length is not None and int(content_length) > 1_048_576:
+            if content_length is not None and int(content_length) > maximum_bytes:
                 raise ProductionClientError("production API response exceeds size limit")
-            payload = response.read(1_048_577)
-            if len(payload) > 1_048_576:
+            payload = response.read(maximum_bytes + 1)
+            if len(payload) > maximum_bytes:
                 raise ProductionClientError("production API response exceeds size limit")
             return response.status, dict(response.getheaders()), payload
         finally:
@@ -172,7 +185,7 @@ class StdlibMTLSTransport:
 
 
 def _json_response(payload: bytes) -> dict[str, Any]:
-    if len(payload) > 1_048_576:
+    if len(payload) > MAX_API_RESPONSE_BYTES:
         raise ProductionClientError("production API response exceeds size limit")
     try:
         value = json.loads(payload)
@@ -284,6 +297,7 @@ class ProductionClient:
                 or any(character not in "0123456789abcdef" for character in item["sha256"])
                 or type(item["size"]) is not int
                 or item["size"] < 0
+                or item["size"] > MAX_RESULT_FILE_BYTES
             ):
                 raise ProductionClientError("result manifest file inventory is invalid")
         return dict(manifest)
@@ -300,7 +314,12 @@ class ProductionClient:
         ):
             raise ProductionClientError("result file request is invalid")
         expected = files[name]
-        if not isinstance(expected, Mapping) or set(expected) != {"sha256", "size"}:
+        if (
+            not isinstance(expected, Mapping)
+            or set(expected) != {"sha256", "size"}
+            or type(expected.get("size")) is not int
+            or not 0 <= expected["size"] <= MAX_RESULT_FILE_BYTES
+        ):
             raise ProductionClientError("result file identity is invalid")
         try:
             status, _headers, payload = self.transport.request(

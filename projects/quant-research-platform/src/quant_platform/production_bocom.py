@@ -159,8 +159,14 @@ class BocomProductionJob:
                             "type": event_type,
                             "effective_date": session.isoformat(),
                             "amount_per_share_cny": amount,
+                            "source_amount_per_share_cny": amount,
                             "source_event_id": source_event_id,
                             "source_event_timestamp": source_timestamp,
+                            "event_date_basis": "Yahoo ex-date evidence",
+                            "payment_date": None,
+                            "recognition_basis": (
+                                "gross pre-tax ex-date receivable / total-return accrual"
+                            ),
                         }
                 except ProductionJobError:
                     raise
@@ -193,6 +199,12 @@ class BocomProductionJob:
             for field in ("open", "high", "low", "close"):
                 if row[field] is not None:
                     row[field] = float(row[field]) * factor
+            for action in row["corporate_actions"]:
+                if action["type"] == "DIVIDEND":
+                    action["amount_per_share_cny"] = (
+                        float(action["source_amount_per_share_cny"]) * factor
+                    )
+                    action["source_dividend_split_adjustment_factor"] = factor
             row["source_quote_split_unadjustment_factor"] = factor
         ordered = [rows[key] for key in sorted(rows)]
         if len(ordered) < self.config.window_sessions + 2:
@@ -326,7 +338,8 @@ class BocomProductionJob:
                 limitations=(
                     "Yahoo quote OHLC is split-adjusted; execution and marks are reconstructed to as-traded price units from bound split events before quantity changes are applied.",
                     "Signals use Yahoo adjusted close; P&L uses the reconstructed open/close path, split terms, and gross dividend events bound to this immutable source snapshot.",
-                    "Dividend cash is gross and pre-tax; Yahoo does not supply withholding, payment-date, cash-in-lieu, or tax-lot authority, so net means net of modeled transaction costs before dividend tax.",
+                    "Yahoo dividend evidence is split-adjusted and dated by ex-date; amounts are restored by all strictly later split factors and recognized as gross pre-tax ex-date receivables / total-return accruals, not observed cash payments.",
+                    "Yahoo does not supply payment date, withholding, tax, cash-in-lieu, or tax-lot authority, so net means net of modeled transaction costs before dividend tax.",
                     "Yahoo adjusted prices and corporate-action history may revise; later revisions create new immutable evidence and never rewrite this result.",
                     "KNOWN_EVENT_CORRECTED_PARTIAL; this report does not promote the model.",
                 ),
