@@ -17,6 +17,7 @@ from quant_platform.attempt_report import (
     REPORT_BUNDLE_FILES,
     REPORT_OPERATOR_ID,
     REPORT_OPERATOR_VERSION,
+    SUPPORTED_REPORT_OPERATOR_VERSIONS,
     _attachment_payload,
     _check_attachment_identity,
     _identity,
@@ -540,6 +541,78 @@ def test_visual_report_truthfully_labels_missing_reference_and_zero_closed_trade
     assert 'class="trade-bar open" data-trade-index="0"' in rendered
 
 
+def test_visual_report_marks_period_available_when_both_endpoints_are_available():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert (
+        '<article class="metric-card" data-state="available"><span>报告期间</span>'
+        '<strong>2026-09-10 — 2026-09-15</strong></article>'
+    ) in rendered
+
+
+def test_visual_report_marks_period_unavailable_and_preserves_both_endpoint_reasons():
+    document = _visual_document()
+    fields = _document_fields(document)
+    fields["period_start"].update(
+        availability="UNAVAILABLE",
+        reason="START_MISSING",
+        raw=None,
+        display="Start unavailable",
+    )
+    fields["period_end"].update(
+        availability="NOT_QUALIFIED",
+        reason="END_NOT_QUALIFIED",
+        raw=None,
+        display="End not qualified",
+    )
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    assert (
+        '<article class="metric-card" data-state="unavailable"><span>报告期间</span>'
+        '<strong>不可用：报告起始：START_MISSING；报告结束：END_NOT_QUALIFIED</strong>'
+        '</article>'
+    ) in rendered
+    assert "None — None" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "expected"),
+    [
+        (
+            "period_start",
+            '<article class="metric-card" data-state="unavailable"><span>Period</span>'
+            '<strong>Unavailable: Period start: PERIOD_ENDPOINT_MISSING</strong></article>',
+        ),
+        (
+            "period_end",
+            '<article class="metric-card" data-state="unavailable"><span>Period</span>'
+            '<strong>Unavailable: Period end: PERIOD_ENDPOINT_MISSING</strong></article>',
+        ),
+    ],
+)
+def test_visual_report_marks_period_unavailable_when_exactly_one_endpoint_is_missing(
+    missing_field: str,
+    expected: str,
+):
+    document = _visual_document()
+    fields = _document_fields(document)
+    fields["template_parameters"]["raw"]["display_name"] = "English fixture"
+    fields[missing_field].update(
+        availability="NOT_EVALUATED",
+        reason="PERIOD_ENDPOINT_MISSING",
+        raw=None,
+        display="Period endpoint missing",
+    )
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    assert expected in rendered
+    assert "None" not in rendered
+
+
 def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates():
     document = _visual_document()
     fields = _document_fields(document)
@@ -569,7 +642,8 @@ def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates()
 def test_visual_contract_advances_the_shared_operator_semantic_identity():
     bundle = canonical_report_operator_bundle()
 
-    assert REPORT_OPERATOR_VERSION == "1.1.0"
+    assert REPORT_OPERATOR_VERSION == "1.1.1"
+    assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset({"1.0.0", "1.1.0", "1.1.1"})
     assert bundle["manifest"]["semantic_version"] == REPORT_OPERATOR_VERSION
     assert b'class="chart chart-price"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-equity"' in bundle["content"]["operator.py"]

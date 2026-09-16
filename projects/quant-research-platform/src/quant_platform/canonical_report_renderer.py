@@ -551,6 +551,35 @@ def _metric_card(label, value, state):
     return '<article class="metric-card" data-state="' + state + '"><span>' + label + "</span><strong>" + _escape(value) + "</strong></article>"
 
 
+def _period_metric(fields, zh):
+    endpoints = (
+        ("period_start", _text(zh, "报告起始", "Period start")),
+        ("period_end", _text(zh, "报告结束", "Period end")),
+    )
+    values = []
+    unavailable = []
+    for field_id, label in endpoints:
+        field = fields.get(field_id)
+        if (
+            type(field) is dict
+            and field.get("availability") == "AVAILABLE"
+            and field.get("raw") is not None
+        ):
+            values.append(field.get("raw"))
+            continue
+        reason = field.get("reason") if type(field) is dict else None
+        if reason:
+            label = label + (_text(zh, "：", ": ")) + str(reason)
+        unavailable.append(label)
+    if unavailable:
+        return (
+            _text(zh, "不可用：", "Unavailable: ")
+            + _text(zh, "；", "; ").join(unavailable),
+            "unavailable",
+        )
+    return str(values[0]) + " — " + str(values[1]), "available"
+
+
 def _evidence(payload, zh):
     labels = {
         "identity_and_purpose": "身份与用途 / Identity and purpose",
@@ -689,8 +718,9 @@ def apply(payload, parameters):
     ]
     reference_return = performance.get("buy_and_hold_return")
     exposure = performance.get("exposure")
+    period_value, period_state = _period_metric(fields, zh)
     parts.append('<section class="metric-cards" aria-label="' + _text(zh, "关键指标", "Key metrics") + '">')
-    parts.append(_metric_card(_text(zh, "报告期间", "Period"), str(_raw(fields, "period_start")) + " — " + str(_raw(fields, "period_end")), "available"))
+    parts.append(_metric_card(_text(zh, "报告期间", "Period"), period_value, period_state))
     parts.append(_metric_card(_text(zh, "策略净回报", "Net return"), _percent(_raw(fields, "net_return"), zh), "available" if _raw(fields, "net_return") is not None else "unavailable"))
     parts.append(_metric_card(_text(zh, "同窗买入持有回报", "Same-window reference return"), _percent(reference_return, zh), "available" if reference_return is not None else "unavailable"))
     parts.append(_metric_card(_text(zh, "净损益", "Net P&L"), _money(_raw(fields, "net_profit_cny"), zh), "available" if _raw(fields, "net_profit_cny") is not None else "unavailable"))
