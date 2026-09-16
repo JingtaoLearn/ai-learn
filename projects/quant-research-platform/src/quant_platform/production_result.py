@@ -125,6 +125,111 @@ def _strict_json(payload: bytes, label: str) -> dict[str, Any]:
     return value
 
 
+def verify_production_result(
+    result_id: str,
+    manifest: Mapping[str, Any],
+    payloads: Mapping[str, bytes],
+) -> dict[str, Any]:
+    """Verify one complete immutable production result independent of its storage backend."""
+    if not isinstance(result_id, str) or SHA256.fullmatch(result_id) is None:
+        raise ProductionResultError("result_id must be lowercase SHA-256")
+    if not isinstance(manifest, Mapping) or not isinstance(payloads, Mapping):
+        raise ProductionResultError("production result is malformed")
+    stored_manifest = dict(manifest)
+    schema = stored_manifest.get("schema")
+    result_files = RESULT_FILES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+    if result_files is None or set(payloads) != result_files:
+        raise ProductionResultError("immutable result member set is invalid")
+    if stored_manifest.get("result_id") != result_id:
+        raise ProductionResultError("stored result_id does not match the requested result")
+    core = {key: value for key, value in stored_manifest.items() if key != "result_id"}
+    if hashlib.sha256(canonical_json_bytes(core)).hexdigest() != result_id:
+        raise ProductionResultError("result manifest identity is invalid")
+    files = core.get("files")
+    if not isinstance(files, Mapping) or set(files) != result_files:
+        raise ProductionResultError("result file inventory is invalid")
+    for name in result_files:
+        payload = payloads[name]
+        if not isinstance(payload, bytes):
+            raise ProductionResultError(f"result member is not bytes: {name}")
+        actual = {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+        if files[name] != actual:
+            raise ProductionResultError(f"result member identity mismatch: {name}")
+    if core.get("automatic_ordering") is not False:
+        raise ProductionResultError("result violates the no-order contract")
+    if schema == "quantresearch-production-formal-result/v1":
+        result_input = core.get("input")
+        phase_claims = core.get("phase_claims")
+        if (
+            core.get("operation") != "calibrate-once"
+            or not isinstance(result_input, Mapping)
+            or result_input.get("kind") != "no-network-operation"
+            or result_input.get("network_access") is not False
+            or core.get("calibration_sha256") != files["calibration.json"]["sha256"]
+            or phase_claims
+            != {
+                "CALIBRATION_CLAIMED": files["03-CALIBRATION_CLAIMED.json"]["sha256"],
+                "CALIBRATION_SEALED": files["04-CALIBRATION_SEALED.json"]["sha256"],
+            }
+        ):
+            raise ProductionResultError("formal result bindings are invalid")
+    else:
+        filename = core.get("report_filename")
+        report_uuid = filename.removesuffix(".html") if isinstance(filename, str) else ""
+        digest_bindings = {
+            "provider_response_sha256": "provider-response.bin",
+            "dataset_snapshot_id": "normalized-snapshot.json",
+            "action_sha256": "action.json",
+            "report_document_sha256": "report-document.json",
+            "report_sha256": "report.html",
+        }
+        action_payload = payloads["action.json"]
+        document_payload = payloads["report-document.json"]
+        action = _strict_json(action_payload, "production action")
+        document = _strict_json(document_payload, "production report document")
+        from .production_schedule_client import (
+            JOBS,
+            REPORT_OPERATOR,
+            ProductionClientError,
+            _verify_report_document_sources,
+        )
+
+        try:
+            evidence_bindings = _verify_report_document_sources(document, payloads)
+        except (KeyError, TypeError, ValueError, ProductionClientError) as exc:
+            raise ProductionResultError("daily semantic attestation is invalid") from exc
+        provider_request = core.get("provider_request")
+        frozen_job = JOBS.get(str(core.get("job_id")))
+        if (
+            filename != f"{report_uuid}.html"
+            or STABLE_REPORT_JOB_IDS.get(report_uuid) != core.get("job_id")
+            or frozen_job is None
+            or frozen_job.report_filename != filename
+            or frozen_job.model_id != core.get("model_id")
+            or frozen_job.production_manifest_sha256
+            != core.get("production_manifest_sha256")
+            or any(core.get(field) != files[name]["sha256"] for field, name in digest_bindings.items())
+            or canonical_json_bytes(action) != action_payload
+            or canonical_json_bytes(document) != document_payload
+            or action.get("job_id") != core.get("job_id")
+            or action.get("report_uuid") != report_uuid
+            or action.get("model_version") != core.get("model_id")
+            or action.get("production_manifest_sha256")
+            != core.get("production_manifest_sha256")
+            or action.get("generated_at") != core.get("generated_at")
+            or action.get("automatic_ordering") is not False
+            or core.get("report_operator") != REPORT_OPERATOR
+            or not isinstance(provider_request, Mapping)
+            or provider_request.get("method") != "GET"
+            or provider_request.get("url") != evidence_bindings["provider_url"]
+            or core.get("attempt_id") != evidence_bindings["attempt_id"]
+            or core.get("experiment_id") != evidence_bindings["experiment_id"]
+            or core.get("dataset_snapshot_id") != evidence_bindings["dataset_snapshot_id"]
+        ):
+            raise ProductionResultError("daily result bindings are invalid")
+    return stored_manifest
+
+
 class ProductionResultStore:
     """Create-once result module with stable pointers to immutable reports."""
 
@@ -275,10 +380,13 @@ class ProductionResultStore:
 
     def complete_stable_report(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
         expected = self._stable_pointer(manifest)
+        verified = self.verify(expected["result_id"])
+        if verified != dict(manifest):
+            raise ProductionResultError("stable production result read-back differs")
         if self._postgres is not None:
-            current = self._postgres.advance_stable_production_report(manifest)
+            current = self._postgres.advance_stable_production_report(verified)
         else:
-            self._advance_stable_report(manifest)
+            self._advance_stable_report(verified)
             current = self.stable_report(expected["report_uuid"])
         if current["generated_at"] < expected["generated_at"]:
             raise ProductionResultError("stable report pointer regressed")
@@ -378,38 +486,7 @@ class ProductionResultStore:
         if result_files is None or members != result_files | {"result-manifest.json"}:
             raise ProductionResultError("immutable result member set is invalid")
         payloads = {name: read_immutable(target / name) for name in result_files}
-        if manifest.get("result_id") != result_id:
-            raise ProductionResultError("stored result_id does not match its path")
-        core = {key: value for key, value in manifest.items() if key != "result_id"}
-        if hashlib.sha256(canonical_json_bytes(core)).hexdigest() != result_id:
-            raise ProductionResultError("result manifest identity is invalid")
-        files = core.get("files")
-        if not isinstance(files, dict) or set(files) != result_files:
-            raise ProductionResultError("result file inventory is invalid")
-        for name, expected in files.items():
-            actual = {"sha256": hashlib.sha256(payloads[name]).hexdigest(), "size": len(payloads[name])}
-            if expected != actual:
-                raise ProductionResultError(f"result member identity mismatch: {name}")
-        if core.get("automatic_ordering") is not False:
-            raise ProductionResultError("result violates the no-order contract")
-        if schema == "quantresearch-production-formal-result/v1":
-            result_input = core.get("input")
-            phase_claims = core.get("phase_claims")
-            if (
-                core.get("operation") != "calibrate-once"
-                or not isinstance(result_input, dict)
-                or result_input.get("kind") != "no-network-operation"
-                or result_input.get("network_access") is not False
-                or core.get("calibration_sha256")
-                != files["calibration.json"]["sha256"]
-                or phase_claims
-                != {
-                    "CALIBRATION_CLAIMED": files["03-CALIBRATION_CLAIMED.json"]["sha256"],
-                    "CALIBRATION_SEALED": files["04-CALIBRATION_SEALED.json"]["sha256"],
-                }
-            ):
-                raise ProductionResultError("formal result bindings are invalid")
-        return manifest
+        return verify_production_result(result_id, manifest, payloads)
 
     def read_client_file(self, result_id: str, name: str) -> bytes:
         if name not in CLIENT_RESULT_FILES:

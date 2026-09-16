@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
-from urllib.parse import urlunsplit
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
 
 from .attempt_report import (
@@ -1015,11 +1016,30 @@ def render_notification(job: ScheduledJob, action: Mapping[str, Any], report_url
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _https_readback(url: str) -> bytes:
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _https_readback(url: str, *, opener: Any | None = None) -> bytes:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ProductionClientError("report HTTPS read-back URL is invalid")
     request = Request(url, headers={"User-Agent": "quantresearch-production-client/1"})
-    with urlopen(request, timeout=20) as response:
+    selected_opener = opener if opener is not None else build_opener(_RejectRedirects())
+    try:
+        response_context = selected_opener.open(request, timeout=20)
+    except HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise ProductionClientError("report HTTPS read-back rejected a redirect") from exc
+        raise
+    with response_context as response:
+        if 300 <= response.status < 400:
+            raise ProductionClientError("report HTTPS read-back rejected a redirect")
         if response.status != 200:
             raise ProductionClientError(f"report HTTPS read-back returned HTTP {response.status}")
+        if response.geturl() != url:
+            raise ProductionClientError("report HTTPS read-back effective URL differs")
         payload = response.read(16 * 1024 * 1024 + 1)
     if len(payload) > 16 * 1024 * 1024:
         raise ProductionClientError("report HTTPS read-back exceeds size limit")
