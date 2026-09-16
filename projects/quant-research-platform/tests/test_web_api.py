@@ -260,7 +260,11 @@ def test_public_health_and_security_headers(tmp_path: Path):
 
     response = client.get("/health")
 
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "persistence": "postgresql",
+        "schema": "operator-v1",
+    }
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert response.headers["strict-transport-security"].startswith("max-age=")
     assert response.headers["x-content-type-options"] == "nosniff"
