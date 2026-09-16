@@ -1122,7 +1122,7 @@ def run_request(
         != files.get("provider-response.bin", {}).get("sha256")
         or manifest.get("action_sha256") != files.get("action.json", {}).get("sha256")
         or manifest.get("generated_at") != document_action.get("generated_at")
-        or document_action.get("generated_at") != request.scheduled_for
+        or document_action.get("generated_at") != request.effective_for
     ):
         raise ProductionClientError("result invocation or experiment identity does not verify")
     canonical_report = render_report_document(

@@ -27,6 +27,7 @@ from quant_platform.production_schedule_client import (
     _parser,
     _verify_report_document_sources,
     run_job,
+    run_validation,
     scheduled_fire_for,
     verify_stable_report,
 )
@@ -655,6 +656,31 @@ def test_exact_job_mapping_schedule_and_notification_output(tmp_path: Path, job_
     assert value.production_manifest_sha256 == JOBS[job_id].production_manifest_sha256
     assert value.scheduled_for == "2026-03-09T00:40:00Z"
     assert value.request_id == value.expected_request_id
+
+
+def test_validation_verifies_result_against_validation_time() -> None:
+    FakeClient.instances.clear()
+    notification = run_validation(
+        JOBS["1cd5557264db"],
+        validation_for="2026-03-09T00:40:00Z",
+        validation_id="1" * 64,
+        tls=ClientTLS(
+            "https://127.0.0.1:8443",
+            Path("/unused"),
+            Path("/unused"),
+            Path("/unused"),
+        ),
+        transport_factory=lambda configuration: configuration,
+        client_factory=FakeClient,
+        stable_report_verifier=lambda job, _report, _action: (
+            f"https://share.ai.jingtao.fun/{job.report_filename}"
+        ),
+    )
+
+    assert notification.endswith(b"f642b386-74c0-4e9f-92e6-563e7c6a5d69.html\n")
+    request = FakeClient.instances[-1].requests[0]
+    assert request.scheduled_for is None
+    assert request.effective_for == "2026-03-09T00:40:00Z"
 
 
 def test_scheduled_fire_is_deterministic_and_fails_closed() -> None:
