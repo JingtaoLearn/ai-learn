@@ -22,6 +22,18 @@ For sharing one-off HTML reports / PDFs / markdown without exposing them via a g
 | TLS / vhost | `nginx-proxy` + `nginx-proxy-acme` via `VIRTUAL_HOST` env var |
 | Subdomain | `share.ai.jingtao.fun` |
 
+The two frozen QuantResearch daily-report UUID paths are reverse-proxied to the
+zhlearn production API's stable-report endpoint. zhlearn resolves each stable
+pointer to one immutable, digest-verified result bundle; share-hosting does not
+copy or publish those report bytes. Other UUID paths retain the static-file
+behavior described below.
+
+Do not activate the two proxy locations until the reviewed zhlearn schema/API is
+running and both direct stable-report endpoints have returned their expected
+canonical bytes from newly completed immutable results. Until both read-backs
+pass, keep the existing share-hosting configuration serving the prior static
+reports; a failed pre-activation validation must not interrupt either URL.
+
 ## Deploy
 
 ```bash

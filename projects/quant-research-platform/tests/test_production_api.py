@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from quant_platform.production_package_authority import FilesystemPackageIdentit
 from quant_platform.production_result import ProductionResultError, ProductionResultStore
 from quant_platform.production_service import AdmissionPolicy, ProductionService
 from quant_platform.production_store import ProductionStore
+from quant_platform.production_store import StateConflict
 from quant_platform.production_web import VERIFIED_CLIENT_HEADER, create_production_app
 from quant_platform.production_worker import ProductionWorker, SimulatedWorkerCrash
 
@@ -279,6 +282,214 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
     assert store.get_run(terminal["production_run_id"])["result_id"] == terminal["result_id"]
 
 
+def test_public_stable_report_is_exact_html_from_bound_immutable_result(tmp_path) -> None:
+    _, results, service, _, worker, client = runtime(tmp_path)
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+    terminal = worker.run_once()
+    assert terminal is not None
+    manifest = results.verify(terminal["result_id"])
+
+    response = client.get(
+        "/api/v1/production/stable-reports/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+    )
+
+    assert response.status_code == 200
+    assert response.content == results.read_client_file(terminal["result_id"], "report.html")
+    assert response.headers["etag"] == f'"sha256:{manifest["report_sha256"]}"'
+    assert response.headers["x-quantresearch-result-id"] == terminal["result_id"]
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_public_stable_report_returns_not_found_for_unknown_uuid(tmp_path) -> None:
+    *_, client = runtime(tmp_path)
+
+    response = client.get(
+        "/api/v1/production/stable-reports/11111111-1111-4111-8111-111111111111.html"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "STABLE_REPORT_NOT_FOUND"
+
+
+def test_competing_complete_results_leave_one_coherent_stable_pointer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = ProductionResultStore(tmp_path / "results")
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    provider = FixtureProvider()
+    scheduled = [
+        datetime(2026, 3, 9, 0, 40, tzinfo=UTC),
+        datetime(2026, 3, 10, 0, 40, tzinfo=UTC),
+    ]
+    computations = []
+    for timestamp in scheduled:
+        provider_url, raw = job.acquire(provider, timestamp)
+        computations.append(job.compute(raw, provider_url, timestamp))
+    rows = [
+        {
+            "request_id": str(index),
+            "production_run_id": f"run-{index}",
+            "production_release_id": "release",
+        }
+        for index in range(2)
+    ]
+    original_read = results.stable_report
+    both_advanced = threading.Barrier(2)
+
+    def delayed_read(report_uuid: str):
+        both_advanced.wait(timeout=5)
+        return original_read(report_uuid)
+
+    monkeypatch.setattr(results, "stable_report", delayed_read)
+    manifests: list[dict] = []
+    errors: list[BaseException] = []
+
+    def publish(index: int) -> None:
+        try:
+            manifest = results.publish(rows[index], computations[index])
+            results.complete_stable_report(manifest)
+            manifests.append(manifest)
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=publish, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert len(manifests) == 2
+    stable = original_read(job.report_uuid)
+    selected = next(item for item in manifests if item["result_id"] == stable["result_id"])
+    assert stable["report_sha256"] == selected["report_sha256"]
+    assert stable["html"] == results.read_client_file(selected["result_id"], "report.html")
+
+
+def test_failure_before_pointer_advance_retains_prior_immutable_report(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results = ProductionResultStore(tmp_path / "results")
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    provider = FixtureProvider()
+    computations = []
+    for day in (9, 10):
+        timestamp = datetime(2026, 3, day, 0, 40, tzinfo=UTC)
+        provider_url, raw = job.acquire(provider, timestamp)
+        computations.append(job.compute(raw, provider_url, timestamp))
+    rows = [
+        {
+            "request_id": str(index),
+            "production_run_id": f"run-{index}",
+            "production_release_id": "release",
+        }
+        for index in range(2)
+    ]
+    first = results.publish(rows[0], computations[0])
+    results.complete_stable_report(first)
+    prior = results.stable_report(job.report_uuid)
+    original_advance = results._advance_stable_report
+
+    def fail_before_advance(manifest):
+        if manifest["result_id"] != first["result_id"]:
+            raise ProductionResultError("injected failure before pointer advance")
+        original_advance(manifest)
+
+    monkeypatch.setattr(results, "_advance_stable_report", fail_before_advance)
+    second = results.publish(rows[1], computations[1])
+    with pytest.raises(ProductionResultError, match="before pointer"):
+        results.complete_stable_report(second)
+
+    assert results.stable_report(job.report_uuid) == prior
+    assert len(list(results.results_root.iterdir())) == 2
+
+
+def test_failed_terminal_commit_never_advances_stable_pointer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, results, service, _, worker, client = runtime(tmp_path)
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+    monkeypatch.setattr(
+        worker.store,
+        "finish_success",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(StateConflict("lost lease")),
+    )
+
+    with pytest.raises(StateConflict, match="lost lease"):
+        worker.run_once()
+
+    response = client.get(
+        "/api/v1/production/stable-reports/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+    )
+    assert response.status_code == 404
+
+
+def test_crash_after_terminal_is_reconciled_from_durable_success_manifest(tmp_path) -> None:
+    armed = [True]
+
+    def crash(point: str) -> None:
+        if point == "after_terminal_before_stable_pointer" and armed[0]:
+            armed[0] = False
+            raise SimulatedWorkerCrash(point)
+
+    _, _, service, _, worker, client = runtime(tmp_path, crash=crash)
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+    with pytest.raises(SimulatedWorkerCrash, match="after_terminal"):
+        worker.run_once()
+
+    url = "/api/v1/production/stable-reports/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+    assert client.get(url).status_code == 404
+    assert worker.run_once() is None
+    assert client.get(url).status_code == 200
+
+
+def test_delayed_older_completion_cannot_replace_newer_stable_report(tmp_path) -> None:
+    results = ProductionResultStore(tmp_path / "results")
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    provider = FixtureProvider()
+    computations = []
+    for day in (9, 10):
+        timestamp = datetime(2026, 3, day, 0, 40, tzinfo=UTC)
+        provider_url, raw = job.acquire(provider, timestamp)
+        computations.append(job.compute(raw, provider_url, timestamp))
+    rows = [
+        {
+            "request_id": str(index),
+            "production_run_id": f"run-{index}",
+            "production_release_id": "release",
+        }
+        for index in range(2)
+    ]
+    newer = results.publish(rows[1], computations[1])
+    results.complete_stable_report(newer)
+    older = results.publish(rows[0], computations[0])
+    results.complete_stable_report(older)
+
+    assert results.stable_report(job.report_uuid)["result_id"] == newer["result_id"]
+
+
+def test_stable_endpoint_fails_closed_on_pointer_identity_tamper(tmp_path) -> None:
+    _, results, service, _, worker, client = runtime(tmp_path)
+    value = request()
+    service.create_or_read(value.canonical_body, value.request_id)
+    assert worker.run_once() is not None
+    with sqlite3.connect(results.stable_database_path) as connection:
+        connection.execute(
+            "UPDATE stable_production_reports SET report_sha256 = ?",
+            ("0" * 64,),
+        )
+
+    response = client.get(
+        "/api/v1/production/stable-reports/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "STABLE_REPORT_NOT_FOUND"
+
+
 def test_capacity_overlap_retries_both_jobs_and_replay_has_no_duplicate_result(tmp_path) -> None:
     store, _, _, provider, worker, api = runtime(tmp_path)
     bocom_request = request()
@@ -492,21 +703,3 @@ def test_result_verifier_rejects_tamper_links_writable_and_missing(tmp_path) -> 
 
     with pytest.raises(ProductionResultError):
         results.verify("../" + result_id)
-
-
-def test_prior_report_is_retained_when_publication_readback_fails(tmp_path, monkeypatch) -> None:
-    _, results, service, _, worker, _ = runtime(tmp_path)
-    value = request()
-    service.create_or_read(value.canonical_body, value.request_id)
-    terminal = worker.run_once()
-    assert terminal is not None
-    report = results.publication_root / "current" / "8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
-    previous = report.read_bytes()
-    original = results._publish_report
-
-    def fail(computation):
-        original(computation)
-        raise ProductionResultError("injected failure after verified promotion")
-
-    monkeypatch.setattr(results, "_publish_report", fail)
-    assert report.read_bytes() == previous

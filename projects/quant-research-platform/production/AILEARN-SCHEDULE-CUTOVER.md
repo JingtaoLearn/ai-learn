@@ -55,7 +55,7 @@ PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_
 PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_platform.production_schedule_client --job-id 297c11cad0dc --scheduled-for 2026-03-09T00:40:00Z --jobs-file "$tmp_jobs"
 ```
 
-Use a newly admitted weekday 08:40 production identity instead of the example, or use distinct bounded validation identities, when performing real validation. BOCOM's 08:45 cron start retains the frozen 08:40 production identity. Each call must verify the immutable result, source notification and report, atomically publish and HTTPS-read back the current stable report, then render the concise notification locally. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, report-publication, model, or action error fails closed; there is no local computation or alternate endpoint.
+Use a newly admitted weekday 08:40 production identity instead of the example, or use distinct bounded validation identities, when performing real validation. BOCOM's 08:45 cron start retains the frozen 08:40 production identity. Each call must verify the immutable result, source notification and report, then HTTPS-read back the same canonical bytes through the unchanged stable URL before rendering the concise notification locally. zhlearn owns the atomic stable pointer and immutable report endpoint; ailearn performs no report publication or financial computation. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, stable-read-back, model, or action error fails closed; there is no local computation or alternate endpoint.
 
 ## Cut over the two existing records
 

@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -311,14 +311,26 @@ def test_bocom_split_and_dividend_accounting_preserves_equity_and_binds_revision
     assert [item["type"] for item in actions] == ["SPLIT", "DIVIDEND"]
     assert parameters["event_ledger"][0]["price"] == 100.0
     assert actions[0]["units_before"] * 2 == actions[0]["units_after"]
-    assert actions[1]["gross_cash_cny"] == pytest.approx(actions[1]["units_before"])
+    assert actions[1]["gross_receivable_accrual_cny"] == pytest.approx(
+        actions[1]["units_before"]
+    )
+    assert actions[1]["available_cash_before_cny"] == actions[1]["available_cash_after_cny"]
+    assert actions[1]["payment_date"] is None
+    assert actions[1]["payment_date_evidence"] == "UNAVAILABLE"
     assert float(daily[split_index - 1]["equity"]) == pytest.approx(
         float(daily[split_index]["equity"])
     )
     assert float(daily[dividend_index]["equity"]) == pytest.approx(
-        float(daily[dividend_index - 1]["equity"]) + actions[1]["gross_cash_cny"]
+        float(daily[dividend_index - 1]["equity"])
+        + actions[1]["gross_receivable_accrual_cny"]
     )
-    assert metrics["gross_dividends_cny"] == pytest.approx(actions[1]["gross_cash_cny"])
+    assert metrics["gross_dividends_cny"] == pytest.approx(
+        actions[1]["gross_receivable_accrual_cny"]
+    )
+    assert metrics["available_cash_cny"] < metrics["final_equity_cny"]
+    assert metrics["dividend_receivable_cny"] == pytest.approx(
+        actions[1]["gross_receivable_accrual_cny"]
+    )
     assert fields["gross_dividends_cny"]["availability"] == "AVAILABLE"
     assert fields["gross_dividends_cny"]["raw"] == pytest.approx(
         metrics["gross_dividends_cny"]
@@ -445,13 +457,68 @@ def test_bocom_same_session_dividend_is_flat_at_buy_and_held_at_sell(
     actions = parameters["corporate_action_ledger"]
     trades = parameters["trade_ledger"]
 
-    assert [item["gross_cash_cny"] for item in actions] == [0.0, 2.0 * actions[1]["units_before"]]
+    assert [item["gross_receivable_accrual_cny"] for item in actions] == [
+        0.0,
+        2.0 * actions[1]["units_before"],
+    ]
     assert [item["application_order"] for item in actions] == [
         "before same-session open execution and close mark",
         "before same-session open execution and close mark",
     ]
     assert trades[0]["status"] == "CLOSED"
-    assert trades[0]["gross_dividends_cny"] == actions[1]["gross_cash_cny"]
+    assert trades[0]["gross_dividends_cny"] == actions[1]["gross_receivable_accrual_cny"]
+
+
+def test_unpaid_dividend_receivables_never_finance_later_buys() -> None:
+    rows = [
+        {"date": date(2026, 1, 5), "corporate_actions": []},
+        {
+            "date": date(2026, 1, 6),
+            "corporate_actions": [
+                {
+                    "type": "DIVIDEND",
+                    "effective_date": date(2026, 1, 6),
+                    "amount_per_share_cny": 100_000.0,
+                    "payment_date": None,
+                    "payment_date_evidence": "UNAVAILABLE",
+                }
+            ],
+        },
+        {
+            "date": date(2026, 1, 7),
+            "corporate_actions": [
+                {
+                    "type": "DIVIDEND",
+                    "effective_date": date(2026, 1, 7),
+                    "amount_per_share_cny": 200_000.0,
+                    "payment_date": None,
+                    "payment_date_evidence": "UNAVAILABLE",
+                }
+            ],
+        },
+        {"date": date(2026, 1, 8), "corporate_actions": []},
+        {"date": date(2026, 1, 9), "corporate_actions": []},
+    ]
+    events = [
+        {"action_date": "2026-01-05", "side": "BUY", "price": 400_000.0, "cost_per_unit": 0.0},
+        {"action_date": "2026-01-08", "side": "SELL", "price": 400_000.0, "cost_per_unit": 0.0},
+        {"action_date": "2026-01-09", "side": "BUY", "price": 600_000.0, "cost_per_unit": 0.0},
+    ]
+
+    accounted, corporate_actions = production_jobs._account_events(events, rows)
+
+    assert [event["quantity"] for event in accounted] == [2, 2, 1]
+    assert accounted[-1]["cash_before_cny"] == 1_000_000.0
+    assert [
+        action["gross_receivable_accrual_cny"] for action in corporate_actions
+    ] == [200_000.0, 400_000.0]
+    assert corporate_actions[-1]["dividend_receivable_after_cny"] == 600_000.0
+    assert all(
+        action["available_cash_before_cny"] == action["available_cash_after_cny"]
+        and action["payment_date"] is None
+        and action["payment_date_evidence"] == "UNAVAILABLE"
+        for action in corporate_actions
+    )
 
 
 def test_zhlearn_semantic_attestation_fails_closed_on_inconsistent_financial_evidence(

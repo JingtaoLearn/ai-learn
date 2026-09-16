@@ -164,6 +164,7 @@ class BocomProductionJob:
                             "source_event_timestamp": source_timestamp,
                             "event_date_basis": "Yahoo ex-date evidence",
                             "payment_date": None,
+                            "payment_date_evidence": "UNAVAILABLE",
                             "recognition_basis": (
                                 "gross pre-tax ex-date receivable / total-return accrual"
                             ),

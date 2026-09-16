@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import pytest
 import yaml
@@ -9,32 +9,30 @@ import yaml
 
 PROJECT = Path(__file__).parents[1]
 PRODUCTION = PROJECT / "production"
+SHARE_HOSTING = PROJECT.parent / "share-hosting"
 
 
-def _bind_source_for_container_path(service: dict, container_path: PurePosixPath) -> PurePosixPath:
-    candidates: list[tuple[int, PurePosixPath]] = []
-    for volume in service["volumes"]:
-        if volume["type"] != "bind":
-            continue
-        target = PurePosixPath(volume["target"])
-        if container_path == target or target in container_path.parents:
-            source = PurePosixPath(volume["source"]) / container_path.relative_to(target)
-            candidates.append((len(target.parts), source))
-    assert candidates, f"no bind backs {container_path}"
-    return max(candidates)[1]
-
-
-def test_writer_publication_and_report_edge_resolve_to_one_host_tree() -> None:
+def test_stable_reports_route_to_zhlearn_without_mutable_report_mount() -> None:
     compose = yaml.safe_load((PRODUCTION / "compose.yaml").read_text())
     api = compose["services"]["production-api"]
     edge = compose["services"]["report-edge"]
-    state_root = PurePosixPath(api["environment"]["QR_PRODUCTION_STATE_ROOT"])
-    writer_current = _bind_source_for_container_path(api, state_root / "publication" / "current")
-    edge_current = _bind_source_for_container_path(edge, PurePosixPath("/srv/reports"))
+    assert all(volume.get("target") != "/srv/reports" for volume in edge["volumes"])
+    assert all("publication" not in volume.get("target", "") for volume in api["volumes"])
 
-    assert writer_current == edge_current == PurePosixPath(
-        "/var/lib/quantresearch-production/state/publication/current"
-    )
+    production_nginx = (PRODUCTION / "nginx.conf").read_text()
+    assert 'location ~ "^/api/v1/production/stable-reports/' in production_nginx
+    assert "proxy_pass http://production_api;" in production_nginx
+
+    share_nginx = (SHARE_HOSTING / "nginx.conf").read_text()
+    for report_uuid in (
+        "f642b386-74c0-4e9f-92e6-563e7c6a5d69",
+        "8991e9a8-1caa-41f5-b76b-6368259db5b4",
+    ):
+        assert f"location = /{report_uuid}.html" in share_nginx
+        assert (
+            f"https://quant.ai.jingtao.fun/api/v1/production/stable-reports/{report_uuid}.html"
+            in share_nginx
+        )
 
 
 @pytest.mark.parametrize(

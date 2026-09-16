@@ -223,6 +223,7 @@ def _account_events(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events_by_date = {event["action_date"]: event for event in events}
     cash = REPORT_INITIAL_CAPITAL_CNY
+    dividend_receivable = 0.0
     holdings = 0
     result: list[dict[str, Any]] = []
     corporate_action_ledger: list[dict[str, Any]] = []
@@ -230,8 +231,9 @@ def _account_events(
         row_date = row["date"].isoformat()
         for action in row.get("corporate_actions", []):
             cash_before = cash
+            receivable_before = dividend_receivable
             holdings_before = holdings
-            gross_cash = 0.0
+            gross_receivable_accrual = 0.0
             if action["type"] == "SPLIT" and holdings:
                 adjusted_holdings = holdings * float(action["ratio"])
                 if not adjusted_holdings.is_integer():
@@ -240,8 +242,8 @@ def _account_events(
                     )
                 holdings = int(adjusted_holdings)
             elif action["type"] == "DIVIDEND" and holdings:
-                gross_cash = holdings * float(action["amount_per_share_cny"])
-                cash += gross_cash
+                gross_receivable_accrual = holdings * float(action["amount_per_share_cny"])
+                dividend_receivable += gross_receivable_accrual
             corporate_action_ledger.append(
                 {
                     **{
@@ -251,9 +253,11 @@ def _account_events(
                     "application_order": "before same-session open execution and close mark",
                     "units_before": holdings_before,
                     "units_after": holdings,
-                    "cash_before_cny": cash_before,
-                    "gross_cash_cny": gross_cash,
-                    "cash_after_cny": cash,
+                    "available_cash_before_cny": cash_before,
+                    "available_cash_after_cny": cash,
+                    "dividend_receivable_before_cny": receivable_before,
+                    "gross_receivable_accrual_cny": gross_receivable_accrual,
+                    "dividend_receivable_after_cny": dividend_receivable,
                 }
             )
         event = events_by_date.get(row_date)
@@ -319,7 +323,9 @@ def _trade_and_holding_ledgers(
             if entry["action_date"] <= action["effective_date"] <= event["action_date"]
             and int(action["units_before"]) > 0
         ]
-        gross_dividends = sum(float(action["gross_cash_cny"]) for action in related_actions)
+        gross_dividends = sum(
+            float(action["gross_receivable_accrual_cny"]) for action in related_actions
+        )
         gross = (
             float(event["price"]) * mark_quantity
             + gross_dividends
@@ -373,7 +379,9 @@ def _trade_and_holding_ledgers(
         mark_quantity = (
             int(related_actions[-1]["units_after"]) if related_actions else entry_quantity
         )
-        gross_dividends = sum(float(action["gross_cash_cny"]) for action in related_actions)
+        gross_dividends = sum(
+            float(action["gross_receivable_accrual_cny"]) for action in related_actions
+        )
         gross = (
             mark * mark_quantity
             + gross_dividends
@@ -423,6 +431,7 @@ def _equity_path(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     events_by_date = {event["action_date"]: event for event in events}
     cash = REPORT_INITIAL_CAPITAL_CNY
+    dividend_receivable = 0.0
     holdings = 0
     cumulative_cost = 0.0
     equity = REPORT_INITIAL_CAPITAL_CNY
@@ -431,6 +440,7 @@ def _equity_path(
     held_sessions = 0
     comparator_entry: float | None = None
     comparator_cash = REPORT_INITIAL_CAPITAL_CNY
+    comparator_dividend_receivable = 0.0
     comparator_holdings = 0
     comparator_equity = REPORT_INITIAL_CAPITAL_CNY
     gross_dividends = 0.0
@@ -444,6 +454,8 @@ def _equity_path(
             "equity_gross": None,
             "equity": REPORT_INITIAL_CAPITAL_CNY,
             "buy_and_hold_reference": None,
+            "available_cash_cny": REPORT_INITIAL_CAPITAL_CNY,
+            "dividend_receivable_cny": 0.0,
         }
         for row in rows
         if row["date"] < config.anchor_date
@@ -476,9 +488,9 @@ def _equity_path(
             elif corporate_action["type"] == "DIVIDEND":
                 amount = float(corporate_action["amount_per_share_cny"])
                 entitlement = holdings * amount
-                cash += entitlement
+                dividend_receivable += entitlement
                 gross_dividends += entitlement
-                comparator_cash += comparator_holdings * amount
+                comparator_dividend_receivable += comparator_holdings * amount
         event = events_by_date.get(action_date)
         if event is not None:
             cash = float(event["cash_after_cny"])
@@ -493,8 +505,10 @@ def _equity_path(
                 REPORT_INITIAL_CAPITAL_CNY / (execution + unit_cost)
             )
             comparator_cash -= comparator_holdings * (execution + unit_cost)
-        equity = cash + holdings * mark
-        comparator_equity = comparator_cash + comparator_holdings * mark
+        equity = cash + dividend_receivable + holdings * mark
+        comparator_equity = (
+            comparator_cash + comparator_dividend_receivable + comparator_holdings * mark
+        )
         peak = max(peak, equity)
         maximum_drawdown = min(maximum_drawdown, equity / peak - 1.0)
         path.append(
@@ -508,6 +522,8 @@ def _equity_path(
                 "equity_gross": equity + cumulative_cost,
                 "equity": equity,
                 "buy_and_hold_reference": comparator_equity,
+                "available_cash_cny": cash,
+                "dividend_receivable_cny": dividend_receivable,
             }
         )
     return path, {
@@ -519,6 +535,9 @@ def _equity_path(
         "exposure": held_sessions / len(period_rows),
         "buy_and_hold_return": comparator_equity / REPORT_INITIAL_CAPITAL_CNY - 1.0,
         "gross_dividends_cny": gross_dividends,
+        "available_cash_cny": cash,
+        "dividend_receivable_cny": dividend_receivable,
+        "buy_and_hold_dividend_receivable_cny": comparator_dividend_receivable,
         "period_start": period_rows[0]["date"].isoformat(),
         "period_end": period_rows[-1]["date"].isoformat(),
     }
@@ -557,9 +576,11 @@ def _validate_report_semantics(
     for item in corporate_actions:
         actions_by_date.setdefault(str(item["effective_date"]), []).append(item)
     account_cash = REPORT_INITIAL_CAPITAL_CNY
+    account_dividend_receivable = 0.0
     account_units = 0
     cumulative_cost = 0.0
     comparator_cash = REPORT_INITIAL_CAPITAL_CNY
+    comparator_dividend_receivable = 0.0
     comparator_units = 0
     comparator_equity = REPORT_INITIAL_CAPITAL_CNY
     peak = REPORT_INITIAL_CAPITAL_CNY
@@ -582,7 +603,11 @@ def _validate_report_semantics(
         mark = float(source_row[spec.mark_price_key])
         for item in actions_by_date.get(current_date, []):
             if (
-                not math.isclose(float(item["cash_before_cny"]), account_cash)
+                not math.isclose(float(item["available_cash_before_cny"]), account_cash)
+                or not math.isclose(
+                    float(item["dividend_receivable_before_cny"]),
+                    account_dividend_receivable,
+                )
                 or int(item["units_before"]) != account_units
             ):
                 raise ProductionJobError("semantic attestation rejected corporate-action opening state")
@@ -595,15 +620,22 @@ def _validate_report_semantics(
                 comparator_units = int(adjusted_comparator)
             else:
                 amount = float(item["amount_per_share_cny"])
-                gross_cash = account_units * amount
-                if not math.isclose(float(item["gross_cash_cny"]), gross_cash):
+                gross_receivable_accrual = account_units * amount
+                if not math.isclose(
+                    float(item["gross_receivable_accrual_cny"]),
+                    gross_receivable_accrual,
+                ):
                     raise ProductionJobError("semantic attestation rejected dividend entitlement")
-                account_cash += gross_cash
-                gross_dividends += gross_cash
-                comparator_cash += comparator_units * amount
+                account_dividend_receivable += gross_receivable_accrual
+                gross_dividends += gross_receivable_accrual
+                comparator_dividend_receivable += comparator_units * amount
             if (
                 int(item["units_after"]) != account_units
-                or not math.isclose(float(item["cash_after_cny"]), account_cash)
+                or not math.isclose(float(item["available_cash_after_cny"]), account_cash)
+                or not math.isclose(
+                    float(item["dividend_receivable_after_cny"]),
+                    account_dividend_receivable,
+                )
             ):
                 raise ProductionJobError("semantic attestation rejected corporate-action closing state")
         event = events_by_date.get(current_date)
@@ -644,8 +676,10 @@ def _validate_report_semantics(
                 REPORT_INITIAL_CAPITAL_CNY / (execution + comparator_cost)
             )
             comparator_cash -= comparator_units * (execution + comparator_cost)
-        final_equity = account_cash + account_units * mark
-        comparator_equity = comparator_cash + comparator_units * mark
+        final_equity = account_cash + account_dividend_receivable + account_units * mark
+        comparator_equity = (
+            comparator_cash + comparator_dividend_receivable + comparator_units * mark
+        )
         if account_units:
             held_sessions += 1
         peak = max(peak, final_equity)
@@ -657,6 +691,10 @@ def _validate_report_semantics(
             or int(path_row["holdings"]) != account_units
             or int(path_row["position"]) != (1 if account_units else 0)
             or not math.isclose(float(path_row["equity"]), final_equity)
+            or not math.isclose(float(path_row["available_cash_cny"]), account_cash)
+            or not math.isclose(
+                float(path_row["dividend_receivable_cny"]), account_dividend_receivable
+            )
             or not math.isclose(float(path_row["equity_gross"]), final_equity + cumulative_cost)
             or not math.isclose(float(path_row["buy_and_hold_reference"]), comparator_equity)
         ):
@@ -705,6 +743,14 @@ def _validate_report_semantics(
             comparator_equity / REPORT_INITIAL_CAPITAL_CNY - 1.0,
         )
         or not math.isclose(float(metrics["gross_dividends_cny"]), gross_dividends)
+        or not math.isclose(float(metrics["available_cash_cny"]), account_cash)
+        or not math.isclose(
+            float(metrics["dividend_receivable_cny"]), account_dividend_receivable
+        )
+        or not math.isclose(
+            float(metrics["buy_and_hold_dividend_receivable_cny"]),
+            comparator_dividend_receivable,
+        )
         or open_trades not in {0, 1}
         or open_trades != int(action["state_before_next"])
         or closed_trades + open_trades != len(trades)
@@ -775,6 +821,10 @@ def build_canonical_production_report(
         "reporting_account": {
             "initial_capital_cny": REPORT_INITIAL_CAPITAL_CNY,
             "quantity_rule": "integer units purchased with available cash at each BUY",
+            "dividend_recognition": (
+                "gross pre-tax ex-date receivables increase equity but never available cash; "
+                "unknown payment dates never finance purchases"
+            ),
             "lot_size": 1,
             "actual_invested_capital": False,
         },
@@ -992,7 +1042,14 @@ def build_canonical_production_report(
             _report_field("stamp_tax_cny", 0.0),
             _report_field("slippage_cny", event_cost if spec.completed_roundtrip_cost_per_unit else 0.0),
             _report_field("total_cost_cny", event_cost, display=f"{event_cost:.12g} CNY; {spec.cost_description}"),
-            _report_field("gross_dividends_cny", metrics["gross_dividends_cny"]),
+            _report_field(
+                "gross_dividends_cny",
+                metrics["gross_dividends_cny"],
+                display=(
+                    f"{metrics['gross_dividends_cny']:.12g} CNY gross pre-tax ex-date "
+                    "receivable accrual; payment dates unavailable and no accrual is spendable cash"
+                ),
+            ),
             _unavailable_report_field("dividend_tax_cny", "Dividend tax is not separately evaluated"),
             _unavailable_report_field("outstanding_tax_cny", "Outstanding tax is not separately evaluated"),
         ]},
@@ -1045,6 +1102,8 @@ def build_canonical_production_report(
             "equity": row["equity"],
             "holdings": int(row.get("holdings", 0)),
             "position_after": 0 if row["position"] is None else row["position"],
+            "available_cash_cny": row["available_cash_cny"],
+            "dividend_receivable_cny": row["dividend_receivable_cny"],
         }
         for row in price_equity
     ]
@@ -1055,6 +1114,13 @@ def build_canonical_production_report(
         "slippage_cny": event_cost if spec.completed_roundtrip_cost_per_unit else 0.0,
         "total_cost_cny": event_cost,
     }
+    daily_replay_bytes = _csv_bytes(
+        daily_rows,
+        (
+            "Date", "price", "close", "equity", "holdings", "position_after",
+            "available_cash_cny", "dividend_receivable_cny",
+        ),
+    )
     report_html = render_report_document(checked)
     semantic_subject_digest = hashlib.sha256(
         b"quantresearch-production-semantic-attestation-subject/v1\0"
@@ -1067,6 +1133,7 @@ def build_canonical_production_report(
                 "holding_spans": holdings,
                 "corporate_action_ledger": corporate_actions,
                 "performance_summary": configuration["performance_summary"],
+                "daily_replay_sha256": hashlib.sha256(daily_replay_bytes).hexdigest(),
             }
         )
     ).hexdigest()
@@ -1089,7 +1156,7 @@ def build_canonical_production_report(
             "action_matches_frozen_evaluation",
             "next_open_event_timing",
             "transaction_cost_accounting",
-            "corporate_action_quantity_and_gross_cash_accounting",
+            "corporate_action_quantity_and_receivable_accounting",
             "trade_and_open_mark_pnl",
             "equity_return_drawdown_exposure_and_comparator",
         ],
@@ -1127,10 +1194,7 @@ def build_canonical_production_report(
             }
         ),
         "cost_breakdown.json": canonical_json_bytes(cost_breakdown),
-        "daily_replay.csv": _csv_bytes(
-            daily_rows,
-            ("Date", "price", "close", "equity", "holdings", "position_after"),
-        ),
+        "daily_replay.csv": daily_replay_bytes,
         "events.csv": _csv_bytes(
             canonical_events,
             (

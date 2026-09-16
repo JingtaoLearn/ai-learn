@@ -10,7 +10,6 @@ import os
 import re
 import stat
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +45,6 @@ TIMEZONE = ZoneInfo("Asia/Shanghai")
 DELIVERY = "feishu:oc_33bdb4845220ee3788fe50c50cf333ed"
 DEFAULT_BASE_URL = "https://127.0.0.1:8443"
 REPORT_BASE_URL = "https://share.ai.jingtao.fun"
-REPORT_ROOT = Path("/data_static/share-hosting")
 REPORT_OPERATOR = {
     "api_version": 2,
     "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
@@ -81,7 +79,7 @@ def _audit_prompt(
         f"PRODUCTION AUDIT COPY — execute only {script}. "
         f"job_id={job_id}; model_id={model_id}; schedule={schedule} Asia/Shanghai; "
         "transport=loopback HTTPS mTLS via host-managed tunnel; "
-        "behavior=trigger, verify immutable result/files, publish and read back the stable report, "
+        "behavior=trigger, verify immutable result/files and read back the zhlearn-owned stable report, "
         "verify canonical_attempt_report@1.0.0 identity and bound ReportDocument evidence, "
         "render from the verified source "
         "notification, then emit notification only; "
@@ -476,7 +474,10 @@ def _verify_report_document_sources(
     daily = _csv_evidence(
         evidence,
         "daily_replay.csv",
-        ("Date", "price", "close", "equity", "holdings", "position_after"),
+        (
+            "Date", "price", "close", "equity", "holdings", "position_after",
+            "available_cash_cny", "dividend_receivable_cny",
+        ),
     )
     event_rows = _csv_evidence(
         evidence,
@@ -513,7 +514,8 @@ def _verify_report_document_sources(
         "initial_capital_cny", "final_equity_cny", "net_profit_cny", "cumulative_return",
         "max_drawdown", "exposure", "buy_and_hold_return", "gross_dividends_cny",
         "period_start", "period_end", "net_return", "current_position", "closed_trades",
-        "open_trades",
+        "open_trades", "available_cash_cny", "dividend_receivable_cny",
+        "buy_and_hold_dividend_receivable_cny",
     }
     if (
         not isinstance(parameters, dict)
@@ -794,6 +796,7 @@ def _verify_report_document_sources(
             "holding_spans": holding_spans,
             "corporate_action_ledger": corporate_actions,
             "performance_summary": parameters["performance_summary"],
+            "daily_replay_sha256": hashlib.sha256(evidence["daily_replay.csv"]).hexdigest(),
         })
     ).hexdigest()
     expected_attestation = {
@@ -810,7 +813,7 @@ def _verify_report_document_sources(
         },
         "checks": [
             "action_matches_frozen_evaluation", "next_open_event_timing",
-            "transaction_cost_accounting", "corporate_action_quantity_and_gross_cash_accounting",
+            "transaction_cost_accounting", "corporate_action_quantity_and_receivable_accounting",
             "trade_and_open_mark_pnl", "equity_return_drawdown_exposure_and_comparator",
         ],
     }
@@ -879,6 +882,10 @@ def _verify_report_document_sources(
         ),
         "holdings": compact_holdings_display(holdings),
         "total_cost_cny": f"{float(costs['total_cost_cny']):.12g} CNY; {parameters['cost_description']}",
+        "gross_dividends_cny": (
+            f"{float(metrics['gross_dividends_cny']):.12g} CNY gross pre-tax ex-date "
+            "receivable accrual; payment dates unavailable and no accrual is spendable cash"
+        ),
         "integrity_not_qualification": "; ".join(details),
         "qualification_not_deployment": details[-2],
         "no_recomputation": details[-1],
@@ -1019,141 +1026,11 @@ def _https_readback(url: str) -> bytes:
     return payload
 
 
-_PUBLICATION_MODE = 0o644
-_MAX_PUBLICATION_BYTES = 16 * 1024 * 1024
-
-
-def _publication_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
-    return metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns, metadata.st_size
-
-
-def _validate_publication_metadata(metadata: os.stat_result) -> None:
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_nlink != 1
-        or stat.S_IMODE(metadata.st_mode) != _PUBLICATION_MODE
-    ):
-        raise ProductionClientError("existing report publication target is unsafe")
-    if metadata.st_uid != os.geteuid():
-        raise ProductionClientError("existing report publication target owner is unsafe")
-    if metadata.st_size > _MAX_PUBLICATION_BYTES:
-        raise ProductionClientError("existing report publication target exceeds size limit")
-
-
-def _publication_metadata(path: Path) -> os.stat_result | None:
-    try:
-        metadata = os.lstat(path)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ProductionClientError("report publication target is unsafe") from exc
-    _validate_publication_metadata(metadata)
-    return metadata
-
-
-def _read_existing_publication(path: Path) -> tuple[bytes, tuple[int, int, int, int]] | None:
-    before = _publication_metadata(path)
-    if before is None:
-        return None
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise ProductionClientError("report publication target is unsafe") from exc
-    try:
-        opened = os.fstat(descriptor)
-        _validate_publication_metadata(opened)
-        if _publication_identity(opened) != _publication_identity(before):
-            raise ProductionClientError("report publication target changed during nofollow read")
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            payload = stream.read(_MAX_PUBLICATION_BYTES + 1)
-        if len(payload) > _MAX_PUBLICATION_BYTES:
-            raise ProductionClientError("existing report publication target exceeds size limit")
-    finally:
-        os.close(descriptor)
-    after = _publication_metadata(path)
-    if after is None or _publication_identity(after) != _publication_identity(opened):
-        raise ProductionClientError("report publication target changed during nofollow read")
-    return payload, _publication_identity(opened)
-
-
-def _atomic_write(
-    path: Path,
-    payload: bytes,
-    *,
-    expected_target: tuple[int, int, int, int] | None,
-) -> tuple[int, int, int, int]:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        directory_descriptor = os.open(
-            path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-    except OSError:
-        os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-        raise
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.fchmod(descriptor, _PUBLICATION_MODE)
-        staged = os.fstat(descriptor)
-        _validate_publication_metadata(staged)
-        staged_path = os.stat(
-            temporary.name,
-            dir_fd=directory_descriptor,
-            follow_symlinks=False,
-        )
-        if _publication_identity(staged_path) != _publication_identity(staged):
-            raise ProductionClientError("report publication staging target changed")
-        try:
-            current = os.stat(
-                path.name,
-                dir_fd=directory_descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            current = None
-        if current is not None:
-            _validate_publication_metadata(current)
-        current_identity = _publication_identity(current) if current is not None else None
-        if current_identity != expected_target:
-            raise ProductionClientError("report publication target changed before replacement")
-        os.replace(
-            temporary.name,
-            path.name,
-            src_dir_fd=directory_descriptor,
-            dst_dir_fd=directory_descriptor,
-        )
-        return _publication_identity(os.fstat(descriptor))
-    finally:
-        os.close(descriptor)
-        try:
-            os.unlink(temporary.name, dir_fd=directory_descriptor)
-        except FileNotFoundError:
-            pass
-        os.close(directory_descriptor)
-
-
-def _unlink_publication(path: Path, expected_target: tuple[int, int, int, int]) -> None:
-    current = _publication_metadata(path)
-    if current is None or _publication_identity(current) != expected_target:
-        raise ProductionClientError("report publication target changed before rollback")
-    path.unlink()
-
-
-def publish_report(
+def verify_stable_report(
     job: ScheduledJob,
     report: bytes,
     action: Mapping[str, Any],
     *,
-    report_root: Path = REPORT_ROOT,
     readback: Callable[[str], bytes] = _https_readback,
 ) -> str:
     if not report or len(report) > 16 * 1024 * 1024 or b"<html" not in report[:4096].lower():
@@ -1162,29 +1039,9 @@ def publish_report(
     action_name = str(action.get("action", ""))
     if market_date.encode() not in report or action_name.encode() not in report:
         raise ProductionClientError("report market date or action differs from the verified action")
-    root_metadata = os.stat(report_root, follow_symlinks=False)
-    if (
-        not stat.S_ISDIR(root_metadata.st_mode)
-        or root_metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(root_metadata.st_mode) & 0o022
-    ):
-        raise ProductionClientError("report publication root is unsafe")
-    target = report_root / job.report_filename
-    prior = _read_existing_publication(target)
-    prior_payload = prior[0] if prior is not None else None
-    prior_identity = prior[1] if prior is not None else None
     url = f"{REPORT_BASE_URL}/{job.report_filename}"
-    published_identity = _atomic_write(target, report, expected_target=prior_identity)
-    try:
-        published = _read_existing_publication(target)
-        if published is None or published[0] != report or readback(url) != report:
-            raise ProductionClientError("published report read-back does not verify")
-    except Exception:
-        if prior_payload is None:
-            _unlink_publication(target, published_identity)
-        else:
-            _atomic_write(target, prior_payload, expected_target=published_identity)
-        raise
+    if readback(url) != report:
+        raise ProductionClientError("stable report read-back does not verify")
     return url
 
 
@@ -1195,7 +1052,9 @@ def run_request(
     tls: ClientTLS,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     client = client_factory(transport_factory(tls))
     manifest = client.submit_and_wait(request)
@@ -1265,7 +1124,7 @@ def run_request(
         job, action, comparison_url
     ):
         raise ProductionClientError("report action and source notification do not agree")
-    report_url = publisher(job, report, action)
+    report_url = stable_report_verifier(job, report, action)
     return render_notification(job, action, report_url)
 
 
@@ -1277,7 +1136,9 @@ def run_job(
     jobs_path: Path,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     validate_schedule_record(job, jobs_path)
     request = ProductionRequest.build(
@@ -1291,7 +1152,7 @@ def run_job(
         tls=tls,
         transport_factory=transport_factory,
         client_factory=client_factory,
-        publisher=publisher,
+        stable_report_verifier=stable_report_verifier,
     )
 
 
@@ -1303,7 +1164,9 @@ def run_validation(
     tls: ClientTLS,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     request = ProductionRequest.build_validation(
         job_id=job.job_id,
@@ -1317,7 +1180,7 @@ def run_validation(
         tls=tls,
         transport_factory=transport_factory,
         client_factory=client_factory,
-        publisher=publisher,
+        stable_report_verifier=stable_report_verifier,
     )
 
 

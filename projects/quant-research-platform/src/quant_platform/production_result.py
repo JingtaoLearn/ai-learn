@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -44,6 +46,10 @@ CLIENT_RESULT_FILES = (
     | FORMAL_RESULT_FILES
 )
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024
+STABLE_REPORT_JOB_IDS = {
+    "f642b386-74c0-4e9f-92e6-563e7c6a5d69": "1cd5557264db",
+    "8991e9a8-1caa-41f5-b76b-6368259db5b4": "297c11cad0dc",
+}
 
 
 def _fsync_directory(path: Path) -> None:
@@ -120,12 +126,13 @@ def _strict_json(payload: bytes, label: str) -> dict[str, Any]:
 
 
 class ProductionResultStore:
-    """Create-once result module plus atomic private fixture report publication."""
+    """Create-once result module with stable pointers to immutable reports."""
 
     def __init__(self, root: Path | str):
         self.root = Path(root).absolute()
         self.results_root = self.root / "results"
-        self.publication_root = self.root / "publication"
+        self.stable_database_path = self.root / "stable-reports.sqlite3"
+        self._prepare_lock = threading.Lock()
         self._postgres = None
         if os.environ.get("QUANT_POSTGRES_PASSWORD_FILE"):
             from .full_persistence import FullPostgresPersistence
@@ -133,13 +140,149 @@ class ProductionResultStore:
             self._postgres = FullPostgresPersistence.from_environment()
 
     def _prepare(self) -> None:
-        self.results_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        (self.publication_root / "staging").mkdir(parents=True, exist_ok=True, mode=0o700)
-        (self.publication_root / "current").mkdir(parents=True, exist_ok=True, mode=0o755)
-        (self.publication_root / "backups").mkdir(parents=True, exist_ok=True, mode=0o700)
-        for path in (self.root, self.results_root, self.publication_root):
-            if path.is_symlink() or not path.is_dir():
-                raise ProductionResultError("result root is unsafe")
+        with self._prepare_lock:
+            self.results_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            for path in (self.root, self.results_root):
+                if path.is_symlink() or not path.is_dir():
+                    raise ProductionResultError("result root is unsafe")
+            connection = sqlite3.connect(self.stable_database_path, timeout=30)
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA synchronous = FULL")
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS stable_production_reports (
+                        report_uuid TEXT PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        result_id TEXT NOT NULL,
+                        report_sha256 TEXT NOT NULL,
+                        report_size INTEGER NOT NULL,
+                        generated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+    @staticmethod
+    def _stable_pointer(manifest: Mapping[str, Any]) -> dict[str, Any]:
+        filename = manifest.get("report_filename")
+        report_uuid = filename.removesuffix(".html") if isinstance(filename, str) else ""
+        expected_job_id = STABLE_REPORT_JOB_IDS.get(report_uuid)
+        files = manifest.get("files")
+        report = files.get("report.html") if isinstance(files, Mapping) else None
+        if (
+            filename != f"{report_uuid}.html"
+            or expected_job_id is None
+            or manifest.get("job_id") != expected_job_id
+            or not isinstance(report, Mapping)
+            or manifest.get("report_sha256") != report.get("sha256")
+            or not isinstance(report.get("size"), int)
+            or not isinstance(manifest.get("generated_at"), str)
+            or not manifest["generated_at"].endswith("Z")
+        ):
+            raise ProductionResultError("stable report binding is invalid")
+        return {
+            "report_uuid": report_uuid,
+            "job_id": expected_job_id,
+            "result_id": manifest.get("result_id"),
+            "report_sha256": report["sha256"],
+            "report_size": report["size"],
+            "generated_at": manifest.get("generated_at"),
+        }
+
+    def _advance_stable_report(self, manifest: Mapping[str, Any]) -> None:
+        pointer = self._stable_pointer(manifest)
+        connection = sqlite3.connect(self.stable_database_path, timeout=30, isolation_level=None)
+        try:
+            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO stable_production_reports(
+                    report_uuid, job_id, result_id, report_sha256, report_size, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_uuid) DO UPDATE SET
+                    job_id=excluded.job_id,
+                    result_id=excluded.result_id,
+                    report_sha256=excluded.report_sha256,
+                    report_size=excluded.report_size,
+                    generated_at=excluded.generated_at
+                WHERE excluded.generated_at > stable_production_reports.generated_at
+                   OR (excluded.generated_at = stable_production_reports.generated_at
+                       AND excluded.result_id > stable_production_reports.result_id)
+                """,
+                tuple(pointer.values()),
+            )
+            stored = connection.execute(
+                "SELECT * FROM stable_production_reports WHERE report_uuid = ?",
+                (pointer["report_uuid"],),
+            ).fetchone()
+            selected = None if stored is None else dict(
+                zip(pointer, stored, strict=True)
+            )
+            if selected is None or (
+                selected["generated_at"], selected["result_id"]
+            ) < (pointer["generated_at"], pointer["result_id"]):
+                raise ProductionResultError("stable report pointer read-back differs")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def stable_report(self, report_uuid: str) -> dict[str, Any]:
+        expected_job_id = STABLE_REPORT_JOB_IDS.get(report_uuid)
+        if expected_job_id is None:
+            raise ProductionResultError("stable report is unknown")
+        if self._postgres is not None:
+            try:
+                value = self._postgres.stable_production_report(report_uuid)
+            except (ValueError, RuntimeError) as exc:
+                raise ProductionResultError(str(exc)) from exc
+            if value.get("job_id") != expected_job_id:
+                raise ProductionResultError("stable report job binding is invalid")
+            return value
+        self._prepare()
+        connection = sqlite3.connect(self.stable_database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            row = connection.execute(
+                "SELECT * FROM stable_production_reports WHERE report_uuid = ?",
+                (report_uuid,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ProductionResultError("stable report is unknown")
+        pointer = dict(row)
+        manifest = self.verify(pointer["result_id"])
+        expected = self._stable_pointer(manifest)
+        if pointer != expected or pointer["job_id"] != expected_job_id:
+            raise ProductionResultError("stable report pointer binding is invalid")
+        payload = self.read_client_file(pointer["result_id"], "report.html")
+        if {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        } != {
+            "sha256": pointer["report_sha256"],
+            "size": pointer["report_size"],
+        }:
+            raise ProductionResultError("stable report member identity mismatch")
+        return {**pointer, "html": payload}
+
+    def complete_stable_report(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
+        expected = self._stable_pointer(manifest)
+        if self._postgres is not None:
+            current = self._postgres.advance_stable_production_report(manifest)
+        else:
+            self._advance_stable_report(manifest)
+            current = self.stable_report(expected["report_uuid"])
+        if current["generated_at"] < expected["generated_at"]:
+            raise ProductionResultError("stable report pointer regressed")
+        return current
 
     @staticmethod
     def _artifact_payloads(
@@ -289,53 +432,6 @@ class ProductionResultStore:
             raise ProductionResultError("result member identity changed during read-back")
         return payload
 
-    def _publish_report(self, computation: JobComputation) -> None:
-        current = self.publication_root / "current" / f"{computation.report_uuid}.html"
-        staging = self.publication_root / "staging" / f".{computation.report_uuid}.{os.getpid()}.tmp"
-        previous = current.read_bytes() if current.exists() else None
-        if current.exists() and (current.is_symlink() or not current.is_file()):
-            raise ProductionResultError("current report path is unsafe")
-        try:
-            with staging.open("xb") as stream:
-                stream.write(computation.report_html)
-                stream.flush()
-                os.fsync(stream.fileno())
-            staging.chmod(0o444)
-            if read_immutable(staging) != computation.report_html:
-                raise ProductionResultError("staged report read-back differs")
-            if previous is not None:
-                digest = hashlib.sha256(previous).hexdigest()
-                backup = self.publication_root / "backups" / f"{computation.report_uuid}.{digest}.html"
-                if backup.exists():
-                    if read_immutable(backup) != previous:
-                        raise ProductionResultError("prior report backup conflicts")
-                else:
-                    with backup.open("xb") as stream:
-                        stream.write(previous)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    backup.chmod(0o444)
-            os.replace(staging, current)
-            _fsync_directory(current.parent)
-            if read_immutable(current) != computation.report_html:
-                raise ProductionResultError("promoted report read-back differs")
-        except BaseException as exc:
-            staging.unlink(missing_ok=True)
-            if previous is None:
-                current.unlink(missing_ok=True)
-            elif not current.exists() or current.read_bytes() != previous:
-                temporary = current.with_name(f".{current.name}.rollback.{os.getpid()}")
-                with temporary.open("xb") as stream:
-                    stream.write(previous)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.chmod(0o444)
-                os.replace(temporary, current)
-                _fsync_directory(current.parent)
-                if read_immutable(current) != previous:
-                    raise ProductionResultError("prior report rollback failed") from exc
-            raise
-
     def publish(
         self, row: Mapping[str, Any], computation: JobComputation | FormalComputation
     ) -> dict[str, Any]:
@@ -372,8 +468,6 @@ class ProductionResultStore:
                     staging.chmod(0o700)
                     shutil.rmtree(staging)
         verified = self.verify(result_id)
-        if isinstance(computation, JobComputation):
-            self._publish_report(computation)
         if self.verify(result_id) != verified:
-            raise ProductionResultError("result changed during report publication")
+            raise ProductionResultError("result changed during stable pointer advancement")
         return verified
