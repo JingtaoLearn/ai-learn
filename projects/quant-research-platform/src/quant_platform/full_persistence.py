@@ -28,6 +28,7 @@ from .postgres_persistence import (
     PostgresOperatorPersistence,
     migrate_schema,
 )
+from .production_result import ProductionResultError, verify_production_result
 from .schemas import canonical_json_bytes
 
 FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v5"
@@ -2347,11 +2348,11 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             raise ValueError("unknown production result")
         members = self.read_artifact_set(row["artifact_set_id"].strip())
         manifest = row["manifest"]
-        for name, descriptor in manifest["files"].items():
-            payload = members.get(name)
-            if payload is None or descriptor != {"sha256": _sha256_bytes(payload), "size": len(payload)}:
-                raise PersistenceUnavailableError("production result member verification failed")
-        return {"manifest": manifest, "members": members}
+        try:
+            verified = verify_production_result(result_id, manifest, members)
+        except (KeyError, TypeError, ProductionResultError) as exc:
+            raise PersistenceUnavailableError("production result verification failed") from exc
+        return {"manifest": verified, "members": members}
 
     @staticmethod
     def _production_report_pointer(manifest: Mapping[str, Any]) -> dict[str, Any]:

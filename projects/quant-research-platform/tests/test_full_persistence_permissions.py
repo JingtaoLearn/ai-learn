@@ -1,11 +1,18 @@
 import hashlib
+import json
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from quant_platform import full_persistence
+from quant_platform.production_bocom import BocomProductionJob
+from quant_platform.production_result import ProductionResultStore
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "production"
 
 
 class _Cursor:
@@ -56,6 +63,35 @@ class _Config:
         return self
 
 
+def _production_result() -> tuple[dict[str, Any], dict[str, bytes]]:
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    raw = (FIXTURES / "bocom-yahoo-chart.json").read_bytes()
+    computation = job.compute(
+        raw,
+        "fixture://bocom-yahoo-chart.json",
+        datetime(2026, 3, 9, 0, 40, tzinfo=UTC),
+    )
+    members = ProductionResultStore._artifact_payloads(computation)
+    core = ProductionResultStore._manifest_core(
+        {
+            "request_id": "request",
+            "production_run_id": "run",
+            "production_release_id": "release",
+        },
+        computation,
+        members,
+    )
+    result_id = hashlib.sha256(full_persistence.canonical_json_bytes(core)).hexdigest()
+    return core | {"result_id": result_id}, members
+
+
+def _replace_result_id(manifest: dict[str, Any]) -> None:
+    core = {key: value for key, value in manifest.items() if key != "result_id"}
+    manifest["result_id"] = hashlib.sha256(
+        full_persistence.canonical_json_bytes(core)
+    ).hexdigest()
+
+
 def test_schema_installer_keeps_replay_tokens_purgeable_but_not_updatable(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -94,6 +130,113 @@ def test_schema_has_one_mutable_stable_pointer_to_immutable_production_results()
     )
     assert ("qr", "production_results") in full_persistence.IMMUTABLE_TABLES
     assert ("qr", "production_report_current") not in full_persistence.IMMUTABLE_TABLES
+
+
+def test_postgres_production_result_accepts_complete_verified_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, members = _production_result()
+    connection = _Connection(
+        {"artifact_set_id": "artifact-set", "manifest": manifest}
+    )
+    persistence = full_persistence.FullPostgresPersistence(
+        cast(Any, _Config(connection)), admit_schema=False
+    )
+    monkeypatch.setattr(persistence, "read_artifact_set", lambda _artifact_set_id: members)
+
+    assert persistence.production_result(manifest["result_id"]) == {
+        "manifest": manifest,
+        "members": members,
+    }
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "manifest-subset",
+        "manifest-extra",
+        "stored-result-id",
+        "automatic-ordering",
+        "semantic-attestation",
+        "semantic-subject",
+        "model-identity",
+        "production-manifest",
+        "report-operator",
+        "member",
+    ],
+)
+def test_postgres_production_result_rejects_incomplete_or_tampered_identity(
+    monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    manifest, members = _production_result()
+    requested_result_id = manifest["result_id"]
+    if tamper == "manifest-subset":
+        manifest["files"].pop("notification.txt")
+        members.pop("notification.txt")
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "manifest-extra":
+        payload = b"unexpected"
+        manifest["files"]["unexpected.bin"] = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+        members["unexpected.bin"] = payload
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "stored-result-id":
+        requested_result_id = "f" * 64
+    elif tamper == "automatic-ordering":
+        manifest["automatic_ordering"] = True
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "semantic-attestation":
+        attestation = json.loads(members["semantic-attestation.json"])
+        attestation["status"] = "REJECTED"
+        payload = full_persistence.canonical_json_bytes(attestation)
+        members["semantic-attestation.json"] = payload
+        manifest["files"]["semantic-attestation.json"] = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "semantic-subject":
+        attestation = json.loads(members["semantic-attestation.json"])
+        attestation["subject_digest"] = "f" * 64
+        payload = full_persistence.canonical_json_bytes(attestation)
+        members["semantic-attestation.json"] = payload
+        manifest["files"]["semantic-attestation.json"] = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "model-identity":
+        manifest["model_id"] = "wrong-model"
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "production-manifest":
+        manifest["production_manifest_sha256"] = "f" * 64
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    elif tamper == "report-operator":
+        manifest["report_operator"] = dict(manifest["report_operator"])
+        manifest["report_operator"]["content_digest"] = "f" * 64
+        _replace_result_id(manifest)
+        requested_result_id = manifest["result_id"]
+    else:
+        members["report.html"] += b"tampered"
+    connection = _Connection(
+        {"artifact_set_id": "artifact-set", "manifest": manifest}
+    )
+    persistence = full_persistence.FullPostgresPersistence(
+        cast(Any, _Config(connection)), admit_schema=False
+    )
+    monkeypatch.setattr(persistence, "read_artifact_set", lambda _artifact_set_id: members)
+
+    with pytest.raises(full_persistence.PersistenceUnavailableError, match="verification"):
+        persistence.production_result(requested_result_id)
 
 
 def test_stable_production_report_rejects_pointer_manifest_or_member_mismatch(

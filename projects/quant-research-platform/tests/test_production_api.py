@@ -446,6 +446,62 @@ def test_crash_after_terminal_is_reconciled_from_durable_success_manifest(tmp_pa
     assert client.get(url).status_code == 200
 
 
+def test_tampered_crash_reconciliation_preserves_prior_stable_report(tmp_path) -> None:
+    current = [datetime(2026, 3, 9, 0, 40, tzinfo=UTC)]
+    armed = [False]
+
+    def crash(point: str) -> None:
+        if armed[0] and point == "after_terminal_before_stable_pointer":
+            armed[0] = False
+            raise SimulatedWorkerCrash(point)
+
+    store, results, service, _, worker, client = runtime(
+        tmp_path, crash=crash, clock=lambda: current[0]
+    )
+    first = request()
+    service.create_or_read(first.canonical_body, first.request_id)
+    assert worker.run_once() is not None
+    report_url = (
+        "/api/v1/production/stable-reports/"
+        "8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+    )
+    prior_response = client.get(report_url)
+    assert prior_response.status_code == 200
+    with sqlite3.connect(results.stable_database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        prior_pointer = dict(connection.execute("SELECT * FROM stable_production_reports").fetchone())
+
+    current[0] = datetime(2026, 3, 10, 0, 40, tzinfo=UTC)
+    second = ProductionRequest.build(
+        job_id="297c11cad0dc",
+        scheduled_for="2026-03-10T00:40:00Z",
+        production_manifest_sha256=MANIFEST,
+    )
+    second_row = service.create_or_read(second.canonical_body, second.request_id)
+    armed[0] = True
+    with pytest.raises(SimulatedWorkerCrash, match="after_terminal"):
+        worker.run_once()
+    newer = store.get_run(second_row[1]["production_run_id"])
+    assert newer is not None
+    report = results.results_root / newer["result_id"] / "report.html"
+    results.results_root.joinpath(newer["result_id"]).chmod(0o755)
+    report.chmod(0o644)
+    report.write_bytes(report.read_bytes() + b"tampered")
+    report.chmod(0o444)
+    results.results_root.joinpath(newer["result_id"]).chmod(0o555)
+
+    with pytest.raises(ProductionResultError, match="member identity"):
+        worker.run_once()
+
+    with sqlite3.connect(results.stable_database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        stored_pointer = dict(connection.execute("SELECT * FROM stable_production_reports").fetchone())
+    stable_response = client.get(report_url)
+    assert stored_pointer == prior_pointer
+    assert stable_response.status_code == 200
+    assert stable_response.content == prior_response.content
+
+
 def test_delayed_older_completion_cannot_replace_newer_stable_report(tmp_path) -> None:
     results = ProductionResultStore(tmp_path / "results")
     job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")

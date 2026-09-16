@@ -695,6 +695,51 @@ def test_stable_report_verification_only_reads_zhlearn_owned_url() -> None:
     assert observed == [url]
 
 
+def test_stable_https_readback_rejects_redirect() -> None:
+    url = "https://share.ai.jingtao.fun/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+
+    class RedirectingOpener:
+        def open(self, _request, *, timeout):
+            assert timeout == 20
+            raise schedule_client.HTTPError(
+                url,
+                302,
+                "Found",
+                {"Location": "https://example.invalid/report.html"},
+                None,
+            )
+
+    with pytest.raises(ProductionClientError, match="redirect"):
+        schedule_client._https_readback(url, opener=RedirectingOpener())
+
+
+def test_stable_https_readback_requires_exact_effective_url() -> None:
+    url = "https://share.ai.jingtao.fun/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return "https://example.invalid/8991e9a8-1caa-41f5-b76b-6368259db5b4.html"
+
+        def read(self, _maximum):
+            raise AssertionError("mismatched effective URL must fail before reading")
+
+    class Opener:
+        def open(self, _request, *, timeout):
+            assert timeout == 20
+            return Response()
+
+    with pytest.raises(ProductionClientError, match="effective URL"):
+        schedule_client._https_readback(url, opener=Opener())
+
+
 def test_daily_cash_and_receivable_evidence_is_attestation_bound() -> None:
     evidence = _gold_canonical_evidence()
     lines = evidence["daily_replay.csv"].decode().splitlines()
