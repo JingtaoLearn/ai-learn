@@ -2,6 +2,7 @@ import html
 import re
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -211,6 +212,9 @@ def test_study_json_routes_use_the_public_service(tmp_path: Path, monkeypatch):
     app, client = make_app(tmp_path)
     issued = authenticate(app, client)
     calls = []
+    app.state.lightweight_studies = SimpleNamespace(
+        list_summaries=lambda *, cursor=None: {"studies": [], "next_cursor": None}
+    )
 
     monkeypatch.setattr(
         app.state.studies,
@@ -475,6 +479,7 @@ def test_completed_study_replaces_controls_and_identifies_unranked_trials(
         phase="COMPLETED",
         control_status="ACTIVE",
         selection_outcome="CHAMPION_SELECTED",
+        holdout={**detail["holdout"], "access": "ACCESSED"},
     )
     incomplete_trial = deepcopy(detail["trials"][0])
     incomplete_trial.update(
@@ -1230,6 +1235,7 @@ def test_real_parameter_study_evidence_renders_through_the_public_web_seam(
     )
     runner = ResolvedAttemptExecutor(
         studies.catalog,
+        operator_persistence=studies.experiments.operator_persistence,
         output_root=studies.catalog.state_root / "study-runs",
         project_root=Path(__file__).parents[1],
         attempt_controller=experiments,

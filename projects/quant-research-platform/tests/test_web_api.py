@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from quant_platform.catalog import initialize_catalog
 from quant_platform.datasets import publish_snapshot, snapshot_status
 from quant_platform.resolved_runner import ResolvedAttemptExecutor
 from quant_platform.settings import Settings
@@ -21,6 +22,16 @@ from test_parameter_study import (
 
 
 def make_app(tmp_path: Path):
+    class OperatorPersistence:
+        def __init__(self, catalog):
+            self._catalog = catalog
+
+        def verify_schema(self):
+            return None
+
+        def __getattr__(self, name):
+            return getattr(self._catalog, name)
+
     allowlist = tmp_path / "allowed.txt"
     allowlist.write_text("researcher@example.com\n", encoding="utf-8")
     settings = Settings(
@@ -38,7 +49,14 @@ def make_app(tmp_path: Path):
         password_scrypt_hash=None,
         secure_cookies=True,
     ).validated()
-    app = create_app(settings, clock=lambda: NOW)
+    operator_persistence = OperatorPersistence(
+        initialize_catalog(settings.state_root, include_operators=True)
+    )
+    app = create_app(
+        settings,
+        clock=lambda: NOW,
+        operator_persistence=operator_persistence,
+    )
     client = TestClient(
         app,
         base_url="https://quant.ai.jingtao.fun",
@@ -242,7 +260,11 @@ def test_public_health_and_security_headers(tmp_path: Path):
 
     response = client.get("/health")
 
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "persistence": "postgresql",
+        "schema": "operator-v1",
+    }
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert response.headers["strict-transport-security"].startswith("max-age=")
     assert response.headers["x-content-type-options"] == "nosniff"
