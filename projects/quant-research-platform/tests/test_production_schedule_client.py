@@ -1079,3 +1079,37 @@ def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None
     )
     assert completed.returncode == 0, completed.stderr
     assert "Trigger one reviewed QuantResearch production job" in completed.stdout
+
+
+def test_historical_report_operator_identities_remain_exactly_verifiable() -> None:
+    historical = (
+        {
+            "api_version": 2,
+            "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+            "version": "1.0.0",
+        },
+        {
+            "api_version": 2,
+            "content_digest": "905ec81f4957680c605515c9e9aecc674fb152586823023854a99fe64d8e5f42",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "10d2bc268c30e570843e636ba3b8dd0cadd241f8593331f659b284ffd43c15b2",
+            "version": "1.1.0",
+        },
+    )
+    for identity in historical:
+        document_operator = {
+            "api_version": identity["api_version"],
+            "content_digest": identity["content_digest"],
+            "operator_id": identity["operator_id"],
+            "semantic_version": identity["version"],
+            "source": {"sha256": identity["source_sha256"]},
+        }
+
+        assert (
+            schedule_client._verify_report_operator_identity(
+                document_operator, {"report": identity}
+            )
+            == identity
+        )

@@ -55,6 +55,55 @@ REPORT_OPERATOR = {
     "source_sha256": _REPORT_OPERATOR_BUNDLE["source_sha256"],
     "version": _REPORT_OPERATOR_BUNDLE["manifest"]["semantic_version"],
 }
+_HISTORICAL_REPORT_OPERATOR_KEYS = frozenset(
+    {
+        (
+            2,
+            "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            "canonical_attempt_report",
+            "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+            "1.0.0",
+        ),
+        (
+            2,
+            "905ec81f4957680c605515c9e9aecc674fb152586823023854a99fe64d8e5f42",
+            "canonical_attempt_report",
+            "10d2bc268c30e570843e636ba3b8dd0cadd241f8593331f659b284ffd43c15b2",
+            "1.1.0",
+        ),
+    }
+)
+_VERIFIABLE_REPORT_OPERATOR_KEYS = _HISTORICAL_REPORT_OPERATOR_KEYS | {
+    (
+        REPORT_OPERATOR["api_version"],
+        REPORT_OPERATOR["content_digest"],
+        REPORT_OPERATOR["operator_id"],
+        REPORT_OPERATOR["source_sha256"],
+        REPORT_OPERATOR["version"],
+    )
+}
+
+
+def _verify_report_operator_identity(
+    document_operator: Mapping[str, Any], audit_operators: Any
+) -> dict[str, Any]:
+    source = document_operator.get("source")
+    identity = {
+        "api_version": document_operator.get("api_version"),
+        "content_digest": document_operator.get("content_digest"),
+        "operator_id": document_operator.get("operator_id"),
+        "source_sha256": source.get("sha256") if isinstance(source, Mapping) else None,
+        "version": document_operator.get("semantic_version"),
+    }
+    identity_key = tuple(identity.values())
+    if (
+        not isinstance(audit_operators, Mapping)
+        or set(audit_operators) != {"report"}
+        or audit_operators["report"] != identity
+        or identity_key not in _VERIFIABLE_REPORT_OPERATOR_KEYS
+    ):
+        raise ProductionClientError("report operator evidence differs from reviewed identity")
+    return identity
 
 
 @dataclass(frozen=True)
@@ -441,7 +490,7 @@ def _csv_evidence(
 
 def _verify_report_document_sources(
     document: Mapping[str, Any], evidence: Mapping[str, bytes]
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Verify immutable bindings and zhlearn's semantic attestation without finance."""
 
     try:
@@ -657,14 +706,7 @@ def _verify_report_document_sources(
         or descriptor["core_result_digest"] != audit["result_digest"]
     ):
         raise ProductionClientError("report run, attempt, experiment, or bundle binding differs")
-    if operator != {
-        "api_version": REPORT_OPERATOR["api_version"],
-        "operator_id": REPORT_OPERATOR["operator_id"],
-        "semantic_version": REPORT_OPERATOR["version"],
-        "source": {"sha256": REPORT_OPERATOR["source_sha256"]},
-        "content_digest": REPORT_OPERATOR["content_digest"],
-    } or audit["operators"] != {"report": REPORT_OPERATOR}:
-        raise ProductionClientError("report operator evidence differs from reviewed identity")
+    report_operator = _verify_report_operator_identity(operator, audit["operators"])
 
     price_equity = [
         {"date": row["Date"], "price": float(row["price"]), "close": float(row["close"]),
@@ -916,6 +958,7 @@ def _verify_report_document_sources(
         "experiment_id": experiment_id,
         "dataset_snapshot_id": snapshot_sha256,
         "provider_url": provider_url,
+        "report_operator": report_operator,
     }
 
 

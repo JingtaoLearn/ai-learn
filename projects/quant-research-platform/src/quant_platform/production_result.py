@@ -189,7 +189,6 @@ def verify_production_result(
         document = _strict_json(document_payload, "production report document")
         from .production_schedule_client import (
             JOBS,
-            REPORT_OPERATOR,
             ProductionClientError,
             _verify_report_document_sources,
         )
@@ -218,7 +217,7 @@ def verify_production_result(
             != core.get("production_manifest_sha256")
             or action.get("generated_at") != core.get("generated_at")
             or action.get("automatic_ordering") is not False
-            or core.get("report_operator") != REPORT_OPERATOR
+            or core.get("report_operator") != evidence_bindings["report_operator"]
             or not isinstance(provider_request, Mapping)
             or provider_request.get("method") != "GET"
             or provider_request.get("url") != evidence_bindings["provider_url"]
