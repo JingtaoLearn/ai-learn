@@ -7,9 +7,10 @@ from typing import Any, cast
 
 import pytest
 
+import quant_platform.production_schedule_client as schedule_client
 from quant_platform import full_persistence
 from quant_platform.production_bocom import BocomProductionJob
-from quant_platform.production_result import ProductionResultStore
+from quant_platform.production_result import ProductionResultStore, verify_production_result
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
@@ -165,6 +166,29 @@ def test_postgres_production_result_accepts_complete_verified_inventory(
         "manifest": manifest,
         "members": members,
     }
+
+
+def test_production_result_binds_to_exact_verified_historical_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, members = _production_result()
+    historical = {
+        "api_version": 2,
+        "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+        "operator_id": "canonical_attempt_report",
+        "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+        "version": "1.0.0",
+    }
+    manifest["report_operator"] = historical
+    _replace_result_id(manifest)
+    original = schedule_client._verify_report_document_sources
+
+    def verify_sources(document, evidence):
+        return {**original(document, evidence), "report_operator": historical}
+
+    monkeypatch.setattr(schedule_client, "_verify_report_document_sources", verify_sources)
+
+    assert verify_production_result(manifest["result_id"], manifest, members) == manifest
 
 
 @pytest.mark.parametrize(
