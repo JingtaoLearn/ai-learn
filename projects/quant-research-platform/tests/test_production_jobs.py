@@ -5,10 +5,13 @@ import json
 import os
 import shutil
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
+from referencing import Registry
+from referencing.jsonschema import DRAFT202012
 
 from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_gold import GoldProductionJob
@@ -19,19 +22,40 @@ from quant_platform.production_jobs import (
     ProductionInput,
     ProductionJobError,
     ProductionJobs,
+    ProductionReportSpec,
+    build_canonical_production_report,
     identity_canonical_bytes,
     staged_package_identity,
 )
 from quant_platform import production_jobs
+from quant_platform import production_bocom as production_bocom_module
+from quant_platform import production_gold as production_gold_module
 from quant_platform.production_package_authority import (
     FilesystemPackageIdentityAuthority,
     PackageIdentityAuthorityError,
 )
+from quant_platform.production_schedule_client import _verify_report_document_sources
 from quant_platform.production_worker import ProductionWorker
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
 SCHEDULED = datetime(2026, 3, 9, 0, 40, tzinfo=UTC)
+
+
+def assert_canonical_report_schema(document: dict) -> None:
+    schema_root = Path(__file__).parent / "fixtures" / "attempt_report"
+    schema = json.loads((schema_root / "REPORT-DOCUMENT.schema.json").read_text())
+    resources = []
+    for path in schema_root.glob("*.json"):
+        value = json.loads(path.read_text())
+        resources.append((f"quant-platform/report-document/{path.name}", value))
+        if isinstance(value.get("$id"), str):
+            resources.append((value["$id"], value))
+    registry = Registry().with_contents(resources, default_specification=DRAFT202012)
+    errors = list(Draft202012Validator(schema, registry=registry).iter_errors(document))
+    assert not errors, "\n".join(
+        f"{list(error.absolute_path)}: {error.message}" for error in errors
+    )
 
 
 def seal(directory: Path, payloads: dict[str, bytes]) -> str:
@@ -92,7 +116,313 @@ def test_synthetic_jobs_preserve_frozen_action_cost_and_route(job, raw_name, exp
     assert first.action["automatic_ordering"] is False
     assert first.report_uuid.encode() in first.report_html
     assert b"automatic_ordering=false" in first.report_html
+    assert first.report_operator["operator_id"] == "canonical_attempt_report"
+    assert first.report_operator["version"] == "1.0.0"
+    assert first.report_operator["api_version"] == 2
+    assert first.report_operator["source_sha256"] == (
+        "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8"
+    )
+    assert expected["latest_market_date"].encode() in first.report_html
+    assert expected["action"].encode() in first.report_html
+    assert b"Buy-and-hold is a period-dependent reference" in first.report_html
+    assert b"no terminal exit or exit cost is fabricated" in first.report_html
     assert len(first.experiment_id) == len(first.attempt_id) == 64
+
+
+def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
+    computations = [
+        BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        ),
+        GoldProductionJob(FIXTURES / "gold-model-manifest.json").compute(
+            (FIXTURES / "gold-au9999.tsv").read_bytes(),
+            "fixture://gold-au9999.tsv",
+            SCHEDULED,
+        ),
+    ]
+
+    assert computations[0].report_operator == computations[1].report_operator
+    assert all(b"Canonical Attempt Report" in item.report_html for item in computations)
+    assert all(b'data-action="canonical"' not in item.report_html for item in computations)
+
+
+@pytest.mark.parametrize(
+    ("module", "job", "raw_name"),
+    [
+        (
+            production_bocom_module,
+            BocomProductionJob(FIXTURES / "bocom-model-manifest.json"),
+            "bocom-yahoo-chart.json",
+        ),
+        (
+            production_gold_module,
+            GoldProductionJob(FIXTURES / "gold-model-manifest.json"),
+            "gold-au9999.tsv",
+        ),
+    ],
+)
+def test_both_daily_jobs_build_formally_canonical_report_documents(
+    monkeypatch: pytest.MonkeyPatch, module, job, raw_name: str
+) -> None:
+    captured = []
+    original = module.build_canonical_production_report
+
+    def capture(**kwargs):
+        report = original(**kwargs)
+        captured.append(report)
+        return report
+
+    monkeypatch.setattr(module, "build_canonical_production_report", capture)
+    job.compute((FIXTURES / raw_name).read_bytes(), f"fixture://{raw_name}", SCHEDULED)
+
+    assert len(captured) == 1
+    assert_canonical_report_schema(captured[0].document)
+    _verify_report_document_sources(captured[0].document, captured[0].evidence_files)
+
+
+def test_canonical_production_adapter_preserves_next_open_events_and_open_trade() -> None:
+    rows = [
+        {"date": datetime(2024, 1, 2, tzinfo=UTC).date(), "open": 100.0, "close": 101.0, "signal_close": 101.0},
+        {"date": datetime(2024, 1, 3, tzinfo=UTC).date(), "open": 105.0, "close": 106.0, "signal_close": 106.0},
+        {"date": datetime(2024, 1, 4, tzinfo=UTC).date(), "open": 110.0, "close": 111.0, "signal_close": 111.0},
+        {"date": datetime(2024, 1, 5, tzinfo=UTC).date(), "open": 120.0, "close": 121.0, "signal_close": 121.0},
+        {"date": datetime(2024, 1, 8, tzinfo=UTC).date(), "open": 130.0, "close": 132.0, "signal_close": 132.0},
+    ]
+    points = [
+        {"decision_date": rows[1]["date"], "is_next_session": False, "slope_pct": -1.0},
+        {"decision_date": rows[2]["date"], "is_next_session": False, "slope_pct": 1.0},
+        {"decision_date": rows[3]["date"], "is_next_session": False, "slope_pct": -1.0},
+        {"decision_date": rows[4]["date"], "is_next_session": False, "slope_pct": 1.0},
+        {
+            "decision_date": None,
+            "is_next_session": True,
+            "slope_pct": 0.0,
+            "raw_curve": 132.0,
+            "smooth_curve": 132.0,
+        },
+    ]
+    action = {
+        "action": "HOLD",
+        "reason": "signal did not cross the frozen sell line",
+        "state_before_next": 1,
+        "target_state": 1,
+        "generated_at": "2024-01-08T00:00:00Z",
+        "latest_market_date": "2024-01-08",
+        "next_session_date_estimate": "2024-01-09",
+        "job_id": "fixture-job",
+        "model_version": "fixture-model",
+        "production_manifest_sha256": "1" * 64,
+        "report_uuid": "fixture-report",
+        "automatic_ordering": False,
+    }
+    spec = ProductionReportSpec(
+        display_name="Fixture",
+        qualification="DESCRIPTIVE_ONLY",
+        execution_price_key="open",
+        mark_price_key="signal_close",
+        execution_price_basis="observed next-session raw open",
+        price_unit="CNY_PER_UNIT",
+        buy_cost_bps=8.0,
+        sell_cost_bps=13.0,
+        completed_roundtrip_cost_per_unit=0.0,
+        cost_description="buy 8 bps; sell 13 bps",
+        limitations=("fixture limitation",),
+    )
+    report = build_canonical_production_report(
+        rows=rows,
+        points=points,
+        config=production_jobs.TrendConfig(2, 1, 0.5, -0.5, rows[1]["date"]),
+        action=action,
+        experiment_id="2" * 64,
+        attempt_id="3" * 64,
+        provider_url="fixture://prices",
+        normalized_bytes=production_jobs.normalized_rows(rows).value,
+        spec=spec,
+    )
+    assert_canonical_report_schema(report.document)
+    assert frozenset(report.evidence_files) == production_jobs.REPORT_EVIDENCE_FILE_NAMES
+    assert report.evidence_files["report-document.json"] == canonical_json_bytes(
+        report.document
+    )
+    assert b"2024-01-03" in report.evidence_files["events.csv"]
+    assert json.loads(report.evidence_files["config.json"])["template"]["parameters"][
+        "current_action"
+    ] == action
+
+    fields = {
+        field["field_id"]: field
+        for section in report.document["sections"]
+        for field in section["fields"]
+    }
+    events = fields["events"]["raw"]
+    trades = fields["trades"]["raw"]
+    holdings = fields["holdings"]["raw"]
+    price_equity = fields["price_equity_rows"]["raw"]
+    configuration = fields["template_parameters"]["raw"]
+
+    assert [event["side"] for event in events] == ["BUY", "SELL", "BUY"]
+    first_event_detail = json.loads(events[0]["reason"])
+    assert first_event_detail == {
+        **first_event_detail,
+        "signal_date": "2024-01-03",
+        "action_date": "2024-01-04",
+        "position_before": 0,
+        "position_after": 1,
+    }
+    assert events[0]["price"] == 110.0
+    assert trades[0]["status"] == "CLOSED"
+    assert trades[0]["quantity"] > 1
+    assert trades[0]["gross_pnl_cny"] == pytest.approx(
+        10.0 * trades[0]["quantity"]
+    )
+    assert trades[0]["net_pnl_cny"] == pytest.approx(
+        trades[0]["gross_pnl_cny"]
+        - trades[0]["entry_cost_cny"]
+        - trades[0]["exit_cost_cny"]
+    )
+    assert trades[1]["status"] == "OPEN"
+    assert trades[1]["exit_date"] is None
+    assert trades[1]["exit_price"] is None
+    assert configuration["trade_ledger"][1]["mark_date"] == "2024-01-08"
+    assert configuration["trade_ledger"][1]["mark_price"] == 132.0
+    assert trades[1]["net_pnl_cny"] == pytest.approx(
+        trades[1]["gross_pnl_cny"] - trades[1]["entry_cost_cny"]
+    )
+    assert configuration["holding_spans"][-1]["status"] == "OPEN"
+    assert holdings[-1]["position_after"] == 1
+    assert len(price_equity) == len(rows)
+    assert price_equity[0]["date"] == "2024-01-02"
+    assert price_equity[0]["equity"] == 1_000_000.0
+    assert price_equity[3]["equity"] == pytest.approx(
+        1_000_000.0 + trades[0]["net_pnl_cny"]
+    )
+    assert price_equity[-1]["equity"] == pytest.approx(
+        price_equity[3]["equity"] + trades[1]["net_pnl_cny"]
+    )
+    assert fields["final_equity_cny"]["raw"] == pytest.approx(price_equity[-1]["equity"])
+    assert fields["net_profit_cny"]["raw"] == pytest.approx(
+        fields["final_equity_cny"]["raw"] - fields["initial_capital_cny"]["raw"]
+    )
+    assert fields["total_cost_cny"]["raw"] == pytest.approx(
+        sum(event["total_cost_cny"] for event in events)
+    )
+    assert fields["period_start"]["raw"] == "2024-01-03"
+    assert configuration["current_action"] == action
+    assert configuration["performance_summary"]["transitions"] == 3
+    assert configuration["performance_summary"]["turnover"] == 3
+    assert configuration["performance_summary"]["turnover_definition"] == (
+        "sum absolute long/cash position changes; each full transition equals 1.0"
+    )
+    assert configuration["performance_summary"]["exposure"] == pytest.approx(0.5)
+    assert "buy_and_hold_return" in configuration["performance_summary"]
+    assert fields["current_position"]["raw"] == "LONG"
+    assert fields["closed_trades"]["raw"] == 1
+    assert fields["open_trades"]["raw"] == 1
+    assert fields["operator_id"]["raw"] == "canonical_attempt_report"
+    assert fields["operator_version"]["raw"] == "1.0.0"
+    assert b"2024-01-03" in report.html and b"2024-01-04" in report.html
+    assert b"fixture limitation" in report.html
+
+    pending_sell_points = [*points[:-1], {**points[-1], "slope_pct": -1.0}]
+    pending_sell_action = {
+        **action,
+        "action": "SELL",
+        "reason": "signal crossed downward through the frozen sell line",
+        "target_state": 0,
+    }
+    pending_sell = build_canonical_production_report(
+        rows=rows,
+        points=pending_sell_points,
+        config=production_jobs.TrendConfig(2, 1, 0.5, -0.5, rows[1]["date"]),
+        action=pending_sell_action,
+        experiment_id="2" * 64,
+        attempt_id="3" * 64,
+        provider_url="fixture://prices",
+        normalized_bytes=production_jobs.normalized_rows(rows).value,
+        spec=spec,
+    )
+    pending_fields = {
+        field["field_id"]: field
+        for section in pending_sell.document["sections"]
+        for field in section["fields"]
+    }
+    assert len(pending_fields["events"]["raw"]) == 3
+    assert pending_fields["trades"]["raw"][-1]["status"] == "OPEN"
+    assert pending_fields["trades"]["raw"][-1]["exit_date"] is None
+    assert pending_fields["template_parameters"]["raw"]["current_action"]["action"] == "SELL"
+
+
+def test_canonical_production_report_keeps_a_complete_large_price_path() -> None:
+    start = datetime(2010, 1, 1, tzinfo=UTC).date()
+    rows = [
+        {
+            "date": start + timedelta(days=index),
+            "open": 100.0 + index / 100,
+            "close": 100.5 + index / 100,
+            "signal_close": 100.5 + index / 100,
+        }
+        for index in range(4_500)
+    ]
+    points = [
+        {"decision_date": rows[1]["date"], "is_next_session": False, "slope_pct": None},
+        {"decision_date": rows[2]["date"], "is_next_session": False, "slope_pct": 0.0},
+        {
+            "decision_date": None,
+            "is_next_session": True,
+            "slope_pct": 0.0,
+            "raw_curve": rows[-1]["signal_close"],
+            "smooth_curve": rows[-1]["signal_close"],
+        },
+    ]
+    action = {
+        "action": "WAIT",
+        "reason": "no upward crossing; remain flat",
+        "state_before_next": 0,
+        "target_state": 0,
+        "generated_at": "2026-01-01T00:00:00Z",
+        "latest_market_date": rows[-1]["date"].isoformat(),
+        "next_session_date_estimate": (rows[-1]["date"] + timedelta(days=1)).isoformat(),
+        "job_id": "large-fixture-job",
+        "model_version": "large-fixture-model",
+        "production_manifest_sha256": "4" * 64,
+        "report_uuid": "large-fixture-report",
+        "automatic_ordering": False,
+    }
+    report = build_canonical_production_report(
+        rows=rows,
+        points=points,
+        config=production_jobs.TrendConfig(2, 1, 0.5, -0.5, rows[1]["date"]),
+        action=action,
+        experiment_id="5" * 64,
+        attempt_id="6" * 64,
+        provider_url="fixture://large-prices",
+        normalized_bytes=production_jobs.normalized_rows(rows).value,
+        spec=ProductionReportSpec(
+            display_name="Large fixture",
+            qualification="DESCRIPTIVE_ONLY",
+            execution_price_key="open",
+            mark_price_key="signal_close",
+            execution_price_basis="observed next-session open",
+            price_unit="CNY_PER_UNIT",
+            buy_cost_bps=0.0,
+            sell_cost_bps=0.0,
+            completed_roundtrip_cost_per_unit=0.0,
+            cost_description="no fixture costs",
+            limitations=("large fixture limitation",),
+        ),
+    )
+    fields = {
+        field["field_id"]: field
+        for section in report.document["sections"]
+        for field in section["fields"]
+    }
+
+    assert len(fields["price_equity_rows"]["raw"]) == 4_500
+    assert rows[0]["date"].isoformat().encode() in report.html
+    assert rows[-1]["date"].isoformat().encode() in report.html
+    assert len(report.html) < 1_000_000
 
 
 @pytest.mark.parametrize(

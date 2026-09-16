@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .production_contract import SHA256, canonical_json_bytes
-from .production_jobs import FormalComputation, JobComputation
+from .production_jobs import REPORT_EVIDENCE_FILE_NAMES, FormalComputation, JobComputation
 
 
 class ProductionResultError(RuntimeError):
@@ -24,6 +24,7 @@ DAILY_RESULT_FILES = frozenset(
         "action.json",
         "report.html",
         "notification.txt",
+        *REPORT_EVIDENCE_FILE_NAMES,
     }
 )
 FORMAL_RESULT_FILES = frozenset(
@@ -37,7 +38,11 @@ RESULT_FILES_BY_SCHEMA = {
     "quantresearch-production-result/v1": DAILY_RESULT_FILES,
     "quantresearch-production-formal-result/v1": FORMAL_RESULT_FILES,
 }
-CLIENT_RESULT_FILES = frozenset({"notification.txt", "report.html"}) | FORMAL_RESULT_FILES
+CLIENT_RESULT_FILES = (
+    REPORT_EVIDENCE_FILE_NAMES
+    | frozenset({"notification.txt", "report.html"})
+    | FORMAL_RESULT_FILES
+)
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024
 
 
@@ -148,6 +153,7 @@ class ProductionResultStore:
             "provider-response.bin": computation.raw_bytes,
             "normalized-snapshot.json": computation.normalized_bytes,
             "action.json": canonical_json_bytes(computation.action),
+            **dict(computation.report_evidence),
             "report.html": computation.report_html,
             "notification.txt": computation.notification_bytes,
         }
@@ -201,6 +207,8 @@ class ProductionResultStore:
             "dataset_snapshot_id": hashlib.sha256(computation.normalized_bytes).hexdigest(),
             "action_sha256": hashlib.sha256(canonical_json_bytes(computation.action)).hexdigest(),
             "report_filename": f"{computation.report_uuid}.html",
+            "report_operator": dict(computation.report_operator),
+            "report_document_sha256": files["report-document.json"]["sha256"],
             "report_sha256": hashlib.sha256(computation.report_html).hexdigest(),
             "generated_at": computation.action["generated_at"],
         }

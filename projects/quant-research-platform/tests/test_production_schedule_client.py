@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 import quant_platform.production_schedule_client as schedule_client
-from quant_platform.production_client import ClientTLS, ProductionClientError, ProductionClientUnknown
+from quant_platform.production_client import (
+    REPORT_EVIDENCE_FILE_NAMES,
+    ClientTLS,
+    ProductionClientError,
+    ProductionClientUnknown,
+)
 from quant_platform.production_schedule_client import (
     DELIVERY,
     JOBS,
@@ -67,27 +72,68 @@ class FakeClient:
         self.requests.append(request)
         self.job = JOBS[request.job_id]
         payload = b"verified production notification"
+        action = fake_action(self.job)
+        self.evidence = fake_report_evidence(self.job)
+        self.report_document = self.evidence["report-document.json"]
+        files = {
+            name: {"sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
+            for name, value in self.evidence.items()
+        }
+        files["notification.txt"] = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
         return {
             "schema": "quantresearch-production-result/v1",
             "job_id": self.job.job_id,
             "model_id": self.job.model_id,
             "production_manifest_sha256": self.job.production_manifest_sha256,
             "report_filename": self.job.report_filename,
-            "automatic_ordering": False,
-            "result_id": "a" * 64,
-            "files": {
-                "notification.txt": {
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                    "size": len(payload),
-                }
+            "report_operator": {
+                "api_version": 2,
+                "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+                "operator_id": "canonical_attempt_report",
+                "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+                "version": "1.0.0",
             },
+            "report_document_sha256": files["report-document.json"]["sha256"],
+            "automatic_ordering": False,
+            "action_sha256": hashlib.sha256(
+                json.dumps(
+                    action,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest(),
+            "result_id": "a" * 64,
+            "files": files,
         }
 
     def fetch_verified_file(self, _manifest, name):
+        if name in REPORT_EVIDENCE_FILE_NAMES:
+            return self.evidence[name]
         if name == "report.html":
             action = fake_action(self.job)
-            encoded = html.escape(json.dumps(action))
-            return f'<html><pre data-action="canonical">{encoded}</pre></html>'.encode()
+            configuration = html.escape(
+                json.dumps({"current_action": action}, sort_keys=True, separators=(",", ":"))
+            )
+            fields = {
+                "operator id": "canonical_attempt_report",
+                "operator version": "1.0.0",
+                "operator source sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+                "operator content digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            }
+            rows = [
+                '<tr><th scope="row">template parameters</th><td><span>AVAILABLE</span><br>'
+                f"<code>{configuration}</code></td></tr>"
+            ]
+            rows.extend(
+                '<tr><th scope="row">'
+                f"{field}</th><td><span>AVAILABLE</span><br><code>{value}</code></td></tr>"
+                for field, value in fields.items()
+            )
+            return ("<html><table>" + "".join(rows) + "</table></html>").encode()
         assert name == "notification.txt"
         return fake_source_notification(self.job)
 
@@ -130,6 +176,135 @@ def fake_action(job):
             "buy_threshold_equivalent_raw_close": 7.4,
             "sell_threshold_equivalent_raw_close": 6.8,
         },
+    }
+
+
+def fake_report_document(job):
+    action = fake_action(job)
+    raw_fields = {
+        "template_parameters": (
+            {"current_action": action}, "bundle/config.json", "/template/parameters"
+        ),
+        "operator_id": ("canonical_attempt_report", "operator-manifest", "/operator_id"),
+        "operator_version": ("1.0.0", "operator-manifest", "/semantic_version"),
+        "operator_source_sha256": (
+            "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+            "operator-manifest",
+            "/source/sha256",
+        ),
+        "operator_content_digest": (
+            "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            "operator-manifest",
+            "/content_digest",
+        ),
+    }
+    core = {
+        "schema_id": "quant-platform/report-document/v1",
+        "schema_version": 1,
+        "sections": [
+            {
+                "section_id": "fixture",
+                "fields": [
+                    {
+                        "field_id": field_id,
+                        "raw": raw,
+                        "availability": "AVAILABLE",
+                        "source_ref": {"artifact": artifact, "pointer": pointer},
+                    }
+                    for field_id, (raw, artifact, pointer) in raw_fields.items()
+                ],
+            }
+        ],
+    }
+    document_id = hashlib.sha256(
+        b"quant-platform/report-document/v1\0"
+        + json.dumps(
+            core,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    return json.dumps(
+        core | {"document_id": document_id},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+
+
+def fake_report_evidence(job):
+    action = fake_action(job)
+
+    def encoded(value):
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+
+    return {
+        "attempt-audit.json": encoded(
+            {
+                "attempt_id": "a" * 64,
+                "experiment_id": "b" * 64,
+                "run_id": "fixture",
+                "dataset": {"snapshot_id": "c" * 64},
+                "result_digest": "d" * 64,
+                "operators": {},
+            }
+        ),
+        "bundle-descriptor.json": encoded(
+            {"bundle_id": "e" * 64, "verification": {"status": "VERIFIED"}}
+        ),
+        "config.json": encoded({"template": {"parameters": {"current_action": action}}}),
+        "contract.json": encoded(
+            {
+                "purpose": "PRESENTATION_ONLY",
+                "limitations": [
+                    "INTEGRITY_IS_NOT_QUALIFICATION",
+                    "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY",
+                    "PRESENTATION_ONLY_NO_RECOMPUTATION",
+                ],
+            }
+        ),
+        "cost_breakdown.json": encoded(
+            {
+                "commission_cny": 0.0,
+                "transfer_fee_cny": 0.0,
+                "stamp_tax_cny": 0.0,
+                "slippage_cny": 0.0,
+                "total_cost_cny": 0.0,
+            }
+        ),
+        "daily_replay.csv": b"Date,price,close,equity,holdings,position_after\n",
+        "events.csv": b"Date,side,price,quantity,notional_cny,commission_cny,transfer_fee_cny,stamp_tax_cny,slippage_cny,total_cost_cny,cash_before_cny,cash_after_cny,holdings_before,holdings_after,reason\n",
+        "metrics.json": encoded(
+            {
+                "period_start": "2026-09-09",
+                "period_end": "2026-09-09",
+                "initial_capital_cny": 1_000_000.0,
+                "final_equity_cny": 1_000_000.0,
+                "net_profit_cny": 0.0,
+                "current_position": "LONG",
+                "closed_trades": 0,
+                "open_trades": 1,
+                "net_return": 0.0,
+                "max_drawdown": 0.0,
+            }
+        ),
+        "operator-manifest.json": encoded(
+            {
+                "api_version": 2,
+                "operator_id": "canonical_attempt_report",
+                "semantic_version": "1.0.0",
+                "source": {
+                    "sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8"
+                },
+                "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            }
+        ),
+        "report-document.json": fake_report_document(job),
+        "run_manifest.json": encoded({"runtime": {}}),
+        "trades.csv": b"entry_date,entry_price,quantity,entry_cost_cny,exit_date,exit_price,exit_cost_cny,status,gross_pnl_cny,net_pnl_cny,return\n",
     }
 
 
@@ -257,6 +432,73 @@ def test_schedule_record_drift_and_unknown_outcome_fail_closed(tmp_path: Path) -
             transport_factory=lambda configuration: configuration,
             client_factory=UnknownClient,
         )
+
+
+def test_result_and_report_operator_identity_drift_fail_closed(tmp_path: Path) -> None:
+    job = JOBS["1cd5557264db"]
+
+    class WrongResultOperator(FakeClient):
+        def submit_and_wait(self, request):
+            manifest = super().submit_and_wait(request)
+            manifest["report_operator"] = dict(manifest["report_operator"])
+            manifest["report_operator"]["source_sha256"] = "0" * 64
+            return manifest
+
+    class WrongReportOperator(FakeClient):
+        def fetch_verified_file(self, manifest, name):
+            payload = super().fetch_verified_file(manifest, name)
+            if name == "report.html":
+                payload = payload.replace(
+                    b"11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+                    b"0" * 64,
+                )
+            return payload
+
+    class WrongActionHash(FakeClient):
+        def submit_and_wait(self, request):
+            manifest = super().submit_and_wait(request)
+            manifest["action_sha256"] = "0" * 64
+            return manifest
+
+    class WrongReportDocument(FakeClient):
+        def fetch_verified_file(self, manifest, name):
+            payload = super().fetch_verified_file(manifest, name)
+            if name == "report-document.json":
+                document = json.loads(payload)
+                document["sections"][0]["fields"][0]["raw"]["current_action"]["action"] = "WAIT"
+                return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+            return payload
+
+    class WrongSourceEvidence(FakeClient):
+        def fetch_verified_file(self, manifest, name):
+            payload = super().fetch_verified_file(manifest, name)
+            if name == "config.json":
+                configuration = json.loads(payload)
+                configuration["template"]["parameters"]["current_action"]["action"] = "WAIT"
+                return json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+            return payload
+
+    for client_factory in (
+        WrongResultOperator,
+        WrongReportOperator,
+        WrongActionHash,
+        WrongReportDocument,
+        WrongSourceEvidence,
+    ):
+        with pytest.raises(ProductionClientError, match="result|report"):
+            run_job(
+                job,
+                scheduled_for="2026-03-09T00:40:00Z",
+                tls=ClientTLS(
+                    "https://127.0.0.1:8443",
+                    Path("/unused"),
+                    Path("/unused"),
+                    Path("/unused"),
+                ),
+                jobs_path=jobs_file(tmp_path, job.job_id),
+                transport_factory=lambda configuration: configuration,
+                client_factory=client_factory,
+            )
 
 
 def test_cli_rejects_unknown_job() -> None:

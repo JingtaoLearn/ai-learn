@@ -20,7 +20,7 @@ from quant_platform.production_contract import (
 )
 from quant_platform.production_focus import FocusCalibrationProductionJob
 from quant_platform.production_gold import GoldProductionJob
-from quant_platform.production_jobs import ProductionJobs
+from quant_platform.production_jobs import REPORT_EVIDENCE_FILE_NAMES, ProductionJobs
 from quant_platform.production_package_authority import FilesystemPackageIdentityAuthority
 from quant_platform.production_result import ProductionResultError, ProductionResultStore
 from quant_platform.production_service import AdmissionPolicy, ProductionService
@@ -226,6 +226,22 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
     )
     assert result.status_code == 200
     assert results.verify(terminal["result_id"]) == result.json()
+    assert result.json()["report_operator"] == {
+        "api_version": 2,
+        "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+        "operator_id": "canonical_attempt_report",
+        "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+        "version": "1.0.0",
+    }
+    assert REPORT_EVIDENCE_FILE_NAMES <= result.json()["files"].keys()
+    report_document = client.get(
+        f"/api/v1/production/results/{terminal['result_id']}/files/report-document.json",
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+    assert report_document.status_code == 200
+    assert hashlib.sha256(report_document.content).hexdigest() == result.json()[
+        "report_document_sha256"
+    ]
     notification = client.get(
         f"/api/v1/production/results/{terminal['result_id']}/files/notification.txt",
         headers={VERIFIED_CLIENT_HEADER: IDENTITY},

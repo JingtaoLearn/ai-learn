@@ -15,6 +15,15 @@ from urllib.parse import urlsplit
 from .production_contract import ProductionRequest, canonical_json_bytes, production_run_id
 
 
+REPORT_EVIDENCE_FILE_NAMES = frozenset(
+    {
+        "attempt-audit.json", "bundle-descriptor.json", "config.json", "contract.json",
+        "cost_breakdown.json", "daily_replay.csv", "events.csv", "metrics.json",
+        "operator-manifest.json", "report-document.json", "run_manifest.json", "trades.csv",
+    }
+)
+
+
 DAILY_RESULT_FILE_NAMES = frozenset(
     {
         "provider-response.bin",
@@ -22,6 +31,7 @@ DAILY_RESULT_FILE_NAMES = frozenset(
         "action.json",
         "report.html",
         "notification.txt",
+        *REPORT_EVIDENCE_FILE_NAMES,
     }
 )
 FORMAL_RESULT_FILE_NAMES = frozenset(

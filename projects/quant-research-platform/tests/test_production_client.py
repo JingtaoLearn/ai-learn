@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from quant_platform.production_client import (
+    REPORT_EVIDENCE_FILE_NAMES,
     ClientTLS,
     ProductionClient,
     ProductionClientError,
@@ -39,6 +40,7 @@ class SuccessTransport:
             "action.json": b"{}",
             "report.html": b"<html></html>",
             "notification.txt": b"verified notification",
+            **{name: b"{}" for name in REPORT_EVIDENCE_FILE_NAMES},
         }
         self.core = {
             "schema": "quantresearch-production-result/v1",

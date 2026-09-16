@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -19,9 +22,15 @@ from .production_client import (
     ClientTLS,
     ProductionClient,
     ProductionClientError,
+    REPORT_EVIDENCE_FILE_NAMES,
     StdlibMTLSTransport,
 )
-from .production_contract import ProductionContractError, ProductionRequest, canonical_scheduled_fire
+from .production_contract import (
+    ProductionContractError,
+    ProductionRequest,
+    canonical_json_bytes,
+    canonical_scheduled_fire,
+)
 
 
 TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -29,6 +38,13 @@ DELIVERY = "feishu:oc_33bdb4845220ee3788fe50c50cf333ed"
 DEFAULT_BASE_URL = "https://127.0.0.1:8443"
 REPORT_BASE_URL = "https://share.ai.jingtao.fun"
 REPORT_ROOT = Path("/data_static/share-hosting")
+REPORT_OPERATOR = {
+    "api_version": 2,
+    "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+    "operator_id": "canonical_attempt_report",
+    "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+    "version": "1.0.0",
+}
 
 
 @dataclass(frozen=True)
@@ -57,7 +73,9 @@ def _audit_prompt(
         f"job_id={job_id}; model_id={model_id}; schedule={schedule} Asia/Shanghai; "
         "transport=loopback HTTPS mTLS via host-managed tunnel; "
         "behavior=trigger, verify immutable result/files, publish and read back the stable report, "
-        "render from the verified source notification, then emit notification only; "
+        "verify canonical_attempt_report@1.0.0 identity and bound ReportDocument evidence, "
+        "render from the verified source "
+        "notification, then emit notification only; "
         "local_compute=false; flearn_fallback=false; automatic_ordering=false; "
         f"production_manifest_sha256={production_manifest_sha256}."
     )
@@ -297,15 +315,33 @@ def _verified_action_from_report(job: ScheduledJob, payload: bytes) -> dict[str,
         document = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ProductionClientError("report payload is not UTF-8") from exc
-    matched = re.search(r'<pre data-action="canonical">(?P<action>.*?)</pre>', document, re.DOTALL)
-    if matched is None:
-        raise ProductionClientError("report does not contain its canonical action")
+    def report_field(field_id: str) -> str:
+        label = re.escape(field_id.replace("_", " "))
+        matched = re.search(
+            rf'<tr><th scope="row">{label}</th><td><span>AVAILABLE</span><br><code>'
+            r"(?P<value>.*?)</code></td></tr>",
+            document,
+            re.DOTALL,
+        )
+        if matched is None:
+            raise ProductionClientError(f"report field is absent: {field_id}")
+        return html.unescape(matched.group("value"))
+
     try:
-        action = json.loads(html.unescape(matched.group("action")))
-    except json.JSONDecodeError as exc:
+        configuration = json.loads(report_field("template_parameters"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
         raise ProductionClientError("report canonical action is invalid") from exc
+    action = configuration.get("current_action") if isinstance(configuration, dict) else None
+    embedded_operator = {
+        "api_version": 2,
+        "content_digest": report_field("operator_content_digest"),
+        "operator_id": report_field("operator_id"),
+        "source_sha256": report_field("operator_source_sha256"),
+        "version": report_field("operator_version"),
+    }
     if (
         not isinstance(action, dict)
+        or embedded_operator != REPORT_OPERATOR
         or action.get("job_id") != job.job_id
         or action.get("model_version") != job.model_id
         or action.get("production_manifest_sha256") != job.production_manifest_sha256
@@ -314,6 +350,196 @@ def _verified_action_from_report(job: ScheduledJob, payload: bytes) -> dict[str,
     ):
         raise ProductionClientError("report canonical action differs from the scheduled job contract")
     return action
+
+
+def _verified_action_from_report_document(
+    job: ScheduledJob, payload: bytes
+) -> dict[str, Any]:
+    try:
+        document = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError("report document is not JSON") from exc
+    if canonical_json_bytes(document) != payload or not isinstance(document, dict):
+        raise ProductionClientError("report document bytes are not canonical")
+    if (
+        document.get("schema_id") != "quant-platform/report-document/v1"
+        or document.get("schema_version") != 1
+        or not isinstance(document.get("sections"), list)
+    ):
+        raise ProductionClientError("report document contract is invalid")
+    core = {key: value for key, value in document.items() if key != "document_id"}
+    expected_id = hashlib.sha256(
+        b"quant-platform/report-document/v1\0" + canonical_json_bytes(core)
+    ).hexdigest()
+    if document.get("document_id") != expected_id:
+        raise ProductionClientError("report document identity does not verify")
+    fields = {}
+    for section in document["sections"]:
+        if not isinstance(section, dict) or not isinstance(section.get("fields"), list):
+            raise ProductionClientError("report document sections are invalid")
+        for field in section["fields"]:
+            if not isinstance(field, dict) or not isinstance(field.get("field_id"), str):
+                raise ProductionClientError("report document fields are invalid")
+            field_id = field["field_id"]
+            if field_id in fields:
+                raise ProductionClientError("report document field identity is duplicated")
+            fields[field_id] = field
+    configuration = fields.get("template_parameters", {}).get("raw")
+    action = configuration.get("current_action") if isinstance(configuration, dict) else None
+    embedded_operator = {
+        "api_version": 2,
+        "content_digest": fields.get("operator_content_digest", {}).get("raw"),
+        "operator_id": fields.get("operator_id", {}).get("raw"),
+        "source_sha256": fields.get("operator_source_sha256", {}).get("raw"),
+        "version": fields.get("operator_version", {}).get("raw"),
+    }
+    if (
+        not isinstance(action, dict)
+        or embedded_operator != REPORT_OPERATOR
+        or action.get("job_id") != job.job_id
+        or action.get("model_version") != job.model_id
+        or action.get("production_manifest_sha256") != job.production_manifest_sha256
+        or action.get("report_uuid") != job.report_filename.removesuffix(".html")
+        or action.get("automatic_ordering") is not False
+    ):
+        raise ProductionClientError("report document action or operator does not verify")
+    return action
+
+
+def _verified_json_evidence(evidence: Mapping[str, bytes], name: str) -> Any:
+    payload = evidence[name]
+    try:
+        value = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError(f"report evidence is not JSON: {name}") from exc
+    if canonical_json_bytes(value) != payload:
+        raise ProductionClientError(f"report evidence is not canonical: {name}")
+    return value
+
+
+def _csv_evidence(evidence: Mapping[str, bytes], name: str) -> list[dict[str, str]]:
+    try:
+        reader = csv.DictReader(io.StringIO(evidence[name].decode("utf-8"), newline=""))
+        rows = list(reader)
+    except UnicodeError as exc:
+        raise ProductionClientError(f"report evidence is not UTF-8 CSV: {name}") from exc
+    if reader.fieldnames is None or any(None in row for row in rows):
+        raise ProductionClientError(f"report evidence CSV is malformed: {name}")
+    return rows
+
+
+def _verify_report_document_sources(
+    document: Mapping[str, Any], evidence: Mapping[str, bytes]
+) -> None:
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    audit = _verified_json_evidence(evidence, "attempt-audit.json")
+    descriptor = _verified_json_evidence(evidence, "bundle-descriptor.json")
+    configuration = _verified_json_evidence(evidence, "config.json")
+    contract = _verified_json_evidence(evidence, "contract.json")
+    costs = _verified_json_evidence(evidence, "cost_breakdown.json")
+    metrics = _verified_json_evidence(evidence, "metrics.json")
+    operator = _verified_json_evidence(evidence, "operator-manifest.json")
+    runtime = _verified_json_evidence(evidence, "run_manifest.json")
+    daily = _csv_evidence(evidence, "daily_replay.csv")
+    event_rows = _csv_evidence(evidence, "events.csv")
+    trade_rows = _csv_evidence(evidence, "trades.csv")
+    price_equity = [
+        {
+            "date": row["Date"],
+            "price": float(row["price"]),
+            "close": float(row["close"]),
+            "equity": float(row["equity"]),
+        }
+        for row in daily
+    ]
+    holdings = [
+        {
+            "date": row["Date"],
+            "holdings": int(row["holdings"]),
+            "position_after": int(row["position_after"]),
+        }
+        for row in daily
+    ]
+    events = [
+        {
+            key: (
+                row[key]
+                if key in {"Date", "side", "reason"}
+                else int(row[key])
+                if key in {"quantity", "holdings_before", "holdings_after"}
+                else float(row[key])
+            )
+            for key in row
+        }
+        for row in event_rows
+    ]
+    trades = [
+        {
+            key: (
+                None
+                if key in {"exit_date", "exit_price"} and row[key] == ""
+                else row[key]
+                if key in {"entry_date", "exit_date", "status"}
+                else int(row[key])
+                if key == "quantity"
+                else float(row[key])
+            )
+            for key in row
+        }
+        for row in trade_rows
+    ]
+    resolved = {
+        "attempt_id": ("attempt-audit", "/attempt_id", audit["attempt_id"]),
+        "experiment_id": ("attempt-audit", "/experiment_id", audit["experiment_id"]),
+        "run_id": ("attempt-audit", "/run_id", audit["run_id"]),
+        "dataset_snapshot_id": ("attempt-audit", "/dataset/snapshot_id", audit["dataset"]["snapshot_id"]),
+        "purpose": ("contract", "/purpose", contract["purpose"]),
+        "bundle_integrity": ("bundle-descriptor", "/verification/status", descriptor["verification"]["status"]),
+        "period_start": ("bundle/metrics.json", "/period_start", metrics["period_start"]),
+        "period_end": ("bundle/metrics.json", "/period_end", metrics["period_end"]),
+        "initial_capital_cny": ("bundle/metrics.json", "/initial_capital_cny", metrics["initial_capital_cny"]),
+        "final_equity_cny": ("bundle/metrics.json", "/final_equity_cny", metrics["final_equity_cny"]),
+        "net_profit_cny": ("bundle/metrics.json", "/net_profit_cny", metrics["net_profit_cny"]),
+        "current_position": ("bundle/metrics.json", "/current_position", metrics["current_position"]),
+        "closed_trades": ("bundle/metrics.json", "/closed_trades", metrics["closed_trades"]),
+        "open_trades": ("bundle/metrics.json", "/open_trades", metrics["open_trades"]),
+        "template_parameters": ("bundle/config.json", "/template/parameters", configuration["template"]["parameters"]),
+        "operators": ("attempt-audit", "/operators", audit["operators"]),
+        "runtime": ("bundle/run_manifest.json", "/runtime", runtime["runtime"]),
+        "price_equity_rows": ("bundle/daily_replay.csv", "/rows/*/{Date,price,close,equity}", price_equity),
+        "events": ("bundle/events.csv", "/rows", events),
+        "trades": ("bundle/trades.csv", "/rows", trades),
+        "holdings": ("bundle/daily_replay.csv", "/rows/*/{Date,holdings,position_after}", holdings),
+        **{
+            name: ("bundle/cost_breakdown.json", f"/{name}", costs[name])
+            for name in ("commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny")
+        },
+        "net_return": ("bundle/metrics.json", "/net_return", metrics["net_return"]),
+        "max_drawdown": ("bundle/metrics.json", "/max_drawdown", metrics["max_drawdown"]),
+        "integrity_not_qualification": ("contract", "/limitations/0", contract["limitations"][0]),
+        "qualification_not_deployment": ("contract", "/limitations/1", contract["limitations"][1]),
+        "no_recomputation": ("contract", "/limitations/2", contract["limitations"][2]),
+        "bundle_id": ("bundle-descriptor", "/bundle_id", descriptor["bundle_id"]),
+        "core_result_digest": ("attempt-audit", "/result_digest", audit["result_digest"]),
+        "operator_id": ("operator-manifest", "/operator_id", operator["operator_id"]),
+        "operator_version": ("operator-manifest", "/semantic_version", operator["semantic_version"]),
+        "operator_source_sha256": ("operator-manifest", "/source/sha256", operator["source"]["sha256"]),
+        "operator_content_digest": ("operator-manifest", "/content_digest", operator["content_digest"]),
+    }
+    for field_id, field in fields.items():
+        if field.get("availability") != "AVAILABLE":
+            continue
+        if field_id not in resolved:
+            raise ProductionClientError(f"report source is unsupported: {field_id}")
+        artifact, pointer, value = resolved[field_id]
+        if field.get("source_ref") != {"artifact": artifact, "pointer": pointer} or field.get(
+            "raw"
+        ) != value:
+            raise ProductionClientError(f"report source binding differs: {field_id}")
 
 
 def _number(action: Mapping[str, Any], key: str) -> float:
@@ -484,17 +710,42 @@ def run_request(
 ) -> bytes:
     client = client_factory(transport_factory(tls))
     manifest = client.submit_and_wait(request)
+    files = manifest.get("files")
     if (
         manifest.get("schema") != "quantresearch-production-result/v1"
         or manifest.get("job_id") != job.job_id
         or manifest.get("model_id") != job.model_id
         or manifest.get("production_manifest_sha256") != job.production_manifest_sha256
         or manifest.get("report_filename") != job.report_filename
+        or manifest.get("report_operator") != REPORT_OPERATOR
+        or not isinstance(files, Mapping)
+        or manifest.get("report_document_sha256")
+        != files.get("report-document.json", {}).get("sha256")
+        or not REPORT_EVIDENCE_FILE_NAMES.issubset(files)
         or manifest.get("automatic_ordering") is not False
     ):
         raise ProductionClientError("result does not match the scheduled job contract")
     report = client.fetch_verified_file(manifest, "report.html")
     action = _verified_action_from_report(job, report)
+    evidence = {
+        name: client.fetch_verified_file(manifest, name)
+        for name in REPORT_EVIDENCE_FILE_NAMES
+    }
+    document_action = _verified_action_from_report_document(
+        job, evidence["report-document.json"]
+    )
+    try:
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionClientError("report source evidence is invalid") from exc
+    if canonical_json_bytes(document_action) != canonical_json_bytes(action):
+        raise ProductionClientError("report HTML and ReportDocument actions differ")
+    if manifest.get("action_sha256") != hashlib.sha256(
+        canonical_json_bytes(action)
+    ).hexdigest():
+        raise ProductionClientError("report action identity differs from the immutable result")
     source_action = _verified_action_from_notification(
         job, client.fetch_verified_file(manifest, "notification.txt")
     )

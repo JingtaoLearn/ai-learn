@@ -11,8 +11,10 @@ from zoneinfo import ZoneInfo
 from .production_jobs import (
     JobComputation,
     ProductionJobError,
+    ProductionReportSpec,
     ProviderClient,
     TrendConfig,
+    build_canonical_production_report,
     close_for_slope,
     decision_points,
     evaluate,
@@ -21,7 +23,6 @@ from .production_jobs import (
     next_weekday,
     normalized_rows,
     parse_manifest,
-    render_private_report,
 )
 
 
@@ -224,13 +225,31 @@ class BocomProductionJob:
             b"quantresearch-production-attempt/v1\0",
             {"experiment_id": experiment_id, "scheduled_for": action["generated_at"]},
         )
-        report = render_private_report(
-            display_name="交通银行",
-            report_uuid=self.report_uuid,
-            qualification="KNOWN_EVENT_CORRECTED_PARTIAL",
+        report = build_canonical_production_report(
+            rows=rows,
+            points=points,
+            config=self.config,
             action=action,
-            model_id=self.model_id,
-            costs="buy_cost_bps=8; sell_cost_bps=13",
+            experiment_id=experiment_id,
+            attempt_id=attempt_id,
+            provider_url=provider_url,
+            normalized_bytes=normalized.value,
+            spec=ProductionReportSpec(
+                display_name="交通银行",
+                qualification="KNOWN_EVENT_CORRECTED_PARTIAL",
+                execution_price_key="adjusted_open",
+                mark_price_key="signal_close",
+                execution_price_basis="observed next-session split/dividend-adjusted open",
+                price_unit="ADJUSTED_CNY_PER_SHARE",
+                buy_cost_bps=8.0,
+                sell_cost_bps=13.0,
+                completed_roundtrip_cost_per_unit=0.0,
+                cost_description="buy 8 bps; sell 13 bps",
+                limitations=(
+                    "Yahoo adjusted OHLC is a market-data proxy; corporate-action evidence remains partial.",
+                    "KNOWN_EVENT_CORRECTED_PARTIAL; this report does not promote the model.",
+                ),
+            ),
         )
         notification = self.render_notification(action)
         return JobComputation(
@@ -243,7 +262,9 @@ class BocomProductionJob:
             raw,
             normalized.value,
             action,
-            report,
+            report.operator_identity,
+            report.evidence_files,
+            report.html,
             notification,
             experiment_id,
             attempt_id,

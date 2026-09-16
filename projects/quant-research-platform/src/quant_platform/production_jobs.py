@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
-import html
+import io
 import json
 import math
 import os
@@ -10,12 +11,40 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
+from .attempt_report import (
+    DOMAIN_DOCUMENT,
+    FIELD_SOURCE_AND_UNIT,
+    REPORT_DOCUMENT_SCHEMA_ID,
+    canonical_report_operator_bundle,
+    render_report_document,
+    validate_report_document,
+)
 from .production_contract import SHA256, canonical_json_bytes
 
 
 class ProductionJobError(RuntimeError):
     """Raised when immutable job input cannot produce a verified action."""
+
+
+REPORT_INITIAL_CAPITAL_CNY = 1_000_000.0
+REPORT_EVIDENCE_FILE_NAMES = frozenset(
+    {
+        "attempt-audit.json",
+        "bundle-descriptor.json",
+        "config.json",
+        "contract.json",
+        "cost_breakdown.json",
+        "daily_replay.csv",
+        "events.csv",
+        "metrics.json",
+        "operator-manifest.json",
+        "report-document.json",
+        "run_manifest.json",
+        "trades.csv",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +78,739 @@ class TrendConfig:
 
 
 @dataclass(frozen=True)
+class ProductionReportSpec:
+    display_name: str
+    qualification: str
+    execution_price_key: str
+    mark_price_key: str
+    execution_price_basis: str
+    price_unit: str
+    buy_cost_bps: float
+    sell_cost_bps: float
+    completed_roundtrip_cost_per_unit: float
+    cost_description: str
+    limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CanonicalProductionReport:
+    document: dict[str, Any]
+    html: bytes
+    operator_identity: dict[str, Any]
+    evidence_files: Mapping[str, bytes]
+
+
+def _report_field(field_id: str, raw: Any, *, display: str | None = None) -> dict[str, Any]:
+    artifact, pointer, unit = FIELD_SOURCE_AND_UNIT[field_id]
+    return {
+        "field_id": field_id,
+        "source_ref": {"artifact": artifact, "pointer": pointer},
+        "availability": "AVAILABLE",
+        "reason": None,
+        "raw": raw,
+        "display": display,
+        "unit": unit,
+    }
+
+
+def _unavailable_report_field(field_id: str, reason: str) -> dict[str, Any]:
+    artifact, pointer, unit = FIELD_SOURCE_AND_UNIT[field_id]
+    return {
+        "field_id": field_id,
+        "source_ref": {"artifact": artifact, "pointer": pointer},
+        "availability": "NOT_EVALUATED",
+        "reason": reason,
+        "raw": None,
+        "display": reason,
+        "unit": unit,
+    }
+
+
+def _operator_identity() -> dict[str, Any]:
+    bundle = canonical_report_operator_bundle()
+    return {
+        "operator_id": bundle["manifest"]["operator_id"],
+        "version": bundle["manifest"]["semantic_version"],
+        "api_version": bundle["manifest"]["api_version"],
+        "source_sha256": bundle["source_sha256"],
+        "content_digest": bundle["content_digest"],
+    }
+
+
+def _csv_bytes(rows: Sequence[Mapping[str, Any]], fieldnames: Sequence[str]) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue().encode("utf-8")
+
+
+def _execution_cost(price: float, side: str, spec: ProductionReportSpec) -> float:
+    if side == "BUY":
+        return price * spec.buy_cost_bps / 10_000.0
+    return (
+        price * spec.sell_cost_bps / 10_000.0
+        + spec.completed_roundtrip_cost_per_unit
+    )
+
+
+def _historical_events(
+    rows: Sequence[Mapping[str, Any]],
+    points: Sequence[Mapping[str, Any]],
+    config: TrendConfig,
+    spec: ProductionReportSpec,
+) -> list[dict[str, Any]]:
+    by_date = {row["date"]: (index, row) for index, row in enumerate(rows)}
+    state = 0
+    prior_slope: float | None = None
+    events: list[dict[str, Any]] = []
+    for point in points:
+        action_date = point["decision_date"]
+        if point["is_next_session"] or not isinstance(action_date, date):
+            continue
+        if action_date < config.anchor_date:
+            continue
+        if point["slope_pct"] is None:
+            continue
+        slope = float(point["slope_pct"])
+        side = None
+        reason = None
+        if prior_slope is not None:
+            if state == 0 and prior_slope < config.buy_threshold_pct_per_day <= slope:
+                side = "BUY"
+                reason = "signal crossed upward through the frozen buy line"
+            elif state == 1 and prior_slope > config.sell_threshold_pct_per_day >= slope:
+                side = "SELL"
+                reason = "signal crossed downward through the frozen sell line"
+        if side is not None:
+            index, row = by_date[action_date]
+            if index == 0:
+                raise ProductionJobError("historical action has no preceding signal date")
+            before = state
+            state = 1 if side == "BUY" else 0
+            price = float(row[spec.execution_price_key])
+            events.append(
+                {
+                    "Date": action_date.isoformat(),
+                    "side": side,
+                    "signal_date": rows[index - 1]["date"].isoformat(),
+                    "action_date": action_date.isoformat(),
+                    "price": price,
+                    "price_basis": spec.execution_price_basis,
+                    "position_before": before,
+                    "position_after": state,
+                    "previous_slope_pct": prior_slope,
+                    "signal_slope_pct": slope,
+                    "reason": reason,
+                    "cost_per_unit": _execution_cost(price, side, spec),
+                }
+            )
+        prior_slope = slope
+    return events
+
+
+def _account_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    cash = REPORT_INITIAL_CAPITAL_CNY
+    holdings = 0
+    result = []
+    for event in events:
+        price = float(event["price"])
+        unit_cost = float(event["cost_per_unit"])
+        cash_before = cash
+        holdings_before = holdings
+        if event["side"] == "BUY":
+            if holdings != 0:
+                raise ProductionJobError("accounting ledger contains a nested BUY")
+            quantity = math.floor(cash / (price + unit_cost))
+            if quantity < 1:
+                raise ProductionJobError("reporting account cannot fund one normalization unit")
+            total_cost = quantity * unit_cost
+            cash -= quantity * price + total_cost
+            holdings = quantity
+        else:
+            if holdings < 1:
+                raise ProductionJobError("accounting ledger contains a SELL without holdings")
+            quantity = holdings
+            total_cost = quantity * unit_cost
+            cash += quantity * price - total_cost
+            holdings = 0
+        result.append(
+            {
+                **event,
+                "quantity": quantity,
+                "notional_cny": quantity * price,
+                "total_cost_cny": total_cost,
+                "cash_before_cny": cash_before,
+                "cash_after_cny": cash,
+                "holdings_before_units": holdings_before,
+                "holdings_after_units": holdings,
+            }
+        )
+    return result
+
+
+def _trade_and_holding_ledgers(
+    events: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
+    spec: ProductionReportSpec,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    trades: list[dict[str, Any]] = []
+    holdings: list[dict[str, Any]] = []
+    entry: Mapping[str, Any] | None = None
+    for event in events:
+        if event["side"] == "BUY":
+            if entry is not None:
+                raise ProductionJobError("historical event ledger contains nested entries")
+            entry = event
+            continue
+        if entry is None:
+            raise ProductionJobError("historical event ledger exits before entry")
+        quantity = int(entry["quantity"])
+        if event["quantity"] != quantity:
+            raise ProductionJobError("trade quantity changes within one holding span")
+        gross = (float(event["price"]) - float(entry["price"])) * quantity
+        costs = float(entry["total_cost_cny"]) + float(event["total_cost_cny"])
+        net = gross - costs
+        trades.append(
+            {
+                "entry_date": entry["action_date"],
+                "entry_price": entry["price"],
+                "quantity": quantity,
+                "entry_cost_cny": entry["total_cost_cny"],
+                "exit_date": event["action_date"],
+                "exit_price": event["price"],
+                "exit_cost_cny": event["total_cost_cny"],
+                "mark_date": event["action_date"],
+                "mark_price": event["price"],
+                "status": "CLOSED",
+                "gross_pnl_cny": gross,
+                "net_pnl_cny": net,
+                "return": net / (float(entry["price"]) * quantity),
+            }
+        )
+        holdings.append(
+            {
+                "entry_date": entry["action_date"],
+                "quantity": quantity,
+                "last_held_market_date": event["signal_date"],
+                "exit_action_date": event["action_date"],
+                "status": "CLOSED",
+            }
+        )
+        entry = None
+    if entry is not None:
+        latest = rows[-1]
+        mark = float(latest[spec.mark_price_key])
+        quantity = int(entry["quantity"])
+        gross = (mark - float(entry["price"])) * quantity
+        net = gross - float(entry["total_cost_cny"])
+        trades.append(
+            {
+                "entry_date": entry["action_date"],
+                "entry_price": entry["price"],
+                "quantity": quantity,
+                "entry_cost_cny": entry["total_cost_cny"],
+                "exit_date": None,
+                "exit_price": None,
+                "exit_cost_cny": 0.0,
+                "mark_date": latest["date"].isoformat(),
+                "mark_price": mark,
+                "status": "OPEN",
+                "gross_pnl_cny": gross,
+                "net_pnl_cny": net,
+                "return": net / (float(entry["price"]) * quantity),
+            }
+        )
+        holdings.append(
+            {
+                "entry_date": entry["action_date"],
+                "quantity": quantity,
+                "last_held_market_date": latest["date"].isoformat(),
+                "exit_action_date": None,
+                "status": "OPEN",
+            }
+        )
+    return trades, holdings
+
+
+def _equity_path(
+    rows: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    config: TrendConfig,
+    spec: ProductionReportSpec,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    events_by_date = {event["action_date"]: event for event in events}
+    cash = REPORT_INITIAL_CAPITAL_CNY
+    holdings = 0
+    cumulative_cost = 0.0
+    equity = REPORT_INITIAL_CAPITAL_CNY
+    peak = REPORT_INITIAL_CAPITAL_CNY
+    maximum_drawdown = 0.0
+    held_sessions = 0
+    comparator_entry: float | None = None
+    comparator_cash = REPORT_INITIAL_CAPITAL_CNY
+    comparator_holdings = 0
+    comparator_equity = REPORT_INITIAL_CAPITAL_CNY
+    path: list[dict[str, Any]] = [
+        {
+            "date": row["date"].isoformat(),
+            "price": float(row[spec.execution_price_key]),
+            "close": float(row[spec.mark_price_key]),
+            "phase": "WARMUP",
+            "position": None,
+            "equity_gross": None,
+            "equity": REPORT_INITIAL_CAPITAL_CNY,
+            "buy_and_hold_reference": None,
+        }
+        for row in rows
+        if row["date"] < config.anchor_date
+    ]
+    period_rows = [row for row in rows if row["date"] >= config.anchor_date]
+    if not period_rows:
+        raise ProductionJobError("report performance period is empty")
+    for row in period_rows:
+        action_date = row["date"].isoformat()
+        execution = float(row[spec.execution_price_key])
+        mark = float(row[spec.mark_price_key])
+        event = events_by_date.get(action_date)
+        if event is not None:
+            cash = float(event["cash_after_cny"])
+            holdings = int(event["holdings_after_units"])
+            cumulative_cost += float(event["total_cost_cny"])
+        if holdings > 0:
+            held_sessions += 1
+        if comparator_entry is None:
+            comparator_entry = execution
+            unit_cost = _execution_cost(execution, "BUY", spec)
+            comparator_holdings = math.floor(
+                REPORT_INITIAL_CAPITAL_CNY / (execution + unit_cost)
+            )
+            comparator_cash -= comparator_holdings * (execution + unit_cost)
+        equity = cash + holdings * mark
+        comparator_equity = comparator_cash + comparator_holdings * mark
+        peak = max(peak, equity)
+        maximum_drawdown = min(maximum_drawdown, equity / peak - 1.0)
+        path.append(
+            {
+                "date": action_date,
+                "price": execution,
+                "close": mark,
+                "phase": "PERFORMANCE",
+                "position": 1 if holdings else 0,
+                "holdings": holdings,
+                "equity_gross": equity + cumulative_cost,
+                "equity": equity,
+                "buy_and_hold_reference": comparator_equity,
+            }
+        )
+    return path, {
+        "initial_capital_cny": REPORT_INITIAL_CAPITAL_CNY,
+        "final_equity_cny": equity,
+        "net_profit_cny": equity - REPORT_INITIAL_CAPITAL_CNY,
+        "cumulative_return": equity / REPORT_INITIAL_CAPITAL_CNY - 1.0,
+        "max_drawdown": maximum_drawdown,
+        "exposure": held_sessions / len(period_rows),
+        "buy_and_hold_return": comparator_equity / REPORT_INITIAL_CAPITAL_CNY - 1.0,
+        "period_start": period_rows[0]["date"].isoformat(),
+        "period_end": period_rows[-1]["date"].isoformat(),
+    }
+
+
+def _path_display(rows: Sequence[Mapping[str, Any]]) -> str:
+    def shown(value: Any) -> str:
+        return "" if value is None else format(float(value), ".12g")
+
+    lines = ["date,phase,open,close,position,equity_gross,equity_net,buy_and_hold_reference"]
+    lines.extend(
+        ",".join(
+            (
+                str(row["date"]),
+                str(row["phase"]),
+                shown(row["price"]),
+                shown(row["close"]),
+                "" if row["position"] is None else str(row["position"]),
+                shown(row["equity_gross"]),
+                shown(row["equity"]),
+                shown(row["buy_and_hold_reference"]),
+            )
+        )
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def build_canonical_production_report(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    points: Sequence[Mapping[str, Any]],
+    config: TrendConfig,
+    action: Mapping[str, Any],
+    experiment_id: str,
+    attempt_id: str,
+    provider_url: str,
+    normalized_bytes: bytes,
+    spec: ProductionReportSpec,
+) -> CanonicalProductionReport:
+    """Adapt one frozen daily computation to the existing canonical Report operator."""
+
+    expected_action = evaluate(points, config)
+    for key in ("action", "reason", "state_before_next", "target_state"):
+        if action.get(key) != expected_action[key]:
+            raise ProductionJobError("report adapter action differs from frozen evaluation")
+    signal_events = _historical_events(rows, points, config, spec)
+    if (signal_events[-1]["position_after"] if signal_events else 0) != action["state_before_next"]:
+        raise ProductionJobError("historical report position differs from current action")
+    events = _account_events(signal_events)
+    trades, holdings = _trade_and_holding_ledgers(events, rows, spec)
+    price_equity, metrics = _equity_path(rows, events, config, spec)
+    operator = _operator_identity()
+    provider = urlsplit(provider_url)
+    event_cost = sum(float(event["total_cost_cny"]) for event in events)
+    closed = sum(trade["status"] == "CLOSED" for trade in trades)
+    opened = sum(trade["status"] == "OPEN" for trade in trades)
+    configuration = {
+        "display_name": spec.display_name,
+        "qualification": spec.qualification,
+        "current_action": dict(action),
+        "strategy_parameters": {
+            "window_sessions": config.window_sessions,
+            "ema_span": config.ema_span,
+            "buy_threshold_pct_per_day": config.buy_threshold_pct_per_day,
+            "sell_threshold_pct_per_day": config.sell_threshold_pct_per_day,
+            "anchor_date": config.anchor_date.isoformat(),
+        },
+        "execution_price_basis": spec.execution_price_basis,
+        "price_unit": spec.price_unit,
+        "cost_description": spec.cost_description,
+        "reporting_account": {
+            "initial_capital_cny": REPORT_INITIAL_CAPITAL_CNY,
+            "quantity_rule": "integer units purchased with available cash at each BUY",
+            "lot_size": 1,
+            "actual_invested_capital": False,
+        },
+        "event_ledger": events,
+        "trade_ledger": trades,
+        "holding_spans": holdings,
+        "performance_summary": {
+            **metrics,
+            "transitions": len(events),
+            "turnover": len(events),
+            "turnover_definition": (
+                "sum absolute long/cash position changes; each full transition equals 1.0"
+            ),
+            "total_cost_cny": event_cost,
+            "turnover_notional_cny": sum(float(event["notional_cny"]) for event in events),
+            "closed_trades": closed,
+            "open_trades": opened,
+        },
+    }
+    provenance = {
+        "job_id": action["job_id"],
+        "report_uuid": action["report_uuid"],
+        "model_id": action["model_version"],
+        "production_manifest_sha256": action["production_manifest_sha256"],
+        "provider_source": provider.netloc or provider.scheme,
+        "provider_request_sha256": hashlib.sha256(provider_url.encode("utf-8")).hexdigest(),
+        "market_window": [rows[0]["date"].isoformat(), rows[-1]["date"].isoformat()],
+        "performance_window": [metrics["period_start"], metrics["period_end"]],
+        "execution_authority": "zhlearn production API",
+        "trigger_role": "ailearn trigger/read-back/delivery only",
+        "local_compute": False,
+        "feng_fallback": False,
+    }
+    core_result_digest = hashlib.sha256(
+        b"quantresearch-production-report-evidence/v1\0"
+        + canonical_json_bytes(
+            {
+                "normalized_snapshot_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
+                "action": dict(action),
+                "price_equity": price_equity,
+                "events": events,
+                "trades": trades,
+                "holdings": holdings,
+                "metrics": metrics,
+                "provenance": provenance,
+            }
+        )
+    ).hexdigest()
+    bundle_id = identity(
+        b"quant-platform/attempt-result-bundle/v1\0",
+        {
+            "attempt_id": attempt_id,
+            "experiment_id": experiment_id,
+            "core_result_digest": core_result_digest,
+        },
+    )
+    limitations = [
+        *spec.limitations,
+        "Buy-and-hold is a period-dependent reference, not a decisive price judgment.",
+        "This evidence does not promote the strategy and grants no order, broker, or fund authority.",
+        "Open positions are marked to the latest completed close; no terminal exit or exit cost is fabricated.",
+    ]
+    canonical_price_equity = [
+        {
+            "date": row["date"],
+            "price": row["price"],
+            "close": row["close"],
+            "equity": 1.0 if row["equity"] is None else row["equity"],
+        }
+        for row in price_equity
+    ]
+    canonical_events = []
+    for event in events:
+        cost = float(event["total_cost_cny"])
+        canonical_events.append(
+            {
+                "Date": event["action_date"],
+                "side": event["side"],
+                "price": event["price"],
+                "quantity": event["quantity"],
+                "notional_cny": event["notional_cny"],
+                "commission_cny": cost if spec.buy_cost_bps or spec.sell_cost_bps else 0.0,
+                "transfer_fee_cny": 0.0,
+                "stamp_tax_cny": 0.0,
+                "slippage_cny": cost if spec.completed_roundtrip_cost_per_unit else 0.0,
+                "total_cost_cny": cost,
+                "cash_before_cny": event["cash_before_cny"],
+                "cash_after_cny": event["cash_after_cny"],
+                "holdings_before": event["holdings_before_units"],
+                "holdings_after": event["holdings_after_units"],
+                "reason": canonical_json_bytes(
+                    {
+                        "trigger": event["reason"],
+                        "signal_date": event["signal_date"],
+                        "action_date": event["action_date"],
+                        "price_basis": event["price_basis"],
+                        "previous_slope_pct": event["previous_slope_pct"],
+                        "signal_slope_pct": event["signal_slope_pct"],
+                        "position_before": event["position_before"],
+                        "position_after": event["position_after"],
+                    }
+                ).decode(),
+            }
+        )
+    canonical_trades = [
+        {
+            "entry_date": trade["entry_date"],
+            "entry_price": trade["entry_price"],
+            "quantity": trade["quantity"],
+            "entry_cost_cny": trade["entry_cost_cny"],
+            "exit_date": trade["exit_date"],
+            "exit_price": trade["exit_price"],
+            "exit_cost_cny": trade["exit_cost_cny"],
+            "status": trade["status"],
+            "gross_pnl_cny": trade["gross_pnl_cny"],
+            "net_pnl_cny": trade["net_pnl_cny"],
+            "return": trade["return"],
+        }
+        for trade in trades
+    ]
+    canonical_holdings = [
+        {
+            "date": row["date"],
+            "holdings": int(row.get("holdings", 0)),
+            "position_after": 0 if row["position"] is None else row["position"],
+        }
+        for row in price_equity
+    ]
+    final_equity = metrics["final_equity_cny"]
+    sections = [
+        {"section_id": "identity_and_purpose", "fields": [
+            _report_field("attempt_id", attempt_id),
+            _report_field("experiment_id", experiment_id),
+            _report_field("run_id", f"{action['job_id']}:{action['generated_at']}"),
+            _report_field("dataset_snapshot_id", hashlib.sha256(normalized_bytes).hexdigest()),
+            _report_field(
+                "purpose",
+                "PRESENTATION_ONLY",
+                display=(
+                    f"Historical daily decision evidence; current action {action['action']} for "
+                    f"{action.get('next_trade_date_estimate', action.get('next_session_date_estimate'))}; "
+                    "automatic_ordering=false"
+                ),
+            ),
+        ]},
+        {"section_id": "evidence_status", "fields": [
+            _report_field("bundle_integrity", "VERIFIED", display="Verified canonical production adapter"),
+            _unavailable_report_field("total_return_status", "No total-return authority attachment was supplied"),
+            _unavailable_report_field("matched_exposure_status", "No matched-exposure qualification was performed"),
+            _unavailable_report_field("ranking_status", "No strategy ranking was performed"),
+            _unavailable_report_field("promotion_ready", "No total-return authority attachment was supplied"),
+        ]},
+        {"section_id": "account_summary", "fields": [
+            _report_field("period_start", metrics["period_start"]),
+            _report_field("period_end", metrics["period_end"]),
+            _report_field("initial_capital_cny", REPORT_INITIAL_CAPITAL_CNY, display="1000000 CNY reporting normalization; not actual invested capital"),
+            _report_field("final_equity_cny", final_equity),
+            _report_field("net_profit_cny", metrics["net_profit_cny"]),
+            _report_field("current_position", "LONG" if action["state_before_next"] else "FLAT"),
+            _report_field("closed_trades", closed),
+            _report_field("open_trades", opened),
+        ]},
+        {"section_id": "configuration", "fields": [
+            _report_field("template_parameters", configuration, display=canonical_json_bytes(configuration).decode()),
+            _report_field("operators", {"report": operator}, display=canonical_json_bytes({"report": operator}).decode()),
+            _report_field("runtime", provenance, display=canonical_json_bytes(provenance).decode()),
+        ]},
+        {"section_id": "price_equity_path", "fields": [
+            _report_field("price_equity_rows", canonical_price_equity, display=_path_display(price_equity)),
+        ]},
+        {"section_id": "events_trades_holdings", "fields": [
+            _report_field("events", canonical_events, display=canonical_json_bytes(events).decode()),
+            _report_field("trades", canonical_trades, display=canonical_json_bytes(trades).decode()),
+            _report_field("holdings", canonical_holdings, display=canonical_json_bytes(holdings).decode()),
+        ]},
+        {"section_id": "costs_and_accounting", "fields": [
+            _report_field("commission_cny", event_cost if spec.buy_cost_bps or spec.sell_cost_bps else 0.0),
+            _report_field("transfer_fee_cny", 0.0),
+            _report_field("stamp_tax_cny", 0.0),
+            _report_field("slippage_cny", event_cost if spec.completed_roundtrip_cost_per_unit else 0.0),
+            _report_field("total_cost_cny", event_cost, display=f"{event_cost:.12g} CNY; {spec.cost_description}"),
+            _unavailable_report_field("gross_dividends_cny", "Dividend cash flows are not separately evaluated"),
+            _unavailable_report_field("dividend_tax_cny", "Dividend tax is not separately evaluated"),
+            _unavailable_report_field("outstanding_tax_cny", "Outstanding tax is not separately evaluated"),
+        ]},
+        {"section_id": "total_return_claim", "fields": [
+            _report_field("net_return", metrics["cumulative_return"]),
+            _report_field("max_drawdown", metrics["max_drawdown"]),
+            _unavailable_report_field(
+                "total_return_attachment",
+                (
+                    f"No promotion authority attachment; normalized exposure={metrics['exposure']:.12g}, "
+                    f"transitions={len(events)}, turnover={len(events)}, total_cost_cny={event_cost:.12g}"
+                ),
+            ),
+        ]},
+        {"section_id": "matched_exposure_qualification", "fields": [
+            _unavailable_report_field(
+                "matched_exposure_attachment",
+                f"Period-dependent buy-and-hold reference return={metrics['buy_and_hold_return']:.12g}",
+            ),
+            _unavailable_report_field("study_terminal_attachment", "This daily production Attempt is not a Study"),
+        ]},
+        {"section_id": "limitations", "fields": [
+            _report_field("integrity_not_qualification", "INTEGRITY_IS_NOT_QUALIFICATION", display="; ".join(limitations)),
+            _report_field("qualification_not_deployment", "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY", display=limitations[-2]),
+            _report_field("no_recomputation", "PRESENTATION_ONLY_NO_RECOMPUTATION", display=limitations[-1]),
+        ]},
+        {"section_id": "provenance", "fields": [
+            _report_field("bundle_id", bundle_id),
+            _report_field("core_result_digest", core_result_digest),
+            _report_field("operator_id", operator["operator_id"]),
+            _report_field("operator_version", operator["version"]),
+            _report_field("operator_source_sha256", operator["source_sha256"]),
+            _report_field("operator_content_digest", operator["content_digest"]),
+        ]},
+    ]
+    core = {
+        "schema_id": REPORT_DOCUMENT_SCHEMA_ID,
+        "schema_version": 1,
+        "sections": sections,
+    }
+    document = core | {
+        "document_id": hashlib.sha256(DOMAIN_DOCUMENT + canonical_json_bytes(core)).hexdigest()
+    }
+    checked = validate_report_document(document)
+    daily_rows = [
+        {
+            "Date": row["date"],
+            "price": row["price"],
+            "close": row["close"],
+            "equity": row["equity"],
+            "holdings": int(row.get("holdings", 0)),
+            "position_after": 0 if row["position"] is None else row["position"],
+        }
+        for row in price_equity
+    ]
+    cost_breakdown = {
+        "commission_cny": event_cost if spec.buy_cost_bps or spec.sell_cost_bps else 0.0,
+        "transfer_fee_cny": 0.0,
+        "stamp_tax_cny": 0.0,
+        "slippage_cny": event_cost if spec.completed_roundtrip_cost_per_unit else 0.0,
+        "total_cost_cny": event_cost,
+    }
+    report_html = render_report_document(checked)
+    evidence_files = {
+        "attempt-audit.json": canonical_json_bytes(
+            {
+                "attempt_id": attempt_id,
+                "experiment_id": experiment_id,
+                "run_id": f"{action['job_id']}:{action['generated_at']}",
+                "dataset": {"snapshot_id": hashlib.sha256(normalized_bytes).hexdigest()},
+                "result_digest": core_result_digest,
+                "operators": {"report": operator},
+            }
+        ),
+        "bundle-descriptor.json": canonical_json_bytes(
+            {
+                "bundle_id": bundle_id,
+                "attempt_id": attempt_id,
+                "experiment_id": experiment_id,
+                "core_result_digest": core_result_digest,
+                "verification": {"status": "VERIFIED"},
+            }
+        ),
+        "config.json": canonical_json_bytes({"template": {"parameters": configuration}}),
+        "contract.json": canonical_json_bytes(
+            {
+                "limitations": [
+                    "INTEGRITY_IS_NOT_QUALIFICATION",
+                    "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY",
+                    "PRESENTATION_ONLY_NO_RECOMPUTATION",
+                ],
+                "purpose": "PRESENTATION_ONLY",
+                "details": limitations,
+            }
+        ),
+        "cost_breakdown.json": canonical_json_bytes(cost_breakdown),
+        "daily_replay.csv": _csv_bytes(
+            daily_rows,
+            ("Date", "price", "close", "equity", "holdings", "position_after"),
+        ),
+        "events.csv": _csv_bytes(
+            canonical_events,
+            (
+                "Date", "side", "price", "quantity", "notional_cny", "commission_cny",
+                "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny",
+                "cash_before_cny", "cash_after_cny", "holdings_before", "holdings_after",
+                "reason",
+            ),
+        ),
+        "metrics.json": canonical_json_bytes(
+            {
+                **metrics,
+                "net_return": metrics["cumulative_return"],
+                "current_position": "LONG" if action["state_before_next"] else "FLAT",
+                "closed_trades": closed,
+                "open_trades": opened,
+            }
+        ),
+        "operator-manifest.json": canonical_json_bytes(
+            {
+                "api_version": operator["api_version"],
+                "operator_id": operator["operator_id"],
+                "semantic_version": operator["version"],
+                "source": {"sha256": operator["source_sha256"]},
+                "content_digest": operator["content_digest"],
+            }
+        ),
+        "report-document.json": canonical_json_bytes(checked),
+        "run_manifest.json": canonical_json_bytes({"runtime": provenance}),
+        "trades.csv": _csv_bytes(
+            canonical_trades,
+            (
+                "entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date",
+                "exit_price", "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny",
+                "return",
+            ),
+        ),
+    }
+    if frozenset(evidence_files) != REPORT_EVIDENCE_FILE_NAMES:
+        raise ProductionJobError("canonical report evidence member set is incomplete")
+    return CanonicalProductionReport(checked, report_html, operator, evidence_files)
+
+
+@dataclass(frozen=True)
 class JobComputation:
     job_id: str
     model_id: str
@@ -59,6 +821,8 @@ class JobComputation:
     raw_bytes: bytes
     normalized_bytes: bytes
     action: dict[str, Any]
+    report_operator: Mapping[str, Any]
+    report_evidence: Mapping[str, bytes]
     report_html: bytes
     notification_bytes: bytes
     experiment_id: str
@@ -101,6 +865,7 @@ _DAILY_COMPUTATION_MEMBERS = frozenset(
         "action.json",
         "report.html",
         "notification.txt",
+        *REPORT_EVIDENCE_FILE_NAMES,
     }
 )
 _FORMAL_RESULT_MEMBERS = frozenset(
@@ -488,27 +1253,6 @@ def identity_canonical_bytes(domain: bytes, value: CanonicalJsonBytes) -> str:
     return hashlib.sha256(domain + value.value).hexdigest()
 
 
-def render_private_report(
-    *,
-    display_name: str,
-    report_uuid: str,
-    qualification: str,
-    action: Mapping[str, Any],
-    model_id: str,
-    costs: str,
-) -> bytes:
-    encoded_action = html.escape(json.dumps(action, sort_keys=True, ensure_ascii=False), quote=True)
-    document = (
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        f"<title>{html.escape(display_name)} · Daily decision evidence</title></head><body>"
-        f"<main data-report-uuid=\"{report_uuid}\"><h1>{html.escape(display_name)}</h1>"
-        f"<p data-qualification=\"{qualification}\">{qualification}</p>"
-        f"<p data-model=\"{model_id}\">{html.escape(costs)}; automatic_ordering=false; not investment advice.</p>"
-        f"<pre data-action=\"canonical\">{encoded_action}</pre></main></body></html>\n"
-    )
-    return document.encode("utf-8")
-
-
 def next_weekday(value: date) -> date:
     result = value + timedelta(days=1)
     while result.weekday() >= 5:
@@ -645,6 +1389,8 @@ class ProductionJobs:
             "report_uuid": value.report_uuid,
             "provider_url": value.provider_url,
             "raw_name": value.raw_name,
+            "report_operator": dict(value.report_operator),
+            "report_evidence": sorted(value.report_evidence),
             "experiment_id": value.experiment_id,
             "attempt_id": value.attempt_id,
         }
@@ -653,6 +1399,7 @@ class ProductionJobs:
             "raw.bin": value.raw_bytes,
             "normalized.json": value.normalized_bytes,
             "action.json": canonical_json_bytes(value.action),
+            **dict(value.report_evidence),
             "report.html": value.report_html,
             "notification.txt": value.notification_bytes,
         }
@@ -703,6 +1450,8 @@ class ProductionJobs:
                 payloads["raw.bin"],
                 payloads["normalized.json"],
                 json.loads(payloads["action.json"]),
+                identity["report_operator"],
+                {name: payloads[name] for name in identity["report_evidence"]},
                 payloads["report.html"],
                 payloads["notification.txt"],
                 identity["experiment_id"],
