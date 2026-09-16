@@ -10,8 +10,10 @@ from typing import Any, Mapping
 from .production_jobs import (
     JobComputation,
     ProductionJobError,
+    ProductionReportSpec,
     ProviderClient,
     TrendConfig,
+    build_canonical_production_report,
     close_for_slope,
     decision_points,
     evaluate,
@@ -20,7 +22,6 @@ from .production_jobs import (
     next_weekday,
     normalized_rows,
     parse_manifest,
-    render_private_report,
 )
 
 
@@ -206,13 +207,31 @@ class GoldProductionJob:
             b"quantresearch-production-attempt/v1\0",
             {"experiment_id": experiment_id, "scheduled_for": action["generated_at"]},
         )
-        report = render_private_report(
-            display_name="黄金（Au99.99）",
-            report_uuid=self.report_uuid,
-            qualification="OVERFIT_RISK_SUBSTANTIATED",
+        report = build_canonical_production_report(
+            rows=rows,
+            points=points,
+            config=self.config,
             action=action,
-            model_id=self.model_id,
-            costs="roundtrip_spread_cny_per_g=5.0",
+            experiment_id=experiment_id,
+            attempt_id=attempt_id,
+            provider_url=provider_url,
+            normalized_bytes=normalized.value,
+            spec=ProductionReportSpec(
+                display_name="黄金（Au99.99）",
+                qualification="OVERFIT_RISK_SUBSTANTIATED",
+                execution_price_key="open",
+                mark_price_key="signal_close",
+                execution_price_basis="observed next-session Au99.99 raw open",
+                price_unit="CNY_PER_GRAM",
+                buy_cost_bps=0.0,
+                sell_cost_bps=0.0,
+                completed_roundtrip_cost_per_unit=5.0,
+                cost_description="fixed completed roundtrip spread 5 CNY per gram",
+                limitations=(
+                    "SGE_AU9999_PROXY; market-proxy evaluation does not represent an actual bank fill.",
+                    "OVERFIT_RISK_SUBSTANTIATED; this report does not promote the model.",
+                ),
+            ),
         )
         notification = self.render_notification(action)
         return JobComputation(
@@ -225,7 +244,9 @@ class GoldProductionJob:
             raw,
             normalized.value,
             action,
-            report,
+            report.operator_identity,
+            report.evidence_files,
+            report.html,
             notification,
             experiment_id,
             attempt_id,

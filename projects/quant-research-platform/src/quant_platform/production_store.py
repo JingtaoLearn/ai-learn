@@ -402,6 +402,35 @@ class ProductionStore:
         finally:
             connection.close()
 
+    def successful_result_manifests(self) -> list[dict[str, Any]]:
+        connection = self.connect()
+        try:
+            rows = connection.execute(
+                "SELECT result_manifest_json FROM production_requests "
+                "WHERE status = 'SUCCEEDED' AND result_manifest_json IS NOT NULL "
+                "ORDER BY updated_at, request_id"
+            ).fetchall()
+        finally:
+            connection.close()
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            value = row["result_manifest_json"]
+            manifest = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(manifest, dict):
+                raise ProductionStoreError("successful result manifest is invalid")
+            filename = manifest.get("report_filename")
+            if (
+                manifest.get("schema") != "quantresearch-production-result/v1"
+                or not isinstance(filename, str)
+            ):
+                continue
+            current = latest.get(filename)
+            if current is None or (
+                manifest.get("generated_at", ""), manifest.get("result_id", "")
+            ) > (current.get("generated_at", ""), current.get("result_id", "")):
+                latest[filename] = manifest
+        return [latest[name] for name in sorted(latest)]
+
     def claim(self, owner: str, *, lease_seconds: int = 120, now: datetime | None = None) -> dict[str, Any] | None:
         if not owner or lease_seconds < 1:
             raise ProductionStoreError("claim identity or lease is invalid")

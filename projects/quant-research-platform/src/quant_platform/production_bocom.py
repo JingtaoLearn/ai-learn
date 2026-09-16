@@ -11,8 +11,10 @@ from zoneinfo import ZoneInfo
 from .production_jobs import (
     JobComputation,
     ProductionJobError,
+    ProductionReportSpec,
     ProviderClient,
     TrendConfig,
+    build_canonical_production_report,
     close_for_slope,
     decision_points,
     evaluate,
@@ -21,7 +23,6 @@ from .production_jobs import (
     next_weekday,
     normalized_rows,
     parse_manifest,
-    render_private_report,
 )
 
 
@@ -85,6 +86,9 @@ class BocomProductionJob:
             if len(quote) != 1 or len(adjusted) != 1:
                 raise ProductionJobError("Yahoo indicator generation is not singular")
             quote, adjusted = quote[0], adjusted[0]["adjclose"]
+            source_events = result.get("events", {})
+            if not isinstance(source_events, dict):
+                raise ProductionJobError("Yahoo corporate-action events are invalid")
         except ProductionJobError:
             raise
         except (UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
@@ -101,7 +105,6 @@ class BocomProductionJob:
             if values["open"] is None or values["close"] is None or adjusted_close is None:
                 continue
             close = float(values["close"])
-            factor = float(adjusted_close) / close
             session = datetime.fromtimestamp(int(timestamp), ZoneInfo("Asia/Shanghai")).date()
             numeric = [float(values[field]) for field in ("open", "close")] + [float(adjusted_close)]
             if any(not math.isfinite(value) or value <= 0 for value in numeric):
@@ -116,8 +119,94 @@ class BocomProductionJob:
                 "close": close,
                 "volume": int(values["volume"]) if values["volume"] is not None else None,
                 "signal_close": float(adjusted_close),
-                "adjusted_open": float(values["open"]) * factor,
+                "corporate_actions": [],
             }
+        for event_type, source_name in (("SPLIT", "splits"), ("DIVIDEND", "dividends")):
+            source_group = source_events.get(source_name, {})
+            if not isinstance(source_group, dict):
+                raise ProductionJobError("Yahoo corporate-action event group is invalid")
+            for source_event_id, source_event in source_group.items():
+                if not isinstance(source_event_id, str) or not isinstance(source_event, dict):
+                    raise ProductionJobError("Yahoo corporate-action event is invalid")
+                try:
+                    source_timestamp = int(source_event["date"])
+                    session = datetime.fromtimestamp(
+                        source_timestamp, ZoneInfo("Asia/Shanghai")
+                    ).date()
+                    if event_type == "SPLIT":
+                        numerator = float(source_event["numerator"])
+                        denominator = float(source_event["denominator"])
+                        ratio = numerator / denominator
+                        if not all(
+                            math.isfinite(value) and value > 0
+                            for value in (numerator, denominator, ratio)
+                        ):
+                            raise ProductionJobError("Yahoo split terms are invalid")
+                        action = {
+                            "type": event_type,
+                            "effective_date": session.isoformat(),
+                            "ratio": ratio,
+                            "numerator": numerator,
+                            "denominator": denominator,
+                            "source_event_id": source_event_id,
+                            "source_event_timestamp": source_timestamp,
+                        }
+                    else:
+                        amount = float(source_event["amount"])
+                        if not math.isfinite(amount) or amount < 0:
+                            raise ProductionJobError("Yahoo dividend amount is invalid")
+                        action = {
+                            "type": event_type,
+                            "effective_date": session.isoformat(),
+                            "amount_per_share_cny": amount,
+                            "source_amount_per_share_cny": amount,
+                            "source_event_id": source_event_id,
+                            "source_event_timestamp": source_timestamp,
+                            "event_date_basis": "Yahoo ex-date evidence",
+                            "payment_date": None,
+                            "payment_date_evidence": "UNAVAILABLE",
+                            "recognition_basis": (
+                                "gross pre-tax ex-date receivable / total-return accrual"
+                            ),
+                        }
+                except ProductionJobError:
+                    raise
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    raise ProductionJobError("Yahoo corporate-action event schema is invalid") from exc
+                if session not in rows:
+                    raise ProductionJobError(
+                        "Yahoo corporate-action event has no observed market session"
+                    )
+                rows[session]["corporate_actions"].append(action)
+        for row in rows.values():
+            row["corporate_actions"].sort(
+                key=lambda item: (
+                    0 if item["type"] == "SPLIT" else 1,
+                    item["source_event_id"],
+                )
+            )
+        splits = [
+            action
+            for row in rows.values()
+            for action in row["corporate_actions"]
+            if action["type"] == "SPLIT"
+        ]
+        for session, row in rows.items():
+            factor = math.prod(
+                float(action["ratio"])
+                for action in splits
+                if session.isoformat() < action["effective_date"]
+            )
+            for field in ("open", "high", "low", "close"):
+                if row[field] is not None:
+                    row[field] = float(row[field]) * factor
+            for action in row["corporate_actions"]:
+                if action["type"] == "DIVIDEND":
+                    action["amount_per_share_cny"] = (
+                        float(action["source_amount_per_share_cny"]) * factor
+                    )
+                    action["source_dividend_split_adjustment_factor"] = factor
+            row["source_quote_split_unadjustment_factor"] = factor
         ordered = [rows[key] for key in sorted(rows)]
         if len(ordered) < self.config.window_sessions + 2:
             raise ProductionJobError("Yahoo BOCOM history is insufficient")
@@ -224,13 +313,43 @@ class BocomProductionJob:
             b"quantresearch-production-attempt/v1\0",
             {"experiment_id": experiment_id, "scheduled_for": action["generated_at"]},
         )
-        report = render_private_report(
-            display_name="交通银行",
-            report_uuid=self.report_uuid,
-            qualification="KNOWN_EVENT_CORRECTED_PARTIAL",
+        report = build_canonical_production_report(
+            rows=rows,
+            points=points,
+            config=self.config,
             action=action,
-            model_id=self.model_id,
-            costs="buy_cost_bps=8; sell_cost_bps=13",
+            experiment_id=experiment_id,
+            attempt_id=attempt_id,
+            provider_url=provider_url,
+            normalized_bytes=normalized.value,
+            spec=ProductionReportSpec(
+                display_name="交通银行",
+                qualification="KNOWN_EVENT_CORRECTED_PARTIAL",
+                execution_price_key="open",
+                mark_price_key="close",
+                execution_price_basis=(
+                    "next-session as-traded open reconstructed from observed Yahoo "
+                    "split-adjusted quote and bound split events"
+                ),
+                price_unit="CNY_PER_SHARE",
+                buy_cost_bps=8.0,
+                sell_cost_bps=13.0,
+                completed_roundtrip_cost_per_unit=0.0,
+                cost_description="buy 8 bps; sell 13 bps",
+                limitations=(
+                    "Yahoo quote OHLC is split-adjusted; execution and marks are reconstructed to as-traded price units from bound split events before quantity changes are applied.",
+                    "Signals use Yahoo adjusted close; P&L uses the reconstructed open/close path, split terms, and gross dividend events bound to this immutable source snapshot.",
+                    "Yahoo dividend evidence is split-adjusted and dated by ex-date; amounts are restored by all strictly later split factors and recognized as gross pre-tax ex-date receivables / total-return accruals, not observed cash payments.",
+                    "Yahoo does not supply payment date, withholding, tax, cash-in-lieu, or tax-lot authority, so net means net of modeled transaction costs before dividend tax.",
+                    "Yahoo adjusted prices and corporate-action history may revise; later revisions create new immutable evidence and never rewrite this result.",
+                    "KNOWN_EVENT_CORRECTED_PARTIAL; this report does not promote the model.",
+                ),
+                corporate_action_source="Yahoo chart events=div,splits",
+                corporate_action_revision_policy=(
+                    "Yahoo adjusted prices and corporate-action history may revise; this immutable "
+                    "snapshot binds the exact event payload used for accounting"
+                ),
+            ),
         )
         notification = self.render_notification(action)
         return JobComputation(
@@ -243,7 +362,9 @@ class BocomProductionJob:
             raw,
             normalized.value,
             action,
-            report,
+            report.operator_identity,
+            report.evidence_files,
+            report.html,
             notification,
             experiment_id,
             attempt_id,

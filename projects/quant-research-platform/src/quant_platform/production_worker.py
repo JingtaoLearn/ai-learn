@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .production_jobs import (
+    JobComputation,
     ProductionComputation,
     ProductionInput,
     ProductionJobError,
@@ -133,9 +134,13 @@ class ProductionWorker:
         )
 
     def run_once(self) -> dict[str, Any] | None:
+        for manifest in self.store.successful_result_manifests():
+            if manifest.get("schema") == "quantresearch-production-result/v1":
+                self.results.complete_stable_report(manifest)
         row = self.store.claim(self.owner, now=self.clock())
         if row is None:
             return None
+        terminal: dict[str, Any] | None = None
         try:
             if row["status"] == "ACCEPTED":
                 row = self.store.transition(
@@ -169,12 +174,16 @@ class ProductionWorker:
                 result_manifest=manifest,
                 now=self.clock(),
             )
+            self.crash("after_terminal_before_stable_pointer")
+            if isinstance(computation, JobComputation):
+                self.results.complete_stable_report(manifest)
             self.crash("after_terminal_commit")
             return terminal
         except SimulatedWorkerCrash:
             raise
         except BaseException as exc:
-            self.store.finish_failure(
-                row["request_id"], self.owner, f"{type(exc).__name__}: {exc}", now=self.clock()
-            )
+            if terminal is None:
+                self.store.finish_failure(
+                    row["request_id"], self.owner, f"{type(exc).__name__}: {exc}", now=self.clock()
+                )
             raise

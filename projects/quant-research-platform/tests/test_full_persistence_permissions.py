@@ -3,6 +3,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from quant_platform import full_persistence
 
 
@@ -31,6 +33,16 @@ class _Connection:
     def execute(self, statement: str, parameters=()):
         self.statements.append(" ".join(statement.split()))
         return _Cursor(self.row)
+
+
+class _SequenceConnection(_Connection):
+    def __init__(self, rows) -> None:
+        super().__init__()
+        self.rows = iter(rows)
+
+    def execute(self, statement: str, parameters=()):
+        self.statements.append(" ".join(statement.split()))
+        return _Cursor(next(self.rows))
 
 
 class _Config:
@@ -71,6 +83,101 @@ def test_schema_installer_keeps_replay_tokens_purgeable_but_not_updatable(
     assert (
         'GRANT DELETE ON qr_catalog.replay_tokens TO "qr_runtime"'
     ) in statements
+
+
+def test_schema_has_one_mutable_stable_pointer_to_immutable_production_results() -> None:
+    assert "CREATE TABLE IF NOT EXISTS qr.production_report_current" in (
+        full_persistence.CATALOG_SCHEMA_SQL
+    )
+    assert "result_id char(64) NOT NULL REFERENCES qr.production_results(result_id)" in (
+        full_persistence.CATALOG_SCHEMA_SQL
+    )
+    assert ("qr", "production_results") in full_persistence.IMMUTABLE_TABLES
+    assert ("qr", "production_report_current") not in full_persistence.IMMUTABLE_TABLES
+
+
+def test_stable_production_report_rejects_pointer_manifest_or_member_mismatch(
+    monkeypatch,
+) -> None:
+    report_uuid = "8991e9a8-1caa-41f5-b76b-6368259db5b4"
+    result_id = "a" * 64
+    html = b"<html>canonical report</html>"
+    digest = hashlib.sha256(html).hexdigest()
+    pointer = {
+        "report_uuid": report_uuid,
+        "job_id": "297c11cad0dc",
+        "result_id": result_id,
+        "report_sha256": digest,
+        "generated_at": "2026-03-09T00:40:00Z",
+        "report_size": len(html),
+    }
+    connection = _Connection(pointer)
+    persistence = full_persistence.FullPostgresPersistence(
+        cast(Any, _Config(connection)),
+        admit_schema=False,
+    )
+    manifest = {
+        "result_id": result_id,
+        "job_id": pointer["job_id"],
+        "report_filename": f"{report_uuid}.html",
+        "report_sha256": digest,
+        "generated_at": "2026-03-09T00:40:00Z",
+        "files": {"report.html": {"sha256": digest, "size": len(html)}},
+    }
+    monkeypatch.setattr(
+        persistence,
+        "production_result",
+        lambda _result_id: {"manifest": manifest, "members": {"report.html": html}},
+    )
+
+    assert persistence.stable_production_report(report_uuid) == {**pointer, "html": html}
+
+    pointer["job_id"] = "wrong-job"
+    with pytest.raises(full_persistence.PersistenceUnavailableError, match="binding"):
+        persistence.stable_production_report(report_uuid)
+
+
+def test_stable_pointer_advances_and_reads_back_inside_one_database_transaction(
+    monkeypatch,
+) -> None:
+    report_uuid = "8991e9a8-1caa-41f5-b76b-6368259db5b4"
+    result_id = "a" * 64
+    html = b"<html>canonical report</html>"
+    digest = hashlib.sha256(html).hexdigest()
+    manifest = {
+        "result_id": result_id,
+        "job_id": "297c11cad0dc",
+        "report_filename": f"{report_uuid}.html",
+        "report_sha256": digest,
+        "generated_at": "2026-03-09T00:40:00Z",
+        "files": {"report.html": {"sha256": digest, "size": len(html)}},
+    }
+    pointer = {
+        "report_uuid": report_uuid,
+        "job_id": manifest["job_id"],
+        "result_id": result_id,
+        "report_sha256": digest,
+        "generated_at": "2026-03-09T00:40:00Z",
+        "report_size": len(html),
+    }
+    connection = _SequenceConnection(
+        [None, {"manifest": manifest}, None, pointer]
+    )
+    persistence = full_persistence.FullPostgresPersistence(
+        cast(Any, _Config(connection)),
+        admit_schema=False,
+    )
+    verified = {"manifest": manifest, "members": {"report.html": html}}
+    monkeypatch.setattr(persistence, "production_result", lambda _result_id: verified)
+
+    assert persistence.advance_stable_production_report(manifest) == {
+        **pointer,
+        "html": html,
+    }
+    assert "pg_advisory_xact_lock" in connection.statements[0]
+    assert "FOR SHARE" in connection.statements[1]
+    assert "ON CONFLICT(report_uuid) DO UPDATE" in connection.statements[2]
+    assert "FROM qr.production_report_current" in connection.statements[3]
 
 
 def test_dataset_lineage_reads_verified_payload_from_migrated_member_index() -> None:

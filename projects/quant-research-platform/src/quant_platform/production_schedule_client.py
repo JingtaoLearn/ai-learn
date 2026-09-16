@@ -1,34 +1,57 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import html
+import io
 import json
 import os
 import re
 import stat
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
+from urllib.parse import urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from .attempt_report import (
+    AttemptReportError,
+    render_report_document,
+    validate_report_document,
+)
 from .production_client import (
     ClientTLS,
     ProductionClient,
     ProductionClientError,
+    REPORT_EVIDENCE_FILE_NAMES,
     StdlibMTLSTransport,
 )
-from .production_contract import ProductionContractError, ProductionRequest, canonical_scheduled_fire
+from .production_contract import (
+    ProductionContractError,
+    ProductionRequest,
+    canonical_json_bytes,
+    canonical_scheduled_fire,
+    compact_holdings_display,
+    compact_price_equity_display,
+    compact_production_parameters_display,
+)
 
 
 TIMEZONE = ZoneInfo("Asia/Shanghai")
 DELIVERY = "feishu:oc_33bdb4845220ee3788fe50c50cf333ed"
 DEFAULT_BASE_URL = "https://127.0.0.1:8443"
 REPORT_BASE_URL = "https://share.ai.jingtao.fun"
-REPORT_ROOT = Path("/data_static/share-hosting")
+REPORT_OPERATOR = {
+    "api_version": 2,
+    "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+    "operator_id": "canonical_attempt_report",
+    "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+    "version": "1.0.0",
+}
 
 
 @dataclass(frozen=True)
@@ -56,8 +79,10 @@ def _audit_prompt(
         f"PRODUCTION AUDIT COPY — execute only {script}. "
         f"job_id={job_id}; model_id={model_id}; schedule={schedule} Asia/Shanghai; "
         "transport=loopback HTTPS mTLS via host-managed tunnel; "
-        "behavior=trigger, verify immutable result/files, publish and read back the stable report, "
-        "render from the verified source notification, then emit notification only; "
+        "behavior=trigger, verify immutable result/files and read back the zhlearn-owned stable report, "
+        "verify canonical_attempt_report@1.0.0 identity and bound ReportDocument evidence, "
+        "render from the verified source "
+        "notification, then emit notification only; "
         "local_compute=false; flearn_fallback=false; automatic_ordering=false; "
         f"production_manifest_sha256={production_manifest_sha256}."
     )
@@ -297,15 +322,40 @@ def _verified_action_from_report(job: ScheduledJob, payload: bytes) -> dict[str,
         document = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ProductionClientError("report payload is not UTF-8") from exc
-    matched = re.search(r'<pre data-action="canonical">(?P<action>.*?)</pre>', document, re.DOTALL)
-    if matched is None:
-        raise ProductionClientError("report does not contain its canonical action")
+    def report_field(field_id: str) -> str:
+        label = re.escape(field_id.replace("_", " "))
+        matched = re.search(
+            rf'<tr><th scope="row">{label}</th><td><span>AVAILABLE</span><br><code>'
+            r"(?P<value>.*?)</code></td></tr>",
+            document,
+            re.DOTALL,
+        )
+        if matched is None:
+            raise ProductionClientError(f"report field is absent: {field_id}")
+        return html.unescape(matched.group("value"))
+
     try:
-        action = json.loads(html.unescape(matched.group("action")))
-    except json.JSONDecodeError as exc:
+        parameter_display = report_field("template_parameters")
+        if parameter_display.startswith("QR-PRODUCTION-PARAMETERS-DISPLAY-1\n"):
+            parameter_header = parameter_display.splitlines()[1]
+            if not parameter_header.startswith("parameters\t"):
+                raise ValueError("compact parameter header is invalid")
+            configuration = json.loads(parameter_header.removeprefix("parameters\t"))
+        else:
+            configuration = json.loads(parameter_display)
+    except (IndexError, ValueError, json.JSONDecodeError, UnicodeError) as exc:
         raise ProductionClientError("report canonical action is invalid") from exc
+    action = configuration.get("current_action") if isinstance(configuration, dict) else None
+    embedded_operator = {
+        "api_version": 2,
+        "content_digest": report_field("operator_content_digest"),
+        "operator_id": report_field("operator_id"),
+        "source_sha256": report_field("operator_source_sha256"),
+        "version": report_field("operator_version"),
+    }
     if (
         not isinstance(action, dict)
+        or embedded_operator != REPORT_OPERATOR
         or action.get("job_id") != job.job_id
         or action.get("model_version") != job.model_id
         or action.get("production_manifest_sha256") != job.production_manifest_sha256
@@ -314,6 +364,556 @@ def _verified_action_from_report(job: ScheduledJob, payload: bytes) -> dict[str,
     ):
         raise ProductionClientError("report canonical action differs from the scheduled job contract")
     return action
+
+
+def _verified_action_from_report_document(
+    job: ScheduledJob, payload: bytes
+) -> dict[str, Any]:
+    try:
+        document = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError("report document is not JSON") from exc
+    if canonical_json_bytes(document) != payload or not isinstance(document, dict):
+        raise ProductionClientError("report document bytes are not canonical")
+    try:
+        document = validate_report_document(document)
+    except AttemptReportError as exc:
+        raise ProductionClientError("report document contract is invalid") from exc
+    fields = {}
+    for section in document["sections"]:
+        if not isinstance(section, dict) or not isinstance(section.get("fields"), list):
+            raise ProductionClientError("report document sections are invalid")
+        for field in section["fields"]:
+            if not isinstance(field, dict) or not isinstance(field.get("field_id"), str):
+                raise ProductionClientError("report document fields are invalid")
+            field_id = field["field_id"]
+            if field_id in fields:
+                raise ProductionClientError("report document field identity is duplicated")
+            fields[field_id] = field
+    configuration = fields.get("template_parameters", {}).get("raw")
+    action = configuration.get("current_action") if isinstance(configuration, dict) else None
+    embedded_operator = {
+        "api_version": 2,
+        "content_digest": fields.get("operator_content_digest", {}).get("raw"),
+        "operator_id": fields.get("operator_id", {}).get("raw"),
+        "source_sha256": fields.get("operator_source_sha256", {}).get("raw"),
+        "version": fields.get("operator_version", {}).get("raw"),
+    }
+    if (
+        not isinstance(action, dict)
+        or embedded_operator != REPORT_OPERATOR
+        or action.get("job_id") != job.job_id
+        or action.get("model_version") != job.model_id
+        or action.get("production_manifest_sha256") != job.production_manifest_sha256
+        or action.get("report_uuid") != job.report_filename.removesuffix(".html")
+        or action.get("automatic_ordering") is not False
+    ):
+        raise ProductionClientError("report document action or operator does not verify")
+    return action
+
+
+def _verified_json_evidence(evidence: Mapping[str, bytes], name: str) -> Any:
+    payload = evidence[name]
+    try:
+        value = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError(f"report evidence is not JSON: {name}") from exc
+    if canonical_json_bytes(value) != payload:
+        raise ProductionClientError(f"report evidence is not canonical: {name}")
+    return value
+
+
+def _csv_evidence(
+    evidence: Mapping[str, bytes], name: str, expected_fields: Sequence[str]
+) -> list[dict[str, str]]:
+    try:
+        reader = csv.DictReader(io.StringIO(evidence[name].decode("utf-8"), newline=""))
+        rows = list(reader)
+    except UnicodeError as exc:
+        raise ProductionClientError(f"report evidence is not UTF-8 CSV: {name}") from exc
+    if reader.fieldnames != list(expected_fields) or any(None in row for row in rows):
+        raise ProductionClientError(f"report evidence CSV is malformed: {name}")
+    return rows
+
+
+def _verify_report_document_sources(
+    document: Mapping[str, Any], evidence: Mapping[str, bytes]
+) -> dict[str, str]:
+    """Verify immutable bindings and zhlearn's semantic attestation without finance."""
+
+    try:
+        document = validate_report_document(document)
+    except AttemptReportError as exc:
+        raise ProductionClientError("report document contract is invalid") from exc
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    optional = {
+        "total_return_status", "matched_exposure_status", "ranking_status", "promotion_ready",
+        "dividend_tax_cny", "outstanding_tax_cny", "total_return_attachment",
+        "matched_exposure_attachment", "study_terminal_attachment",
+    }
+    if any(
+        field["availability"] != "AVAILABLE"
+        for field_id, field in fields.items()
+        if field_id not in optional
+    ):
+        raise ProductionClientError("required production field availability is invalid")
+
+    audit = _verified_json_evidence(evidence, "attempt-audit.json")
+    descriptor = _verified_json_evidence(evidence, "bundle-descriptor.json")
+    configuration = _verified_json_evidence(evidence, "config.json")
+    contract = _verified_json_evidence(evidence, "contract.json")
+    costs = _verified_json_evidence(evidence, "cost_breakdown.json")
+    metrics = _verified_json_evidence(evidence, "metrics.json")
+    operator = _verified_json_evidence(evidence, "operator-manifest.json")
+    runtime = _verified_json_evidence(evidence, "run_manifest.json")
+    attestation = _verified_json_evidence(evidence, "semantic-attestation.json")
+    daily = _csv_evidence(
+        evidence,
+        "daily_replay.csv",
+        (
+            "Date", "price", "close", "equity", "holdings", "position_after",
+            "available_cash_cny", "dividend_receivable_cny",
+        ),
+    )
+    event_rows = _csv_evidence(
+        evidence,
+        "events.csv",
+        (
+            "Date", "side", "price", "quantity", "notional_cny", "commission_cny",
+            "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny",
+            "cash_before_cny", "cash_after_cny", "holdings_before", "holdings_after", "reason",
+        ),
+    )
+    trade_rows = _csv_evidence(
+        evidence,
+        "trades.csv",
+        (
+            "entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date",
+            "exit_price", "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny", "return",
+        ),
+    )
+    if (
+        not isinstance(configuration, dict)
+        or set(configuration) != {"template"}
+        or not isinstance(configuration["template"], dict)
+        or set(configuration["template"]) != {"parameters"}
+    ):
+        raise ProductionClientError("report configuration evidence contract is invalid")
+    parameters = configuration["template"]["parameters"]
+    expected_parameters = {
+        "display_name", "qualification", "current_action", "strategy_parameters",
+        "execution_price_basis", "price_unit", "cost_description", "signal_price_path",
+        "reporting_account", "event_ledger", "trade_ledger", "holding_spans",
+        "corporate_action_ledger", "performance_summary",
+    }
+    expected_metrics = {
+        "initial_capital_cny", "final_equity_cny", "net_profit_cny", "cumulative_return",
+        "max_drawdown", "exposure", "buy_and_hold_return", "gross_dividends_cny",
+        "period_start", "period_end", "net_return", "current_position", "closed_trades",
+        "open_trades", "available_cash_cny", "dividend_receivable_cny",
+        "buy_and_hold_dividend_receivable_cny",
+    }
+    if (
+        not isinstance(parameters, dict)
+        or set(parameters) != expected_parameters
+        or not isinstance(metrics, dict)
+        or set(metrics) != expected_metrics
+        or not isinstance(audit, dict)
+        or set(audit) != {
+            "attempt_id", "experiment_id", "run_id", "dataset", "result_digest", "operators"
+        }
+        or not isinstance(audit["dataset"], dict)
+        or set(audit["dataset"]) != {"snapshot_id"}
+        or not isinstance(descriptor, dict)
+        or set(descriptor) != {
+            "bundle_id", "attempt_id", "experiment_id", "core_result_digest", "verification"
+        }
+        or descriptor["verification"] != {"status": "VERIFIED"}
+        or not isinstance(contract, dict)
+        or set(contract) != {"purpose", "limitations", "details"}
+        or not isinstance(costs, dict)
+        or set(costs) != {
+            "commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny",
+            "total_cost_cny",
+        }
+        or not isinstance(operator, dict)
+        or set(operator) != {
+            "api_version", "operator_id", "semantic_version", "source", "content_digest"
+        }
+        or not isinstance(operator["source"], dict)
+        or set(operator["source"]) != {"sha256"}
+        or not isinstance(runtime, dict)
+        or set(runtime) != {"runtime"}
+        or not isinstance(attestation, dict)
+    ):
+        raise ProductionClientError("report evidence member contract is invalid")
+
+    action = parameters["current_action"]
+    event_ledger = parameters["event_ledger"]
+    trade_ledger = parameters["trade_ledger"]
+    holding_spans = parameters["holding_spans"]
+    corporate_actions = parameters["corporate_action_ledger"]
+    provenance = runtime["runtime"]
+    if not all(
+        isinstance(value, expected)
+        for value, expected in (
+            (action, dict), (event_ledger, list), (trade_ledger, list),
+            (holding_spans, list), (corporate_actions, list), (provenance, dict),
+        )
+    ):
+        raise ProductionClientError("report configuration evidence is invalid")
+    details = contract["details"]
+    if (
+        contract["purpose"] != "PRESENTATION_ONLY"
+        or contract["limitations"] != [
+            "INTEGRITY_IS_NOT_QUALIFICATION",
+            "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY",
+            "PRESENTATION_ONLY_NO_RECOMPUTATION",
+        ]
+        or not isinstance(details, list)
+        or len(details) < 4
+        or not all(isinstance(item, str) and item for item in details)
+    ):
+        raise ProductionClientError("report contract limitations do not verify")
+    expected_provenance = {
+        "job_id", "report_uuid", "model_id", "production_manifest_sha256", "provider_source",
+        "provider_request", "provider_request_sha256", "market_window", "performance_window",
+        "execution_authority", "trigger_role", "local_compute", "feng_fallback",
+        "corporate_action_source", "corporate_action_revision_policy",
+    }
+    if (
+        set(provenance) != expected_provenance
+        or provenance["job_id"] != action.get("job_id")
+        or provenance["report_uuid"] != action.get("report_uuid")
+        or provenance["model_id"] != action.get("model_version")
+        or provenance["production_manifest_sha256"] != action.get("production_manifest_sha256")
+        or provenance["execution_authority"] != "zhlearn production API"
+        or provenance["trigger_role"] != "ailearn trigger/read-back/delivery only"
+        or provenance["local_compute"] is not False
+        or provenance["feng_fallback"] is not False
+        or not isinstance(provenance["provider_request"], dict)
+        or set(provenance["provider_request"]) != {"scheme", "netloc", "path", "query", "fragment"}
+        or not all(isinstance(value, str) for value in provenance["provider_request"].values())
+        or provenance["provider_source"]
+        != (provenance["provider_request"]["netloc"] or provenance["provider_request"]["scheme"])
+        or not all(
+            isinstance(provenance[name], str) and provenance[name]
+            for name in ("provider_source", "corporate_action_source", "corporate_action_revision_policy")
+        )
+    ):
+        raise ProductionClientError("report provenance authority does not verify")
+    provider_url = urlunsplit(tuple(provenance["provider_request"][name] for name in (
+        "scheme", "netloc", "path", "query", "fragment"
+    )))
+    if hashlib.sha256(provider_url.encode()).hexdigest() != provenance["provider_request_sha256"]:
+        raise ProductionClientError("report provider request identity does not verify")
+
+    normalized = evidence.get("normalized-snapshot.json")
+    if type(normalized) is not bytes:
+        raise ProductionClientError("normalized snapshot evidence is absent")
+    try:
+        normalized_value = json.loads(normalized)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError("normalized snapshot evidence is not JSON") from exc
+    if (
+        canonical_json_bytes(normalized_value) != normalized
+        or not isinstance(normalized_value, list)
+        or not all(isinstance(row, dict) for row in normalized_value)
+    ):
+        raise ProductionClientError("normalized snapshot evidence is invalid")
+    snapshot_sha256 = hashlib.sha256(normalized).hexdigest()
+    dataset_identity = hashlib.sha256(
+        b"quantresearch-production-dataset/v1\0" + normalized
+    ).hexdigest()
+    experiment_id = hashlib.sha256(
+        b"quantresearch-production-experiment/v1\0"
+        + canonical_json_bytes({
+            "job_id": action.get("job_id"),
+            "model": action.get("production_manifest_sha256"),
+            "snapshot": dataset_identity,
+        })
+    ).hexdigest()
+    attempt_id = hashlib.sha256(
+        b"quantresearch-production-attempt/v1\0"
+        + canonical_json_bytes({
+            "experiment_id": experiment_id,
+            "scheduled_for": action.get("generated_at"),
+        })
+    ).hexdigest()
+    if (
+        audit["dataset"]["snapshot_id"] != snapshot_sha256
+        or audit["experiment_id"] != experiment_id
+        or audit["attempt_id"] != attempt_id
+        or audit["run_id"] != f"{action.get('job_id')}:{action.get('generated_at')}"
+        or descriptor["attempt_id"] != attempt_id
+        or descriptor["experiment_id"] != experiment_id
+        or descriptor["core_result_digest"] != audit["result_digest"]
+    ):
+        raise ProductionClientError("report run, attempt, experiment, or bundle binding differs")
+    if operator != {
+        "api_version": REPORT_OPERATOR["api_version"],
+        "operator_id": REPORT_OPERATOR["operator_id"],
+        "semantic_version": REPORT_OPERATOR["version"],
+        "source": {"sha256": REPORT_OPERATOR["source_sha256"]},
+        "content_digest": REPORT_OPERATOR["content_digest"],
+    } or audit["operators"] != {"report": REPORT_OPERATOR}:
+        raise ProductionClientError("report operator evidence differs from reviewed identity")
+
+    price_equity = [
+        {"date": row["Date"], "price": float(row["price"]), "close": float(row["close"]),
+         "equity": float(row["equity"])}
+        for row in daily
+    ]
+    holdings = [
+        {"date": row["Date"], "holdings": int(row["holdings"]),
+         "position_after": int(row["position_after"])}
+        for row in daily
+    ]
+    events = [{
+        key: row[key] if key in {"Date", "side", "reason"}
+        else int(row[key]) if key in {"quantity", "holdings_before", "holdings_after"}
+        else float(row[key])
+        for key in row
+    } for row in event_rows]
+    trades = [{
+        key: None if key in {"exit_date", "exit_price"} and row[key] == ""
+        else row[key] if key in {"entry_date", "exit_date", "status"}
+        else int(row[key]) if key == "quantity" else float(row[key])
+        for key in row
+    } for row in trade_rows]
+    if not daily or len(normalized_value) != len(daily):
+        raise ProductionClientError("report price/equity path inventory differs")
+    dates = [row["date"] for row in price_equity]
+    if dates != sorted(set(dates)):
+        raise ProductionClientError("report price/equity dates are not unique and ordered")
+    if action.get("job_id") == "1cd5557264db":
+        mark_price_key = "signal_close"
+        action_close_key = "latest_close_cny_per_g"
+    elif action.get("job_id") == "297c11cad0dc":
+        mark_price_key = "close"
+        action_close_key = "latest_close"
+    else:
+        raise ProductionClientError("report names an unknown production job")
+    if any(
+        normalized_row.get("date") != daily_row["Date"]
+        or float(normalized_row.get("open")) != float(daily_row["price"])
+        or float(normalized_row.get(mark_price_key)) != float(daily_row["close"])
+        for normalized_row, daily_row in zip(normalized_value, daily, strict=True)
+    ):
+        raise ProductionClientError("normalized snapshot and report price path differ")
+    if parameters["signal_price_path"] != [
+        {"date": row["date"], "signal_price": row["signal_close"]}
+        for row in normalized_value
+    ]:
+        raise ProductionClientError("normalized snapshot and signal price path differ")
+    source_actions = [
+        source_action
+        for row in normalized_value
+        for source_action in row.get("corporate_actions", [])
+    ]
+    if len(source_actions) != len(corporate_actions) or any(
+        any(accounted.get(key) != value for key, value in source.items())
+        for source, accounted in zip(source_actions, corporate_actions, strict=True)
+    ):
+        raise ProductionClientError("normalized corporate actions and report ledger differ")
+    if (
+        action.get("latest_market_date") != normalized_value[-1].get("date")
+        or float(action.get(action_close_key)) != float(normalized_value[-1].get("close"))
+    ):
+        raise ProductionClientError("normalized snapshot and current action differ")
+    if (
+        fields["price_equity_rows"]["raw"] != price_equity
+        or fields["holdings"]["raw"] != holdings
+        or fields["events"]["raw"] != events
+        or fields["trades"]["raw"] != trades
+        or provenance["market_window"] != [dates[0], dates[-1]]
+        or provenance["performance_window"] != [metrics["period_start"], metrics["period_end"]]
+    ):
+        raise ProductionClientError("report tabular evidence or provenance window differs")
+    if len(event_ledger) != len(events) or any(
+        source["Date"] != detail.get("action_date")
+        or source["side"] != detail.get("side")
+        or source["price"] != detail.get("price")
+        or source["quantity"] != detail.get("quantity")
+        for source, detail in zip(events, event_ledger, strict=True)
+    ):
+        raise ProductionClientError("report event ledger references differ")
+    trade_keys = (
+        "entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date", "exit_price",
+        "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny", "return",
+    )
+    if len(trade_ledger) != len(trades) or any(
+        source != {key: detail[key] for key in trade_keys}
+        for source, detail in zip(trades, trade_ledger, strict=True)
+    ):
+        raise ProductionClientError("report trade ledger references differ")
+    statuses = [trade["status"] for trade in trades]
+    if (
+        any(status not in {"OPEN", "CLOSED"} for status in statuses)
+        or metrics["open_trades"] != statuses.count("OPEN")
+        or metrics["closed_trades"] != statuses.count("CLOSED")
+        or metrics["current_position"] != ("LONG" if holdings[-1]["position_after"] else "FLAT")
+        or action.get("state_before_next") != holdings[-1]["position_after"]
+    ):
+        raise ProductionClientError("report trade and position metric counts differ")
+
+    core_metrics = {
+        key: value for key, value in metrics.items()
+        if key not in {"net_return", "current_position", "closed_trades", "open_trades"}
+    }
+    core_result_digest = hashlib.sha256(
+        b"quantresearch-production-report-evidence/v1\0"
+        + canonical_json_bytes({
+            "normalized_snapshot_sha256": snapshot_sha256,
+            "action": action,
+            "price_equity": price_equity,
+            "events": events,
+            "trades": trades,
+            "holdings": holdings,
+            "metrics": core_metrics,
+            "provenance": provenance,
+        })
+    ).hexdigest()
+    bundle_id = hashlib.sha256(
+        b"quant-platform/attempt-result-bundle/v1\0"
+        + canonical_json_bytes({
+            "attempt_id": attempt_id,
+            "experiment_id": experiment_id,
+            "core_result_digest": core_result_digest,
+        })
+    ).hexdigest()
+    semantic_subject_digest = hashlib.sha256(
+        b"quantresearch-production-semantic-attestation-subject/v1\0"
+        + canonical_json_bytes({
+            "core_result_digest": core_result_digest,
+            "cost_breakdown": costs,
+            "event_ledger": event_ledger,
+            "trade_ledger": trade_ledger,
+            "holding_spans": holding_spans,
+            "corporate_action_ledger": corporate_actions,
+            "performance_summary": parameters["performance_summary"],
+            "daily_replay_sha256": hashlib.sha256(evidence["daily_replay.csv"]).hexdigest(),
+        })
+    ).hexdigest()
+    expected_attestation = {
+        "schema": "quantresearch-production-semantic-attestation/v1",
+        "authority": "zhlearn production report adapter",
+        "status": "VERIFIED",
+        "subject_core_result_digest": core_result_digest,
+        "subject_digest": semantic_subject_digest,
+        "dataset_snapshot_sha256": snapshot_sha256,
+        "evidence_counts": {
+            "price_rows": len(price_equity), "events": len(events), "trades": len(trades),
+            "holding_rows": len(holdings), "holding_spans": len(holding_spans),
+            "corporate_actions": len(corporate_actions),
+        },
+        "checks": [
+            "action_matches_frozen_evaluation", "next_open_event_timing",
+            "transaction_cost_accounting", "corporate_action_quantity_and_receivable_accounting",
+            "trade_and_open_mark_pnl", "equity_return_drawdown_exposure_and_comparator",
+        ],
+    }
+    if (
+        audit["result_digest"] != core_result_digest
+        or descriptor["bundle_id"] != bundle_id
+        or attestation != expected_attestation
+    ):
+        raise ProductionClientError("report semantic attestation or immutable identity differs")
+
+    resolved = {
+        "attempt_id": ("attempt-audit", "/attempt_id", attempt_id),
+        "experiment_id": ("attempt-audit", "/experiment_id", experiment_id),
+        "run_id": ("attempt-audit", "/run_id", audit["run_id"]),
+        "dataset_snapshot_id": ("attempt-audit", "/dataset/snapshot_id", snapshot_sha256),
+        "purpose": ("contract", "/purpose", contract["purpose"]),
+        "bundle_integrity": ("bundle-descriptor", "/verification/status", "VERIFIED"),
+        **{
+            name: ("bundle/metrics.json", f"/{name}", metrics[name])
+            for name in (
+                "period_start", "period_end", "initial_capital_cny", "final_equity_cny",
+                "net_profit_cny", "current_position", "closed_trades", "open_trades",
+                "gross_dividends_cny", "net_return", "max_drawdown",
+            )
+        },
+        "template_parameters": ("bundle/config.json", "/template/parameters", parameters),
+        "operators": ("attempt-audit", "/operators", audit["operators"]),
+        "runtime": ("bundle/run_manifest.json", "/runtime", provenance),
+        "price_equity_rows": ("bundle/daily_replay.csv", "/rows/*/{Date,price,close,equity}", price_equity),
+        "events": ("bundle/events.csv", "/rows", events),
+        "trades": ("bundle/trades.csv", "/rows", trades),
+        "holdings": ("bundle/daily_replay.csv", "/rows/*/{Date,holdings,position_after}", holdings),
+        **{
+            name: ("bundle/cost_breakdown.json", f"/{name}", costs[name])
+            for name in ("commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny")
+        },
+        "integrity_not_qualification": ("contract", "/limitations/0", contract["limitations"][0]),
+        "qualification_not_deployment": ("contract", "/limitations/1", contract["limitations"][1]),
+        "no_recomputation": ("contract", "/limitations/2", contract["limitations"][2]),
+        "bundle_id": ("bundle-descriptor", "/bundle_id", bundle_id),
+        "core_result_digest": ("attempt-audit", "/result_digest", core_result_digest),
+        "operator_id": ("operator-manifest", "/operator_id", operator["operator_id"]),
+        "operator_version": ("operator-manifest", "/semantic_version", operator["semantic_version"]),
+        "operator_source_sha256": ("operator-manifest", "/source/sha256", operator["source"]["sha256"]),
+        "operator_content_digest": ("operator-manifest", "/content_digest", operator["content_digest"]),
+    }
+    expected_displays = {
+        "purpose": (
+            f"Historical daily decision evidence; current action {action.get('action')} for "
+            f"{action.get('next_trade_date_estimate', action.get('next_session_date_estimate'))}; "
+            "automatic_ordering=false"
+        ),
+        "bundle_integrity": "Verified canonical production adapter",
+        "initial_capital_cny": "1000000 CNY reporting normalization; not actual invested capital",
+        "template_parameters": compact_production_parameters_display(parameters),
+        "operators": canonical_json_bytes(audit["operators"]).decode(),
+        "runtime": canonical_json_bytes(provenance).decode(),
+        "price_equity_rows": compact_price_equity_display(price_equity),
+        "events": (
+            f"{len(events)} source-bound rows; complete detailed ledger is included in "
+            "template_parameters"
+        ),
+        "trades": (
+            f"{len(trades)} source-bound rows; complete detailed ledger is included in "
+            "template_parameters"
+        ),
+        "holdings": compact_holdings_display(holdings),
+        "total_cost_cny": f"{float(costs['total_cost_cny']):.12g} CNY; {parameters['cost_description']}",
+        "gross_dividends_cny": (
+            f"{float(metrics['gross_dividends_cny']):.12g} CNY gross pre-tax ex-date "
+            "receivable accrual; payment dates unavailable and no accrual is spendable cash"
+        ),
+        "integrity_not_qualification": "; ".join(details),
+        "qualification_not_deployment": details[-2],
+        "no_recomputation": details[-1],
+    }
+    for field_id, field in fields.items():
+        if field["availability"] != "AVAILABLE":
+            continue
+        if field_id not in resolved:
+            raise ProductionClientError(f"report source is unsupported: {field_id}")
+        artifact, pointer, value = resolved[field_id]
+        if (
+            field["source_ref"] != {"artifact": artifact, "pointer": pointer}
+            or field["raw"] != value
+            or field["display"] != expected_displays.get(field_id)
+        ):
+            if field_id in {
+                "integrity_not_qualification",
+                "qualification_not_deployment",
+                "no_recomputation",
+            }:
+                raise ProductionClientError("report contract limitation binding differs")
+            raise ProductionClientError(f"report source binding differs: {field_id}")
+    return {
+        "attempt_id": attempt_id,
+        "experiment_id": experiment_id,
+        "dataset_snapshot_id": snapshot_sha256,
+        "provider_url": provider_url,
+    }
 
 
 def _number(action: Mapping[str, Any], key: str) -> float:
@@ -426,26 +1026,11 @@ def _https_readback(url: str) -> bytes:
     return payload
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.chmod(0o644)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def publish_report(
+def verify_stable_report(
     job: ScheduledJob,
     report: bytes,
     action: Mapping[str, Any],
     *,
-    report_root: Path = REPORT_ROOT,
     readback: Callable[[str], bytes] = _https_readback,
 ) -> str:
     if not report or len(report) > 16 * 1024 * 1024 or b"<html" not in report[:4096].lower():
@@ -454,22 +1039,9 @@ def publish_report(
     action_name = str(action.get("action", ""))
     if market_date.encode() not in report or action_name.encode() not in report:
         raise ProductionClientError("report market date or action differs from the verified action")
-    root_metadata = os.stat(report_root, follow_symlinks=False)
-    if not stat.S_ISDIR(root_metadata.st_mode):
-        raise ProductionClientError("report publication root is unsafe")
-    target = report_root / job.report_filename
-    prior = target.read_bytes() if target.exists() else None
     url = f"{REPORT_BASE_URL}/{job.report_filename}"
-    _atomic_write(target, report)
-    try:
-        if target.read_bytes() != report or readback(url) != report:
-            raise ProductionClientError("published report read-back does not verify")
-    except Exception:
-        if prior is None:
-            target.unlink(missing_ok=True)
-        else:
-            _atomic_write(target, prior)
-        raise
+    if readback(url) != report:
+        raise ProductionClientError("stable report read-back does not verify")
     return url
 
 
@@ -480,21 +1052,70 @@ def run_request(
     tls: ClientTLS,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     client = client_factory(transport_factory(tls))
     manifest = client.submit_and_wait(request)
+    files = manifest.get("files")
     if (
         manifest.get("schema") != "quantresearch-production-result/v1"
         or manifest.get("job_id") != job.job_id
         or manifest.get("model_id") != job.model_id
         or manifest.get("production_manifest_sha256") != job.production_manifest_sha256
         or manifest.get("report_filename") != job.report_filename
+        or manifest.get("report_operator") != REPORT_OPERATOR
+        or not isinstance(files, Mapping)
+        or manifest.get("report_document_sha256")
+        != files.get("report-document.json", {}).get("sha256")
+        or manifest.get("report_sha256") != files.get("report.html", {}).get("sha256")
+        or not REPORT_EVIDENCE_FILE_NAMES.issubset(files)
         or manifest.get("automatic_ordering") is not False
     ):
         raise ProductionClientError("result does not match the scheduled job contract")
     report = client.fetch_verified_file(manifest, "report.html")
     action = _verified_action_from_report(job, report)
+    evidence = {
+        name: client.fetch_verified_file(manifest, name)
+        for name in REPORT_EVIDENCE_FILE_NAMES
+    }
+    evidence["normalized-snapshot.json"] = client.fetch_verified_file(
+        manifest, "normalized-snapshot.json"
+    )
+    document_action = _verified_action_from_report_document(
+        job, evidence["report-document.json"]
+    )
+    try:
+        verified_ids = _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionClientError("report source evidence is invalid") from exc
+    if (
+        manifest.get("attempt_id") != verified_ids["attempt_id"]
+        or manifest.get("experiment_id") != verified_ids["experiment_id"]
+        or manifest.get("dataset_snapshot_id") != verified_ids["dataset_snapshot_id"]
+        or manifest.get("provider_request")
+        != {"method": "GET", "url": verified_ids["provider_url"]}
+        or manifest.get("provider_response_sha256")
+        != files.get("provider-response.bin", {}).get("sha256")
+        or manifest.get("action_sha256") != files.get("action.json", {}).get("sha256")
+        or manifest.get("generated_at") != document_action.get("generated_at")
+        or document_action.get("generated_at") != request.scheduled_for
+    ):
+        raise ProductionClientError("result invocation or experiment identity does not verify")
+    canonical_report = render_report_document(
+        json.loads(evidence["report-document.json"])
+    )
+    if report != canonical_report:
+        raise ProductionClientError("report HTML differs from canonical document rendering")
+    if canonical_json_bytes(document_action) != canonical_json_bytes(action):
+        raise ProductionClientError("report HTML and ReportDocument actions differ")
+    if manifest.get("action_sha256") != hashlib.sha256(
+        canonical_json_bytes(action)
+    ).hexdigest():
+        raise ProductionClientError("report action identity differs from the immutable result")
     source_action = _verified_action_from_notification(
         job, client.fetch_verified_file(manifest, "notification.txt")
     )
@@ -503,7 +1124,7 @@ def run_request(
         job, action, comparison_url
     ):
         raise ProductionClientError("report action and source notification do not agree")
-    report_url = publisher(job, report, action)
+    report_url = stable_report_verifier(job, report, action)
     return render_notification(job, action, report_url)
 
 
@@ -515,7 +1136,9 @@ def run_job(
     jobs_path: Path,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     validate_schedule_record(job, jobs_path)
     request = ProductionRequest.build(
@@ -529,7 +1152,7 @@ def run_job(
         tls=tls,
         transport_factory=transport_factory,
         client_factory=client_factory,
-        publisher=publisher,
+        stable_report_verifier=stable_report_verifier,
     )
 
 
@@ -541,7 +1164,9 @@ def run_validation(
     tls: ClientTLS,
     transport_factory: Callable[[ClientTLS], Any] = StdlibMTLSTransport,
     client_factory: Callable[[Any], Any] = ProductionClient,
-    publisher: Callable[[ScheduledJob, bytes, Mapping[str, Any]], str] = publish_report,
+    stable_report_verifier: Callable[
+        [ScheduledJob, bytes, Mapping[str, Any]], str
+    ] = verify_stable_report,
 ) -> bytes:
     request = ProductionRequest.build_validation(
         job_id=job.job_id,
@@ -555,7 +1180,7 @@ def run_validation(
         tls=tls,
         transport_factory=transport_factory,
         client_factory=client_factory,
-        publisher=publisher,
+        stable_report_verifier=stable_report_verifier,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -33,6 +34,10 @@ from .study_remote import StudyRemoteError
 MAX_BODY_BYTES = 16_384
 MAX_RESPONSE_BYTES = 1_048_576
 VERIFIED_CLIENT_HEADER = "x-quantresearch-verified-client"
+STABLE_REPORT_PATH = re.compile(
+    r"^/api/v1/production/stable-reports/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.html$"
+)
 
 
 def _response(status: int, value: Mapping[str, Any]) -> Response:
@@ -66,7 +71,9 @@ def create_production_app(
 
     @app.middleware("http")
     async def verified_client_boundary(request: Request, call_next):
-        if request.url.path in {"/health", "/health/live", "/health/ready"}:
+        if request.url.path in {"/health", "/health/live", "/health/ready"} or (
+            STABLE_REPORT_PATH.fullmatch(request.url.path) is not None
+        ):
             return await call_next(request)
         supplied = request.headers.get(VERIFIED_CLIENT_HEADER)
         if (
@@ -148,6 +155,23 @@ def create_production_app(
         except ProductionResultError as exc:
             return _error(404, "RESULT_FILE_NOT_FOUND", str(exc))
         return Response(value, status_code=200, media_type="application/octet-stream")
+
+    @app.get("/api/v1/production/stable-reports/{report_uuid}.html")
+    async def stable_report(report_uuid: str):
+        try:
+            value = await run_in_threadpool(results.stable_report, report_uuid)
+        except ProductionResultError as exc:
+            return _error(404, "STABLE_REPORT_NOT_FOUND", str(exc))
+        return Response(
+            value["html"],
+            status_code=200,
+            media_type="text/html",
+            headers={
+                "ETag": f'"sha256:{value["report_sha256"]}"',
+                "X-QuantResearch-Result-Id": value["result_id"],
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.post("/api/v1/datasets/msft/snapshots")
     async def create_msft_snapshot(request: Request):

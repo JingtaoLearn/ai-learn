@@ -30,10 +30,14 @@ from .postgres_persistence import (
 )
 from .schemas import canonical_json_bytes
 
-FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v4"
+FULL_SCHEMA_IDENTITY = "quantresearch-postgresql-full-persistence-v5"
 MIGRATION_MANIFEST_SCHEMA = "quantresearch-full-migration-manifest/v1"
 PARITY_RECEIPT_SCHEMA = "quantresearch-full-migration-parity/v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+UUID_V4 = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+UTC_SECOND = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 SAFE_TABLE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 MAX_BYTEA_ARTIFACT = 16 * 1024 * 1024
 RESIDUAL_CLASSES = frozenset({"DATASET_PARQUET", "SOURCE_TREE"})
@@ -411,6 +415,15 @@ CREATE TABLE IF NOT EXISTS qr.production_results (
     artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id),
     manifest jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+CREATE TABLE IF NOT EXISTS qr.production_report_current (
+    report_uuid uuid PRIMARY KEY,
+    job_id text NOT NULL UNIQUE,
+    result_id char(64) NOT NULL REFERENCES qr.production_results(result_id),
+    report_sha256 char(64) NOT NULL CHECK (report_sha256 ~ '^[0-9a-f]{64}$'),
+    report_size bigint NOT NULL CHECK (report_size > 0),
+    generated_at text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
 CREATE TABLE IF NOT EXISTS qr.formal_calibration_claims (
     claim_id text PRIMARY KEY, artifact_set_id char(64) NOT NULL REFERENCES qr.artifact_sets(artifact_set_id),
     document jsonb NOT NULL
@@ -683,9 +696,10 @@ def install_full_schema(
                 current = connection.execute(
                     "SELECT identity FROM qr.full_schema_identity WHERE singleton"
                 ).fetchone()
-                if current is not None and current["identity"] == (
-                    "quantresearch-postgresql-full-persistence-v3"
-                ):
+                if current is not None and current["identity"] in {
+                    "quantresearch-postgresql-full-persistence-v3",
+                    "quantresearch-postgresql-full-persistence-v4",
+                }:
                     connection.execute(
                         'DROP TRIGGER IF EXISTS "full_schema_identity_immutable" '
                         "ON qr.full_schema_identity"
@@ -2338,6 +2352,141 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
             if payload is None or descriptor != {"sha256": _sha256_bytes(payload), "size": len(payload)}:
                 raise PersistenceUnavailableError("production result member verification failed")
         return {"manifest": manifest, "members": members}
+
+    @staticmethod
+    def _production_report_pointer(manifest: Mapping[str, Any]) -> dict[str, Any]:
+        filename = manifest.get("report_filename")
+        report_uuid = filename.removesuffix(".html") if isinstance(filename, str) else ""
+        files = manifest.get("files")
+        descriptor = files.get("report.html") if isinstance(files, Mapping) else None
+        if (
+            UUID_V4.fullmatch(report_uuid) is None
+            or filename != f"{report_uuid}.html"
+            or not isinstance(manifest.get("job_id"), str)
+            or not manifest["job_id"]
+            or not isinstance(manifest.get("result_id"), str)
+            or SHA256.fullmatch(manifest["result_id"]) is None
+            or not isinstance(descriptor, Mapping)
+            or not isinstance(descriptor.get("sha256"), str)
+            or SHA256.fullmatch(descriptor["sha256"]) is None
+            or not isinstance(descriptor.get("size"), int)
+            or descriptor["size"] <= 0
+            or manifest.get("report_sha256") != descriptor["sha256"]
+            or not isinstance(manifest.get("generated_at"), str)
+            or UTC_SECOND.fullmatch(manifest["generated_at"]) is None
+        ):
+            raise ValueError("stable production report binding is invalid")
+        return {
+            "report_uuid": report_uuid,
+            "job_id": manifest["job_id"],
+            "result_id": manifest["result_id"],
+            "report_sha256": descriptor["sha256"],
+            "report_size": descriptor["size"],
+            "generated_at": manifest["generated_at"],
+        }
+
+    def stable_production_report(self, report_uuid: str) -> dict[str, Any]:
+        if not isinstance(report_uuid, str) or UUID_V4.fullmatch(report_uuid) is None:
+            raise ValueError("stable production report UUID is invalid")
+        try:
+            with self.config.connect() as connection:
+                row = connection.execute(
+                    "SELECT report_uuid::text AS report_uuid, job_id, result_id, "
+                    "report_sha256, report_size, generated_at FROM qr.production_report_current "
+                    "WHERE report_uuid=%s",
+                    (report_uuid,),
+                ).fetchone()
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("stable production report pointer is unavailable") from exc
+        if row is None:
+            raise ValueError("unknown stable production report")
+        pointer = {
+            "report_uuid": str(row["report_uuid"]),
+            "job_id": row["job_id"],
+            "result_id": row["result_id"].strip(),
+            "report_sha256": row["report_sha256"].strip(),
+            "report_size": int(row["report_size"]),
+            "generated_at": row["generated_at"],
+        }
+        result = self.production_result(pointer["result_id"])
+        manifest = result["manifest"]
+        expected = self._production_report_pointer(manifest)
+        html = result["members"].get("report.html")
+        if (
+            pointer != expected
+            or not isinstance(html, bytes)
+            or _sha256_bytes(html) != pointer["report_sha256"]
+            or len(html) != pointer["report_size"]
+        ):
+            raise PersistenceUnavailableError("stable production report binding is invalid")
+        return {**pointer, "html": html}
+
+    def advance_stable_production_report(
+        self, manifest: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        pointer = self._production_report_pointer(manifest)
+        selected_pointer = pointer
+        verified = self.production_result(pointer["result_id"])
+        if verified["manifest"] != dict(manifest):
+            raise PersistenceUnavailableError("stable production result read-back differs")
+        try:
+            with self.config.connect() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (pointer["report_uuid"],),
+                    )
+                    stored = connection.execute(
+                        "SELECT manifest FROM qr.production_results WHERE result_id=%s FOR SHARE",
+                        (pointer["result_id"],),
+                    ).fetchone()
+                    if stored is None or stored["manifest"] != dict(manifest):
+                        raise PersistenceUnavailableError(
+                            "stable production result disappeared before pointer advancement"
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO qr.production_report_current(
+                            report_uuid, job_id, result_id, report_sha256, report_size, generated_at
+                        ) VALUES (%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(report_uuid) DO UPDATE SET
+                            job_id=excluded.job_id,
+                            result_id=excluded.result_id,
+                            report_sha256=excluded.report_sha256,
+                            report_size=excluded.report_size,
+                            generated_at=excluded.generated_at,
+                            updated_at=clock_timestamp()
+                        WHERE excluded.generated_at > qr.production_report_current.generated_at
+                           OR (excluded.generated_at = qr.production_report_current.generated_at
+                               AND excluded.result_id > qr.production_report_current.result_id)
+                        """,
+                        tuple(pointer.values()),
+                    )
+                    current = connection.execute(
+                        "SELECT report_uuid::text AS report_uuid, job_id, result_id, "
+                        "report_sha256, report_size, generated_at FROM qr.production_report_current "
+                        "WHERE report_uuid=%s",
+                        (pointer["report_uuid"],),
+                    ).fetchone()
+                    selected_pointer = None if current is None else {
+                        "report_uuid": str(current["report_uuid"]),
+                        "job_id": current["job_id"],
+                        "result_id": current["result_id"].strip(),
+                        "report_sha256": current["report_sha256"].strip(),
+                        "report_size": int(current["report_size"]),
+                        "generated_at": current["generated_at"],
+                    }
+                    if selected_pointer is None or (
+                        selected_pointer["generated_at"], selected_pointer["result_id"]
+                    ) < (pointer["generated_at"], pointer["result_id"]):
+                        raise PersistenceUnavailableError(
+                            "stable production pointer transaction read-back differs"
+                        )
+        except psycopg.Error as exc:
+            raise PersistenceUnavailableError("stable production pointer advancement failed") from exc
+        if selected_pointer == pointer:
+            return {**pointer, "html": verified["members"]["report.html"]}
+        return self.stable_production_report(pointer["report_uuid"])
 
     def publish_production_result(
         self, manifest: Mapping[str, Any], payloads: Mapping[str, bytes]

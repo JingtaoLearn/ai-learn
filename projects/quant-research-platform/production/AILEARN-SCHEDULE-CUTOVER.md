@@ -13,7 +13,7 @@ test -f "$project_root/production/ailearn-schedule-cutover.json"
 runtime="$HOME/.hermes/lib/quantresearch-production-client/quant_platform"
 install -d -m 0755 "$runtime" "$HOME/.hermes/scripts"
 install -m 0444 /dev/null "$runtime/__init__.py"
-for name in production_contract.py production_client.py production_schedule_client.py; do
+for name in schemas.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do
   install -m 0444 "$project_root/src/quant_platform/$name" "$runtime/$name"
 done
 install -m 0555 "$project_root/scripts/gold_production_api_action.py" "$HOME/.hermes/scripts/gold_production_api_action.py"
@@ -55,7 +55,7 @@ PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_
 PYTHONPATH="$HOME/.hermes/lib/quantresearch-production-client" python3 -m quant_platform.production_schedule_client --job-id 297c11cad0dc --scheduled-for 2026-03-09T00:40:00Z --jobs-file "$tmp_jobs"
 ```
 
-Use a newly admitted weekday 08:40 production identity instead of the example, or use distinct bounded validation identities, when performing real validation. BOCOM's 08:45 cron start retains the frozen 08:40 production identity. Each call must verify the immutable result, source notification and report, atomically publish and HTTPS-read back the current stable report, then render the concise notification locally. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, report-publication, model, or action error fails closed; there is no local computation or alternate endpoint.
+Use a newly admitted weekday 08:40 production identity instead of the example, or use distinct bounded validation identities, when performing real validation. BOCOM's 08:45 cron start retains the frozen 08:40 production identity. Each call must verify the immutable result, source notification and report, then HTTPS-read back the same canonical bytes through the unchanged stable URL before rendering the concise notification locally. zhlearn owns the atomic stable pointer and immutable report endpoint; ailearn performs no report publication or financial computation. Any `UNKNOWN`, TLS, tunnel, schedule, result, file-identity, stable-read-back, model, or action error fails closed; there is no local computation or alternate endpoint.
 
 ## Cut over the two existing records
 

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import quant_platform.production_client as production_client_module
 
 from quant_platform.production_client import (
+    MAX_API_RESPONSE_BYTES,
+    MAX_RESULT_FILE_BYTES,
+    REPORT_EVIDENCE_FILE_NAMES,
     ClientTLS,
     ProductionClient,
     ProductionClientError,
     ProductionClientUnknown,
+    StdlibMTLSTransport,
 )
 from quant_platform.production_contract import ProductionRequest, canonical_json_bytes, production_run_id
 
@@ -39,6 +45,7 @@ class SuccessTransport:
             "action.json": b"{}",
             "report.html": b"<html></html>",
             "notification.txt": b"verified notification",
+            **{name: b"{}" for name in REPORT_EVIDENCE_FILE_NAMES},
         }
         self.core = {
             "schema": "quantresearch-production-result/v1",
@@ -177,6 +184,91 @@ def test_client_rejects_tampered_result_file() -> None:
 
     with pytest.raises(ProductionClientError, match="file identity"):
         client.fetch_verified_file(result, "notification.txt")
+
+
+def test_stdlib_transport_uses_a_bounded_result_artifact_limit_without_loosening_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"x" * (MAX_API_RESPONSE_BYTES + 1)
+
+    class Response:
+        status = 200
+
+        @staticmethod
+        def getheader(name):
+            return str(len(payload)) if name.casefold() == "content-length" else None
+
+        @staticmethod
+        def getheaders():
+            return []
+
+        @staticmethod
+        def read(limit):
+            return payload[:limit]
+
+    class Connection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def getresponse():
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(production_client_module.http.client, "HTTPSConnection", Connection)
+    transport = StdlibMTLSTransport.__new__(StdlibMTLSTransport)
+    transport.host = "127.0.0.1"
+    transport.port = 8443
+    transport.context = None
+    transport.configuration = SimpleNamespace(timeout_seconds=15.0)
+    result_id = "a" * 64
+
+    status, _headers, actual = transport.request(
+        "GET",
+        f"/api/v1/production/results/{result_id}/files/report-document.json",
+        headers={"Accept": "application/octet-stream"},
+        body=None,
+    )
+
+    assert status == 200
+    assert actual == payload
+    assert len(actual) < MAX_RESULT_FILE_BYTES
+    manifest = {
+        "request_id": "request-id",
+        "result_id": result_id,
+        "files": {
+            "report-document.json": {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+        },
+    }
+    assert ProductionClient(transport).fetch_verified_file(
+        manifest, "report-document.json"
+    ) == payload
+    with pytest.raises(ProductionClientError, match="size limit"):
+        transport.request(
+            "GET",
+            f"/api/v1/production/results/{result_id}",
+            headers={"Accept": "application/json"},
+            body=None,
+        )
+
+
+def test_client_rejects_result_artifacts_above_the_enforced_transport_limit() -> None:
+    value = request()
+    transport = SuccessTransport(value)
+    transport.core["files"]["report-document.json"]["size"] = MAX_RESULT_FILE_BYTES + 1
+    transport.result_id = hashlib.sha256(canonical_json_bytes(transport.core)).hexdigest()
+    client = ProductionClient(transport, sleep=lambda _: None)
+
+    with pytest.raises(ProductionClientError, match="file inventory"):
+        client.submit_and_wait(value)
 
 
 def test_client_tls_rejects_non_loopback_and_unsafe_key_paths(tmp_path: Path) -> None:
