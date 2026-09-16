@@ -2438,7 +2438,7 @@ class FullPostgresPersistence(PostgresOperatorPersistence):
                         (pointer["report_uuid"],),
                     )
                     stored = connection.execute(
-                        "SELECT manifest FROM qr.production_results WHERE result_id=%s FOR SHARE",
+                        "SELECT manifest FROM qr.production_results WHERE result_id=%s",
                         (pointer["result_id"],),
                     ).fetchone()
                     if stored is None or stored["manifest"] != dict(manifest):

@@ -132,6 +132,23 @@ def test_schema_has_one_mutable_stable_pointer_to_immutable_production_results()
     assert ("qr", "production_report_current") not in full_persistence.IMMUTABLE_TABLES
 
 
+def test_schema_installer_denies_runtime_row_lock_privilege_on_production_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    connection = _Connection()
+    monkeypatch.setattr(full_persistence, "migrate_schema", lambda *args, **kwargs: None)
+
+    full_persistence.install_full_schema(
+        cast(Any, _Config(connection)),
+        runtime_user="qr_runtime",
+        runtime_password_file=tmp_path / "runtime-password",
+    )
+
+    assert (
+        'REVOKE UPDATE, DELETE ON "qr"."production_results" FROM "qr_runtime"'
+    ) in connection.statements
+
+
 def test_postgres_production_result_accepts_complete_verified_inventory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -318,7 +335,9 @@ def test_stable_pointer_advances_and_reads_back_inside_one_database_transaction(
         "html": html,
     }
     assert "pg_advisory_xact_lock" in connection.statements[0]
-    assert "FOR SHARE" in connection.statements[1]
+    assert connection.statements[1] == (
+        "SELECT manifest FROM qr.production_results WHERE result_id=%s"
+    )
     assert "ON CONFLICT(report_uuid) DO UPDATE" in connection.statements[2]
     assert "FROM qr.production_report_current" in connection.statements[3]
 
