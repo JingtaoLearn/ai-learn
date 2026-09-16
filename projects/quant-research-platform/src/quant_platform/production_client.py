@@ -19,7 +19,8 @@ REPORT_EVIDENCE_FILE_NAMES = frozenset(
     {
         "attempt-audit.json", "bundle-descriptor.json", "config.json", "contract.json",
         "cost_breakdown.json", "daily_replay.csv", "events.csv", "metrics.json",
-        "operator-manifest.json", "report-document.json", "run_manifest.json", "trades.csv",
+        "operator-manifest.json", "report-document.json", "run_manifest.json",
+        "semantic-attestation.json", "trades.csv",
     }
 )
 

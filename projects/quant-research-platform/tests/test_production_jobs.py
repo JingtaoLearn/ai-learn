@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -66,6 +68,27 @@ def seal(directory: Path, payloads: dict[str, bytes]) -> str:
         member.chmod(0o444)
     directory.chmod(0o555)
     return staged_package_identity(payloads)
+
+
+def _one_entry_points(rows, _config):
+    points = [
+        {
+            "decision_date": row["date"],
+            "is_next_session": False,
+            "slope_pct": -1.0 if index == 0 else 1.0,
+        }
+        for index, row in enumerate(rows)
+    ]
+    points.append(
+        {
+            "decision_date": None,
+            "is_next_session": True,
+            "slope_pct": 1.0,
+            "raw_curve": rows[-1]["signal_close"],
+            "smooth_curve": rows[-1]["signal_close"],
+        }
+    )
+    return points
 
 
 def formal_computation() -> FormalComputation:
@@ -205,8 +228,181 @@ def test_bocom_report_execution_and_pnl_are_not_revised_by_adjusted_close_scale(
     assert original_config["event_ledger"] == rescaled_config["event_ledger"]
     assert original_config["trade_ledger"] == rescaled_config["trade_ledger"]
     assert original_config["performance_summary"] == rescaled_config["performance_summary"]
-    assert original_config["execution_price_basis"] == "observed next-session raw open"
+    assert original_config["execution_price_basis"] == (
+        "next-session as-traded open reconstructed from observed Yahoo split-adjusted quote "
+        "and bound split events"
+    )
     assert original_config["price_unit"] == "CNY_PER_SHARE"
+
+
+def test_bocom_split_and_dividend_accounting_preserves_equity_and_binds_revision_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    def one_entry_points(rows, _config):
+        points = [
+            {
+                "decision_date": row["date"],
+                "is_next_session": False,
+                "slope_pct": -1.0 if index == 0 else 1.0,
+            }
+            for index, row in enumerate(rows)
+        ]
+        points.append(
+            {
+                "decision_date": None,
+                "is_next_session": True,
+                "slope_pct": 1.0,
+                "raw_curve": rows[-1]["signal_close"],
+                "smooth_curve": rows[-1]["signal_close"],
+            }
+        )
+        return points
+
+    monkeypatch.setattr(production_bocom_module, "decision_points", one_entry_points)
+    payload = json.loads((FIXTURES / "bocom-yahoo-chart.json").read_bytes())
+    result = payload["chart"]["result"][0]
+    quote = result["indicators"]["quote"][0]
+    split_index = 5
+    dividend_index = 7
+    for name in ("open", "close"):
+        quote[name] = [50.0] * len(result["timestamp"])
+    quote["high"] = [value + 1.0 for value in quote["close"]]
+    quote["low"] = [value - 1.0 for value in quote["close"]]
+    result["events"] = {
+        "splits": {
+            str(result["timestamp"][split_index]): {
+                "date": result["timestamp"][split_index],
+                "numerator": 2.0,
+                "denominator": 1.0,
+                "splitRatio": "2:1",
+            }
+        },
+        "dividends": {
+            str(result["timestamp"][dividend_index]): {
+                "amount": 1.0,
+                "date": result["timestamp"][dividend_index],
+            }
+        },
+    }
+
+    computation = job.compute(
+        canonical_json_bytes(payload), "fixture://bocom-corporate-actions", SCHEDULED
+    )
+    parameters = json.loads(computation.report_evidence["config.json"])["template"][
+        "parameters"
+    ]
+    metrics = json.loads(computation.report_evidence["metrics.json"])
+    daily = list(
+        csv.DictReader(
+            io.StringIO(computation.report_evidence["daily_replay.csv"].decode("utf-8"))
+        )
+    )
+    document = json.loads(computation.report_evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+
+    actions = parameters["corporate_action_ledger"]
+    assert [item["type"] for item in actions] == ["SPLIT", "DIVIDEND"]
+    assert parameters["event_ledger"][0]["price"] == 100.0
+    assert actions[0]["units_before"] * 2 == actions[0]["units_after"]
+    assert actions[1]["gross_cash_cny"] == pytest.approx(actions[1]["units_before"])
+    assert float(daily[split_index - 1]["equity"]) == pytest.approx(
+        float(daily[split_index]["equity"])
+    )
+    assert float(daily[dividend_index]["equity"]) == pytest.approx(
+        float(daily[dividend_index - 1]["equity"]) + actions[1]["gross_cash_cny"]
+    )
+    assert metrics["gross_dividends_cny"] == pytest.approx(actions[1]["gross_cash_cny"])
+    assert fields["gross_dividends_cny"]["availability"] == "AVAILABLE"
+    assert fields["gross_dividends_cny"]["raw"] == pytest.approx(
+        metrics["gross_dividends_cny"]
+    )
+    trade = parameters["trade_ledger"][0]
+    assert trade["entry_quantity"] * 2 == trade["mark_quantity"]
+    assert trade["gross_pnl_cny"] == pytest.approx(metrics["gross_dividends_cny"])
+    assert metrics["final_equity_cny"] == pytest.approx(
+        metrics["initial_capital_cny"] + trade["net_pnl_cny"]
+    )
+    provenance = json.loads(computation.report_evidence["run_manifest.json"])["runtime"]
+    assert provenance["corporate_action_source"] == "Yahoo chart events=div,splits"
+    assert "may revise" in provenance["corporate_action_revision_policy"]
+    attestation = json.loads(computation.report_evidence["semantic-attestation.json"])
+    assert attestation["authority"] == "zhlearn production report adapter"
+    assert attestation["status"] == "VERIFIED"
+
+
+def test_zhlearn_semantic_attestation_fails_closed_on_inconsistent_financial_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = production_jobs._equity_path
+
+    def inconsistent_equity(*args, **kwargs):
+        path, metrics = original(*args, **kwargs)
+        return path, {**metrics, "final_equity_cny": metrics["final_equity_cny"] + 1.0}
+
+    monkeypatch.setattr(production_jobs, "_equity_path", inconsistent_equity)
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    with pytest.raises(ProductionJobError, match="semantic attestation"):
+        job.compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        )
+
+
+def test_zhlearn_semantic_attestation_recomputes_transaction_closing_cash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = production_jobs._account_events
+
+    def inconsistent_account(*args, **kwargs):
+        events, actions = original(*args, **kwargs)
+        events = deepcopy(events)
+        events[0]["cash_after_cny"] += 1.0
+        return events, actions
+
+    monkeypatch.setattr(production_jobs, "_account_events", inconsistent_account)
+    monkeypatch.setattr(production_bocom_module, "decision_points", _one_entry_points)
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    with pytest.raises(ProductionJobError, match="semantic attestation"):
+        job.compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        )
+
+
+def test_zhlearn_semantic_attestation_recomputes_trade_pnl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = production_jobs._trade_and_holding_ledgers
+
+    def inconsistent_trades(*args, **kwargs):
+        trades, spans = original(*args, **kwargs)
+        trades = deepcopy(trades)
+        trades[0]["gross_pnl_cny"] += 1.0
+        trades[0]["net_pnl_cny"] += 1.0
+        return trades, spans
+
+    monkeypatch.setattr(
+        production_jobs, "_trade_and_holding_ledgers", inconsistent_trades
+    )
+    monkeypatch.setattr(production_bocom_module, "decision_points", _one_entry_points)
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    with pytest.raises(ProductionJobError, match="semantic attestation"):
+        job.compute(
+            (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+            "fixture://bocom-yahoo-chart.json",
+            SCHEDULED,
+        )
 
 
 @pytest.mark.parametrize(
@@ -485,9 +681,11 @@ def test_canonical_production_report_keeps_a_complete_large_price_path() -> None
     }
 
     assert len(fields["price_equity_rows"]["raw"]) == 4_500
+    assert b"QR-HOLDINGS-TSV-1" in report.html
+    assert f"{rows[-1]['date'].isoformat()}\t0\t0".encode() in report.html
     assert rows[0]["date"].isoformat().encode() in report.html
     assert rows[-1]["date"].isoformat().encode() in report.html
-    assert len(report.html) < 1_000_000
+    assert len(report.html) < 700_000
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 
@@ -67,6 +67,77 @@ def canonical_json_bytes(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ProductionContractError("document is not finite canonical JSON") from exc
+
+
+def compact_production_parameters_display(value: Mapping[str, Any]) -> str:
+    """Render every production parameter once in compact deterministic records."""
+
+    ledgers = (
+        "signal_price_path",
+        "event_ledger",
+        "trade_ledger",
+        "holding_spans",
+        "corporate_action_ledger",
+    )
+    parts = [
+        "QR-PRODUCTION-PARAMETERS-DISPLAY-1",
+        "parameters\t"
+        + canonical_json_bytes(
+            {key: item for key, item in value.items() if key not in ledgers}
+        ).decode(),
+        "signal_price_path\tdate\tsignal_price",
+    ]
+    parts.extend(
+        "\t".join(
+            (
+                "signal_price_path",
+                str(row["date"]),
+                canonical_json_bytes(row["signal_price"]).decode(),
+            )
+        )
+        for row in value["signal_price_path"]
+    )
+    for name in ledgers[1:]:
+        parts.append(f"{name}\tQR-CJSON-LINES-1")
+        parts.extend(
+            f"{name}\t{canonical_json_bytes(row).decode()}" for row in value[name]
+        )
+    return "\n".join(parts)
+
+
+def compact_price_equity_display(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Render the complete canonical price/equity path as compact deterministic TSV."""
+
+    parts = ["QR-PRICE-EQUITY-TSV-1\tdate\tprice\tclose\tequity"]
+    parts.extend(
+        "\t".join(
+            (
+                str(row["date"]),
+                canonical_json_bytes(row["price"]).decode(),
+                canonical_json_bytes(row["close"]).decode(),
+                canonical_json_bytes(row["equity"]).decode(),
+            )
+        )
+        for row in rows
+    )
+    return "\n".join(parts)
+
+
+def compact_holdings_display(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Render the complete daily holdings/position path as deterministic TSV."""
+
+    parts = ["QR-HOLDINGS-TSV-1\tdate\tholdings\tposition_after"]
+    parts.extend(
+        "\t".join(
+            (
+                str(row["date"]),
+                canonical_json_bytes(row["holdings"]).decode(),
+                canonical_json_bytes(row["position_after"]).decode(),
+            )
+        )
+        for row in rows
+    )
+    return "\n".join(parts)
 
 
 def sha256_hex(payload: bytes) -> str:

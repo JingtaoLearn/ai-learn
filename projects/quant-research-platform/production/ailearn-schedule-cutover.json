@@ -9,6 +9,8 @@
   },
   "runtime_files": [
     "src/quant_platform/__init__.py",
+    "src/quant_platform/schemas.py",
+    "src/quant_platform/attempt_report.py",
     "src/quant_platform/production_contract.py",
     "src/quant_platform/production_client.py",
     "src/quant_platform/production_schedule_client.py"

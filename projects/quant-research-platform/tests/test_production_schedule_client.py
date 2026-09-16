@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -409,6 +410,16 @@ def test_report_source_verifier_requires_available_production_fields() -> None:
         _verify_report_document_sources(document, evidence)
 
 
+def test_report_source_verifier_fails_closed_for_non_object_configuration() -> None:
+    evidence = _gold_canonical_evidence()
+    evidence["config.json"] = b"[]"
+
+    with pytest.raises(ProductionClientError, match="contract|configuration|evidence"):
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+
+
 def test_report_source_verifier_rejects_cross_file_identity_tampering() -> None:
     evidence = _gold_canonical_evidence()
     descriptor = json.loads(evidence["bundle-descriptor.json"])
@@ -484,6 +495,20 @@ def test_report_source_verifier_recomputes_core_result_digest() -> None:
 
     with pytest.raises(ProductionClientError, match="digest|identity"):
         _verify_report_document_sources(document, evidence)
+
+
+def test_report_source_verifier_rejects_unbound_zhlearn_semantic_attestation() -> None:
+    evidence = _gold_canonical_evidence()
+    attestation = json.loads(evidence["semantic-attestation.json"])
+    attestation["subject_core_result_digest"] = "0" * 64
+    evidence["semantic-attestation.json"] = json.dumps(
+        attestation, sort_keys=True, separators=(",", ":")
+    ).encode()
+
+    with pytest.raises(ProductionClientError, match="attestation|identity"):
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
 
 
 def test_report_source_verifier_rejects_unbound_contract_details() -> None:
@@ -886,18 +911,50 @@ def test_thin_client_imports_no_provider_or_computation_modules() -> None:
         assert "zhlearn:" not in source.casefold()
 
 
+def test_thin_client_verifier_contains_no_strategy_or_financial_recomputation() -> None:
+    source = inspect.getsource(_verify_report_document_sources)
+    names = {node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)}
+
+    assert "math." not in source
+    assert names.isdisjoint(
+        {
+            "expected_strategy",
+            "cost_rates",
+            "cash",
+            "held_units",
+            "period_equities",
+            "period_positions",
+            "comparator_units",
+            "comparator_final",
+            "expected_drawdown",
+            "expected_quantity",
+        }
+    )
+
+
 def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None:
     package = tmp_path / "quant_platform"
     package.mkdir()
-    (package / "__init__.py").write_bytes(b"")
-    for name in (
-        "schemas.py",
-        "attempt_report.py",
-        "production_contract.py",
-        "production_client.py",
-        "production_schedule_client.py",
-    ):
-        shutil.copyfile(PACKAGE / name, package / name)
+    cutover = json.loads(
+        (PROJECT / "production" / "ailearn-schedule-cutover.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_files = cutover["runtime_files"]
+    assert runtime_files == [
+        "src/quant_platform/__init__.py",
+        "src/quant_platform/schemas.py",
+        "src/quant_platform/attempt_report.py",
+        "src/quant_platform/production_contract.py",
+        "src/quant_platform/production_client.py",
+        "src/quant_platform/production_schedule_client.py",
+    ]
+    for relative_name in runtime_files:
+        source = PROJECT / relative_name
+        if source.name == "__init__.py":
+            (package / source.name).write_bytes(b"")
+        else:
+            shutil.copyfile(source, package / source.name)
 
     recipe = (PROJECT / "production" / "AILEARN-SCHEDULE-CUTOVER.md").read_text(
         encoding="utf-8"
