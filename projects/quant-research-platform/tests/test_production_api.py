@@ -242,6 +242,14 @@ def test_authenticated_synthetic_asgi_client_to_verified_result(tmp_path) -> Non
     assert hashlib.sha256(report_document.content).hexdigest() == result.json()[
         "report_document_sha256"
     ]
+    normalized = client.get(
+        f"/api/v1/production/results/{terminal['result_id']}/files/normalized-snapshot.json",
+        headers={VERIFIED_CLIENT_HEADER: IDENTITY},
+    )
+    assert normalized.status_code == 200
+    assert hashlib.sha256(normalized.content).hexdigest() == result.json()["files"][
+        "normalized-snapshot.json"
+    ]["sha256"]
     notification = client.get(
         f"/api/v1/production/results/{terminal['result_id']}/files/notification.txt",
         headers={VERIFIED_CLIENT_HEADER: IDENTITY},

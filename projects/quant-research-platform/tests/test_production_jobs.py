@@ -148,6 +148,67 @@ def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
     assert all(b'data-action="canonical"' not in item.report_html for item in computations)
 
 
+def test_bocom_report_execution_and_pnl_are_not_revised_by_adjusted_close_scale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    def one_entry_points(rows, _config):
+        points = [
+            {
+                "decision_date": row["date"],
+                "is_next_session": False,
+                "slope_pct": -1.0 if index == 0 else 1.0,
+            }
+            for index, row in enumerate(rows)
+        ]
+        points.append(
+            {
+                "decision_date": None,
+                "is_next_session": True,
+                "slope_pct": 1.0,
+                "raw_curve": rows[-1]["signal_close"],
+                "smooth_curve": rows[-1]["signal_close"],
+            }
+        )
+        return points
+
+    monkeypatch.setattr(production_bocom_module, "decision_points", one_entry_points)
+    original_payload = json.loads((FIXTURES / "bocom-yahoo-chart.json").read_bytes())
+    revised_payload = deepcopy(original_payload)
+    revised = revised_payload["chart"]["result"][0]["indicators"]["adjclose"][0][
+        "adjclose"
+    ]
+    revised_payload["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"] = [
+        value * 0.5 for value in revised
+    ]
+
+    original = job.compute(
+        canonical_json_bytes(original_payload), "fixture://bocom-original", SCHEDULED
+    )
+    rescaled = job.compute(
+        canonical_json_bytes(revised_payload), "fixture://bocom-rescaled", SCHEDULED
+    )
+    original_config = json.loads(original.report_evidence["config.json"])["template"][
+        "parameters"
+    ]
+    rescaled_config = json.loads(rescaled.report_evidence["config.json"])["template"][
+        "parameters"
+    ]
+
+    assert original.action["action"] == rescaled.action["action"]
+    assert len(original_config["event_ledger"]) == 1
+    assert len(original_config["trade_ledger"]) == 1
+    assert original_config["trade_ledger"][0]["status"] == "OPEN"
+    assert original_config["event_ledger"][0]["price"] == 6.0
+    assert original_config["trade_ledger"][0]["mark_price"] == 6.0
+    assert original_config["event_ledger"] == rescaled_config["event_ledger"]
+    assert original_config["trade_ledger"] == rescaled_config["trade_ledger"]
+    assert original_config["performance_summary"] == rescaled_config["performance_summary"]
+    assert original_config["execution_price_basis"] == "observed next-session raw open"
+    assert original_config["price_unit"] == "CNY_PER_SHARE"
+
+
 @pytest.mark.parametrize(
     ("module", "job", "raw_name"),
     [
@@ -171,15 +232,19 @@ def test_both_daily_jobs_build_formally_canonical_report_documents(
 
     def capture(**kwargs):
         report = original(**kwargs)
-        captured.append(report)
+        captured.append((report, kwargs["normalized_bytes"]))
         return report
 
     monkeypatch.setattr(module, "build_canonical_production_report", capture)
     job.compute((FIXTURES / raw_name).read_bytes(), f"fixture://{raw_name}", SCHEDULED)
 
     assert len(captured) == 1
-    assert_canonical_report_schema(captured[0].document)
-    _verify_report_document_sources(captured[0].document, captured[0].evidence_files)
+    report, normalized = captured[0]
+    assert_canonical_report_schema(report.document)
+    _verify_report_document_sources(
+        report.document,
+        {**report.evidence_files, "normalized-snapshot.json": normalized},
+    )
 
 
 def test_canonical_production_adapter_preserves_next_open_events_and_open_trade() -> None:

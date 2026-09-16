@@ -102,7 +102,6 @@ class BocomProductionJob:
             if values["open"] is None or values["close"] is None or adjusted_close is None:
                 continue
             close = float(values["close"])
-            factor = float(adjusted_close) / close
             session = datetime.fromtimestamp(int(timestamp), ZoneInfo("Asia/Shanghai")).date()
             numeric = [float(values[field]) for field in ("open", "close")] + [float(adjusted_close)]
             if any(not math.isfinite(value) or value <= 0 for value in numeric):
@@ -117,7 +116,6 @@ class BocomProductionJob:
                 "close": close,
                 "volume": int(values["volume"]) if values["volume"] is not None else None,
                 "signal_close": float(adjusted_close),
-                "adjusted_open": float(values["open"]) * factor,
             }
         ordered = [rows[key] for key in sorted(rows)]
         if len(ordered) < self.config.window_sessions + 2:
@@ -237,16 +235,17 @@ class BocomProductionJob:
             spec=ProductionReportSpec(
                 display_name="交通银行",
                 qualification="KNOWN_EVENT_CORRECTED_PARTIAL",
-                execution_price_key="adjusted_open",
-                mark_price_key="signal_close",
-                execution_price_basis="observed next-session split/dividend-adjusted open",
-                price_unit="ADJUSTED_CNY_PER_SHARE",
+                execution_price_key="open",
+                mark_price_key="close",
+                execution_price_basis="observed next-session raw open",
+                price_unit="CNY_PER_SHARE",
                 buy_cost_bps=8.0,
                 sell_cost_bps=13.0,
                 completed_roundtrip_cost_per_unit=0.0,
                 cost_description="buy 8 bps; sell 13 bps",
                 limitations=(
-                    "Yahoo adjusted OHLC is a market-data proxy; corporate-action evidence remains partial.",
+                    "Signals use Yahoo adjusted close; execution and P&L use observed raw open/close so later adjusted-price revisions do not rewrite fills.",
+                    "Corporate-action cash flows and quantity changes are not inferred; affected holding spans remain partial rather than fabricated.",
                     "KNOWN_EVENT_CORRECTED_PARTIAL; this report does not promote the model.",
                 ),
             ),

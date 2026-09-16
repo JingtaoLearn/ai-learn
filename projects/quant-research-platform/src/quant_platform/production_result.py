@@ -40,7 +40,7 @@ RESULT_FILES_BY_SCHEMA = {
 }
 CLIENT_RESULT_FILES = (
     REPORT_EVIDENCE_FILE_NAMES
-    | frozenset({"notification.txt", "report.html"})
+    | frozenset({"normalized-snapshot.json", "notification.txt", "report.html"})
     | FORMAL_RESULT_FILES
 )
 MAX_RESULT_MEMBER_BYTES = 16 * 1024 * 1024

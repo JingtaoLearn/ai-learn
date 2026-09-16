@@ -6,6 +6,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import re
 import stat
@@ -15,9 +16,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
+from urllib.parse import urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from .attempt_report import (
+    AttemptReportError,
+    render_report_document,
+    validate_report_document,
+)
 from .production_client import (
     ClientTLS,
     ProductionClient,
@@ -361,18 +368,10 @@ def _verified_action_from_report_document(
         raise ProductionClientError("report document is not JSON") from exc
     if canonical_json_bytes(document) != payload or not isinstance(document, dict):
         raise ProductionClientError("report document bytes are not canonical")
-    if (
-        document.get("schema_id") != "quant-platform/report-document/v1"
-        or document.get("schema_version") != 1
-        or not isinstance(document.get("sections"), list)
-    ):
-        raise ProductionClientError("report document contract is invalid")
-    core = {key: value for key, value in document.items() if key != "document_id"}
-    expected_id = hashlib.sha256(
-        b"quant-platform/report-document/v1\0" + canonical_json_bytes(core)
-    ).hexdigest()
-    if document.get("document_id") != expected_id:
-        raise ProductionClientError("report document identity does not verify")
+    try:
+        document = validate_report_document(document)
+    except AttemptReportError as exc:
+        raise ProductionClientError("report document contract is invalid") from exc
     fields = {}
     for section in document["sections"]:
         if not isinstance(section, dict) or not isinstance(section.get("fields"), list):
@@ -417,25 +416,49 @@ def _verified_json_evidence(evidence: Mapping[str, bytes], name: str) -> Any:
     return value
 
 
-def _csv_evidence(evidence: Mapping[str, bytes], name: str) -> list[dict[str, str]]:
+def _csv_evidence(
+    evidence: Mapping[str, bytes], name: str, expected_fields: Sequence[str]
+) -> list[dict[str, str]]:
     try:
         reader = csv.DictReader(io.StringIO(evidence[name].decode("utf-8"), newline=""))
         rows = list(reader)
     except UnicodeError as exc:
         raise ProductionClientError(f"report evidence is not UTF-8 CSV: {name}") from exc
-    if reader.fieldnames is None or any(None in row for row in rows):
+    if reader.fieldnames != list(expected_fields) or any(None in row for row in rows):
         raise ProductionClientError(f"report evidence CSV is malformed: {name}")
     return rows
 
 
 def _verify_report_document_sources(
     document: Mapping[str, Any], evidence: Mapping[str, bytes]
-) -> None:
+) -> dict[str, str]:
+    try:
+        document = validate_report_document(document)
+    except AttemptReportError as exc:
+        raise ProductionClientError("report document contract is invalid") from exc
     fields = {
         field["field_id"]: field
         for section in document["sections"]
         for field in section["fields"]
     }
+    optional_authority_fields = {
+        "total_return_status",
+        "matched_exposure_status",
+        "ranking_status",
+        "promotion_ready",
+        "gross_dividends_cny",
+        "dividend_tax_cny",
+        "outstanding_tax_cny",
+        "total_return_attachment",
+        "matched_exposure_attachment",
+        "study_terminal_attachment",
+    }
+    if any(
+        field["availability"] != "AVAILABLE"
+        for field_id, field in fields.items()
+        if field_id not in optional_authority_fields
+    ):
+        raise ProductionClientError("required production field availability is invalid")
     audit = _verified_json_evidence(evidence, "attempt-audit.json")
     descriptor = _verified_json_evidence(evidence, "bundle-descriptor.json")
     configuration = _verified_json_evidence(evidence, "config.json")
@@ -444,9 +467,305 @@ def _verify_report_document_sources(
     metrics = _verified_json_evidence(evidence, "metrics.json")
     operator = _verified_json_evidence(evidence, "operator-manifest.json")
     runtime = _verified_json_evidence(evidence, "run_manifest.json")
-    daily = _csv_evidence(evidence, "daily_replay.csv")
-    event_rows = _csv_evidence(evidence, "events.csv")
-    trade_rows = _csv_evidence(evidence, "trades.csv")
+    daily = _csv_evidence(
+        evidence,
+        "daily_replay.csv",
+        ("Date", "price", "close", "equity", "holdings", "position_after"),
+    )
+    event_rows = _csv_evidence(
+        evidence,
+        "events.csv",
+        (
+            "Date", "side", "price", "quantity", "notional_cny", "commission_cny",
+            "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny",
+            "cash_before_cny", "cash_after_cny", "holdings_before", "holdings_after",
+            "reason",
+        ),
+    )
+    trade_rows = _csv_evidence(
+        evidence,
+        "trades.csv",
+        (
+            "entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date",
+            "exit_price", "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny",
+            "return",
+        ),
+    )
+    expected_metrics = {
+        "initial_capital_cny", "final_equity_cny", "net_profit_cny", "cumulative_return",
+        "max_drawdown", "exposure", "buy_and_hold_return", "period_start", "period_end",
+        "net_return", "current_position", "closed_trades", "open_trades",
+    }
+    if (
+        not isinstance(audit, dict)
+        or set(audit) != {
+            "attempt_id", "experiment_id", "run_id", "dataset", "result_digest", "operators"
+        }
+        or not isinstance(audit["dataset"], dict)
+        or set(audit["dataset"]) != {"snapshot_id"}
+        or not isinstance(descriptor, dict)
+        or set(descriptor) != {
+            "bundle_id", "attempt_id", "experiment_id", "core_result_digest", "verification"
+        }
+        or descriptor["verification"] != {"status": "VERIFIED"}
+        or not isinstance(configuration, dict)
+        or set(configuration) != {"template"}
+        or not isinstance(configuration["template"], dict)
+        or set(configuration["template"]) != {"parameters"}
+        or not isinstance(configuration["template"]["parameters"], dict)
+        or not isinstance(contract, dict)
+        or set(contract) != {"purpose", "limitations", "details"}
+        or not isinstance(costs, dict)
+        or set(costs) != {
+            "commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny",
+            "total_cost_cny",
+        }
+        or not isinstance(metrics, dict)
+        or set(metrics) != expected_metrics
+        or not isinstance(operator, dict)
+        or set(operator) != {
+            "api_version", "operator_id", "semantic_version", "source", "content_digest"
+        }
+        or not isinstance(operator["source"], dict)
+        or set(operator["source"]) != {"sha256"}
+        or not isinstance(runtime, dict)
+        or set(runtime) != {"runtime"}
+        or not isinstance(runtime["runtime"], dict)
+    ):
+        raise ProductionClientError("report evidence member contract is invalid")
+    parameters = configuration["template"]["parameters"]
+    required_parameters = {
+        "display_name", "qualification", "current_action", "strategy_parameters",
+        "execution_price_basis", "price_unit", "cost_description", "signal_price_path",
+        "reporting_account", "event_ledger", "trade_ledger", "holding_spans",
+        "performance_summary",
+    }
+    if set(parameters) != required_parameters:
+        raise ProductionClientError("report configuration inventory is invalid")
+    details = contract["details"]
+    if (
+        contract["purpose"] != "PRESENTATION_ONLY"
+        or contract["limitations"]
+        != [
+            "INTEGRITY_IS_NOT_QUALIFICATION",
+            "QUALIFICATION_IS_NOT_DEPLOYMENT_OR_TRADING_AUTHORITY",
+            "PRESENTATION_ONLY_NO_RECOMPUTATION",
+        ]
+        or not isinstance(details, list)
+        or len(details) < 4
+        or not all(isinstance(item, str) and item for item in details)
+        or fields["integrity_not_qualification"]["display"] != "; ".join(details)
+        or fields["qualification_not_deployment"]["display"] != details[-2]
+        or fields["no_recomputation"]["display"] != details[-1]
+    ):
+        raise ProductionClientError("report contract limitations do not verify")
+    action = parameters["current_action"]
+    event_ledger = parameters["event_ledger"]
+    trade_ledger = parameters["trade_ledger"]
+    holding_spans = parameters["holding_spans"]
+    summary = parameters["performance_summary"]
+    provenance = runtime["runtime"]
+    if not all(
+        isinstance(value, expected)
+        for value, expected in (
+            (action, dict),
+            (event_ledger, list),
+            (trade_ledger, list),
+            (holding_spans, list),
+            (summary, dict),
+        )
+    ):
+        raise ProductionClientError("report configuration evidence is invalid")
+    if action.get("job_id") == "1cd5557264db":
+        action_parameters = action.get("parameters")
+        expected_strategy = {
+            "window_sessions": 55,
+            "ema_span": 1,
+            "buy_threshold_pct_per_day": 0.175,
+            "sell_threshold_pct_per_day": -0.275,
+            "anchor_date": "2021-05-10",
+        }
+        expected_configuration = {
+            "display_name": "黄金（Au99.99）",
+            "qualification": "OVERFIT_RISK_SUBSTANTIATED",
+            "execution_price_basis": "observed next-session Au99.99 raw open",
+            "price_unit": "CNY_PER_GRAM",
+            "cost_description": "fixed completed roundtrip spread 5 CNY per gram",
+        }
+        cost_rates = (0.0, 0.0, 5.0)
+        mark_price_key = "signal_close"
+        action_close_key = "latest_close_cny_per_g"
+        action_strategy_matches = isinstance(action_parameters, dict) and all(
+            action_parameters.get(key) == value for key, value in expected_strategy.items()
+        )
+    elif action.get("job_id") == "297c11cad0dc":
+        rules = action.get("rules")
+        expected_strategy = {
+            "window_sessions": 20,
+            "ema_span": 5,
+            "buy_threshold_pct_per_day": 0.2,
+            "sell_threshold_pct_per_day": -0.2,
+            "anchor_date": "2025-01-02",
+        }
+        expected_configuration = {
+            "display_name": "交通银行",
+            "qualification": "KNOWN_EVENT_CORRECTED_PARTIAL",
+            "execution_price_basis": "observed next-session raw open",
+            "price_unit": "CNY_PER_SHARE",
+            "cost_description": "buy 8 bps; sell 13 bps",
+        }
+        cost_rates = (8.0, 13.0, 0.0)
+        mark_price_key = "close"
+        action_close_key = "latest_close"
+        action_strategy_matches = isinstance(rules, dict) and rules == {
+            "window": 20,
+            "ema_span": 5,
+            "buy_crossing_pct": 0.2,
+            "sell_crossing_pct": -0.2,
+            "initial_position": 0,
+            "anchor_date": "2025-01-02",
+        }
+    else:
+        raise ProductionClientError("report configuration names an unknown production job")
+    if (
+        not action_strategy_matches
+        or parameters["strategy_parameters"] != expected_strategy
+        or any(parameters[key] != value for key, value in expected_configuration.items())
+        or parameters["reporting_account"]
+        != {
+            "initial_capital_cny": 1_000_000.0,
+            "quantity_rule": "integer units purchased with available cash at each BUY",
+            "lot_size": 1,
+            "actual_invested_capital": False,
+        }
+    ):
+        raise ProductionClientError("report configuration differs from frozen production meaning")
+    if (
+        set(provenance)
+        != {
+            "job_id", "report_uuid", "model_id", "production_manifest_sha256",
+            "provider_source", "provider_request", "provider_request_sha256", "market_window",
+            "performance_window", "execution_authority", "trigger_role", "local_compute",
+            "feng_fallback",
+        }
+        or provenance["job_id"] != action.get("job_id")
+        or provenance["report_uuid"] != action.get("report_uuid")
+        or provenance["model_id"] != action.get("model_version")
+        or provenance["production_manifest_sha256"]
+        != action.get("production_manifest_sha256")
+        or provenance["execution_authority"] != "zhlearn production API"
+        or provenance["trigger_role"] != "ailearn trigger/read-back/delivery only"
+        or provenance["local_compute"] is not False
+        or provenance["feng_fallback"] is not False
+        or not isinstance(provenance["provider_source"], str)
+        or not provenance["provider_source"]
+        or not isinstance(provenance["provider_request"], dict)
+        or set(provenance["provider_request"])
+        != {"scheme", "netloc", "path", "query", "fragment"}
+        or not all(isinstance(value, str) for value in provenance["provider_request"].values())
+        or provenance["provider_source"]
+        != (
+            provenance["provider_request"]["netloc"]
+            or provenance["provider_request"]["scheme"]
+        )
+        or hashlib.sha256(
+            urlunsplit(
+                (
+                    str(provenance["provider_request"]["scheme"]),
+                    str(provenance["provider_request"]["netloc"]),
+                    str(provenance["provider_request"]["path"]),
+                    str(provenance["provider_request"]["query"]),
+                    str(provenance["provider_request"]["fragment"]),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        != provenance["provider_request_sha256"]
+        or re.fullmatch(r"[0-9a-f]{64}", provenance["provider_request_sha256"]) is None
+    ):
+        raise ProductionClientError("report provenance authority does not verify")
+    next_action_date = action.get(
+        "next_trade_date_estimate", action.get("next_session_date_estimate")
+    )
+    event_cost = sum(float(event["total_cost_cny"]) for event in event_ledger)
+    expected_displays = {
+        "purpose": (
+            f"Historical daily decision evidence; current action {action.get('action')} for "
+            f"{next_action_date}; automatic_ordering=false"
+        ),
+        "bundle_integrity": "Verified canonical production adapter",
+        "initial_capital_cny": "1000000 CNY reporting normalization; not actual invested capital",
+        "template_parameters": canonical_json_bytes(parameters).decode(),
+        "operators": canonical_json_bytes(audit["operators"]).decode(),
+        "runtime": canonical_json_bytes(provenance).decode(),
+        "price_equity_rows": canonical_json_bytes(fields["price_equity_rows"]["raw"]).decode(),
+        "events": canonical_json_bytes(event_ledger).decode(),
+        "trades": canonical_json_bytes(trade_ledger).decode(),
+        "holdings": canonical_json_bytes(holding_spans).decode(),
+        "total_cost_cny": f"{event_cost:.12g} CNY; {parameters['cost_description']}",
+        "integrity_not_qualification": "; ".join(details),
+        "qualification_not_deployment": details[-2],
+        "no_recomputation": details[-1],
+    }
+    if any(
+        field["display"] != expected_displays.get(field_id)
+        for field_id, field in fields.items()
+        if field["availability"] == "AVAILABLE"
+    ):
+        raise ProductionClientError("report display differs from verified source evidence")
+    normalized = evidence.get("normalized-snapshot.json")
+    if type(normalized) is not bytes:
+        raise ProductionClientError("normalized snapshot evidence is absent")
+    try:
+        normalized_value = json.loads(normalized)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionClientError("normalized snapshot evidence is not JSON") from exc
+    if canonical_json_bytes(normalized_value) != normalized:
+        raise ProductionClientError("normalized snapshot evidence is not canonical")
+    if not isinstance(normalized_value, list) or not all(
+        isinstance(row, dict) for row in normalized_value
+    ):
+        raise ProductionClientError("normalized snapshot row inventory is invalid")
+    snapshot_sha256 = hashlib.sha256(normalized).hexdigest()
+    dataset_identity = hashlib.sha256(
+        b"quantresearch-production-dataset/v1\0" + normalized
+    ).hexdigest()
+    experiment_id = hashlib.sha256(
+        b"quantresearch-production-experiment/v1\0"
+        + canonical_json_bytes(
+            {
+                "job_id": action.get("job_id"),
+                "model": action.get("production_manifest_sha256"),
+                "snapshot": dataset_identity,
+            }
+        )
+    ).hexdigest()
+    attempt_id = hashlib.sha256(
+        b"quantresearch-production-attempt/v1\0"
+        + canonical_json_bytes(
+            {"experiment_id": experiment_id, "scheduled_for": action.get("generated_at")}
+        )
+    ).hexdigest()
+    if (
+        audit["dataset"]["snapshot_id"] != snapshot_sha256
+        or audit["experiment_id"] != experiment_id
+        or audit["attempt_id"] != attempt_id
+        or audit["run_id"] != f"{action.get('job_id')}:{action.get('generated_at')}"
+    ):
+        raise ProductionClientError("report run, attempt, or experiment identity does not verify")
+    if operator != {
+        "api_version": REPORT_OPERATOR["api_version"],
+        "operator_id": REPORT_OPERATOR["operator_id"],
+        "semantic_version": REPORT_OPERATOR["version"],
+        "source": {"sha256": REPORT_OPERATOR["source_sha256"]},
+        "content_digest": REPORT_OPERATOR["content_digest"],
+    } or audit["operators"] != {"report": REPORT_OPERATOR}:
+        raise ProductionClientError("report operator evidence differs from reviewed identity")
+    if (
+        descriptor["attempt_id"] != audit["attempt_id"]
+        or descriptor["experiment_id"] != audit["experiment_id"]
+        or descriptor["core_result_digest"] != audit["result_digest"]
+    ):
+        raise ProductionClientError("report bundle identity bindings differ")
     price_equity = [
         {
             "date": row["Date"],
@@ -492,6 +811,385 @@ def _verify_report_document_sources(
         }
         for row in trade_rows
     ]
+    if not daily:
+        raise ProductionClientError("report price/equity path is empty")
+    if len(normalized_value) != len(daily) or any(
+        normalized_row.get("date") != daily_row["Date"]
+        or not math.isclose(float(normalized_row.get("open", math.nan)), float(daily_row["price"]))
+        or not math.isclose(
+            float(normalized_row.get(mark_price_key, math.nan)), float(daily_row["close"])
+        )
+        for normalized_row, daily_row in zip(normalized_value, daily, strict=True)
+    ):
+        raise ProductionClientError("normalized snapshot and report price path differ")
+    expected_signal_path = [
+        {"date": row["date"], "signal_price": row["signal_close"]}
+        for row in normalized_value
+    ]
+    if parameters["signal_price_path"] != expected_signal_path:
+        raise ProductionClientError("normalized snapshot and signal price path differ")
+    if (
+        action.get("latest_market_date") != normalized_value[-1].get("date")
+        or not math.isclose(
+            float(action.get(action_close_key, math.nan)),
+            float(normalized_value[-1].get("close", math.nan)),
+        )
+    ):
+        raise ProductionClientError("normalized snapshot and current action differ")
+    expected_events = [
+        {
+            "Date": event["action_date"],
+            "side": event["side"],
+            "price": event["price"],
+            "quantity": event["quantity"],
+            "notional_cny": event["notional_cny"],
+            "commission_cny": (
+                event["total_cost_cny"] if costs["commission_cny"] else 0.0
+            ),
+            "transfer_fee_cny": 0.0,
+            "stamp_tax_cny": 0.0,
+            "slippage_cny": (
+                event["total_cost_cny"] if costs["slippage_cny"] else 0.0
+            ),
+            "total_cost_cny": event["total_cost_cny"],
+            "cash_before_cny": event["cash_before_cny"],
+            "cash_after_cny": event["cash_after_cny"],
+            "holdings_before": event["holdings_before_units"],
+            "holdings_after": event["holdings_after_units"],
+            "reason": canonical_json_bytes(
+                {
+                    "trigger": event["reason"],
+                    "signal_date": event["signal_date"],
+                    "action_date": event["action_date"],
+                    "price_basis": event["price_basis"],
+                    "previous_slope_pct": event["previous_slope_pct"],
+                    "signal_slope_pct": event["signal_slope_pct"],
+                    "position_before": event["position_before"],
+                    "position_after": event["position_after"],
+                }
+            ).decode(),
+        }
+        for event in event_ledger
+    ]
+    expected_trades = [
+        {
+            "entry_date": trade["entry_date"],
+            "entry_price": trade["entry_price"],
+            "quantity": trade["quantity"],
+            "entry_cost_cny": trade["entry_cost_cny"],
+            "exit_date": trade["exit_date"],
+            "exit_price": trade["exit_price"],
+            "exit_cost_cny": trade["exit_cost_cny"],
+            "status": trade["status"],
+            "gross_pnl_cny": trade["gross_pnl_cny"],
+            "net_pnl_cny": trade["net_pnl_cny"],
+            "return": trade["return"],
+        }
+        for trade in trade_ledger
+    ]
+    if events != expected_events or trades != expected_trades:
+        raise ProductionClientError("report CSV and configuration ledgers differ")
+    dates = [row["date"] for row in price_equity]
+    if dates != sorted(set(dates)):
+        raise ProductionClientError("report price/equity dates are not unique and ordered")
+    date_indexes = {value: index for index, value in enumerate(dates)}
+    expected_position = 0
+    expected_holdings = 0
+    buy_events: list[Mapping[str, Any]] = []
+    sell_events: list[Mapping[str, Any]] = []
+    for event in event_ledger:
+        action_index = date_indexes.get(event["action_date"])
+        expected_after = 1 if event["side"] == "BUY" else 0
+        is_valid_crossing = (
+            event["side"] == "BUY"
+            and float(event["previous_slope_pct"])
+            < float(expected_strategy["buy_threshold_pct_per_day"])
+            <= float(event["signal_slope_pct"])
+            and event["reason"] == "signal crossed upward through the frozen buy line"
+        ) or (
+            event["side"] == "SELL"
+            and float(event["previous_slope_pct"])
+            > float(expected_strategy["sell_threshold_pct_per_day"])
+            >= float(event["signal_slope_pct"])
+            and event["reason"] == "signal crossed downward through the frozen sell line"
+        )
+        if (
+            event["side"] not in {"BUY", "SELL"}
+            or not is_valid_crossing
+            or not isinstance(action_index, int)
+            or action_index < 1
+            or event["action_date"] < expected_strategy["anchor_date"]
+            or event["signal_date"] != dates[action_index - 1]
+            or not math.isclose(
+                float(event["price"]), float(price_equity[action_index]["price"])
+            )
+            or event["position_before"] != expected_position
+            or event["position_after"] != expected_after
+            or event["holdings_before_units"] != expected_holdings
+            or holdings[action_index]["position_after"] != expected_after
+            or holdings[action_index]["holdings"] != event["holdings_after_units"]
+        ):
+            raise ProductionClientError("report event timing or position transition is invalid")
+        if event["side"] == "BUY":
+            if expected_position != 0 or event["holdings_after_units"] <= 0:
+                raise ProductionClientError("report BUY transition is invalid")
+            buy_events.append(event)
+        else:
+            if expected_position != 1 or event["holdings_after_units"] != 0:
+                raise ProductionClientError("report SELL transition is invalid")
+            sell_events.append(event)
+        expected_position = expected_after
+        expected_holdings = event["holdings_after_units"]
+    trade_statuses = [trade["status"] for trade in trade_ledger]
+    if any(status not in {"OPEN", "CLOSED"} for status in trade_statuses):
+        raise ProductionClientError("report trade status is invalid")
+    open_trades = trade_statuses.count("OPEN")
+    closed_trades = trade_statuses.count("CLOSED")
+    final_position = holdings[-1]["position_after"]
+    expected_period_start = next(
+        (value for value in dates if value >= expected_strategy["anchor_date"]), None
+    )
+    if (
+        metrics["open_trades"] != open_trades
+        or metrics["closed_trades"] != closed_trades
+        or metrics["initial_capital_cny"] != 1_000_000.0
+        or len(holding_spans) != len(trade_ledger)
+        or len(trade_ledger) != len(buy_events)
+        or open_trades not in {0, 1}
+        or final_position != open_trades
+        or metrics["current_position"] != ("LONG" if final_position else "FLAT")
+        or action.get("state_before_next") != final_position
+        or action.get("latest_market_date") != metrics["period_end"]
+        or metrics["period_end"] != dates[-1]
+        or metrics["period_start"] not in dates
+        or metrics["period_start"] != expected_period_start
+    ):
+        raise ProductionClientError("report trade, position, and metric counts differ")
+    if any(
+        (trade["status"] == "OPEN")
+        != (trade["exit_date"] is None and trade["exit_price"] is None)
+        for trade in trade_ledger
+    ):
+        raise ProductionClientError("report open trade exit semantics are invalid")
+    for index, (trade, span, entry) in enumerate(
+        zip(trade_ledger, holding_spans, buy_events, strict=True)
+    ):
+        exit_event = sell_events[index] if index < len(sell_events) else None
+        if (
+            trade["entry_date"] != entry["action_date"]
+            or trade["entry_price"] != entry["price"]
+            or trade["entry_cost_cny"] != entry["total_cost_cny"]
+            or span["entry_date"] != entry["action_date"]
+            or trade["quantity"] != entry["quantity"]
+            or span["quantity"] != entry["quantity"]
+            or trade["status"] != span["status"]
+            or (
+                trade["status"] == "CLOSED"
+                and (
+                    exit_event is None
+                    or trade["exit_date"] != exit_event["action_date"]
+                    or trade["exit_price"] != exit_event["price"]
+                    or trade["exit_cost_cny"] != exit_event["total_cost_cny"]
+                    or span["exit_action_date"] != exit_event["action_date"]
+                    or span["last_held_market_date"] != exit_event["signal_date"]
+                )
+            )
+            or (
+                trade["status"] == "OPEN"
+                and (
+                    trade["exit_date"] is not None
+                    or span["exit_action_date"] is not None
+                    or span["last_held_market_date"] != dates[-1]
+                )
+            )
+        ):
+            raise ProductionClientError("report trade and holding span ledgers differ")
+    buy_bps, sell_bps, fixed_sell_cost = cost_rates
+    events_by_date = {event["action_date"]: event for event in event_ledger}
+    if len(events_by_date) != len(event_ledger):
+        raise ProductionClientError("report contains multiple transitions on one action date")
+    cash = 1_000_000.0
+    held_units = 0
+    period_equities: list[float] = []
+    period_positions: list[int] = []
+    for row, holding in zip(price_equity, holdings, strict=True):
+        event = events_by_date.get(row["date"])
+        if event is not None:
+            price = float(event["price"])
+            unit_cost = price * (buy_bps if event["side"] == "BUY" else sell_bps) / 10_000
+            if event["side"] == "SELL":
+                unit_cost += fixed_sell_cost
+            expected_quantity = (
+                math.floor(cash / (price + unit_cost))
+                if event["side"] == "BUY"
+                else held_units
+            )
+            expected_cash = (
+                cash - expected_quantity * (price + unit_cost)
+                if event["side"] == "BUY"
+                else cash + expected_quantity * (price - unit_cost)
+            )
+            if (
+                event["quantity"] != expected_quantity
+                or not math.isclose(float(event["cost_per_unit"]), unit_cost)
+                or not math.isclose(float(event["notional_cny"]), expected_quantity * price)
+                or not math.isclose(
+                    float(event["total_cost_cny"]), expected_quantity * unit_cost
+                )
+                or not math.isclose(float(event["cash_before_cny"]), cash)
+                or not math.isclose(float(event["cash_after_cny"]), expected_cash)
+            ):
+                raise ProductionClientError("report event cash or cost accounting is invalid")
+            cash = expected_cash
+            held_units = expected_quantity if event["side"] == "BUY" else 0
+        if (
+            holding["holdings"] != held_units
+            or holding["position_after"] != (1 if held_units else 0)
+            or not math.isclose(float(row["equity"]), cash + held_units * float(row["close"]))
+        ):
+            raise ProductionClientError("report daily holdings or equity accounting is invalid")
+        if row["date"] >= metrics["period_start"]:
+            period_equities.append(float(row["equity"]))
+            period_positions.append(holding["position_after"])
+    if not period_equities:
+        raise ProductionClientError("report performance period has no rows")
+    for trade in trade_ledger:
+        quantity = int(trade["quantity"])
+        entry_notional = float(trade["entry_price"]) * quantity
+        mark_price = float(trade["mark_price"])
+        gross = (mark_price - float(trade["entry_price"])) * quantity
+        costs_paid = float(trade["entry_cost_cny"]) + (
+            float(trade["exit_cost_cny"]) if trade["status"] == "CLOSED" else 0.0
+        )
+        if (
+            entry_notional <= 0
+            or not math.isclose(float(trade["gross_pnl_cny"]), gross)
+            or not math.isclose(float(trade["net_pnl_cny"]), gross - costs_paid)
+            or not math.isclose(float(trade["return"]), (gross - costs_paid) / entry_notional)
+            or (
+                trade["status"] == "OPEN"
+                and (
+                    trade["mark_date"] != dates[-1]
+                    or not math.isclose(mark_price, float(price_equity[-1]["close"]))
+                    or float(trade["exit_cost_cny"]) != 0.0
+                )
+            )
+            or (
+                trade["status"] == "CLOSED"
+                and (
+                    trade["mark_date"] != trade["exit_date"]
+                    or not math.isclose(mark_price, float(trade["exit_price"]))
+                )
+            )
+        ):
+            raise ProductionClientError("report trade P&L accounting is invalid")
+    peak = 1_000_000.0
+    expected_drawdown = 0.0
+    for equity in period_equities:
+        peak = max(peak, equity)
+        expected_drawdown = min(expected_drawdown, equity / peak - 1.0)
+    period_start_index = dates.index(metrics["period_start"])
+    comparator_execution = float(price_equity[period_start_index]["price"])
+    comparator_unit_cost = comparator_execution * buy_bps / 10_000
+    comparator_units = math.floor(
+        1_000_000.0 / (comparator_execution + comparator_unit_cost)
+    )
+    comparator_cash = 1_000_000.0 - comparator_units * (
+        comparator_execution + comparator_unit_cost
+    )
+    comparator_final = comparator_cash + comparator_units * float(price_equity[-1]["close"])
+    if (
+        not math.isclose(float(metrics["final_equity_cny"]), period_equities[-1])
+        or not math.isclose(
+            float(metrics["cumulative_return"]), period_equities[-1] / 1_000_000.0 - 1.0
+        )
+        or not math.isclose(float(metrics["max_drawdown"]), expected_drawdown)
+        or not math.isclose(
+            float(metrics["exposure"]), sum(period_positions) / len(period_positions)
+        )
+        or not math.isclose(
+            float(metrics["buy_and_hold_return"]), comparator_final / 1_000_000.0 - 1.0
+        )
+    ):
+        raise ProductionClientError("report return, risk, or comparator metrics do not reconcile")
+    if provenance.get("market_window") != [dates[0], dates[-1]] or provenance.get(
+        "performance_window"
+    ) != [metrics["period_start"], metrics["period_end"]]:
+        raise ProductionClientError("report price window and provenance differ")
+    core_metrics = {
+        key: value
+        for key, value in metrics.items()
+        if key not in {"net_return", "current_position", "closed_trades", "open_trades"}
+    }
+    if any(summary.get(key) != value for key, value in core_metrics.items()) or (
+        summary.get("transitions") != len(event_ledger)
+        or summary.get("turnover") != len(event_ledger)
+        or not math.isclose(
+            float(summary.get("turnover_notional_cny", math.nan)),
+            sum(float(event["notional_cny"]) for event in event_ledger),
+        )
+        or summary.get("closed_trades") != closed_trades
+        or summary.get("open_trades") != open_trades
+        or not math.isclose(
+            float(summary.get("total_cost_cny", math.nan)),
+            sum(float(event["total_cost_cny"]) for event in event_ledger),
+        )
+    ):
+        raise ProductionClientError("report performance summary and ledgers differ")
+    if (
+        not math.isclose(
+            float(metrics["net_profit_cny"]),
+            float(metrics["final_equity_cny"]) - float(metrics["initial_capital_cny"]),
+        )
+        or not math.isclose(float(metrics["net_return"]), float(metrics["cumulative_return"]))
+        or not math.isclose(float(price_equity[-1]["equity"]), float(metrics["final_equity_cny"]))
+        or not math.isclose(
+            float(costs["total_cost_cny"]),
+            sum(float(event["total_cost_cny"]) for event in events),
+        )
+        or not math.isclose(
+            float(costs["total_cost_cny"]),
+            sum(float(costs[name]) for name in (
+                "commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny"
+            )),
+        )
+        or any(
+            not math.isclose(
+                float(costs[name]), sum(float(event[name]) for event in events)
+            )
+            for name in (
+                "commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny"
+            )
+        )
+    ):
+        raise ProductionClientError("report accounting evidence does not reconcile")
+    core_result_digest = hashlib.sha256(
+        b"quantresearch-production-report-evidence/v1\0"
+        + canonical_json_bytes(
+            {
+                "normalized_snapshot_sha256": audit["dataset"]["snapshot_id"],
+                "action": action,
+                "price_equity": price_equity,
+                "events": events,
+                "trades": trades,
+                "holdings": holdings,
+                "metrics": core_metrics,
+                "provenance": provenance,
+            }
+        )
+    ).hexdigest()
+    bundle_id = hashlib.sha256(
+        b"quant-platform/attempt-result-bundle/v1\0"
+        + canonical_json_bytes(
+            {
+                "attempt_id": audit["attempt_id"],
+                "experiment_id": audit["experiment_id"],
+                "core_result_digest": core_result_digest,
+            }
+        )
+    ).hexdigest()
+    if audit["result_digest"] != core_result_digest or descriptor["bundle_id"] != bundle_id:
+        raise ProductionClientError("report core result or bundle identity does not verify")
     resolved = {
         "attempt_id": ("attempt-audit", "/attempt_id", audit["attempt_id"]),
         "experiment_id": ("attempt-audit", "/experiment_id", audit["experiment_id"]),
@@ -540,6 +1238,20 @@ def _verify_report_document_sources(
             "raw"
         ) != value:
             raise ProductionClientError(f"report source binding differs: {field_id}")
+    return {
+        "attempt_id": attempt_id,
+        "experiment_id": experiment_id,
+        "dataset_snapshot_id": snapshot_sha256,
+        "provider_url": urlunsplit(
+            (
+                str(provenance["provider_request"]["scheme"]),
+                str(provenance["provider_request"]["netloc"]),
+                str(provenance["provider_request"]["path"]),
+                str(provenance["provider_request"]["query"]),
+                str(provenance["provider_request"]["fragment"]),
+            )
+        ),
+    }
 
 
 def _number(action: Mapping[str, Any], key: str) -> float:
@@ -721,6 +1433,7 @@ def run_request(
         or not isinstance(files, Mapping)
         or manifest.get("report_document_sha256")
         != files.get("report-document.json", {}).get("sha256")
+        or manifest.get("report_sha256") != files.get("report.html", {}).get("sha256")
         or not REPORT_EVIDENCE_FILE_NAMES.issubset(files)
         or manifest.get("automatic_ordering") is not False
     ):
@@ -731,15 +1444,36 @@ def run_request(
         name: client.fetch_verified_file(manifest, name)
         for name in REPORT_EVIDENCE_FILE_NAMES
     }
+    evidence["normalized-snapshot.json"] = client.fetch_verified_file(
+        manifest, "normalized-snapshot.json"
+    )
     document_action = _verified_action_from_report_document(
         job, evidence["report-document.json"]
     )
     try:
-        _verify_report_document_sources(
+        verified_ids = _verify_report_document_sources(
             json.loads(evidence["report-document.json"]), evidence
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ProductionClientError("report source evidence is invalid") from exc
+    if (
+        manifest.get("attempt_id") != verified_ids["attempt_id"]
+        or manifest.get("experiment_id") != verified_ids["experiment_id"]
+        or manifest.get("dataset_snapshot_id") != verified_ids["dataset_snapshot_id"]
+        or manifest.get("provider_request")
+        != {"method": "GET", "url": verified_ids["provider_url"]}
+        or manifest.get("provider_response_sha256")
+        != files.get("provider-response.bin", {}).get("sha256")
+        or manifest.get("action_sha256") != files.get("action.json", {}).get("sha256")
+        or manifest.get("generated_at") != document_action.get("generated_at")
+        or document_action.get("generated_at") != request.scheduled_for
+    ):
+        raise ProductionClientError("result invocation or experiment identity does not verify")
+    canonical_report = render_report_document(
+        json.loads(evidence["report-document.json"])
+    )
+    if report != canonical_report:
+        raise ProductionClientError("report HTML differs from canonical document rendering")
     if canonical_json_bytes(document_action) != canonical_json_bytes(action):
         raise ProductionClientError("report HTML and ReportDocument actions differ")
     if manifest.get("action_sha256") != hashlib.sha256(

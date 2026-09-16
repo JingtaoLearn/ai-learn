@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import html
 import json
 import os
 import shutil
@@ -14,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import quant_platform.production_schedule_client as schedule_client
+from quant_platform.production_bocom import BocomProductionJob
 from quant_platform.production_client import (
     REPORT_EVIDENCE_FILE_NAMES,
     ClientTLS,
@@ -24,15 +24,19 @@ from quant_platform.production_schedule_client import (
     DELIVERY,
     JOBS,
     _parser,
+    _verify_report_document_sources,
     publish_report,
     run_job,
     scheduled_fire_for,
 )
+from quant_platform.production_gold import GoldProductionJob
 
 
 PROJECT = Path(__file__).parents[1]
 PACKAGE = PROJECT / "src" / "quant_platform"
 SCRIPTS = PROJECT / "scripts"
+FIXTURES = Path(__file__).parent / "fixtures" / "production"
+SCHEDULED = datetime.fromisoformat("2026-03-09T00:40:00+00:00")
 
 
 def jobs_file(tmp_path: Path, job_id: str) -> Path:
@@ -71,17 +75,40 @@ class FakeClient:
     def submit_and_wait(self, request):
         self.requests.append(request)
         self.job = JOBS[request.job_id]
-        payload = b"verified production notification"
-        action = fake_action(self.job)
-        self.evidence = fake_report_evidence(self.job)
+        self.computation = _canonical_computation(self.job)
+        payload = self.computation.notification_bytes
+        action = self.computation.action
+        action_payload = json.dumps(
+            action,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        self.evidence = dict(self.computation.report_evidence)
         self.report_document = self.evidence["report-document.json"]
         files = {
             name: {"sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
             for name, value in self.evidence.items()
         }
+        files["normalized-snapshot.json"] = {
+            "sha256": hashlib.sha256(self.computation.normalized_bytes).hexdigest(),
+            "size": len(self.computation.normalized_bytes),
+        }
         files["notification.txt"] = {
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
+        }
+        files["report.html"] = {
+            "sha256": hashlib.sha256(self.computation.report_html).hexdigest(),
+            "size": len(self.computation.report_html),
+        }
+        files["action.json"] = {
+            "sha256": hashlib.sha256(action_payload).hexdigest(),
+            "size": len(action_payload),
+        }
+        files["provider-response.bin"] = {
+            "sha256": hashlib.sha256(self.computation.raw_bytes).hexdigest(),
+            "size": len(self.computation.raw_bytes),
         }
         return {
             "schema": "quantresearch-production-result/v1",
@@ -98,14 +125,14 @@ class FakeClient:
             },
             "report_document_sha256": files["report-document.json"]["sha256"],
             "automatic_ordering": False,
-            "action_sha256": hashlib.sha256(
-                json.dumps(
-                    action,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode()
-            ).hexdigest(),
+            "attempt_id": self.computation.attempt_id,
+            "experiment_id": self.computation.experiment_id,
+            "generated_at": action["generated_at"],
+            "report_sha256": files["report.html"]["sha256"],
+            "dataset_snapshot_id": files["normalized-snapshot.json"]["sha256"],
+            "provider_request": {"method": "GET", "url": self.computation.provider_url},
+            "provider_response_sha256": files["provider-response.bin"]["sha256"],
+            "action_sha256": files["action.json"]["sha256"],
             "result_id": "a" * 64,
             "files": files,
         }
@@ -114,28 +141,23 @@ class FakeClient:
         if name in REPORT_EVIDENCE_FILE_NAMES:
             return self.evidence[name]
         if name == "report.html":
-            action = fake_action(self.job)
-            configuration = html.escape(
-                json.dumps({"current_action": action}, sort_keys=True, separators=(",", ":"))
-            )
-            fields = {
-                "operator id": "canonical_attempt_report",
-                "operator version": "1.0.0",
-                "operator source sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
-                "operator content digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
-            }
-            rows = [
-                '<tr><th scope="row">template parameters</th><td><span>AVAILABLE</span><br>'
-                f"<code>{configuration}</code></td></tr>"
-            ]
-            rows.extend(
-                '<tr><th scope="row">'
-                f"{field}</th><td><span>AVAILABLE</span><br><code>{value}</code></td></tr>"
-                for field, value in fields.items()
-            )
-            return ("<html><table>" + "".join(rows) + "</table></html>").encode()
+            return self.computation.report_html
+        if name == "normalized-snapshot.json":
+            return self.computation.normalized_bytes
         assert name == "notification.txt"
-        return fake_source_notification(self.job)
+        return self.computation.notification_bytes
+
+
+def _canonical_computation(job):
+    if job.job_id == "1cd5557264db":
+        implementation = GoldProductionJob(FIXTURES / "gold-model-manifest.json")
+        raw_name = "gold-au9999.tsv"
+    else:
+        implementation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+        raw_name = "bocom-yahoo-chart.json"
+    return implementation.compute(
+        (FIXTURES / raw_name).read_bytes(), f"fixture://{raw_name}", SCHEDULED
+    )
 
 
 def fake_action(job):
@@ -308,6 +330,250 @@ def fake_report_evidence(job):
     }
 
 
+def _gold_canonical_evidence() -> dict[str, bytes]:
+    computation = GoldProductionJob(FIXTURES / "gold-model-manifest.json").compute(
+        (FIXTURES / "gold-au9999.tsv").read_bytes(),
+        "fixture://gold-au9999.tsv",
+        SCHEDULED,
+    )
+    return {
+        **dict(computation.report_evidence),
+        "normalized-snapshot.json": computation.normalized_bytes,
+    }
+
+
+def _replace_document_fields(
+    evidence: dict[str, bytes], replacements: dict[str, object]
+) -> dict:
+    document = json.loads(evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    for field_id, value in replacements.items():
+        fields[field_id]["raw"] = value
+    return _store_report_document(evidence, document)
+
+
+def _store_report_document(
+    evidence: dict[str, bytes], document: dict
+) -> dict:
+    core = {key: value for key, value in document.items() if key != "document_id"}
+    document["document_id"] = hashlib.sha256(
+        b"quant-platform/report-document/v1\0"
+        + json.dumps(
+            core,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    evidence["report-document.json"] = json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    return document
+
+
+def test_report_source_verifier_rejects_incomplete_canonical_document() -> None:
+    evidence = fake_report_evidence(JOBS["1cd5557264db"])
+
+    with pytest.raises(ProductionClientError, match="document|section|field"):
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+
+
+def test_report_source_verifier_requires_available_production_fields() -> None:
+    evidence = _gold_canonical_evidence()
+    document = json.loads(evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    fields["net_profit_cny"].update(
+        {
+            "availability": "NOT_EVALUATED",
+            "raw": None,
+            "reason": "tampered omission",
+            "display": "tampered omission",
+        }
+    )
+    document = _store_report_document(evidence, document)
+
+    with pytest.raises(ProductionClientError, match="availability|production field"):
+        _verify_report_document_sources(document, evidence)
+
+
+def test_report_source_verifier_rejects_cross_file_identity_tampering() -> None:
+    evidence = _gold_canonical_evidence()
+    descriptor = json.loads(evidence["bundle-descriptor.json"])
+    descriptor["attempt_id"] = "f" * 64
+    evidence["bundle-descriptor.json"] = json.dumps(
+        descriptor, sort_keys=True, separators=(",", ":")
+    ).encode()
+
+    with pytest.raises(ProductionClientError, match="attempt|identity|binding"):
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+
+
+def test_report_source_verifier_recomputes_attempt_and_experiment_identities() -> None:
+    evidence = _gold_canonical_evidence()
+    audit = json.loads(evidence["attempt-audit.json"])
+    descriptor = json.loads(evidence["bundle-descriptor.json"])
+    audit["experiment_id"] = descriptor["experiment_id"] = "e" * 64
+    audit["attempt_id"] = descriptor["attempt_id"] = "a" * 64
+    descriptor["bundle_id"] = hashlib.sha256(
+        b"quant-platform/attempt-result-bundle/v1\0"
+        + json.dumps(
+            {
+                "attempt_id": audit["attempt_id"],
+                "experiment_id": audit["experiment_id"],
+                "core_result_digest": audit["result_digest"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    evidence["attempt-audit.json"] = json.dumps(
+        audit, sort_keys=True, separators=(",", ":")
+    ).encode()
+    evidence["bundle-descriptor.json"] = json.dumps(
+        descriptor, sort_keys=True, separators=(",", ":")
+    ).encode()
+    document = _replace_document_fields(
+        evidence,
+        {
+            "attempt_id": audit["attempt_id"],
+            "experiment_id": audit["experiment_id"],
+            "bundle_id": descriptor["bundle_id"],
+        },
+    )
+
+    with pytest.raises(ProductionClientError, match="attempt|experiment|identity"):
+        _verify_report_document_sources(document, evidence)
+
+
+def test_report_source_verifier_recomputes_core_result_digest() -> None:
+    evidence = _gold_canonical_evidence()
+    runtime = json.loads(evidence["run_manifest.json"])
+    runtime["runtime"]["provider_request"]["netloc"] = "tampered-source"
+    runtime["runtime"]["provider_source"] = "tampered-source"
+    runtime["runtime"]["provider_request_sha256"] = hashlib.sha256(
+        b"fixture://tampered-source"
+    ).hexdigest()
+    evidence["run_manifest.json"] = json.dumps(
+        runtime, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    document = _replace_document_fields(evidence, {"runtime": runtime["runtime"]})
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    fields["runtime"]["display"] = json.dumps(
+        runtime["runtime"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    document = _store_report_document(evidence, document)
+
+    with pytest.raises(ProductionClientError, match="digest|identity"):
+        _verify_report_document_sources(document, evidence)
+
+
+def test_report_source_verifier_rejects_unbound_contract_details() -> None:
+    evidence = _gold_canonical_evidence()
+    contract = json.loads(evidence["contract.json"])
+    contract["details"][0] = "tampered limitation"
+    evidence["contract.json"] = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+
+    with pytest.raises(ProductionClientError, match="contract|limitation"):
+        _verify_report_document_sources(
+            json.loads(evidence["report-document.json"]), evidence
+        )
+
+
+def test_report_source_verifier_rejects_resealed_ledger_contradiction() -> None:
+    evidence = _gold_canonical_evidence()
+    metrics = json.loads(evidence["metrics.json"])
+    metrics["open_trades"] += 1
+    evidence["metrics.json"] = json.dumps(
+        metrics, sort_keys=True, separators=(",", ":")
+    ).encode()
+    document = json.loads(evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    configuration = json.loads(evidence["config.json"])["template"]["parameters"]
+    audit = json.loads(evidence["attempt-audit.json"])
+    runtime = json.loads(evidence["run_manifest.json"])["runtime"]
+    core_digest = hashlib.sha256(
+        b"quantresearch-production-report-evidence/v1\0"
+        + json.dumps(
+            {
+                "normalized_snapshot_sha256": audit["dataset"]["snapshot_id"],
+                "action": configuration["current_action"],
+                "price_equity": fields["price_equity_rows"]["raw"],
+                "events": fields["events"]["raw"],
+                "trades": fields["trades"]["raw"],
+                "holdings": fields["holdings"]["raw"],
+                "metrics": {
+                    key: value
+                    for key, value in metrics.items()
+                    if key
+                    not in {"net_return", "current_position", "closed_trades", "open_trades"}
+                },
+                "provenance": runtime,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    descriptor = json.loads(evidence["bundle-descriptor.json"])
+    bundle_id = hashlib.sha256(
+        b"quant-platform/attempt-result-bundle/v1\0"
+        + json.dumps(
+            {
+                "attempt_id": audit["attempt_id"],
+                "experiment_id": audit["experiment_id"],
+                "core_result_digest": core_digest,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    audit["result_digest"] = core_digest
+    descriptor["core_result_digest"] = core_digest
+    descriptor["bundle_id"] = bundle_id
+    evidence["attempt-audit.json"] = json.dumps(
+        audit, sort_keys=True, separators=(",", ":")
+    ).encode()
+    evidence["bundle-descriptor.json"] = json.dumps(
+        descriptor, sort_keys=True, separators=(",", ":")
+    ).encode()
+    document = _replace_document_fields(
+        evidence,
+        {
+            "open_trades": metrics["open_trades"],
+            "core_result_digest": core_digest,
+            "bundle_id": bundle_id,
+        },
+    )
+
+    with pytest.raises(ProductionClientError, match="trade|ledger|count"):
+        _verify_report_document_sources(document, evidence)
+
+
 def fake_source_notification(job):
     if job.job_id == "1cd5557264db":
         return (
@@ -465,7 +731,12 @@ def test_result_and_report_operator_identity_drift_fail_closed(tmp_path: Path) -
             payload = super().fetch_verified_file(manifest, name)
             if name == "report-document.json":
                 document = json.loads(payload)
-                document["sections"][0]["fields"][0]["raw"]["current_action"]["action"] = "WAIT"
+                fields = {
+                    field["field_id"]: field
+                    for section in document["sections"]
+                    for field in section["fields"]
+                }
+                fields["template_parameters"]["raw"]["current_action"]["action"] = "BUY"
                 return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
             return payload
 
@@ -474,8 +745,13 @@ def test_result_and_report_operator_identity_drift_fail_closed(tmp_path: Path) -
             payload = super().fetch_verified_file(manifest, name)
             if name == "config.json":
                 configuration = json.loads(payload)
-                configuration["template"]["parameters"]["current_action"]["action"] = "WAIT"
-                return json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+                configuration["template"]["parameters"]["current_action"]["action"] = "BUY"
+                return json.dumps(
+                    configuration,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
             return payload
 
     for client_factory in (
@@ -499,6 +775,38 @@ def test_result_and_report_operator_identity_drift_fail_closed(tmp_path: Path) -
                 transport_factory=lambda configuration: configuration,
                 client_factory=client_factory,
             )
+
+
+def test_report_html_must_equal_deterministic_canonical_rendering(tmp_path: Path) -> None:
+    job = JOBS["1cd5557264db"]
+
+    class WrongPresentation(FakeClient):
+        def fetch_verified_file(self, manifest, name):
+            payload = super().fetch_verified_file(manifest, name)
+            if name == "report.html":
+                return payload.replace(
+                    b"This document presents sealed evidence.",
+                    b"This document presents fabricated evidence.",
+                )
+            return payload
+
+    with pytest.raises(ProductionClientError, match="render|presentation|report"):
+        run_job(
+            job,
+            scheduled_for="2026-03-09T00:40:00Z",
+            tls=ClientTLS(
+                "https://127.0.0.1:8443",
+                Path("/unused"),
+                Path("/unused"),
+                Path("/unused"),
+            ),
+            jobs_path=jobs_file(tmp_path, job.job_id),
+            transport_factory=lambda configuration: configuration,
+            client_factory=WrongPresentation,
+            publisher=lambda selected, _report, _action: (
+                f"https://share.ai.jingtao.fun/{selected.report_filename}"
+            ),
+        )
 
 
 def test_cli_rejects_unknown_job() -> None:
@@ -582,7 +890,13 @@ def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None
     package = tmp_path / "quant_platform"
     package.mkdir()
     (package / "__init__.py").write_bytes(b"")
-    for name in ("production_contract.py", "production_client.py", "production_schedule_client.py"):
+    for name in (
+        "schemas.py",
+        "attempt_report.py",
+        "production_contract.py",
+        "production_client.py",
+        "production_schedule_client.py",
+    ):
         shutil.copyfile(PACKAGE / name, package / name)
 
     recipe = (PROJECT / "production" / "AILEARN-SCHEDULE-CUTOVER.md").read_text(
@@ -590,7 +904,7 @@ def test_documented_thin_runtime_imports_schedule_client(tmp_path: Path) -> None
     )
     assert 'install -m 0444 /dev/null "$runtime/__init__.py"' in recipe
     assert (
-        "for name in production_contract.py production_client.py production_schedule_client.py; do"
+        "for name in schemas.py attempt_report.py production_contract.py production_client.py production_schedule_client.py; do"
         in recipe
     )
 

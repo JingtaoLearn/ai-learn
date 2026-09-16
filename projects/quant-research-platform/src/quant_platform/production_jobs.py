@@ -416,29 +416,6 @@ def _equity_path(
     }
 
 
-def _path_display(rows: Sequence[Mapping[str, Any]]) -> str:
-    def shown(value: Any) -> str:
-        return "" if value is None else format(float(value), ".12g")
-
-    lines = ["date,phase,open,close,position,equity_gross,equity_net,buy_and_hold_reference"]
-    lines.extend(
-        ",".join(
-            (
-                str(row["date"]),
-                str(row["phase"]),
-                shown(row["price"]),
-                shown(row["close"]),
-                "" if row["position"] is None else str(row["position"]),
-                shown(row["equity_gross"]),
-                shown(row["equity"]),
-                shown(row["buy_and_hold_reference"]),
-            )
-        )
-        for row in rows
-    )
-    return "\n".join(lines)
-
-
 def build_canonical_production_report(
     *,
     rows: Sequence[Mapping[str, Any]],
@@ -482,6 +459,10 @@ def build_canonical_production_report(
         "execution_price_basis": spec.execution_price_basis,
         "price_unit": spec.price_unit,
         "cost_description": spec.cost_description,
+        "signal_price_path": [
+            {"date": row["date"].isoformat(), "signal_price": float(row["signal_close"])}
+            for row in rows
+        ],
         "reporting_account": {
             "initial_capital_cny": REPORT_INITIAL_CAPITAL_CNY,
             "quantity_rule": "integer units purchased with available cash at each BUY",
@@ -510,6 +491,13 @@ def build_canonical_production_report(
         "model_id": action["model_version"],
         "production_manifest_sha256": action["production_manifest_sha256"],
         "provider_source": provider.netloc or provider.scheme,
+        "provider_request": {
+            "scheme": provider.scheme,
+            "netloc": provider.netloc,
+            "path": provider.path,
+            "query": provider.query,
+            "fragment": provider.fragment,
+        },
         "provider_request_sha256": hashlib.sha256(provider_url.encode("utf-8")).hexdigest(),
         "market_window": [rows[0]["date"].isoformat(), rows[-1]["date"].isoformat()],
         "performance_window": [metrics["period_start"], metrics["period_end"]],
@@ -518,29 +506,6 @@ def build_canonical_production_report(
         "local_compute": False,
         "feng_fallback": False,
     }
-    core_result_digest = hashlib.sha256(
-        b"quantresearch-production-report-evidence/v1\0"
-        + canonical_json_bytes(
-            {
-                "normalized_snapshot_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
-                "action": dict(action),
-                "price_equity": price_equity,
-                "events": events,
-                "trades": trades,
-                "holdings": holdings,
-                "metrics": metrics,
-                "provenance": provenance,
-            }
-        )
-    ).hexdigest()
-    bundle_id = identity(
-        b"quant-platform/attempt-result-bundle/v1\0",
-        {
-            "attempt_id": attempt_id,
-            "experiment_id": experiment_id,
-            "core_result_digest": core_result_digest,
-        },
-    )
     limitations = [
         *spec.limitations,
         "Buy-and-hold is a period-dependent reference, not a decisive price judgment.",
@@ -613,6 +578,29 @@ def build_canonical_production_report(
         }
         for row in price_equity
     ]
+    core_result_digest = hashlib.sha256(
+        b"quantresearch-production-report-evidence/v1\0"
+        + canonical_json_bytes(
+            {
+                "normalized_snapshot_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
+                "action": dict(action),
+                "price_equity": canonical_price_equity,
+                "events": canonical_events,
+                "trades": canonical_trades,
+                "holdings": canonical_holdings,
+                "metrics": metrics,
+                "provenance": provenance,
+            }
+        )
+    ).hexdigest()
+    bundle_id = identity(
+        b"quant-platform/attempt-result-bundle/v1\0",
+        {
+            "attempt_id": attempt_id,
+            "experiment_id": experiment_id,
+            "core_result_digest": core_result_digest,
+        },
+    )
     final_equity = metrics["final_equity_cny"]
     sections = [
         {"section_id": "identity_and_purpose", "fields": [
@@ -653,7 +641,11 @@ def build_canonical_production_report(
             _report_field("runtime", provenance, display=canonical_json_bytes(provenance).decode()),
         ]},
         {"section_id": "price_equity_path", "fields": [
-            _report_field("price_equity_rows", canonical_price_equity, display=_path_display(price_equity)),
+            _report_field(
+                "price_equity_rows",
+                canonical_price_equity,
+                display=canonical_json_bytes(canonical_price_equity).decode(),
+            ),
         ]},
         {"section_id": "events_trades_holdings", "fields": [
             _report_field("events", canonical_events, display=canonical_json_bytes(events).decode()),
