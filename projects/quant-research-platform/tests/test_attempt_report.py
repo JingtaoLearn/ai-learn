@@ -498,6 +498,68 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert "<script" not in rendered.lower()
 
 
+def test_visual_report_ledgers_keep_primary_fields_visible_and_disclose_complete_rows():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert rendered.count('class="ledger-row event-row"') == 2
+    assert rendered.count('class="ledger-row trade-row"') == 2
+    assert 'data-primary-field="date">2026-09-11' in rendered
+    assert 'data-primary-field="action"><span class="status-label buy">BUY ▲</span>' in rendered
+    assert 'data-primary-field="transition">0 → 9' in rendered
+    assert 'data-primary-field="pnl">¥34.00' in rendered
+    assert "upward crossing" in rendered
+    assert rendered.count('class="ledger-details"') == 4
+    assert 'aria-label="事件 1 · 2026-09-11 · BUY"' in rendered
+    assert 'aria-label="交易 1 · 2026-09-11 · CLOSED"' in rendered
+    for value in (
+        "notional cny",
+        "commission cny",
+        "cash before cny",
+        "entry cost cny",
+        "gross pnl cny",
+        "return",
+    ):
+        assert value in rendered
+
+
+def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_labels():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+    style_match = re.search(r"<style>(?P<css>.*)</style>", rendered)
+    assert style_match is not None
+    css = style_match.group("css")
+
+    assert '<nav class="report-nav"' in rendered
+    assert 'href="#decision"' in rendered
+    assert 'href="#event-ledger"' in rendered
+    assert rendered.count('class="chart-range"') == 4
+    assert 'id="decision"' in rendered
+    assert 'id="price-history"' in rendered
+    assert css.count("{") == css.count("}")
+    assert ".chart{min-width" not in css
+    assert "font-variant-numeric:tabular-nums" in css
+    assert ":focus-visible" in css
+    assert "min-height:44px" in css
+    assert "@media(prefers-reduced-motion:reduce)" in css
+
+
+def test_visual_report_keeps_chart_navigation_targets_when_series_are_empty():
+    document = _visual_document()
+    fields = _document_fields(document)
+    fields["price_equity_rows"]["raw"] = []
+    fields["holdings"]["raw"] = []
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    for section_id in (
+        "price-history",
+        "equity-history",
+        "drawdown-history",
+        "trade-history",
+    ):
+        assert f'id="{section_id}"' in rendered
+
+
 def test_visual_report_escapes_hostile_human_text_in_headers_ledgers_and_evidence():
     document = _visual_document()
     fields = _document_fields(document)
@@ -642,8 +704,10 @@ def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates()
 def test_visual_contract_advances_the_shared_operator_semantic_identity():
     bundle = canonical_report_operator_bundle()
 
-    assert REPORT_OPERATOR_VERSION == "1.1.1"
-    assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset({"1.0.0", "1.1.0", "1.1.1"})
+    assert REPORT_OPERATOR_VERSION == "1.2.0"
+    assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset(
+        {"1.0.0", "1.1.0", "1.1.1", "1.2.0"}
+    )
     assert bundle["manifest"]["semantic_version"] == REPORT_OPERATOR_VERSION
     assert b'class="chart chart-price"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-equity"' in bundle["content"]["operator.py"]

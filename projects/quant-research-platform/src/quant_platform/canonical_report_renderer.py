@@ -144,6 +144,22 @@ def _axis(rows, low, high, left, top, width, height, value_suffix):
     return "".join(parts)
 
 
+def _chart_range(start, end, low, high, zh):
+    return (
+        '<div class="chart-range" aria-label="'
+        + _text(zh, "图表范围", "Chart range")
+        + '"><span>'
+        + _escape(start)
+        + " → "
+        + _escape(end)
+        + '</span><span class="numeric">'
+        + _escape(low)
+        + " — "
+        + _escape(high)
+        + "</span></div>"
+    )
+
+
 def _date_index(rows, date_value):
     for index in range(len(rows)):
         if rows[index].get("date") == date_value:
@@ -171,7 +187,7 @@ def _price_chart(rows, events, holdings, zh):
     title = _text(zh, "价格、买卖点与持仓区间", "Price, actions, and holding intervals")
     if not rows:
         return (
-            '<section class="chart-card"><h2>'
+            '<section class="chart-card" id="price-history"><h2>'
             + title
             + '</h2><div class="chart-empty">'
             + _text(zh, "价格序列不可用", "Price series unavailable")
@@ -200,11 +216,19 @@ def _price_chart(rows, events, holdings, zh):
         elif events[index].get("side") == "SELL":
             sell_count += 1
     parts = [
-        '<section class="chart-card"><div class="chart-heading"><h2>'
+        '<section class="chart-card" id="price-history"><div class="chart-heading"><h2>'
         + title
         + "</h2><p>"
         + _text(zh, "▲ BUY 买入；■ SELL 卖出；斜纹为持仓。", "▲ BUY; ■ SELL; hatched areas are holding intervals.")
-        + '</p></div><svg class="chart chart-price" role="img" aria-labelledby="price-title price-desc" '
+        + "</p></div>"
+        + _chart_range(
+            rows[0].get("date"),
+            rows[-1].get("date"),
+            _number(low),
+            _number(high),
+            zh,
+        )
+        + '<svg class="chart chart-price" role="img" aria-labelledby="price-title price-desc" '
         + 'viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '" data-event-count="'
@@ -313,7 +337,7 @@ def _price_chart(rows, events, holdings, zh):
 def _equity_chart(rows, performance, zh):
     title = _text(zh, "策略净值与可用参考", "Strategy equity and available reference")
     if not rows:
-        return '<section class="chart-card"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "净值序列不可用", "Equity series unavailable") + "</div></section>"
+        return '<section class="chart-card" id="equity-history"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "净值序列不可用", "Equity series unavailable") + "</div></section>"
     left = 62.0
     top = 28.0
     plot_width = 838.0
@@ -343,11 +367,19 @@ def _equity_chart(rows, performance, zh):
     low -= padding
     high += padding
     parts = [
-        '<section class="chart-card"><div class="chart-heading"><h2>'
+        '<section class="chart-card" id="equity-history"><div class="chart-heading"><h2>'
         + title
         + "</h2><p>"
         + _text(zh, "策略净值以首日为 1.00；参考仅在来源字段合格可用时显示。", "Strategy equity starts at 1.00; a reference is shown only when its source field is available.")
-        + '</p></div><svg class="chart chart-equity" role="img" aria-labelledby="equity-title equity-desc" viewBox="0 0 920 330" data-point-count="'
+        + "</p></div>"
+        + _chart_range(
+            rows[0].get("date"),
+            rows[-1].get("date"),
+            "%.2f×" % low,
+            "%.2f×" % high,
+            zh,
+        )
+        + '<svg class="chart chart-equity" role="img" aria-labelledby="equity-title equity-desc" viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '" data-reference-count="'
         + ("1" if reference_available else "0")
@@ -383,7 +415,7 @@ def _equity_chart(rows, performance, zh):
 def _drawdown_chart(rows, zh):
     title = _text(zh, "回撤路径", "Drawdown through time")
     if not rows:
-        return '<section class="chart-card"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "回撤序列不可用", "Drawdown series unavailable") + "</div></section>"
+        return '<section class="chart-card" id="drawdown-history"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "回撤序列不可用", "Drawdown series unavailable") + "</div></section>"
     equities = []
     for index in range(len(rows)):
         equities.append(float(rows[index].get("equity")))
@@ -405,11 +437,19 @@ def _drawdown_chart(rows, zh):
     area += " L" + _coord(left + plot_width) + " " + _coord(baseline)
     area += " L" + _coord(left) + " " + _coord(baseline) + " Z"
     parts = [
-        '<section class="chart-card"><div class="chart-heading"><h2>'
+        '<section class="chart-card" id="drawdown-history"><div class="chart-heading"><h2>'
         + title
         + "</h2><p>"
         + _text(zh, "基于已封存策略净值逐点投影；0% 为历史高点。", "Pointwise projection from sealed strategy equity; 0% is the running peak.")
-        + '</p></div><svg class="chart chart-drawdown" role="img" aria-labelledby="drawdown-title drawdown-desc" viewBox="0 0 920 330" data-point-count="'
+        + "</p></div>"
+        + _chart_range(
+            rows[0].get("date"),
+            rows[-1].get("date"),
+            "%.2f%%" % (low * 100.0),
+            "0.00%",
+            zh,
+        )
+        + '<svg class="chart chart-drawdown" role="img" aria-labelledby="drawdown-title drawdown-desc" viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '"><title id="drawdown-title">'
         + title
@@ -438,11 +478,19 @@ def _trade_chart(trades, zh):
         elif trades[index].get("status") == "OPEN":
             open_count += 1
     parts = [
-        '<section class="chart-card"><div class="chart-heading"><h2>'
+        '<section class="chart-card" id="trade-history"><div class="chart-heading"><h2>'
         + title
         + "</h2><p>"
         + _text(zh, "实心柱为已平仓净损益；虚线描边为未平仓盯市值，不虚构退出成本。", "Solid bars are closed-trade net P&L; dashed outlines are open mark-to-market values with no fabricated exit cost.")
-        + '</p></div><svg class="chart chart-trade-pnl" role="img" aria-labelledby="trade-title trade-desc" viewBox="0 0 920 330" data-trade-count="'
+        + "</p></div>"
+        + _chart_range(
+            "#1" if trades else _text(zh, "无交易", "No trades"),
+            "#" + str(len(trades)) if trades else _text(zh, "无交易", "No trades"),
+            _money(min(values), zh) if values else _money(0.0, zh),
+            _money(max(values), zh) if values else _money(0.0, zh),
+            zh,
+        )
+        + '<svg class="chart chart-trade-pnl" role="img" aria-labelledby="trade-title trade-desc" viewBox="0 0 920 330" data-trade-count="'
         + str(len(trades))
         + '" data-closed-count="'
         + str(closed_count)
@@ -547,6 +595,151 @@ def _table(rows, columns, labels, ledger, title, zh):
     return "".join(parts)
 
 
+def _ledger_detail(row, columns, zh, accessible_name):
+    parts = [
+        '<details class="ledger-details"><summary aria-label="'
+        + _escape(accessible_name)
+        + '">'
+        + _text(zh, "完整核算", "All fields")
+        + '</summary><dl>'
+    ]
+    for column in columns:
+        parts.append(
+            "<div><dt>"
+            + _escape(column.replace("_", " "))
+            + "</dt><dd>"
+            + _escape(row.get(column))
+            + "</dd></div>"
+        )
+    parts.append("</dl></details>")
+    return "".join(parts)
+
+
+def _event_ledger(rows, columns, title, zh):
+    parts = [
+        '<section class="ledger-card" id="event-ledger"><div class="section-heading"><div><p class="section-kicker">'
+        + _text(zh, "决策轨迹", "Decision trail")
+        + "</p><h2>"
+        + title
+        + "</h2></div><span>"
+        + str(len(rows))
+        + _text(zh, " 条事件", " events")
+        + '</span></div><div class="table-wrap"><table class="compact-ledger" data-ledger="events" data-row-count="'
+        + str(len(rows))
+        + '"><thead><tr><th scope="col">'
+        + _text(zh, "日期 / 动作 / 成交 / 仓位", "Date / action / execution / position")
+        + '</th><th scope="col">'
+        + _text(zh, "原因", "Reason")
+        + '</th><th scope="col">'
+        + _text(zh, "核算明细", "Accounting detail")
+        + "</th></tr></thead><tbody>"
+    ]
+    if not rows:
+        parts.append('<tr><td colspan="3" class="empty-cell">' + _text(zh, "无记录", "No rows") + "</td></tr>")
+    for index in range(len(rows)):
+        row = rows[index]
+        side = str(row.get("side", "UNAVAILABLE")).upper()
+        symbol = "▲" if side == "BUY" else "■" if side == "SELL" else "•"
+        side_class = side.lower() if side in {"BUY", "SELL"} else "unavailable"
+        transition = str(row.get("holdings_before", "—")) + " → " + str(
+            row.get("holdings_after", "—")
+        )
+        parts.append(
+            '<tr class="ledger-row event-row" data-row-index="'
+            + str(index)
+            + '"><td class="ledger-primary"><span data-primary-field="date">'
+            + _escape(row.get("Date"))
+            + '</span><span data-primary-field="action"><span class="status-label '
+            + side_class
+            + '">'
+            + _escape(side)
+            + " "
+            + symbol
+            + '</span></span><span data-primary-field="price">'
+            + _number(row.get("price"))
+            + '</span><span data-primary-field="transition">'
+            + _escape(transition)
+            + '</span></td><td class="ledger-reason">'
+            + _escape(row.get("reason"))
+            + '</td><td class="ledger-disclosure">'
+            + _ledger_detail(
+                row,
+                columns,
+                zh,
+                _text(zh, "事件 ", "Event ")
+                + str(index + 1)
+                + " · "
+                + str(row.get("Date", "—"))
+                + " · "
+                + side,
+            )
+            + "</td></tr>"
+        )
+    parts.append("</tbody></table></div></section>")
+    return "".join(parts)
+
+
+def _trade_ledger(rows, columns, title, zh):
+    parts = [
+        '<section class="ledger-card" id="trade-ledger"><div class="section-heading"><div><p class="section-kicker">'
+        + _text(zh, "交易结果", "Trade outcomes")
+        + "</p><h2>"
+        + title
+        + "</h2></div><span>"
+        + str(len(rows))
+        + _text(zh, " 笔交易", " trades")
+        + '</span></div><div class="table-wrap"><table class="compact-ledger" data-ledger="trades" data-row-count="'
+        + str(len(rows))
+        + '"><thead><tr><th scope="col">'
+        + _text(zh, "期间 / 状态 / 数量 / 净损益", "Period / status / quantity / net P&L")
+        + '</th><th scope="col">'
+        + _text(zh, "回报", "Return")
+        + '</th><th scope="col">'
+        + _text(zh, "核算明细", "Accounting detail")
+        + "</th></tr></thead><tbody>"
+    ]
+    if not rows:
+        parts.append('<tr><td colspan="3" class="empty-cell">' + _text(zh, "无记录", "No rows") + "</td></tr>")
+    for index in range(len(rows)):
+        row = rows[index]
+        status = str(row.get("status", "UNAVAILABLE")).upper()
+        status_class = status.lower() if status in {"OPEN", "CLOSED"} else "unavailable"
+        period = str(row.get("entry_date", "—")) + " → " + str(
+            row.get("exit_date") or _text(zh, "未平仓", "Open")
+        )
+        parts.append(
+            '<tr class="ledger-row trade-row" data-row-index="'
+            + str(index)
+            + '"><td class="ledger-primary"><span data-primary-field="date">'
+            + _escape(period)
+            + '</span><span data-primary-field="action"><span class="status-label '
+            + status_class
+            + '">'
+            + _escape(status)
+            + '</span></span><span data-primary-field="quantity">×'
+            + _escape(row.get("quantity"))
+            + '</span><span data-primary-field="pnl">'
+            + _money(row.get("net_pnl_cny"), zh)
+            + '</span></td><td class="ledger-reason">'
+            + _percent(row.get("return"), zh)
+            + '</td><td class="ledger-disclosure">'
+            + _ledger_detail(
+                row,
+                columns,
+                zh,
+                _text(zh, "交易 ", "Trade ")
+                + str(index + 1)
+                + " · "
+                + str(row.get("entry_date", "—"))
+                + " · "
+                + status,
+            )
+            + "</td></tr>"
+        )
+    parts.append("</tbody></table></div></section>")
+    return "".join(parts)
+
+
 def _metric_card(label, value, state):
     return '<article class="metric-card" data-state="' + state + '"><span>' + label + "</span><strong>" + _escape(value) + "</strong></article>"
 
@@ -595,7 +788,7 @@ def _evidence(payload, zh):
         "provenance": "不可变来源 / Provenance",
     }
     parts = [
-        '<details class="evidence-details"><summary>'
+        '<details class="evidence-details" id="evidence"><summary>'
         + _text(zh, "证据、配置与不可变来源", "Evidence, configuration, and provenance")
         + '</summary><p class="detail-note">'
         + _text(zh, "以下保留 ReportDocument 的来源、可用性、限制与原始字段；完整行数据见上方台账。", "The ReportDocument sources, availability, limitations, and raw fields remain below; complete row data is in the ledgers above.")
@@ -637,6 +830,14 @@ def _evidence(payload, zh):
         parts.append("</div></details>")
     parts.append("</details>")
     return "".join(parts)
+
+
+def _stylesheet():
+    return """:root{--canvas:#f3f5f7;--surface:#fff;--surface-alt:#f7f8fa;--ink:#151a20;--muted:#58636f;--line:#d9dee5;--line-strong:#b8c0ca;--accent:#1559d6;--buy:#087a52;--buy-bg:#e8f6f0;--sell:#b42318;--sell-bg:#fff0ee;--hold:#3f4852;--hold-bg:#eef1f4;--focus:#005fcc}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.45 Arial,"Helvetica Neue",sans-serif;font-variant-numeric:tabular-nums}main{max-width:1180px;margin:auto;padding:18px}.decision-header{background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center}.eyebrow,.section-kicker{margin:0;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.decision-header h1{margin:2px 0 5px;font-size:clamp(1.4rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.02em}.as-of,.reason,.boundary,.qualification{margin:3px 0}.as-of{font-weight:700}.reason{font-size:1rem}.qualification{color:var(--muted);font-size:.82rem}.boundary{color:#6f2f00;font-weight:750}.action-state{min-width:148px;text-align:center;border:1px solid currentColor;border-radius:8px;padding:12px 16px;font-size:1.7rem;font-weight:850;letter-spacing:.04em}.action-state.buy{background:var(--buy-bg);color:#05633f}.action-state.sell{background:var(--sell-bg);color:#9c1c13}.action-state.hold,.action-state.wait{background:var(--hold-bg);color:var(--hold)}.action-state.unavailable{background:#f1f2f4;color:#414b55}.report-nav{display:flex;gap:4px;margin:10px 0 14px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow-x:auto;scrollbar-width:thin}.report-nav a{min-height:36px;padding:8px 11px;display:inline-flex;align-items:center;color:#33404c;text-decoration:none;white-space:nowrap;border-radius:5px;font-size:.8rem;font-weight:700}.report-nav a:hover{background:#edf3ff;color:#104bb4}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px}.metric-card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 12px;min-width:0}.metric-card span{display:block;color:var(--muted);font-size:.75rem;font-weight:700}.metric-card strong{display:block;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1rem;line-height:1.3;overflow-wrap:anywhere}.metric-card[data-state=unavailable]{border-style:dashed}.chart-card,.ledger-card,.evidence-details{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:15px 16px;margin:10px 0}.chart-heading,.section-heading{display:flex;justify-content:space-between;gap:18px;align-items:baseline}.chart-heading h2,.section-heading h2,.ledger-card h2{margin:0;font-size:1.05rem;line-height:1.3}.chart-heading p{max-width:58%;margin:0;color:var(--muted);font-size:.78rem;text-align:right}.section-heading>span{color:var(--muted);font-size:.78rem;font-weight:700}.chart-range{display:flex;justify-content:space-between;gap:12px;margin:8px 0 -2px;color:var(--muted);font-size:.75rem;font-weight:700}.numeric{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.chart{display:block;width:100%;height:300px;margin-top:4px}.axis,.zero-line{stroke:#7a8490;stroke-width:1}.axis-label,.bar-label{font-size:12px;fill:#4d5965}.series{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.price-series,.equity-series{stroke:var(--accent)}.reference-series{stroke:#8a5a00;stroke-dasharray:9 6}.drawdown-series{stroke:var(--sell)}.drawdown-area{fill:#f5cbc6;opacity:.7}.holding-hatch{stroke:#5f788c;stroke-width:3}.holding-interval{opacity:.23}.event-marker text{font-size:11px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}.event-marker polygon,.event-marker rect{vector-effect:non-scaling-stroke}.event-marker.buy polygon{fill:var(--buy);stroke:#035337;stroke-width:2}.event-marker.sell rect{fill:var(--sell);stroke:#77150f;stroke-width:2}.trade-bar.closed.positive{fill:var(--buy)}.trade-bar.closed.negative{fill:var(--sell)}.trade-bar.closed.zero{fill:#66727a}.trade-bar.open{fill:#fff;stroke:#604ca6;stroke-width:3;stroke-dasharray:7 4}.missing-state,.chart-empty{color:var(--muted);fill:var(--muted);font-weight:700}.table-wrap{max-width:100%;overflow-x:auto;margin-top:8px}table{border-collapse:collapse;width:100%;font-size:.82rem}th,td{text-align:left;vertical-align:top;padding:8px 9px;border-bottom:1px solid #e5e8ec;white-space:nowrap}td:last-child,code{white-space:normal;overflow-wrap:anywhere}thead th{background:var(--surface-alt);color:#46515d;font-size:.72rem;letter-spacing:.02em}.empty-cell{text-align:center;color:var(--muted)}.compact-ledger{table-layout:fixed}.compact-ledger th:first-child{width:51%}.compact-ledger th:nth-child(2){width:31%}.compact-ledger th:last-child{width:18%}.ledger-row>td{height:64px;vertical-align:middle}.ledger-primary{display:grid;grid-template-columns:1.35fr .72fr .72fr 1fr;gap:8px;align-items:center;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ledger-primary>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-label{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border-radius:4px;font-family:Arial,"Helvetica Neue",sans-serif;font-size:.72rem;font-weight:850}.status-label.buy{background:var(--buy-bg);color:#05633f}.status-label.sell{background:var(--sell-bg);color:#9c1c13}.status-label.open{background:#f2efff;color:#4d358f;border:1px dashed #7561b6}.status-label.closed{background:var(--hold-bg);color:var(--hold)}.status-label.unavailable{background:#f1f2f4;color:#414b55}.ledger-reason{line-height:1.35;white-space:normal;overflow-wrap:normal;word-break:normal}.ledger-details summary,.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{cursor:pointer}.ledger-details summary{min-height:44px;display:inline-flex;align-items:center;color:var(--accent);font-size:.78rem;font-weight:800}.ledger-details dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 4px}.ledger-details dl div{min-width:0;padding:7px;background:var(--surface-alt);border-radius:5px}.ledger-details dt{color:var(--muted);font-size:.68rem;text-transform:capitalize}.ledger-details dd{margin:2px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}.ledger-details[open]{min-width:510px}.series-ledgers{margin:10px 0;padding:0 2px}.series-ledgers>summary{min-height:44px;display:flex;align-items:center;font-weight:800}.evidence-details>summary{min-height:44px;display:flex;align-items:center;font-size:1rem;font-weight:800}.evidence-section{border-top:1px solid #e2e8ec;padding:5px 0}.evidence-section summary{min-height:44px;display:flex;align-items:center;font-weight:700}.detail-note{color:var(--muted)}.source-list{display:grid;gap:4px}.source-list code{font-size:.75rem}:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:3px}@media(max-width:800px){main{padding:12px}.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-heading{display:block}.chart-heading p{max-width:none;text-align:left;margin-top:3px}.chart{height:260px}}@media(max-width:640px){body{font-size:13px}main{padding:8px}.decision-header{padding:12px;grid-template-columns:minmax(0,1fr) 90px;gap:10px;border-radius:7px}.decision-header h1{font-size:1.3rem}.eyebrow{font-size:.65rem}.as-of,.reason,.boundary,.qualification{margin:2px 0}.reason{font-size:.88rem;line-height:1.32}.qualification{font-size:.72rem}.boundary{font-size:.74rem}.action-state{min-width:0;padding:10px 5px;font-size:1.15rem}.report-nav{margin:7px 0 9px}.report-nav a{min-height:44px;padding:9px}.metric-cards{gap:6px;margin-bottom:8px}.metric-card{padding:8px}.metric-card strong{font-size:.86rem}.chart-card,.ledger-card,.evidence-details{padding:10px;margin:7px 0;border-radius:7px}.chart-heading h2,.section-heading h2,.ledger-card h2{font-size:.95rem}.chart-heading p{font-size:.72rem}.chart-range{font-size:.7rem}.chart{height:220px;min-height:0}.axis-label,.bar-label,.event-marker text{display:none}.compact-ledger,.compact-ledger tbody{display:block}.compact-ledger thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.compact-ledger .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:3px 8px;padding:7px 0;min-height:88px;border-bottom:1px solid #e5e8ec}.compact-ledger .ledger-row>td{height:auto;padding:0;border:0}.ledger-primary{grid-column:1/-1;grid-template-columns:1.35fr .72fr .65fr .95fr;gap:5px;font-size:.75rem}.ledger-reason{grid-column:1;display:-webkit-box;min-width:0;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}.ledger-disclosure{grid-column:2;grid-row:2}.ledger-details summary{width:100%;min-height:44px;justify-content:flex-end}.ledger-details[open]{min-width:0}.ledger-details[open] dl{position:relative;z-index:1;grid-template-columns:repeat(2,minmax(0,1fr));width:calc(100vw - 38px);margin-left:calc(-100vw + 126px)}.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{min-height:44px}th,td{padding:7px 8px;font-size:.76rem}.date-label{display:none}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}"""
+
+
+def _ledger_styles():
+    return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}"""
 
 
 def apply(payload, parameters):
@@ -682,7 +883,7 @@ def apply(payload, parameters):
     holdings = _raw(fields, "holdings") or []
     lang = "zh-CN" if zh else "en"
     title = _text(zh, "决策证据报告", "Decision evidence report")
-    css = """*{box-sizing:border-box}body{margin:0;background:#f4f7f9;color:#18232d;font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}main{max-width:1180px;margin:auto;padding:22px}.decision-header{background:#102c3b;color:#fff;border-radius:18px;padding:26px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center}.eyebrow{margin:0;color:#b7d7e7;font-weight:700}.decision-header h1{margin:4px 0 6px;font-size:clamp(1.7rem,4vw,2.8rem)}.as-of,.reason,.boundary,.qualification{margin:5px 0}.action-state{min-width:180px;text-align:center;border:3px solid #fff;border-radius:16px;padding:15px;font-size:2.1rem;font-weight:850;letter-spacing:.04em}.action-state.buy{background:#0c704b}.action-state.sell{background:#9b2c2c}.action-state.hold,.action-state.wait{background:#735a12}.action-state.unavailable{background:#4b5563}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}.metric-card{background:#fff;border:1px solid #d8e1e7;border-radius:13px;padding:14px;min-width:0}.metric-card span{display:block;color:#52616b;font-size:.82rem}.metric-card strong{display:block;margin-top:3px;font-size:1.12rem;overflow-wrap:anywhere}.metric-card[data-state=unavailable]{border-style:dashed}.chart-card,.ledger-card,.evidence-details{background:#fff;border:1px solid #d8e1e7;border-radius:15px;padding:18px;margin:14px 0}.chart-heading{display:flex;justify-content:space-between;gap:20px;align-items:baseline}.chart-heading h2,.ledger-card h2{margin:0}.chart-heading p{margin:0;color:#52616b;text-align:right}.chart{display:block;width:100%;height:auto;min-height:220px;margin-top:10px}.axis,.zero-line{stroke:#7b8790;stroke-width:1}.axis-label,.bar-label{font-size:11px;fill:#52616b}.series{fill:none;stroke-width:3;vector-effect:non-scaling-stroke}.price-series,.equity-series{stroke:#155e75}.reference-series{stroke:#9a6700;stroke-dasharray:9 6}.drawdown-series{stroke:#9b2c2c}.drawdown-area{fill:#f8d7da;opacity:.8}.holding-hatch{stroke:#628799;stroke-width:3}.holding-interval{opacity:.32}.event-marker text{font-size:11px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}.event-marker.buy polygon{fill:#0c704b;stroke:#083f2c;stroke-width:2}.event-marker.sell rect{fill:#9b2c2c;stroke:#5e1717;stroke-width:2}.trade-bar.closed.positive{fill:#0c704b}.trade-bar.closed.negative{fill:#9b2c2c}.trade-bar.closed.zero{fill:#66727a}.trade-bar.open{fill:#fff;stroke:#6d28d9;stroke-width:3;stroke-dasharray:7 4}.missing-state,.chart-empty{color:#5b6670;fill:#5b6670;font-weight:700}.table-wrap{overflow-x:auto;margin-top:10px}table{border-collapse:collapse;width:100%;font-size:.87rem}th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid #e2e8ec;white-space:nowrap}td:last-child,code{white-space:normal;overflow-wrap:anywhere}thead th{background:#edf3f6;position:sticky;top:0}.empty-cell{text-align:center;color:#66727a}.evidence-details>summary{font-size:1.15rem;font-weight:800;cursor:pointer}.evidence-section{border-top:1px solid #e2e8ec;padding:10px 0}.evidence-section summary{cursor:pointer;font-weight:700}.detail-note{color:#52616b}.boundary{font-weight:750;color:#f9d86b}@media(max-width:800px){.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-heading{display:block}.chart-heading p{text-align:left;margin-top:4px}.decision-header{grid-template-columns:1fr}.action-state{width:100%}}@media(max-width:640px){main{padding:10px}.decision-header{padding:18px;border-radius:12px}.metric-cards{grid-template-columns:1fr 1fr;gap:8px}.metric-card{padding:10px}.chart-card,.ledger-card,.evidence-details{padding:11px;border-radius:11px}.chart{min-width:620px}.chart-card{overflow-x:auto}.date-label{font-size:10px}th,td{padding:7px 8px;font-size:.8rem}}"""
+    css = _stylesheet() + _ledger_styles()
     parts = [
         '<!doctype html><html lang="'
         + lang
@@ -692,7 +893,7 @@ def apply(payload, parameters):
         + title
         + "</title><style>"
         + css
-        + '</style></head><body><main><header class="decision-header"><div><p class="eyebrow">'
+        + '</style></head><body><main><header class="decision-header" id="decision"><div><p class="eyebrow">'
         + title
         + "</p><h1>"
         + _escape(display_name)
@@ -714,12 +915,26 @@ def apply(payload, parameters):
         + ("" if action_available else " unavailable")
         + '">'
         + _escape(action_name)
-        + "</div></header>"
+        + '</div></header><nav class="report-nav" aria-label="'
+        + _text(zh, "报告导航", "Report navigation")
+        + '"><a href="#decision">'
+        + _text(zh, "当前决策", "Decision")
+        + '</a><a href="#summary">'
+        + _text(zh, "摘要", "Summary")
+        + '</a><a href="#price-history">'
+        + _text(zh, "价格", "Price")
+        + '</a><a href="#drawdown-history">'
+        + _text(zh, "风险", "Risk")
+        + '</a><a href="#event-ledger">'
+        + _text(zh, "台账", "Ledgers")
+        + '</a><a href="#evidence">'
+        + _text(zh, "证据", "Evidence")
+        + "</a></nav>"
     ]
     reference_return = performance.get("buy_and_hold_return")
     exposure = performance.get("exposure")
     period_value, period_state = _period_metric(fields, zh)
-    parts.append('<section class="metric-cards" aria-label="' + _text(zh, "关键指标", "Key metrics") + '">')
+    parts.append('<section class="metric-cards" id="summary" aria-label="' + _text(zh, "关键指标", "Key metrics") + '">')
     parts.append(_metric_card(_text(zh, "报告期间", "Period"), period_value, period_state))
     parts.append(_metric_card(_text(zh, "策略净回报", "Net return"), _percent(_raw(fields, "net_return"), zh), "available" if _raw(fields, "net_return") is not None else "unavailable"))
     parts.append(_metric_card(_text(zh, "同窗买入持有回报", "Same-window reference return"), _percent(reference_return, zh), "available" if reference_return is not None else "unavailable"))
@@ -734,14 +949,12 @@ def apply(payload, parameters):
     parts.append(_drawdown_chart(rows, zh))
     parts.append(_trade_chart(trades, zh))
     event_columns = ["Date", "side", "price", "quantity", "notional_cny", "commission_cny", "transfer_fee_cny", "stamp_tax_cny", "slippage_cny", "total_cost_cny", "cash_before_cny", "cash_after_cny", "holdings_before", "holdings_after", "reason"]
-    event_labels = {"Date": "日期 / Date", "side": "动作 / Side", "price": "价格 / Price", "quantity": "数量 / Quantity", "reason": "原因 / Reason", "total_cost_cny": "总成本 / Total cost"}
     trade_columns = ["entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date", "exit_price", "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny", "return"]
-    trade_labels = {"entry_date": "入场日 / Entry", "exit_date": "退出日 / Exit", "status": "状态 / Status", "net_pnl_cny": "净损益 / Net P&L", "return": "回报 / Return"}
     price_columns = ["date", "price", "close", "equity"]
     holding_columns = ["date", "holdings", "position_after"]
-    parts.append(_table(events, event_columns, event_labels, "events", _text(zh, "完整 BUY / SELL 事件台账", "Complete BUY / SELL event ledger"), zh))
-    parts.append(_table(trades, trade_columns, trade_labels, "trades", _text(zh, "完整交易台账", "Complete trade ledger"), zh))
-    parts.append('<details class="series-ledgers"><summary>' + _text(zh, "展开完整价格、净值与每日持仓行", "Expand complete price, equity, and daily holding rows") + "</summary>")
+    parts.append(_event_ledger(events, event_columns, _text(zh, "BUY / SELL 事件台账", "BUY / SELL event ledger"), zh))
+    parts.append(_trade_ledger(trades, trade_columns, _text(zh, "交易台账", "Trade ledger"), zh))
+    parts.append('<details class="series-ledgers" id="raw-data"><summary>' + _text(zh, "展开完整价格、净值与每日持仓行", "Expand complete price, equity, and daily holding rows") + "</summary>")
     parts.append(_table(rows, price_columns, {}, "price-equity", _text(zh, "完整价格与净值行", "Complete price and equity rows"), zh))
     parts.append(_table(holdings, holding_columns, {}, "holdings", _text(zh, "完整每日持仓行", "Complete daily holding rows"), zh))
     parts.append("</details>")
