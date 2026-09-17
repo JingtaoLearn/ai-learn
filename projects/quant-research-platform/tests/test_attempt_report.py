@@ -468,19 +468,13 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert 'data-event-count="2"' in rendered
     assert 'data-buy-count="1"' in rendered
     assert 'data-sell-count="1"' in rendered
-    assert len(re.findall(r'<g class="event-marker (?:buy|sell)"', rendered)) == 2
+    assert 'data-position-interval-count="3"' in rendered
+    assert 'data-transition-count="2"' in rendered
     assert 'data-closed-count="1"' in rendered
     assert 'data-open-count="1"' in rendered
     assert (
-        'class="event-marker buy" data-event-index="0" data-point-index="1" '
-        'data-date="2026-09-11" data-side="BUY"'
-    ) in rendered
-    assert (
-        'class="event-marker sell" data-event-index="1" data-point-index="3" '
-        'data-date="2026-09-15" data-side="SELL"'
-    ) in rendered
-    assert (
-        'class="holding-interval" data-start-index="1" data-end-index="2" '
+        'class="position-interval holding-interval" data-state="HOLDING" '
+        'data-start-index="1" data-end-index="2" '
         'data-start-date="2026-09-11" data-end-date="2026-09-12"'
     ) in rendered
     assert 'class="trade-bar closed positive" data-trade-index="0"' in rendered
@@ -499,109 +493,176 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert "<script" not in rendered.lower()
 
 
-def test_price_chart_has_an_always_visible_numbered_action_index():
+def test_price_chart_has_no_action_point_or_index_dom():
     rendered = render_report_document(_visual_document()).decode("utf-8")
 
-    assert '<ol class="action-index" data-event-count="2">' in rendered
-    assert (
-        '<li class="action-index-item buy" data-event-index="0" '
-        'data-date="2026-09-11" data-side="BUY">'
-    ) in rendered
-    assert (
-        '<span class="action-number">1</span><span class="action-side">▲ BUY</span>'
-        '<time datetime="2026-09-11">2026-09-11</time>'
-        '<span class="action-price">102.00</span>'
-    ) in rendered
-    assert (
-        '<li class="action-index-item sell" data-event-index="1" '
-        'data-date="2026-09-15" data-side="SELL">'
-    ) in rendered
-    assert (
-        '<span class="action-number">2</span><span class="action-side">■ SELL</span>'
-        '<time datetime="2026-09-15">2026-09-15</time>'
-        '<span class="action-price">106.00</span>'
-    ) in rendered
+    for forbidden in (
+        'class="event-marker',
+        'class="event-connector',
+        'class="event-anchor',
+        'class="marker-number',
+        'class="action-index',
+    ):
+        assert forbidden not in rendered
 
 
-def test_price_chart_normalizes_side_for_markers_and_action_index():
-    rows = [{"date": "2026-09-11", "close": 102.0}]
-    events = [{"Date": "2026-09-11", "side": "buy", "price": 102.0}]
-
-    rendered = canonical_report_renderer_module._price_chart(rows, events, [], False)
-
-    assert 'data-buy-count="1" data-sell-count="0"' in rendered
-    assert 'class="event-marker buy" data-event-index="0"' in rendered
-    assert rendered.count('data-side="BUY"') == 2
-    assert '<span class="action-side">▲ BUY</span>' in rendered
-
-
-def test_price_chart_uses_unavailable_semantics_for_unknown_side():
-    rows = [{"date": "2026-09-11", "close": 102.0}]
-    events = [{"Date": "2026-09-11", "side": "WAIT", "price": 102.0}]
-
-    rendered = canonical_report_renderer_module._price_chart(rows, events, [], False)
-
-    assert 'class="event-marker unavailable" data-event-index="0"' in rendered
-    assert rendered.count('data-side="UNAVAILABLE"') == 2
-    assert 'class="marker-glyph unavailable-glyph"' in rendered
-    assert '<span class="action-side">• UNAVAILABLE</span>' in rendered
-
-
-def test_price_chart_renders_all_connectors_and_anchors_before_glyphs():
-    rendered = render_report_document(_visual_document()).decode("utf-8")
-
-    first_glyph = rendered.index('class="marker-glyph')
-    assert rendered.rindex('class="event-connector"') < first_glyph
-    assert rendered.rindex('class="event-anchor"') < first_glyph
-
-
-def test_price_chart_spreads_dense_numbered_markers_without_overlap():
+def test_position_intervals_cover_every_row_and_express_event_transitions():
     rows = [
         {"date": "2026-09-10", "close": 100.0},
         {"date": "2026-09-11", "close": 102.0},
-        {"date": "2026-09-12", "close": 101.0},
+        {"date": "2026-09-12", "close": 104.0},
+        {"date": "2026-09-15", "close": 106.0},
+    ]
+    holdings = [
+        {"date": "2026-09-10", "position_after": 0},
+        {"date": "2026-09-11", "position_after": 1},
+        {"date": "2026-09-12", "position_after": 1},
+        {"date": "2026-09-15", "position_after": 0},
     ]
     events = [
-        {"Date": "2026-09-11", "side": "BUY" if index % 2 == 0 else "SELL", "price": 102.0}
-        for index in range(8)
+        {"Date": "2026-09-11", "side": "BUY", "price": 102.0},
+        {"Date": "2026-09-15", "side": "SELL", "price": 106.0},
     ]
 
-    rendered = canonical_report_renderer_module._price_chart(rows, events, [], True)
+    rendered = canonical_report_renderer_module._price_chart(rows, events, holdings, False)
 
-    positions = [
-        tuple(float(value) for value in match)
-        for match in re.findall(
-            r'data-marker-x="([\d.]+)" data-marker-y="([\d.]+)" '
-            r'data-anchor-x="([\d.]+)" data-anchor-y="([\d.]+)"',
-            rendered,
-        )
+    intervals = re.findall(
+        r'class="position-interval (?:holding|cash)-interval" data-state="(HOLDING|CASH)" '
+        r'data-start-index="(\d+)" data-end-index="(\d+)"',
+        rendered,
+    )
+    assert intervals == [("CASH", "0", "0"), ("HOLDING", "1", "2"), ("CASH", "3", "3")]
+    assert sum(int(end) - int(start) + 1 for _, start, end in intervals) == len(rows)
+    assert (
+        'class="transition-boundary buy" data-side="BUY" data-date="2026-09-11" '
+        'data-from-state="CASH" data-to-state="HOLDING"'
+    ) in rendered
+    assert (
+        'class="transition-boundary sell" data-side="SELL" data-date="2026-09-15" '
+        'data-from-state="HOLDING" data-to-state="CASH"'
+    ) in rendered
+
+
+@pytest.mark.parametrize(
+    "holdings",
+    [
+        [],
+        [{"date": "2026-09-10", "position_after": 0}],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-13", "position_after": 1},
+        ],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-11"},
+        ],
+    ],
+)
+def test_position_intervals_reject_missing_short_or_date_misaligned_holdings(holdings):
+    rows = [
+        {"date": "2026-09-10", "close": 100.0},
+        {"date": "2026-09-11", "close": 102.0},
     ]
-    assert len(positions) == len(events)
-    assert all(anchor_x == positions[0][2] for _, _, anchor_x, _ in positions)
-    assert all(anchor_y == positions[0][3] for _, _, _, anchor_y in positions)
-    for index, (marker_x, marker_y, _, _) in enumerate(positions):
-        for other_x, other_y, _, _ in positions[index + 1 :]:
-            assert abs(marker_x - other_x) >= 72 or abs(marker_y - other_y) >= 72
-    assert rendered.count('class="event-connector"') == len(events)
-    assert rendered.count('class="marker-number"') == len(events)
-    assert 'class="marker-glyph buy-glyph"' in rendered
-    assert 'class="marker-glyph sell-glyph"' in rendered
+
+    with pytest.raises(ValueError, match="holdings must align one-to-one with price rows by date"):
+        canonical_report_renderer_module._position_intervals(rows, holdings)
 
 
-def test_event_marker_layout_fails_when_no_non_overlapping_position_exists():
-    points = [
-        {"side": "BUY", "anchor_x": 36.0, "anchor_y": 36.0},
-        {"side": "SELL", "anchor_x": 36.0, "anchor_y": 36.0},
+def test_position_intervals_preserve_empty_price_series_path():
+    assert canonical_report_renderer_module._position_intervals([], []) == []
+    assert "Price series unavailable" in canonical_report_renderer_module._price_chart([], [], [], False)
+
+
+def test_one_row_position_interval_covers_full_chart_and_focus_track_width():
+    rows = [{"date": "2026-09-10", "close": 100.0}]
+    holdings = [{"date": "2026-09-10", "position_after": 1}]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    svg_interval = re.search(
+        r'class="position-interval holding-interval"[^>]+x="(?P<x>[\d.]+)"[^>]+'
+        r'width="(?P<width>[\d.]+)"',
+        rendered,
+    )
+    assert svg_interval is not None
+    assert float(svg_interval.group("x")) == 62.0
+    assert float(svg_interval.group("width")) == 838.0
+    track_interval = re.search(
+        r'class="state-track-segment holding"[^>]+style="left:(?P<left>[\d.]+)%'
+        r';width:(?P<width>[\d.]+)%"',
+        rendered,
+    )
+    assert track_interval is not None
+    assert float(track_interval.group("left")) == 0.0
+    assert float(track_interval.group("width")) == 100.0
+
+
+def test_price_chart_uses_textures_labels_and_boundary_styles_not_color_alone():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert 'id="price-holding-pattern"' in rendered
+    assert 'id="price-cash-pattern"' in rendered
+    assert 'class="state-legend-item holding"' in rendered
+    assert 'class="state-legend-item cash"' in rendered
+    assert "持仓 / HOLDING" in rendered
+    assert "空仓 / CASH" in rendered
+    assert "买入 BUY：CASH→HOLDING" in rendered
+    assert "卖出 SELL：HOLDING→CASH" in rendered
+    assert 'class="transition-boundary buy"' in rendered
+    assert 'class="transition-boundary sell"' in rendered
+
+
+def test_state_timeline_expands_late_dense_transitions_without_hiding_full_history():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
+    holdings = [
+        {"date": row["date"], "position_after": int(index >= 80 and index % 2 == 0)}
+        for index, row in enumerate(rows)
     ]
 
-    with pytest.raises(ValueError, match="non-overlapping event marker"):
-        canonical_report_renderer_module._event_marker_layout(
-            points,
-            left=0.0,
-            top=0.0,
-            width=72.0,
-            height=72.0,
-        )
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    assert 'class="state-timeline" data-focus-start-index="78" data-focus-end-index="99"' in rendered
+    assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
+    assert 'class="state-track"' in rendered
+    assert "day-078 → day-099" in rendered
+    assert 'class="position-interval cash-interval" data-state="CASH" data-start-index="0"' in rendered
+
+
+def test_state_timeline_focuses_late_dense_cluster_after_isolated_early_transition():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
+    holdings = [
+        {
+            "date": row["date"],
+            "position_after": int(index < 10 or (index >= 80 and index % 2 == 0)),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    assert 'class="state-timeline" data-focus-start-index="78" data-focus-end-index="99"' in rendered
+    assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
+    assert (
+        'class="position-interval holding-interval" data-state="HOLDING" '
+        'data-start-index="0" data-end-index="9"'
+    ) in rendered
+
+
+def test_state_timeline_segments_expose_state_and_visible_date_range_text():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(4)]
+    holdings = [
+        {"date": row["date"], "position_after": int(index in {1, 2})}
+        for index, row in enumerate(rows)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    segment_labels = re.findall(r'class="state-track-segment [^"]+"[^>]+aria-label="([^"]+)"', rendered)
+    assert segment_labels == [
+        "CASH · day-000 — day-000",
+        "HOLDING · day-001 — day-002",
+        "CASH · day-003 — day-003",
+    ]
 
 
 def test_visual_report_ledgers_keep_primary_fields_visible_and_disclose_complete_rows():
@@ -646,7 +707,12 @@ def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_label
     assert ":focus-visible" in css
     assert "min-height:44px" in css
     assert "@media(prefers-reduced-motion:reduce)" in css
-    assert ".event-marker .marker-number{display:block" in css
+    assert ".position-interval.holding-interval" in css
+    assert ".position-interval.cash-interval" in css
+    assert ".transition-boundary.buy" in css
+    assert ".transition-boundary.sell" in css
+    assert ".event-marker" not in css
+    assert ".action-index" not in css
 
 
 def test_visual_report_keeps_chart_navigation_targets_when_series_are_empty():
@@ -782,7 +848,7 @@ def test_visual_report_marks_period_unavailable_when_exactly_one_endpoint_is_mis
     assert "None" not in rendered
 
 
-def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates():
+def test_price_chart_keeps_gap_prices_in_scale_and_unmatched_events_in_ledger():
     document = _visual_document()
     fields = _document_fields(document)
     fields["events"]["raw"][0]["price"] = 500.0
@@ -795,17 +861,12 @@ def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates()
 
     rendered = render_report_document(document).decode("utf-8")
 
-    matched = re.search(
-        r'data-event-index="0"[^>]+transform="translate\([^ ]+ (?P<y>-?[0-9.]+)\)"',
-        rendered,
-    )
-    assert matched is not None
-    assert 28.0 <= float(matched.group("y")) <= 270.0
-    assert (
-        'data-event-index="2" data-point-index="-1" data-date="2026-09-14" '
-        'data-side="BUY" data-placement="unmapped"'
-    ) in rendered
-    assert "Unmatched event date" in rendered
+    assert ">532.00</text>" in rendered
+    assert 'data-ledger="events" data-row-count="3"' in rendered
+    assert 'data-primary-field="date">2026-09-14' in rendered
+    assert 'data-primary-field="price">500.00' in rendered
+    assert "event date absent from price rows" in rendered
+    assert 'class="event-marker' not in rendered
 
 
 def test_visual_contract_advances_the_shared_operator_semantic_identity():

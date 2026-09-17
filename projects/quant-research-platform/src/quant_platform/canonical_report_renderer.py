@@ -160,26 +160,30 @@ def _chart_range(start, end, low, high, zh):
     )
 
 
-def _date_index(rows, date_value):
-    for index in range(len(rows)):
-        if rows[index].get("date") == date_value:
-            return index
-    return -1
-
-
-def _holding_intervals(rows, holdings):
+def _position_intervals(rows, holdings):
     intervals = []
-    start = None
-    limit = min(len(rows), len(holdings))
-    for index in range(limit):
-        held = int(holdings[index].get("position_after", 0)) != 0
-        if held and start is None:
+    if not rows:
+        return intervals
+    if len(holdings) != len(rows):
+        raise ValueError("holdings must align one-to-one with price rows by date")
+    for index in range(len(rows)):
+        if (
+            holdings[index].get("date") != rows[index].get("date")
+            or "position_after" not in holdings[index]
+        ):
+            raise ValueError("holdings must align one-to-one with price rows by date")
+    state = None
+    start = 0
+    for index in range(len(rows)):
+        position_after = holdings[index]["position_after"]
+        next_state = "HOLDING" if int(position_after) != 0 else "CASH"
+        if state is None:
+            state = next_state
+        elif next_state != state:
+            intervals.append({"state": state, "start": start, "end": index - 1})
+            state = next_state
             start = index
-        if not held and start is not None:
-            intervals.append([start, index - 1])
-            start = None
-    if start is not None:
-        intervals.append([start, limit - 1])
+    intervals.append({"state": state, "start": start, "end": len(rows) - 1})
     return intervals
 
 
@@ -188,63 +192,100 @@ def _event_side(event):
     return side if side in {"BUY", "SELL"} else "UNAVAILABLE"
 
 
-def _marker_position_available(marker_x, marker_y, placed):
-    for other_x, other_y in placed:
-        if abs(marker_x - other_x) < 72.0 and abs(marker_y - other_y) < 72.0:
-            return False
-    return True
-
-
-def _event_marker_layout(points, left, top, width, height):
-    placed = []
-    result = []
-    spacing = 76.0
-    minimum_x = left + 36.0
-    maximum_x = left + width - 36.0
-    minimum_y = top + 36.0
-    maximum_y = top + height - 36.0
-    x_offsets = [0.0]
-    for step in range(1, 8):
-        x_offsets.extend([-spacing * step, spacing * step])
-    for point in points:
-        preferred = 1.0 if point["side"] == "BUY" else -1.0
-        y_offsets = []
-        for step in range(6):
-            distance = 42.0 + spacing * step
-            y_offsets.extend([preferred * distance, -preferred * distance])
-        candidates = []
-        for x_offset in x_offsets:
-            for y_offset in y_offsets:
-                marker_x = min(max(point["anchor_x"] + x_offset, minimum_x), maximum_x)
-                marker_y = min(max(point["anchor_y"] + y_offset, minimum_y), maximum_y)
-                candidate = (marker_x, marker_y)
-                if candidate not in candidates:
-                    candidates.append(candidate)
-        selected = None
-        for marker_x, marker_y in candidates:
-            if _marker_position_available(marker_x, marker_y, placed):
-                selected = (marker_x, marker_y)
-                break
-        if selected is None:
-            for marker_y in range(int(minimum_y), int(maximum_y) + 1, int(spacing)):
-                for marker_x in range(int(minimum_x), int(maximum_x) + 1, int(spacing)):
-                    if _marker_position_available(marker_x, marker_y, placed):
-                        selected = (float(marker_x), float(marker_y))
-                        break
-                if selected is not None:
-                    break
-        if selected is None:
-            raise ValueError("no non-overlapping event marker position is available")
-        placed.append(selected)
-        item = dict(point)
-        item["marker_x"] = selected[0]
-        item["marker_y"] = selected[1]
-        result.append(item)
-    return result
+def _state_timeline(rows, intervals, zh):
+    focus_start = 0
+    context = max(1, int(len(rows) * 0.025))
+    transition_starts = [interval["start"] for interval in intervals[1:]]
+    dense_start = None
+    dense_span = max(2, int(len(rows) * 0.05))
+    for index in range(len(transition_starts) - 2):
+        if (
+            transition_starts[index] > len(rows) * 0.35
+            and transition_starts[index + 2] - transition_starts[index] <= dense_span
+        ):
+            dense_start = transition_starts[index]
+            break
+    if dense_start is not None:
+        focus_start = max(0, dense_start - context)
+    elif transition_starts and transition_starts[0] > len(rows) * 0.35:
+        focus_start = max(0, transition_starts[0] - context)
+    focus_end = len(rows) - 1
+    focus_count = focus_end - focus_start + 1
+    step = 100.0 / float(max(focus_count - 1, 1))
+    parts = [
+        '<div class="state-timeline" data-focus-start-index="'
+        + str(focus_start)
+        + '" data-focus-end-index="'
+        + str(focus_end)
+        + '" data-full-start-date="'
+        + _escape(rows[0].get("date"))
+        + '" data-full-end-date="'
+        + _escape(rows[-1].get("date"))
+        + '"><div class="state-timeline-heading"><strong>'
+        + _text(zh, "持仓状态时间线", "Position-state timeline")
+        + '</strong><span class="numeric">'
+        + _escape(rows[focus_start].get("date"))
+        + " → "
+        + _escape(rows[focus_end].get("date"))
+        + '</span></div><div class="state-track" role="img" aria-label="'
+        + _text(zh, "展开的连续持仓与空仓状态时间线", "Expanded continuous HOLDING and CASH state timeline")
+        + '">'
+    ]
+    for interval in intervals:
+        if interval["end"] < focus_start:
+            continue
+        start = max(interval["start"], focus_start)
+        end = min(interval["end"], focus_end)
+        if focus_count == 1:
+            start_percent = 0.0
+            end_percent = 100.0
+        else:
+            start_percent = max(0.0, (start - focus_start) * step - step / 2.0)
+            end_percent = min(100.0, (end - focus_start) * step + step / 2.0)
+        width_percent = end_percent - start_percent
+        state = interval["state"]
+        state_class = "holding" if state == "HOLDING" else "cash"
+        transition_class = ""
+        if interval["start"] > focus_start:
+            transition_class = " transition-buy" if state == "HOLDING" else " transition-sell"
+        label = _text(zh, "持仓 / HOLDING", "HOLDING")
+        if state == "CASH":
+            label = _text(zh, "空仓 / CASH", "CASH")
+        parts.append(
+            '<span class="state-track-segment '
+            + state_class
+            + transition_class
+            + '" data-state="'
+            + state
+            + '" data-start-index="'
+            + str(start)
+            + '" data-end-index="'
+            + str(end)
+            + '" aria-label="'
+            + state
+            + " · "
+            + _escape(rows[start].get("date"))
+            + " — "
+            + _escape(rows[end].get("date"))
+            + '" style="left:'
+            + _coord(start_percent)
+            + "%;width:"
+            + _coord(width_percent)
+            + '%">'
+        )
+        if width_percent >= 12.0:
+            parts.append('<span class="state-track-label">' + label + "</span>")
+        parts.append("</span>")
+    parts.append('</div><div class="state-timeline-axis">')
+    for index in (focus_start, focus_start + (focus_count - 1) // 2, focus_end):
+        date_value = rows[index].get("date")
+        parts.append('<time datetime="' + _escape(date_value) + '">' + _escape(date_value) + "</time>")
+    parts.append("</div></div>")
+    return "".join(parts)
 
 
 def _price_chart(rows, events, holdings, zh):
-    title = _text(zh, "价格、买卖点与持仓区间", "Price, actions, and holding intervals")
+    title = _text(zh, "价格与持仓状态", "Price and position state")
     if not rows:
         return (
             '<section class="chart-card" id="price-history"><h2>'
@@ -276,12 +317,30 @@ def _price_chart(rows, events, holdings, zh):
             buy_count += 1
         elif side == "SELL":
             sell_count += 1
+    intervals = _position_intervals(rows, holdings)
+    transitions = []
+    for index in range(1, len(intervals)):
+        previous = intervals[index - 1]
+        current = intervals[index]
+        side = "BUY" if current["state"] == "HOLDING" else "SELL"
+        transitions.append(
+            {
+                "side": side,
+                "date": rows[current["start"]].get("date"),
+                "from_state": previous["state"],
+                "to_state": current["state"],
+                "index": current["start"],
+            }
+        )
     parts = [
         '<section class="chart-card" id="price-history"><div class="chart-heading"><h2>'
         + title
-        + "</h2><p>"
-        + _text(zh, "▲ BUY 买入；■ SELL 卖出；斜纹为持仓。", "▲ BUY; ■ SELL; hatched areas are holding intervals.")
-        + "</p></div>"
+        + '</h2><div class="state-legend" aria-label="'
+        + _text(zh, "持仓状态图例", "Position-state legend")
+        + '"><span class="state-legend-item holding"><i aria-hidden="true"></i>持仓 / HOLDING</span>'
+        + '<span class="state-legend-item cash"><i aria-hidden="true"></i>空仓 / CASH</span>'
+        + '<span class="boundary-legend"><i class="buy" aria-hidden="true"></i>买入 BUY：CASH→HOLDING · '
+        + '<i class="sell" aria-hidden="true"></i>卖出 SELL：HOLDING→CASH</span></div></div>'
         + _chart_range(
             rows[0].get("date"),
             rows[-1].get("date"),
@@ -298,21 +357,31 @@ def _price_chart(rows, events, holdings, zh):
         + str(buy_count)
         + '" data-sell-count="'
         + str(sell_count)
+        + '" data-position-interval-count="'
+        + str(len(intervals))
+        + '" data-transition-count="'
+        + str(len(transitions))
         + '"><title id="price-title">'
         + title
         + '</title><desc id="price-desc">'
-        + _text(zh, "完整价格路径、每个 BUY/SELL 标记及持仓区间；下方台账提供等价明细。", "Complete price path with every BUY/SELL marker and holding interval; equivalent details follow in tables.")
-        + '</desc><defs><pattern id="price-holding-pattern" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" class="holding-hatch"/></pattern></defs>',
+        + _text(zh, "完整价格路径与连续持仓/空仓区间。实线边界表示空仓转持仓，虚线边界表示持仓转空仓；精确事件明细保留在下方台账。", "Complete price path with continuous HOLDING/CASH intervals. Solid boundaries mean CASH to HOLDING and dashed boundaries mean HOLDING to CASH; exact event details remain in the ledger below.")
+        + '</desc><defs><pattern id="price-holding-pattern" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#e8f3ee"/><line x1="0" y1="0" x2="0" y2="8" stroke="#78988a" stroke-width="2"/></pattern><pattern id="price-cash-pattern" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f4f5f7"/><circle cx="2" cy="2" r="1.2" fill="#8b949e"/></pattern></defs>',
     ]
-    intervals = _holding_intervals(rows, holdings)
     step = plot_width / float(max(len(rows) - 1, 1))
     for interval_index in range(len(intervals)):
-        start = intervals[interval_index][0]
-        end = intervals[interval_index][1]
+        interval = intervals[interval_index]
+        state = interval["state"]
+        start = interval["start"]
+        end = interval["end"]
         start_x = max(left, _x(start, len(rows), left, plot_width) - step / 2.0)
         end_x = min(left + plot_width, _x(end, len(rows), left, plot_width) + step / 2.0)
+        state_class = "holding" if state == "HOLDING" else "cash"
         parts.append(
-            '<rect class="holding-interval" data-start-index="'
+            '<rect class="position-interval '
+            + state_class
+            + '-interval" data-state="'
+            + state
+            + '" data-start-index="'
             + str(start)
             + '" data-end-index="'
             + str(end)
@@ -325,10 +394,14 @@ def _price_chart(rows, events, holdings, zh):
             + '" y="'
             + _coord(top)
             + '" width="'
-            + _coord(max(end_x - start_x, 2.0))
+            + _coord(end_x - start_x)
             + '" height="'
             + _coord(plot_height)
-            + '" fill="url(#price-holding-pattern)"><title>'
+            + '" fill="url(#price-'
+            + state_class
+            + '-pattern)"><title>'
+            + state
+            + " · "
             + _escape(rows[start].get("date"))
             + " — "
             + _escape(rows[end].get("date"))
@@ -339,184 +412,42 @@ def _price_chart(rows, events, holdings, zh):
         + _series_path(values, low, high, left, top, plot_width, plot_height)
         + '"/>'
     )
-    event_points = []
-    for event_index in range(len(events)):
-        event = events[event_index]
-        side = _event_side(event)
-        point_index = _date_index(rows, event.get("Date"))
-        if point_index >= 0:
-            placement = "mapped"
-            x_value = _x(point_index, len(rows), left, plot_width)
-            y_value = _y(float(event.get("price")), low, high, top, plot_height)
-        else:
-            placement = "unmapped"
-            x_value = left + plot_width * float(event_index + 1) / float(len(events) + 1)
-            y_value = top + plot_height
-        event_points.append(
-            {
-                "event": event,
-                "side": side,
-                "point_index": point_index,
-                "placement": placement,
-                "anchor_x": x_value,
-                "anchor_y": y_value,
-            }
+    for transition in transitions:
+        boundary_x = max(
+            left,
+            _x(transition["index"], len(rows), left, plot_width) - step / 2.0,
         )
-    event_points = _event_marker_layout(
-        event_points,
-        left,
-        top,
-        plot_width,
-        plot_height,
-    )
-    parts.append('<g class="event-connectors" aria-hidden="true">')
-    for event_index in range(len(event_points)):
-        point = event_points[event_index]
         parts.append(
-            '<line class="event-connector" data-event-index="'
-            + str(event_index)
+            '<line class="transition-boundary '
+            + transition["side"].lower()
+            + '" data-side="'
+            + transition["side"]
+            + '" data-date="'
+            + _escape(transition["date"])
+            + '" data-from-state="'
+            + transition["from_state"]
+            + '" data-to-state="'
+            + transition["to_state"]
             + '" x1="'
-            + _coord(point["marker_x"])
+            + _coord(boundary_x)
             + '" y1="'
-            + _coord(point["marker_y"])
+            + _coord(top)
             + '" x2="'
-            + _coord(point["anchor_x"])
+            + _coord(boundary_x)
             + '" y2="'
-            + _coord(point["anchor_y"])
-            + '"/><circle class="event-anchor" data-event-index="'
-            + str(event_index)
-            + '" cx="'
-            + _coord(point["anchor_x"])
-            + '" cy="'
-            + _coord(point["anchor_y"])
-            + '" r="3"/>'
+            + _coord(top + plot_height)
+            + '"><title>'
+            + transition["side"]
+            + " · "
+            + _escape(transition["date"])
+            + " · "
+            + transition["from_state"]
+            + " → "
+            + transition["to_state"]
+            + "</title></line>"
         )
-    parts.append('</g><g class="event-glyphs">')
-    for event_index in range(len(event_points)):
-        point = event_points[event_index]
-        event = point["event"]
-        side = point["side"]
-        point_index = point["point_index"]
-        placement = point["placement"]
-        x_value = point["marker_x"]
-        y_value = point["marker_y"]
-        css_side = side.lower()
-        parts.append(
-            '<g class="event-marker '
-            + css_side
-            + '" data-event-index="'
-            + str(event_index)
-            + '" data-point-index="'
-            + str(point_index)
-            + '" data-date="'
-            + _escape(event.get("Date"))
-            + '" data-side="'
-            + _escape(side)
-            + '" data-placement="'
-            + placement
-            + '" data-marker-x="'
-            + _coord(x_value)
-            + '" data-marker-y="'
-            + _coord(y_value)
-            + '" data-anchor-x="'
-            + _coord(point["anchor_x"])
-            + '" data-anchor-y="'
-            + _coord(point["anchor_y"])
-            + '" transform="translate('
-            + _coord(x_value)
-            + " "
-            + _coord(y_value)
-            + ')"><title>'
-            + _escape(side)
-            + " · "
-            + _escape(event.get("Date"))
-            + " · "
-            + _escape(event.get("price"))
-            + " · "
-            + _escape(event.get("reason"))
-            + "</title>"
-        )
-        if side == "BUY":
-            parts.append(
-                '<g class="marker-glyph buy-glyph"><polygon class="marker-shape" '
-                'points="0,-17 -17,14 17,14"/><text class="marker-number" x="0" '
-                'y="5" text-anchor="middle">'
-                + str(event_index + 1)
-                + "</text></g>"
-            )
-        elif side == "SELL":
-            parts.append(
-                '<g class="marker-glyph sell-glyph"><rect class="marker-shape" x="-16" '
-                'y="-16" width="32" height="32" rx="2"/><text class="marker-number" '
-                'x="0" y="1" text-anchor="middle">'
-                + str(event_index + 1)
-                + "</text></g>"
-            )
-        else:
-            parts.append(
-                '<g class="marker-glyph unavailable-glyph"><circle class="marker-shape" '
-                'cx="0" cy="0" r="16"/><text class="marker-number" x="0" y="1" '
-                'text-anchor="middle">'
-                + str(event_index + 1)
-                + "</text></g>"
-            )
-        if placement == "unmapped":
-            parts.append(
-                '<text class="unmapped-label" x="0" y="22" text-anchor="middle">'
-                + _text(zh, "事件日期未匹配 / Unmatched event date", "Unmatched event date")
-                + "</text>"
-            )
-        parts.append("</g>")
-    parts.append("</g>")
     parts.append(_axis(rows, low, high, left, top, plot_width, plot_height, ""))
-    parts.append("</svg>" + _action_index(events, zh) + "</section>")
-    return "".join(parts)
-
-
-def _action_index(events, zh):
-    parts = [
-        '<div class="action-index-wrap"><div class="action-index-heading"><strong>'
-        + _text(zh, "买卖点索引", "Action index")
-        + "</strong><span>"
-        + _text(
-            zh,
-            "编号对应上方价格路径；▲ BUY 买入，■ SELL 卖出。",
-            "Numbers map to the price path above; ▲ BUY, ■ SELL.",
-        )
-        + '</span></div><ol class="action-index" data-event-count="'
-        + str(len(events))
-        + '">'
-    ]
-    for index in range(len(events)):
-        event = events[index]
-        side = _event_side(event)
-        side_class = side.lower() if side in {"BUY", "SELL"} else "unavailable"
-        symbol = "▲" if side == "BUY" else "■" if side == "SELL" else "•"
-        date_value = event.get("Date")
-        parts.append(
-            '<li class="action-index-item '
-            + side_class
-            + '" data-event-index="'
-            + str(index)
-            + '" data-date="'
-            + _escape(date_value)
-            + '" data-side="'
-            + _escape(side)
-            + '"><span class="action-number">'
-            + str(index + 1)
-            + '</span><span class="action-side">'
-            + symbol
-            + " "
-            + _escape(side)
-            + '</span><time datetime="'
-            + _escape(date_value)
-            + '">'
-            + _escape(date_value)
-            + '</time><span class="action-price">'
-            + _number(event.get("price"))
-            + "</span></li>"
-        )
-    parts.append("</ol></div>")
+    parts.append("</svg>" + _state_timeline(rows, intervals, zh) + "</section>")
     return "".join(parts)
 
 
@@ -1019,11 +950,11 @@ def _evidence(payload, zh):
 
 
 def _stylesheet():
-    return """:root{--canvas:#f3f5f7;--surface:#fff;--surface-alt:#f7f8fa;--ink:#151a20;--muted:#58636f;--line:#d9dee5;--line-strong:#b8c0ca;--accent:#1559d6;--buy:#087a52;--buy-bg:#e8f6f0;--sell:#b42318;--sell-bg:#fff0ee;--hold:#3f4852;--hold-bg:#eef1f4;--focus:#005fcc}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.45 Arial,"Helvetica Neue",sans-serif;font-variant-numeric:tabular-nums}main{max-width:1180px;margin:auto;padding:18px}.decision-header{background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center}.eyebrow,.section-kicker{margin:0;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.decision-header h1{margin:2px 0 5px;font-size:clamp(1.4rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.02em}.as-of,.reason,.boundary,.qualification{margin:3px 0}.as-of{font-weight:700}.reason{font-size:1rem}.qualification{color:var(--muted);font-size:.82rem}.boundary{color:#6f2f00;font-weight:750}.action-state{min-width:148px;text-align:center;border:1px solid currentColor;border-radius:8px;padding:12px 16px;font-size:1.7rem;font-weight:850;letter-spacing:.04em}.action-state.buy{background:var(--buy-bg);color:#05633f}.action-state.sell{background:var(--sell-bg);color:#9c1c13}.action-state.hold,.action-state.wait{background:var(--hold-bg);color:var(--hold)}.action-state.unavailable{background:#f1f2f4;color:#414b55}.report-nav{display:flex;gap:4px;margin:10px 0 14px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow-x:auto;scrollbar-width:thin}.report-nav a{min-height:36px;padding:8px 11px;display:inline-flex;align-items:center;color:#33404c;text-decoration:none;white-space:nowrap;border-radius:5px;font-size:.8rem;font-weight:700}.report-nav a:hover{background:#edf3ff;color:#104bb4}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px}.metric-card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 12px;min-width:0}.metric-card span{display:block;color:var(--muted);font-size:.75rem;font-weight:700}.metric-card strong{display:block;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1rem;line-height:1.3;overflow-wrap:anywhere}.metric-card[data-state=unavailable]{border-style:dashed}.chart-card,.ledger-card,.evidence-details{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:15px 16px;margin:10px 0}.chart-heading,.section-heading{display:flex;justify-content:space-between;gap:18px;align-items:baseline}.chart-heading h2,.section-heading h2,.ledger-card h2{margin:0;font-size:1.05rem;line-height:1.3}.chart-heading p{max-width:58%;margin:0;color:var(--muted);font-size:.78rem;text-align:right}.section-heading>span{color:var(--muted);font-size:.78rem;font-weight:700}.chart-range{display:flex;justify-content:space-between;gap:12px;margin:8px 0 -2px;color:var(--muted);font-size:.75rem;font-weight:700}.numeric{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.chart{display:block;width:100%;height:300px;margin-top:4px}.axis,.zero-line{stroke:#7a8490;stroke-width:1}.axis-label,.bar-label{font-size:12px;fill:#4d5965}.series{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.price-series,.equity-series{stroke:var(--accent)}.reference-series{stroke:#8a5a00;stroke-dasharray:9 6}.drawdown-series{stroke:var(--sell)}.drawdown-area{fill:#f5cbc6;opacity:.7}.holding-hatch{stroke:#5f788c;stroke-width:3}.holding-interval{opacity:.23}.event-marker text{font-size:11px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}.event-marker polygon,.event-marker rect{vector-effect:non-scaling-stroke}.event-marker.buy polygon{fill:var(--buy);stroke:#035337;stroke-width:2}.event-marker.sell rect{fill:var(--sell);stroke:#77150f;stroke-width:2}.trade-bar.closed.positive{fill:var(--buy)}.trade-bar.closed.negative{fill:var(--sell)}.trade-bar.closed.zero{fill:#66727a}.trade-bar.open{fill:#fff;stroke:#604ca6;stroke-width:3;stroke-dasharray:7 4}.missing-state,.chart-empty{color:var(--muted);fill:var(--muted);font-weight:700}.table-wrap{max-width:100%;overflow-x:auto;margin-top:8px}table{border-collapse:collapse;width:100%;font-size:.82rem}th,td{text-align:left;vertical-align:top;padding:8px 9px;border-bottom:1px solid #e5e8ec;white-space:nowrap}td:last-child,code{white-space:normal;overflow-wrap:anywhere}thead th{background:var(--surface-alt);color:#46515d;font-size:.72rem;letter-spacing:.02em}.empty-cell{text-align:center;color:var(--muted)}.compact-ledger{table-layout:fixed}.compact-ledger th:first-child{width:51%}.compact-ledger th:nth-child(2){width:31%}.compact-ledger th:last-child{width:18%}.ledger-row>td{height:64px;vertical-align:middle}.ledger-primary{display:grid;grid-template-columns:1.35fr .72fr .72fr 1fr;gap:8px;align-items:center;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ledger-primary>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-label{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border-radius:4px;font-family:Arial,"Helvetica Neue",sans-serif;font-size:.72rem;font-weight:850}.status-label.buy{background:var(--buy-bg);color:#05633f}.status-label.sell{background:var(--sell-bg);color:#9c1c13}.status-label.open{background:#f2efff;color:#4d358f;border:1px dashed #7561b6}.status-label.closed{background:var(--hold-bg);color:var(--hold)}.status-label.unavailable{background:#f1f2f4;color:#414b55}.ledger-reason{line-height:1.35;white-space:normal;overflow-wrap:normal;word-break:normal}.ledger-details summary,.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{cursor:pointer}.ledger-details summary{min-height:44px;display:inline-flex;align-items:center;color:var(--accent);font-size:.78rem;font-weight:800}.ledger-details dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 4px}.ledger-details dl div{min-width:0;padding:7px;background:var(--surface-alt);border-radius:5px}.ledger-details dt{color:var(--muted);font-size:.68rem;text-transform:capitalize}.ledger-details dd{margin:2px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}.ledger-details[open]{min-width:510px}.series-ledgers{margin:10px 0;padding:0 2px}.series-ledgers>summary{min-height:44px;display:flex;align-items:center;font-weight:800}.evidence-details>summary{min-height:44px;display:flex;align-items:center;font-size:1rem;font-weight:800}.evidence-section{border-top:1px solid #e2e8ec;padding:5px 0}.evidence-section summary{min-height:44px;display:flex;align-items:center;font-weight:700}.detail-note{color:var(--muted)}.source-list{display:grid;gap:4px}.source-list code{font-size:.75rem}:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:3px}@media(max-width:800px){main{padding:12px}.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-heading{display:block}.chart-heading p{max-width:none;text-align:left;margin-top:3px}.chart{height:260px}}@media(max-width:640px){body{font-size:13px}main{padding:8px}.decision-header{padding:12px;grid-template-columns:minmax(0,1fr) 90px;gap:10px;border-radius:7px}.decision-header h1{font-size:1.3rem}.eyebrow{font-size:.65rem}.as-of,.reason,.boundary,.qualification{margin:2px 0}.reason{font-size:.88rem;line-height:1.32}.qualification{font-size:.72rem}.boundary{font-size:.74rem}.action-state{min-width:0;padding:10px 5px;font-size:1.15rem}.report-nav{margin:7px 0 9px}.report-nav a{min-height:44px;padding:9px}.metric-cards{gap:6px;margin-bottom:8px}.metric-card{padding:8px}.metric-card strong{font-size:.86rem}.chart-card,.ledger-card,.evidence-details{padding:10px;margin:7px 0;border-radius:7px}.chart-heading h2,.section-heading h2,.ledger-card h2{font-size:.95rem}.chart-heading p{font-size:.72rem}.chart-range{font-size:.7rem}.chart{height:220px;min-height:0}.axis-label,.bar-label,.event-marker text{display:none}.compact-ledger,.compact-ledger tbody{display:block}.compact-ledger thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.compact-ledger .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:3px 8px;padding:7px 0;min-height:88px;border-bottom:1px solid #e5e8ec}.compact-ledger .ledger-row>td{height:auto;padding:0;border:0}.ledger-primary{grid-column:1/-1;grid-template-columns:1.35fr .72fr .65fr .95fr;gap:5px;font-size:.75rem}.ledger-reason{grid-column:1;display:-webkit-box;min-width:0;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}.ledger-disclosure{grid-column:2;grid-row:2}.ledger-details summary{width:100%;min-height:44px;justify-content:flex-end}.ledger-details[open]{min-width:0}.ledger-details[open] dl{position:relative;z-index:1;grid-template-columns:repeat(2,minmax(0,1fr));width:calc(100vw - 38px);margin-left:calc(-100vw + 126px)}.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{min-height:44px}th,td{padding:7px 8px;font-size:.76rem}.date-label{display:none}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}"""
+    return """:root{--canvas:#f3f5f7;--surface:#fff;--surface-alt:#f7f8fa;--ink:#151a20;--muted:#58636f;--line:#d9dee5;--line-strong:#b8c0ca;--accent:#1559d6;--buy:#087a52;--buy-bg:#e8f6f0;--sell:#b42318;--sell-bg:#fff0ee;--hold:#3f4852;--hold-bg:#eef1f4;--focus:#005fcc}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.45 Arial,"Helvetica Neue",sans-serif;font-variant-numeric:tabular-nums}main{max-width:1180px;margin:auto;padding:18px}.decision-header{background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center}.eyebrow,.section-kicker{margin:0;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.decision-header h1{margin:2px 0 5px;font-size:clamp(1.4rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.02em}.as-of,.reason,.boundary,.qualification{margin:3px 0}.as-of{font-weight:700}.reason{font-size:1rem}.qualification{color:var(--muted);font-size:.82rem}.boundary{color:#6f2f00;font-weight:750}.action-state{min-width:148px;text-align:center;border:1px solid currentColor;border-radius:8px;padding:12px 16px;font-size:1.7rem;font-weight:850;letter-spacing:.04em}.action-state.buy{background:var(--buy-bg);color:#05633f}.action-state.sell{background:var(--sell-bg);color:#9c1c13}.action-state.hold,.action-state.wait{background:var(--hold-bg);color:var(--hold)}.action-state.unavailable{background:#f1f2f4;color:#414b55}.report-nav{display:flex;gap:4px;margin:10px 0 14px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow-x:auto;scrollbar-width:thin}.report-nav a{min-height:36px;padding:8px 11px;display:inline-flex;align-items:center;color:#33404c;text-decoration:none;white-space:nowrap;border-radius:5px;font-size:.8rem;font-weight:700}.report-nav a:hover{background:#edf3ff;color:#104bb4}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px}.metric-card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 12px;min-width:0}.metric-card span{display:block;color:var(--muted);font-size:.75rem;font-weight:700}.metric-card strong{display:block;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1rem;line-height:1.3;overflow-wrap:anywhere}.metric-card[data-state=unavailable]{border-style:dashed}.chart-card,.ledger-card,.evidence-details{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:15px 16px;margin:10px 0}.chart-heading,.section-heading{display:flex;justify-content:space-between;gap:18px;align-items:baseline}.chart-heading h2,.section-heading h2,.ledger-card h2{margin:0;font-size:1.05rem;line-height:1.3}.chart-heading p{max-width:58%;margin:0;color:var(--muted);font-size:.78rem;text-align:right}.section-heading>span{color:var(--muted);font-size:.78rem;font-weight:700}.chart-range{display:flex;justify-content:space-between;gap:12px;margin:8px 0 -2px;color:var(--muted);font-size:.75rem;font-weight:700}.numeric{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.chart{display:block;width:100%;height:300px;margin-top:4px}.axis,.zero-line{stroke:#7a8490;stroke-width:1}.axis-label,.bar-label{font-size:12px;fill:#4d5965}.series{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.price-series,.equity-series{stroke:var(--accent)}.reference-series{stroke:#8a5a00;stroke-dasharray:9 6}.drawdown-series{stroke:var(--sell)}.drawdown-area{fill:#f5cbc6;opacity:.7}.trade-bar.closed.positive{fill:var(--buy)}.trade-bar.closed.negative{fill:var(--sell)}.trade-bar.closed.zero{fill:#66727a}.trade-bar.open{fill:#fff;stroke:#604ca6;stroke-width:3;stroke-dasharray:7 4}.missing-state,.chart-empty{color:var(--muted);fill:var(--muted);font-weight:700}.table-wrap{max-width:100%;overflow-x:auto;margin-top:8px}table{border-collapse:collapse;width:100%;font-size:.82rem}th,td{text-align:left;vertical-align:top;padding:8px 9px;border-bottom:1px solid #e5e8ec;white-space:nowrap}td:last-child,code{white-space:normal;overflow-wrap:anywhere}thead th{background:var(--surface-alt);color:#46515d;font-size:.72rem;letter-spacing:.02em}.empty-cell{text-align:center;color:var(--muted)}.compact-ledger{table-layout:fixed}.compact-ledger th:first-child{width:51%}.compact-ledger th:nth-child(2){width:31%}.compact-ledger th:last-child{width:18%}.ledger-row>td{height:64px;vertical-align:middle}.ledger-primary{display:grid;grid-template-columns:1.35fr .72fr .72fr 1fr;gap:8px;align-items:center;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ledger-primary>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-label{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border-radius:4px;font-family:Arial,"Helvetica Neue",sans-serif;font-size:.72rem;font-weight:850}.status-label.buy{background:var(--buy-bg);color:#05633f}.status-label.sell{background:var(--sell-bg);color:#9c1c13}.status-label.open{background:#f2efff;color:#4d358f;border:1px dashed #7561b6}.status-label.closed{background:var(--hold-bg);color:var(--hold)}.status-label.unavailable{background:#f1f2f4;color:#414b55}.ledger-reason{line-height:1.35;white-space:normal;overflow-wrap:normal;word-break:normal}.ledger-details summary,.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{cursor:pointer}.ledger-details summary{min-height:44px;display:inline-flex;align-items:center;color:var(--accent);font-size:.78rem;font-weight:800}.ledger-details dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 4px}.ledger-details dl div{min-width:0;padding:7px;background:var(--surface-alt);border-radius:5px}.ledger-details dt{color:var(--muted);font-size:.68rem;text-transform:capitalize}.ledger-details dd{margin:2px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}.ledger-details[open]{min-width:510px}.series-ledgers{margin:10px 0;padding:0 2px}.series-ledgers>summary{min-height:44px;display:flex;align-items:center;font-weight:800}.evidence-details>summary{min-height:44px;display:flex;align-items:center;font-size:1rem;font-weight:800}.evidence-section{border-top:1px solid #e2e8ec;padding:5px 0}.evidence-section summary{min-height:44px;display:flex;align-items:center;font-weight:700}.detail-note{color:var(--muted)}.source-list{display:grid;gap:4px}.source-list code{font-size:.75rem}:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:3px}@media(max-width:800px){main{padding:12px}.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-heading{display:block}.chart-heading p{max-width:none;text-align:left;margin-top:3px}.chart{height:260px}}@media(max-width:640px){body{font-size:13px}main{padding:8px}.decision-header{padding:12px;grid-template-columns:minmax(0,1fr) 90px;gap:10px;border-radius:7px}.decision-header h1{font-size:1.3rem}.eyebrow{font-size:.65rem}.as-of,.reason,.boundary,.qualification{margin:2px 0}.reason{font-size:.88rem;line-height:1.32}.qualification{font-size:.72rem}.boundary{font-size:.74rem}.action-state{min-width:0;padding:10px 5px;font-size:1.15rem}.report-nav{margin:7px 0 9px}.report-nav a{min-height:44px;padding:9px}.metric-cards{gap:6px;margin-bottom:8px}.metric-card{padding:8px}.metric-card strong{font-size:.86rem}.chart-card,.ledger-card,.evidence-details{padding:10px;margin:7px 0;border-radius:7px}.chart-heading h2,.section-heading h2,.ledger-card h2{font-size:.95rem}.chart-heading p{font-size:.72rem}.chart-range{font-size:.7rem}.chart{height:220px;min-height:0}.axis-label,.bar-label{display:none}.compact-ledger,.compact-ledger tbody{display:block}.compact-ledger thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.compact-ledger .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:3px 8px;padding:7px 0;min-height:88px;border-bottom:1px solid #e5e8ec}.compact-ledger .ledger-row>td{height:auto;padding:0;border:0}.ledger-primary{grid-column:1/-1;grid-template-columns:1.35fr .72fr .65fr .95fr;gap:5px;font-size:.75rem}.ledger-reason{grid-column:1;display:-webkit-box;min-width:0;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}.ledger-disclosure{grid-column:2;grid-row:2}.ledger-details summary{width:100%;min-height:44px;justify-content:flex-end}.ledger-details[open]{min-width:0}.ledger-details[open] dl{position:relative;z-index:1;grid-template-columns:repeat(2,minmax(0,1fr));width:calc(100vw - 38px);margin-left:calc(-100vw + 126px)}.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{min-height:44px}th,td{padding:7px 8px;font-size:.76rem}.date-label{display:none}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}"""
 
 
 def _ledger_styles():
-    return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.event-connector{stroke:#46515d;stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}.event-anchor{fill:#fff;stroke:#151a20;stroke-width:2;vector-effect:non-scaling-stroke}.event-marker .marker-glyph{transform-box:fill-box;transform-origin:center}.event-marker .marker-shape{stroke:#fff;stroke-width:4;paint-order:stroke fill;vector-effect:non-scaling-stroke}.event-marker.buy .marker-shape{fill:var(--buy)}.event-marker.sell .marker-shape{fill:var(--sell)}.event-marker.unavailable .marker-shape{fill:var(--muted)}.event-marker .marker-number{display:block;fill:#fff;stroke:none;paint-order:normal;font-size:13px;font-weight:900;dominant-baseline:middle}.action-index-wrap{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}.action-index-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.action-index-heading strong{font-size:.86rem}.action-index-heading span{color:var(--muted);font-size:.75rem;text-align:right}.action-index{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:6px;margin:8px 0 0;padding:0;list-style:none}.action-index-item{min-width:0;min-height:52px;padding:6px 7px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:6px;align-items:center;border:1px solid var(--line);border-radius:5px;background:var(--surface-alt)}.action-number{grid-row:1/3;display:grid;place-items:center;width:28px;height:28px;border:2px solid currentColor;background:var(--surface);font-weight:850;line-height:1}.action-index-item.buy .action-number{color:var(--buy);clip-path:polygon(50% 0,100% 100%,0 100%)}.action-index-item.sell .action-number{color:var(--sell)}.action-side{grid-column:2;grid-row:1;font-size:.78rem;font-weight:850;white-space:nowrap}.action-index-item time{grid-column:2/4;grid-row:2;color:var(--muted);font-size:.72rem}.action-price{grid-column:3;grid-row:1;font-size:.75rem;font-weight:750;text-align:right}@media(max-width:640px){.event-marker .marker-glyph{transform:scale(2)}.action-index-heading{display:block}.action-index-heading span{display:block;margin-top:2px;text-align:left}.action-index{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.action-index-item{min-height:58px;padding:6px}.action-side{font-size:.8rem}.action-index-item time,.action-price{font-size:.74rem}}"""
+    return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.state-legend{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px 12px;color:var(--muted);font-size:.75rem}.state-legend-item,.boundary-legend{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.state-legend-item i{width:18px;height:12px;border:1px solid var(--line-strong)}.state-legend-item.holding i{background:repeating-linear-gradient(135deg,#e8f3ee 0,#e8f3ee 4px,#78988a 4px,#78988a 6px)}.state-legend-item.cash i{background-color:#f4f5f7;background-image:radial-gradient(#8b949e 1px,transparent 1px);background-size:5px 5px}.boundary-legend i{display:inline-block;width:2px;height:14px;border-left:2px solid var(--ink)}.boundary-legend i.sell{border-left-style:dashed}.position-interval{opacity:.55}.position-interval.holding-interval{stroke:#78988a;stroke-width:.5}.position-interval.cash-interval{stroke:#8b949e;stroke-width:.5}.state-timeline{margin-top:6px}.state-timeline-heading{display:flex;justify-content:space-between;gap:12px;margin-bottom:4px;color:var(--muted);font-size:.72rem}.state-timeline-heading strong{color:var(--ink)}.state-track{position:relative;height:38px;overflow:hidden;border:1px solid var(--line-strong);background:var(--surface-alt)}.state-track-segment{position:absolute;top:0;height:100%;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:inset -1px 0 #fff}.state-track-segment.holding{background:repeating-linear-gradient(135deg,#e8f3ee 0,#e8f3ee 5px,#78988a 5px,#78988a 7px)}.state-track-segment.cash{background-color:#f4f5f7;background-image:radial-gradient(#8b949e 1px,transparent 1px);background-size:6px 6px}.state-track-segment.transition-buy::before,.state-track-segment.transition-sell::before{content:"";position:absolute;inset:0 auto 0 0;width:0;border-left:2px solid var(--ink)}.state-track-segment.transition-sell::before{border-left-style:dashed}.state-track-label{padding:2px 4px;background:rgba(255,255,255,.82);color:var(--ink);font-size:.7rem;font-weight:850;white-space:nowrap}.state-timeline-axis{display:grid;grid-template-columns:repeat(3,1fr);margin-top:3px;color:var(--muted);font-size:.68rem}.state-timeline-axis time:nth-child(2){text-align:center}.state-timeline-axis time:last-child{text-align:right}.transition-boundary{stroke:var(--ink);stroke-width:2;vector-effect:non-scaling-stroke}.transition-boundary.buy{stroke-dasharray:none}.transition-boundary.sell{stroke-dasharray:6 4}@media(max-width:640px){.chart-heading .state-legend{justify-content:flex-start}.state-legend{gap:5px 9px;font-size:.72rem}.state-track-label{display:none}.chart-price .date-label{display:block;font-size:24px}}"""
 
 
 def apply(payload, parameters):
