@@ -132,12 +132,15 @@ def _axis(rows, low, high, left, top, width, height, value_suffix):
         for item_index in range(len(indices)):
             index = indices[item_index]
             date_value = rows[index].get("date", rows[index].get("Date", ""))
+            text_anchor = "start" if index == 0 else "end" if index == count - 1 else "middle"
             parts.append(
                 '<text class="axis-label date-label" x="'
                 + _coord(_x(index, count, left, width))
                 + '" y="'
                 + _coord(bottom + 22)
-                + '" text-anchor="middle">'
+                + '" text-anchor="'
+                + text_anchor
+                + '">'
                 + _escape(date_value)
                 + "</text>"
             )
@@ -194,21 +197,6 @@ def _event_side(event):
 
 def _state_timeline(rows, intervals, zh):
     focus_start = 0
-    context = max(1, int(len(rows) * 0.025))
-    transition_starts = [interval["start"] for interval in intervals[1:]]
-    dense_start = None
-    dense_span = max(2, int(len(rows) * 0.05))
-    for index in range(len(transition_starts) - 2):
-        if (
-            transition_starts[index] > len(rows) * 0.35
-            and transition_starts[index + 2] - transition_starts[index] <= dense_span
-        ):
-            dense_start = transition_starts[index]
-            break
-    if dense_start is not None:
-        focus_start = max(0, dense_start - context)
-    elif transition_starts and transition_starts[0] > len(rows) * 0.35:
-        focus_start = max(0, transition_starts[0] - context)
     focus_end = len(rows) - 1
     focus_count = focus_end - focus_start + 1
     step = 100.0 / float(max(focus_count - 1, 1))
@@ -217,6 +205,10 @@ def _state_timeline(rows, intervals, zh):
         + str(focus_start)
         + '" data-focus-end-index="'
         + str(focus_end)
+        + '" data-window-start-date="'
+        + _escape(rows[focus_start].get("date"))
+        + '" data-window-end-date="'
+        + _escape(rows[focus_end].get("date"))
         + '" data-full-start-date="'
         + _escape(rows[0].get("date"))
         + '" data-full-end-date="'
@@ -348,7 +340,11 @@ def _price_chart(rows, events, holdings, zh):
             _number(high),
             zh,
         )
-        + '<svg class="chart chart-price" role="img" aria-labelledby="price-title price-desc" '
+        + '<svg class="chart chart-price" data-window-start-date="'
+        + _escape(rows[0].get("date"))
+        + '" data-window-end-date="'
+        + _escape(rows[-1].get("date"))
+        + '" role="img" aria-labelledby="price-title price-desc" '
         + 'viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '" data-event-count="'
@@ -364,7 +360,13 @@ def _price_chart(rows, events, holdings, zh):
         + '"><title id="price-title">'
         + title
         + '</title><desc id="price-desc">'
-        + _text(zh, "完整价格路径与连续持仓/空仓区间。实线边界表示空仓转持仓，虚线边界表示持仓转空仓；精确事件明细保留在下方台账。", "Complete price path with continuous HOLDING/CASH intervals. Solid boundaries mean CASH to HOLDING and dashed boundaries mean HOLDING to CASH; exact event details remain in the ledger below.")
+        + _text(zh, "完整价格路径与连续持仓/空仓区间。", "Complete price path with continuous HOLDING/CASH intervals. ")
+        + _escape(rows[0].get("date"))
+        + " — "
+        + _escape(rows[-1].get("date"))
+        + " · "
+        + str(len(rows))
+        + _text(zh, " 行。实线边界表示空仓转持仓，虚线边界表示持仓转空仓；精确事件明细保留在下方台账。", " rows. Solid boundaries mean CASH to HOLDING and dashed boundaries mean HOLDING to CASH; exact event details remain in the ledger below.")
         + '</desc><defs><pattern id="price-holding-pattern" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#e8f3ee"/><line x1="0" y1="0" x2="0" y2="8" stroke="#78988a" stroke-width="2"/></pattern><pattern id="price-cash-pattern" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f4f5f7"/><circle cx="2" cy="2" r="1.2" fill="#8b949e"/></pattern></defs>',
     ]
     step = plot_width / float(max(len(rows) - 1, 1))
@@ -496,14 +498,24 @@ def _equity_chart(rows, performance, zh):
             "%.2f×" % high,
             zh,
         )
-        + '<svg class="chart chart-equity" role="img" aria-labelledby="equity-title equity-desc" viewBox="0 0 920 330" data-point-count="'
+        + '<svg class="chart chart-equity" data-window-start-date="'
+        + _escape(rows[0].get("date"))
+        + '" data-window-end-date="'
+        + _escape(rows[-1].get("date"))
+        + '" role="img" aria-labelledby="equity-title equity-desc" viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '" data-reference-count="'
         + ("1" if reference_available else "0")
         + '"><title id="equity-title">'
         + title
         + '</title><desc id="equity-desc">'
-        + _text(zh, "归一化策略净值与可用的同窗收盘参考。", "Normalized strategy equity and the available same-window close reference.")
+        + _text(zh, "归一化策略净值与可用的同窗收盘参考。", "Normalized strategy equity and the available same-window close reference. ")
+        + _escape(rows[0].get("date"))
+        + " — "
+        + _escape(rows[-1].get("date"))
+        + " · "
+        + str(len(rows))
+        + _text(zh, " 行。", " rows.")
         + '</desc><path class="series equity-series" data-series="strategy-equity" d="'
         + _series_path(strategy, low, high, left, top, plot_width, plot_height)
         + '"/>'
@@ -551,8 +563,11 @@ def _drawdown_chart(rows, zh):
     plot_height = 242.0
     baseline = _y(0.0, low, high, top, plot_height)
     area = _series_path(drawdowns, low, high, left, top, plot_width, plot_height)
-    area += " L" + _coord(left + plot_width) + " " + _coord(baseline)
-    area += " L" + _coord(left) + " " + _coord(baseline) + " Z"
+    if len(rows) > 1:
+        area += " L" + _coord(left + plot_width) + " " + _coord(baseline)
+        area += " L" + _coord(left) + " " + _coord(baseline) + " Z"
+    else:
+        area = ""
     parts = [
         '<section class="chart-card" id="drawdown-history"><div class="chart-heading"><h2>'
         + title
@@ -566,12 +581,22 @@ def _drawdown_chart(rows, zh):
             "0.00%",
             zh,
         )
-        + '<svg class="chart chart-drawdown" role="img" aria-labelledby="drawdown-title drawdown-desc" viewBox="0 0 920 330" data-point-count="'
+        + '<svg class="chart chart-drawdown" data-window-start-date="'
+        + _escape(rows[0].get("date"))
+        + '" data-window-end-date="'
+        + _escape(rows[-1].get("date"))
+        + '" role="img" aria-labelledby="drawdown-title drawdown-desc" viewBox="0 0 920 330" data-point-count="'
         + str(len(rows))
         + '"><title id="drawdown-title">'
         + title
         + '</title><desc id="drawdown-desc">'
-        + _text(zh, "完整净值序列对应的逐日回撤。", "Drawdown for every canonical equity row.")
+        + _text(zh, "完整净值序列对应的逐日回撤。", "Drawdown for every canonical equity row. ")
+        + _escape(rows[0].get("date"))
+        + " — "
+        + _escape(rows[-1].get("date"))
+        + " · "
+        + str(len(rows))
+        + _text(zh, " 行。", " rows.")
         + '</desc><path class="drawdown-area" d="'
         + area
         + '"/><path class="series drawdown-series" data-series="drawdown" d="'
@@ -949,6 +974,183 @@ def _evidence(payload, zh):
     return "".join(parts)
 
 
+def _time_window_control(rows, zh):
+    count = len(rows)
+    start = rows[0].get("date") if rows else "—"
+    end = rows[-1].get("date") if rows else "—"
+    input_disabled = " disabled" if count <= 1 else ""
+    preset_disabled = " disabled" if count == 0 else ""
+    if count == 0:
+        feedback = _text(
+            zh,
+            "没有可用的时间序列行；完整台账仍保留。",
+            "No time-series rows are available; complete ledgers remain available.",
+        )
+    elif count == 1:
+        feedback = _text(
+            zh,
+            "仅有一行数据；图表细节有限。",
+            "Only one row is available; chart detail is limited.",
+        )
+    else:
+        feedback = _text(
+            zh,
+            "当前显示全部 " + str(count) + " 行。",
+            "Showing all " + str(count) + " rows.",
+        )
+    return (
+        '<section class="time-window-control" id="time-window-control" data-full-start-date="'
+        + _escape(start)
+        + '" data-full-end-date="'
+        + _escape(end)
+        + '" data-row-count="'
+        + str(count)
+        + '" data-full-feedback="'
+        + _escape(feedback)
+        + '"><div class="time-window-heading"><div><p class="section-kicker">'
+        + _text(zh, "共享横轴", "Shared x-axis")
+        + "</p><h2>"
+        + _text(zh, "查看时间窗口", "View time window")
+        + '</h2></div><output id="time-window-bounds" aria-live="polite">'
+        + _escape(start)
+        + " → "
+        + _escape(end)
+        + '</output></div><p class="time-window-instructions" id="time-window-instructions">'
+        + _text(
+            zh,
+            "使用预设或两个滑块设置同一个共享时间窗口；价格/持仓状态、净值/参考和回撤将同步更新。方向键可精确调整，页面滚动不受鼠标滚轮控制。",
+            "Use presets or both sliders to set one shared time window; price/position state, equity/reference, and drawdown update together. Arrow keys adjust precisely and the mouse wheel remains available for page scrolling.",
+        )
+        + '</p><div class="time-window-presets" aria-label="'
+        + _text(zh, "时间窗口预设", "Time-window presets")
+        + '"><button type="button" class="time-preset is-active" data-window-preset="full" aria-pressed="true"'
+        + preset_disabled
+        + '>全部 / Full</button><button type="button" class="time-preset" data-window-preset="3y" aria-pressed="false"'
+        + preset_disabled
+        + '>近3年 / 3Y</button><button type="button" class="time-preset" data-window-preset="1y" aria-pressed="false"'
+        + preset_disabled
+        + '>近1年 / 1Y</button><button type="button" class="time-preset" data-window-preset="6m" aria-pressed="false"'
+        + preset_disabled
+        + '>近6月 / 6M</button><button type="button" id="time-window-reset">'
+        + _text(zh, "重置 / Reset", "Reset / 重置")
+        + '</button></div><div class="time-window-sliders"><label for="time-window-start"><span>'
+        + _text(zh, "开始日期", "Start date")
+        + '</span><input id="time-window-start" type="range" min="0" max="'
+        + str(max(count - 1, 0))
+        + '" value="0" step="1"'
+        + ' aria-describedby="time-window-instructions time-window-feedback" aria-valuetext="'
+        + _escape(start)
+        + '"'
+        + input_disabled
+        + '></label><label for="time-window-end"><span>'
+        + _text(zh, "结束日期", "End date")
+        + '</span><input id="time-window-end" type="range" min="0" max="'
+        + str(max(count - 1, 0))
+        + '" value="'
+        + str(max(count - 1, 0))
+        + '" step="1"'
+        + ' aria-describedby="time-window-instructions time-window-feedback" aria-valuetext="'
+        + _escape(end)
+        + '"'
+        + input_disabled
+        + '></label></div><p id="time-window-feedback" role="status">'
+        + _escape(feedback)
+        + "</p></section>"
+    )
+
+
+def _time_window_styles():
+    return """.time-window-control{margin:12px 0;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:14px 16px}.time-window-heading{display:flex;align-items:end;justify-content:space-between;gap:16px}.time-window-heading h2{margin:1px 0 0;font-size:1rem}.time-window-heading output{font-weight:800;color:var(--accent);white-space:nowrap}.time-window-instructions,#time-window-feedback{margin:6px 0;color:var(--muted);font-size:.78rem}.time-window-presets{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.time-window-presets button{min-height:44px;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--ink);padding:8px 12px;font:inherit;font-weight:750;cursor:pointer}.time-window-presets button:hover,.time-window-presets button.is-active{border-color:var(--accent);background:#edf3ff;color:#104bb4}.time-window-presets button[disabled]{cursor:not-allowed;opacity:.55}.time-window-sliders{display:grid;grid-template-columns:1fr 1fr;gap:12px}.time-window-sliders label{display:grid;gap:2px;font-size:.78rem;font-weight:750}.time-window-sliders input{width:100%;min-height:44px;margin:0;accent-color:var(--accent);touch-action:pan-y}.time-window-control :focus-visible{outline:3px solid var(--focus);outline-offset:2px}@media(max-width:640px){.time-window-control{padding:12px}.time-window-heading{display:grid;gap:3px}.time-window-heading output{white-space:normal}.time-window-presets{display:grid;grid-template-columns:1fr 1fr}.time-window-presets button{width:100%}.time-window-sliders{grid-template-columns:1fr;gap:5px}}"""
+
+
+def _time_window_script():
+    return r"""(function(){
+"use strict";
+var control=document.getElementById("time-window-control");
+if(!control){return;}
+var startInput=document.getElementById("time-window-start");
+var endInput=document.getElementById("time-window-end");
+var boundsOutput=document.getElementById("time-window-bounds");
+var feedback=document.getElementById("time-window-feedback");
+var resetButton=document.getElementById("time-window-reset");
+var presetButtons=Array.from(control.querySelectorAll("[data-window-preset]"));
+var rowElements=Array.from(document.querySelectorAll('[data-ledger="price-equity"] tbody tr[data-row-index]'));
+var holdingElements=Array.from(document.querySelectorAll('[data-ledger="holdings"] tbody tr[data-row-index]'));
+var rows=rowElements.map(function(row){var cells=row.querySelectorAll("td");return{date:cells[0].textContent,close:Number(cells[2].textContent),equity:Number(cells[3].textContent)};});
+var holdings=holdingElements.map(function(row){var cells=row.querySelectorAll("td");return{date:cells[0].textContent,position:Number(cells[2].textContent)};});
+var eventRows=Array.from(document.querySelectorAll('[data-ledger="events"] tbody tr[data-row-index]')).map(function(row){var date=row.querySelector('[data-primary-field="date"]');var price=row.querySelector('[data-primary-field="price"]');var status=row.querySelector(".status-label");return{date:date?date.textContent:"",price:price?Number(price.textContent):NaN,side:status?status.textContent.trim().split(" ")[0]:"UNAVAILABLE"};});
+var sections={price:document.getElementById("price-history"),equity:document.getElementById("equity-history"),drawdown:document.getElementById("drawdown-history")};
+var initialHtml={price:sections.price?sections.price.innerHTML:"",equity:sections.equity?sections.equity.innerHTML:"",drawdown:sections.drawdown?sections.drawdown.innerHTML:""};
+var rowCount=rows.length;
+var lastIndex=Math.max(rowCount-1,0);
+var zh=document.documentElement.lang==="zh-CN";
+function setText(node,value){if(node){node.textContent=value;}}
+function clamp(value,low,high){return Math.min(high,Math.max(low,value));}
+function validatedRange(start,end,changed){
+  var first=Number.parseInt(start,10);var last=Number.parseInt(end,10);
+  if(!Number.isFinite(first)){first=0;}if(!Number.isFinite(last)){last=lastIndex;}
+  first=clamp(first,0,lastIndex);last=clamp(last,0,lastIndex);
+  if(first>last){if(changed==="start"){first=last;}else{last=first;}}
+  return{start:first,end:last};
+}
+function coord(value){return Number(value).toFixed(2);}
+function x(index,count){return count<=1?481:62+838*index/(count-1);}
+function y(value,low,high){return high<=low?149:28+242*(high-value)/(high-low);}
+function seriesPath(values,low,high){return values.map(function(value,index){return(index===0?"M":"L")+coord(x(index,values.length))+" "+coord(y(value,low,high));}).join(" ");}
+function paddedDomain(values,fallback){var low=Math.min.apply(null,values);var high=Math.max.apply(null,values);var padding=high>low?(high-low)*0.08:(fallback||Math.max(Math.abs(high)*0.02,1));return{low:low-padding,high:high+padding};}
+function svgElement(name,attributes,text){var node=document.createElementNS("http:"+String.fromCharCode(47)+String.fromCharCode(47)+"www.w3.org/2000/svg",name);Object.keys(attributes||{}).forEach(function(key){node.setAttribute(key,String(attributes[key]));});if(text!==undefined){node.textContent=text;}return node;}
+function htmlElement(name,className,text){var node=document.createElement(name);if(className){node.className=className;}if(text!==undefined){node.textContent=text;}return node;}
+function clearAxis(svg){Array.from(svg.querySelectorAll(".axis,.axis-label")).forEach(function(node){node.remove();});}
+function appendAxis(svg,visibleRows,low,high,suffix,multiplier){
+  var bottom=270;var scale=multiplier||1;
+  svg.appendChild(svgElement("line",{class:"axis",x1:62,y1:bottom,x2:900,y2:bottom}));
+  svg.appendChild(svgElement("line",{class:"axis",x1:62,y1:28,x2:62,y2:bottom}));
+  svg.appendChild(svgElement("text",{class:"axis-label",x:54,y:33,"text-anchor":"end"},coord(high*scale)+suffix));
+  svg.appendChild(svgElement("text",{class:"axis-label",x:54,y:bottom,"text-anchor":"end"},coord(low*scale)+suffix));
+  var candidates=[0,Math.floor((visibleRows.length-1)/2),visibleRows.length-1];var seen={};
+  candidates.forEach(function(index){if(index<0||seen[index]){return;}seen[index]=true;var anchor=index===0?"start":index===visibleRows.length-1?"end":"middle";svg.appendChild(svgElement("text",{class:"axis-label date-label",x:coord(x(index,visibleRows.length)),y:292,"text-anchor":anchor},visibleRows[index].date));});
+}
+function setChartWindow(svg,startDate,endDate,count){svg.setAttribute("data-window-start-date",startDate);svg.setAttribute("data-window-end-date",endDate);svg.setAttribute("data-point-count",String(count));}
+function updateRange(section,startDate,endDate,lowText,highText){var spans=section.querySelectorAll(".chart-range span");setText(spans[0],startDate+" → "+endDate);setText(spans[1],lowText+" — "+highText);}
+function updateDescription(section,selector,startDate,endDate,count,label){var description=section.querySelector(selector);setText(description,label+" "+startDate+" — "+endDate+" · "+count+(zh?" 行。":" rows."));}
+function positionIntervals(start,end){var result=[];if(start>end){return result;}var state=holdings[start].position!==0?"HOLDING":"CASH";var localStart=0;for(var source=start+1;source<=end;source+=1){var next=holdings[source].position!==0?"HOLDING":"CASH";if(next!==state){result.push({state:state,start:localStart,end:source-start-1});state=next;localStart=source-start;}}result.push({state:state,start:localStart,end:end-start});return result;}
+function renderTimeline(section,visibleRows,intervals,sourceStart,leadingState){
+  var old=section.querySelector(".state-timeline");if(!old){return;}
+  var timeline=htmlElement("div","state-timeline");timeline.dataset.focusStartIndex=String(sourceStart);timeline.dataset.focusEndIndex=String(sourceStart+visibleRows.length-1);timeline.dataset.windowStartDate=visibleRows[0].date;timeline.dataset.windowEndDate=visibleRows[visibleRows.length-1].date;timeline.dataset.fullStartDate=control.dataset.fullStartDate;timeline.dataset.fullEndDate=control.dataset.fullEndDate;
+  var heading=htmlElement("div","state-timeline-heading");heading.appendChild(htmlElement("strong","",zh?"持仓状态时间线":"Position-state timeline"));heading.appendChild(htmlElement("span","numeric",visibleRows[0].date+" → "+visibleRows[visibleRows.length-1].date));timeline.appendChild(heading);
+  var track=htmlElement("div","state-track");track.setAttribute("role","img");track.setAttribute("aria-label",(zh?"连续持仓与空仓状态时间线":"Continuous HOLDING and CASH state timeline")+" · "+visibleRows[0].date+" — "+visibleRows[visibleRows.length-1].date);
+  var step=100/Math.max(visibleRows.length-1,1);
+  intervals.forEach(function(interval,index){var startPercent=visibleRows.length===1?0:Math.max(0,interval.start*step-step/2);var endPercent=visibleRows.length===1?100:Math.min(100,interval.end*step+step/2);var width=endPercent-startPercent;var stateClass=interval.state==="HOLDING"?"holding":"cash";var hasTransition=index>0||(index===0&&leadingState&&leadingState!==interval.state);var transition=hasTransition?(interval.state==="HOLDING"?" transition-buy":" transition-sell"):"";var segment=htmlElement("span","state-track-segment "+stateClass+transition);segment.dataset.state=interval.state;segment.dataset.startIndex=String(sourceStart+interval.start);segment.dataset.endIndex=String(sourceStart+interval.end);segment.setAttribute("aria-label",interval.state+" · "+visibleRows[interval.start].date+" — "+visibleRows[interval.end].date);segment.style.left=coord(startPercent)+"%";segment.style.width=coord(width)+"%";if(width>=12){segment.appendChild(htmlElement("span","state-track-label",interval.state==="HOLDING"?(zh?"持仓 / HOLDING":"HOLDING"):(zh?"空仓 / CASH":"CASH")));}track.appendChild(segment);});
+  timeline.appendChild(track);var axis=htmlElement("div","state-timeline-axis");[0,Math.floor((visibleRows.length-1)/2),visibleRows.length-1].forEach(function(index){var time=htmlElement("time","",visibleRows[index].date);time.setAttribute("datetime",visibleRows[index].date);axis.appendChild(time);});timeline.appendChild(axis);old.replaceWith(timeline);
+}
+function renderPrice(start,end,visibleRows){
+  var section=sections.price;var svg=section.querySelector("svg");if(!svg){return;}
+  var values=visibleRows.map(function(row){return row.close;});var startDate=visibleRows[0].date;var endDate=visibleRows[visibleRows.length-1].date;var visibleEvents=eventRows.filter(function(event){return event.date>=startDate&&event.date<=endDate&&Number.isFinite(event.price);});var domain=paddedDomain(values.concat(visibleEvents.map(function(event){return event.price;})));var intervals=positionIntervals(start,end);var leadingState=start>0?(holdings[start-1].position!==0?"HOLDING":"CASH"):null;var path=svg.querySelector(".price-series");
+  Array.from(svg.querySelectorAll(".position-interval,.transition-boundary")).forEach(function(node){node.remove();});clearAxis(svg);
+  var step=838/Math.max(visibleRows.length-1,1);intervals.forEach(function(interval){var startX=visibleRows.length===1?62:Math.max(62,x(interval.start,visibleRows.length)-step/2);var endX=visibleRows.length===1?900:Math.min(900,x(interval.end,visibleRows.length)+step/2);var stateClass=interval.state==="HOLDING"?"holding":"cash";var rect=svgElement("rect",{class:"position-interval "+stateClass+"-interval","data-state":interval.state,"data-start-index":start+interval.start,"data-end-index":start+interval.end,"data-start-date":visibleRows[interval.start].date,"data-end-date":visibleRows[interval.end].date,x:coord(startX),y:28,width:coord(endX-startX),height:242,fill:"url(#price-"+stateClass+"-pattern)"});rect.appendChild(svgElement("title",{},interval.state+" · "+visibleRows[interval.start].date+" — "+visibleRows[interval.end].date));svg.insertBefore(rect,path);});
+  path.setAttribute("d",seriesPath(values,domain.low,domain.high));
+  var transitions=[];if(leadingState&&leadingState!==intervals[0].state){transitions.push({interval:intervals[0],previousState:leadingState});}intervals.slice(1).forEach(function(interval){transitions.push({interval:interval,previousState:intervals[intervals.indexOf(interval)-1].state});});transitions.forEach(function(transition){var interval=transition.interval;var side=interval.state==="HOLDING"?"BUY":"SELL";var boundaryX=Math.max(62,x(interval.start,visibleRows.length)-step/2);var line=svgElement("line",{class:"transition-boundary "+side.toLowerCase(),"data-side":side,"data-date":visibleRows[interval.start].date,"data-from-state":transition.previousState,"data-to-state":interval.state,x1:coord(boundaryX),y1:28,x2:coord(boundaryX),y2:270});line.appendChild(svgElement("title",{},side+" · "+visibleRows[interval.start].date+" · "+transition.previousState+" → "+interval.state));svg.appendChild(line);});
+  var buyCount=visibleEvents.filter(function(event){return event.side==="BUY";}).length;var sellCount=visibleEvents.filter(function(event){return event.side==="SELL";}).length;appendAxis(svg,visibleRows,domain.low,domain.high,"",1);setChartWindow(svg,startDate,endDate,visibleRows.length);svg.setAttribute("data-event-count",String(visibleEvents.length));svg.setAttribute("data-buy-count",String(buyCount));svg.setAttribute("data-sell-count",String(sellCount));svg.setAttribute("data-position-interval-count",String(intervals.length));svg.setAttribute("data-transition-count",String(transitions.length));updateRange(section,startDate,endDate,coord(domain.low),coord(domain.high));updateDescription(section,"#price-desc",startDate,endDate,visibleRows.length,zh?"所选窗口的价格路径与持仓状态。":"Price path and position state for selected window.");renderTimeline(section,visibleRows,intervals,start,leadingState);
+}
+var firstEquity=rowCount?rows[0].equity:1;var firstClose=rowCount?rows[0].close:1;var strategy=rows.map(function(row){return row.equity/firstEquity;});var reference=rows.map(function(row){return row.close/firstClose;});var runningPeak=rowCount?rows[0].equity:0;var drawdowns=rows.map(function(row){runningPeak=Math.max(runningPeak,row.equity);return row.equity/runningPeak-1;});
+function renderEquity(start,end,visibleRows){var section=sections.equity;var svg=section.querySelector("svg");if(!svg){return;}var strategyValues=strategy.slice(start,end+1);var hasReference=svg.getAttribute("data-reference-count")==="1";var referenceValues=reference.slice(start,end+1);var allValues=hasReference?strategyValues.concat(referenceValues):strategyValues;var domain=paddedDomain(allValues,0.02);clearAxis(svg);svg.querySelector(".equity-series").setAttribute("d",seriesPath(strategyValues,domain.low,domain.high));var referencePath=svg.querySelector(".reference-series");if(hasReference&&referencePath){referencePath.setAttribute("d",seriesPath(referenceValues,domain.low,domain.high));}appendAxis(svg,visibleRows,domain.low,domain.high,"×",1);setChartWindow(svg,visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length);updateRange(section,visibleRows[0].date,visibleRows[visibleRows.length-1].date,coord(domain.low)+"×",coord(domain.high)+"×");updateDescription(section,"#equity-desc",visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length,zh?"所选窗口的归一化策略净值与可用参考。":"Normalized strategy equity and available reference for selected window.");}
+function renderDrawdown(start,end,visibleRows){var section=sections.drawdown;var svg=section.querySelector("svg");if(!svg){return;}var values=drawdowns.slice(start,end+1);var low=Math.min.apply(null,values);var high=0;if(low===high){low=-0.01;}clearAxis(svg);var baseline=y(0,low,high);var path=seriesPath(values,low,high);var area=values.length===1?"":path+" L900.00 "+coord(baseline)+" L62.00 "+coord(baseline)+" Z";svg.querySelector(".drawdown-area").setAttribute("d",area);svg.querySelector(".drawdown-series").setAttribute("d",path);appendAxis(svg,visibleRows,low,high,"%",100);setChartWindow(svg,visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length);updateRange(section,visibleRows[0].date,visibleRows[visibleRows.length-1].date,coord(low*100)+"%","0.00%");updateDescription(section,"#drawdown-desc",visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length,zh?"所选窗口的回撤路径。":"Drawdown path for selected window.");}
+function markPreset(active){presetButtons.forEach(function(button){var selected=button.dataset.windowPreset===active;button.classList.toggle("is-active",selected);button.setAttribute("aria-pressed",selected?"true":"false");});}
+function restoreCharts(){Object.keys(sections).forEach(function(key){if(sections[key]){sections[key].innerHTML=initialHtml[key];}});}
+function updateReadout(start,end){var count=end-start+1;var startDate=rows[start].date;var endDate=rows[end].date;setText(boundsOutput,startDate+" → "+endDate);setText(feedback,count===1?(zh?"仅显示一行；图表细节有限。":"Only one row is selected; chart detail is limited."):(zh?"同步显示 "+count+" 行（含首尾）。":"Showing "+count+" synchronized rows, inclusive."));startInput.setAttribute("aria-valuetext",startDate);endInput.setAttribute("aria-valuetext",endDate);control.dataset.windowStartIndex=String(start);control.dataset.windowEndIndex=String(end);control.dataset.windowStartDate=startDate;control.dataset.windowEndDate=endDate;}
+function renderWindow(start,end){var range=validatedRange(start,end,"end");start=range.start;end=range.end;if(start===0&&end===lastIndex){restoreCharts();}else{var visibleRows=rows.slice(start,end+1);renderPrice(start,end,visibleRows);renderEquity(start,end,visibleRows);renderDrawdown(start,end,visibleRows);}updateReadout(start,end);}
+function resetFull(){startInput.value="0";endInput.value=String(lastIndex);startInput.setAttribute("aria-valuetext",control.dataset.fullStartDate);endInput.setAttribute("aria-valuetext",control.dataset.fullEndDate);restoreCharts();setText(boundsOutput,control.dataset.fullStartDate+" → "+control.dataset.fullEndDate);setText(feedback,control.dataset.fullFeedback);control.dataset.windowStartIndex="0";control.dataset.windowEndIndex=String(lastIndex);control.dataset.windowStartDate=control.dataset.fullStartDate;control.dataset.windowEndDate=control.dataset.fullEndDate;markPreset("full");}
+function subtractMonthsClamped(dateText,months){var parts=dateText.split("-").map(Number);var total=parts[0]*12+parts[1]-1-months;var year=Math.floor(total/12);var month=total-year*12;var lastDay=new Date(Date.UTC(year,month+1,0)).getUTCDate();var target=new Date(Date.UTC(year,month,Math.min(parts[2],lastDay)));return target.toISOString().slice(0,10);}
+function presetStart(months){var cutoff=subtractMonthsClamped(rows[lastIndex].date,months);var index=rows.findIndex(function(row){return row.date>=cutoff;});return index<0?lastIndex:index;}
+resetButton.addEventListener("click",resetFull);
+if(rowCount===0||holdings.length!==rowCount||holdings.some(function(item,index){return item.date!==rows[index].date;})){return;}
+presetButtons.forEach(function(button){button.addEventListener("click",function(){var preset=button.dataset.windowPreset;if(preset==="full"){resetFull();return;}var months=preset==="3y"?36:preset==="1y"?12:6;var start=presetStart(months);startInput.value=String(start);endInput.value=String(lastIndex);renderWindow(start,lastIndex);markPreset(preset);});});
+startInput.addEventListener("input",function(){var range=validatedRange(startInput.value,endInput.value,"start");startInput.value=String(range.start);endInput.value=String(range.end);renderWindow(range.start,range.end);markPreset("");});
+endInput.addEventListener("input",function(){var range=validatedRange(startInput.value,endInput.value,"end");startInput.value=String(range.start);endInput.value=String(range.end);renderWindow(range.start,range.end);markPreset("");});
+resetFull();
+}());"""
+
+
 def _stylesheet():
     return """:root{--canvas:#f3f5f7;--surface:#fff;--surface-alt:#f7f8fa;--ink:#151a20;--muted:#58636f;--line:#d9dee5;--line-strong:#b8c0ca;--accent:#1559d6;--buy:#087a52;--buy-bg:#e8f6f0;--sell:#b42318;--sell-bg:#fff0ee;--hold:#3f4852;--hold-bg:#eef1f4;--focus:#005fcc}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.45 Arial,"Helvetica Neue",sans-serif;font-variant-numeric:tabular-nums}main{max-width:1180px;margin:auto;padding:18px}.decision-header{background:var(--surface);border:1px solid var(--line-strong);border-radius:10px;padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center}.eyebrow,.section-kicker{margin:0;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.decision-header h1{margin:2px 0 5px;font-size:clamp(1.4rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.02em}.as-of,.reason,.boundary,.qualification{margin:3px 0}.as-of{font-weight:700}.reason{font-size:1rem}.qualification{color:var(--muted);font-size:.82rem}.boundary{color:#6f2f00;font-weight:750}.action-state{min-width:148px;text-align:center;border:1px solid currentColor;border-radius:8px;padding:12px 16px;font-size:1.7rem;font-weight:850;letter-spacing:.04em}.action-state.buy{background:var(--buy-bg);color:#05633f}.action-state.sell{background:var(--sell-bg);color:#9c1c13}.action-state.hold,.action-state.wait{background:var(--hold-bg);color:var(--hold)}.action-state.unavailable{background:#f1f2f4;color:#414b55}.report-nav{display:flex;gap:4px;margin:10px 0 14px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow-x:auto;scrollbar-width:thin}.report-nav a{min-height:36px;padding:8px 11px;display:inline-flex;align-items:center;color:#33404c;text-decoration:none;white-space:nowrap;border-radius:5px;font-size:.8rem;font-weight:700}.report-nav a:hover{background:#edf3ff;color:#104bb4}.metric-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 12px}.metric-card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:11px 12px;min-width:0}.metric-card span{display:block;color:var(--muted);font-size:.75rem;font-weight:700}.metric-card strong{display:block;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1rem;line-height:1.3;overflow-wrap:anywhere}.metric-card[data-state=unavailable]{border-style:dashed}.chart-card,.ledger-card,.evidence-details{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:15px 16px;margin:10px 0}.chart-heading,.section-heading{display:flex;justify-content:space-between;gap:18px;align-items:baseline}.chart-heading h2,.section-heading h2,.ledger-card h2{margin:0;font-size:1.05rem;line-height:1.3}.chart-heading p{max-width:58%;margin:0;color:var(--muted);font-size:.78rem;text-align:right}.section-heading>span{color:var(--muted);font-size:.78rem;font-weight:700}.chart-range{display:flex;justify-content:space-between;gap:12px;margin:8px 0 -2px;color:var(--muted);font-size:.75rem;font-weight:700}.numeric{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.chart{display:block;width:100%;height:300px;margin-top:4px}.axis,.zero-line{stroke:#7a8490;stroke-width:1}.axis-label,.bar-label{font-size:12px;fill:#4d5965}.series{fill:none;stroke-width:2.5;vector-effect:non-scaling-stroke}.price-series,.equity-series{stroke:var(--accent)}.reference-series{stroke:#8a5a00;stroke-dasharray:9 6}.drawdown-series{stroke:var(--sell)}.drawdown-area{fill:#f5cbc6;opacity:.7}.trade-bar.closed.positive{fill:var(--buy)}.trade-bar.closed.negative{fill:var(--sell)}.trade-bar.closed.zero{fill:#66727a}.trade-bar.open{fill:#fff;stroke:#604ca6;stroke-width:3;stroke-dasharray:7 4}.missing-state,.chart-empty{color:var(--muted);fill:var(--muted);font-weight:700}.table-wrap{max-width:100%;overflow-x:auto;margin-top:8px}table{border-collapse:collapse;width:100%;font-size:.82rem}th,td{text-align:left;vertical-align:top;padding:8px 9px;border-bottom:1px solid #e5e8ec;white-space:nowrap}td:last-child,code{white-space:normal;overflow-wrap:anywhere}thead th{background:var(--surface-alt);color:#46515d;font-size:.72rem;letter-spacing:.02em}.empty-cell{text-align:center;color:var(--muted)}.compact-ledger{table-layout:fixed}.compact-ledger th:first-child{width:51%}.compact-ledger th:nth-child(2){width:31%}.compact-ledger th:last-child{width:18%}.ledger-row>td{height:64px;vertical-align:middle}.ledger-primary{display:grid;grid-template-columns:1.35fr .72fr .72fr 1fr;gap:8px;align-items:center;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.ledger-primary>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-label{display:inline-flex;align-items:center;min-height:24px;padding:2px 7px;border-radius:4px;font-family:Arial,"Helvetica Neue",sans-serif;font-size:.72rem;font-weight:850}.status-label.buy{background:var(--buy-bg);color:#05633f}.status-label.sell{background:var(--sell-bg);color:#9c1c13}.status-label.open{background:#f2efff;color:#4d358f;border:1px dashed #7561b6}.status-label.closed{background:var(--hold-bg);color:var(--hold)}.status-label.unavailable{background:#f1f2f4;color:#414b55}.ledger-reason{line-height:1.35;white-space:normal;overflow-wrap:normal;word-break:normal}.ledger-details summary,.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{cursor:pointer}.ledger-details summary{min-height:44px;display:inline-flex;align-items:center;color:var(--accent);font-size:.78rem;font-weight:800}.ledger-details dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 4px}.ledger-details dl div{min-width:0;padding:7px;background:var(--surface-alt);border-radius:5px}.ledger-details dt{color:var(--muted);font-size:.68rem;text-transform:capitalize}.ledger-details dd{margin:2px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}.ledger-details[open]{min-width:510px}.series-ledgers{margin:10px 0;padding:0 2px}.series-ledgers>summary{min-height:44px;display:flex;align-items:center;font-weight:800}.evidence-details>summary{min-height:44px;display:flex;align-items:center;font-size:1rem;font-weight:800}.evidence-section{border-top:1px solid #e2e8ec;padding:5px 0}.evidence-section summary{min-height:44px;display:flex;align-items:center;font-weight:700}.detail-note{color:var(--muted)}.source-list{display:grid;gap:4px}.source-list code{font-size:.75rem}:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:3px}@media(max-width:800px){main{padding:12px}.metric-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-heading{display:block}.chart-heading p{max-width:none;text-align:left;margin-top:3px}.chart{height:260px}}@media(max-width:640px){body{font-size:13px}main{padding:8px}.decision-header{padding:12px;grid-template-columns:minmax(0,1fr) 90px;gap:10px;border-radius:7px}.decision-header h1{font-size:1.3rem}.eyebrow{font-size:.65rem}.as-of,.reason,.boundary,.qualification{margin:2px 0}.reason{font-size:.88rem;line-height:1.32}.qualification{font-size:.72rem}.boundary{font-size:.74rem}.action-state{min-width:0;padding:10px 5px;font-size:1.15rem}.report-nav{margin:7px 0 9px}.report-nav a{min-height:44px;padding:9px}.metric-cards{gap:6px;margin-bottom:8px}.metric-card{padding:8px}.metric-card strong{font-size:.86rem}.chart-card,.ledger-card,.evidence-details{padding:10px;margin:7px 0;border-radius:7px}.chart-heading h2,.section-heading h2,.ledger-card h2{font-size:.95rem}.chart-heading p{font-size:.72rem}.chart-range{font-size:.7rem}.chart{height:220px;min-height:0}.axis-label,.bar-label{display:none}.compact-ledger,.compact-ledger tbody{display:block}.compact-ledger thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.compact-ledger .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:3px 8px;padding:7px 0;min-height:88px;border-bottom:1px solid #e5e8ec}.compact-ledger .ledger-row>td{height:auto;padding:0;border:0}.ledger-primary{grid-column:1/-1;grid-template-columns:1.35fr .72fr .65fr .95fr;gap:5px;font-size:.75rem}.ledger-reason{grid-column:1;display:-webkit-box;min-width:0;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}.ledger-disclosure{grid-column:2;grid-row:2}.ledger-details summary{width:100%;min-height:44px;justify-content:flex-end}.ledger-details[open]{min-width:0}.ledger-details[open] dl{position:relative;z-index:1;grid-template-columns:repeat(2,minmax(0,1fr));width:calc(100vw - 38px);margin-left:calc(-100vw + 126px)}.series-ledgers>summary,.evidence-details>summary,.evidence-section summary{min-height:44px}th,td{padding:7px 8px;font-size:.76rem}.date-label{display:none}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}"""
 
@@ -1000,7 +1202,7 @@ def apply(payload, parameters):
     holdings = _raw(fields, "holdings") or []
     lang = "zh-CN" if zh else "en"
     title = _text(zh, "决策证据报告", "Decision evidence report")
-    css = _stylesheet() + _ledger_styles()
+    css = _stylesheet() + _ledger_styles() + _time_window_styles()
     parts = [
         '<!doctype html><html lang="'
         + lang
@@ -1061,6 +1263,7 @@ def apply(payload, parameters):
     parts.append(_metric_card(_text(zh, "事件 / 交易", "Events / trades"), str(len(events)) + " / " + str(len(trades)), "available"))
     parts.append(_metric_card(_text(zh, "总成本", "Total costs"), _money(_raw(fields, "total_cost_cny"), zh), "available" if _raw(fields, "total_cost_cny") is not None else "unavailable"))
     parts.append("</section>")
+    parts.append(_time_window_control(rows, zh))
     parts.append(_price_chart(rows, events, holdings, zh))
     parts.append(_equity_chart(rows, performance, zh))
     parts.append(_drawdown_chart(rows, zh))
@@ -1076,5 +1279,6 @@ def apply(payload, parameters):
     parts.append(_table(holdings, holding_columns, {}, "holdings", _text(zh, "完整每日持仓行", "Complete daily holding rows"), zh))
     parts.append("</details>")
     parts.append(_evidence(payload, zh))
+    parts.append('<script id="time-window-behavior">' + _time_window_script() + "</script>")
     parts.append("</main></body></html>\n")
     return "".join(parts)

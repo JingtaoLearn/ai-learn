@@ -490,7 +490,8 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert "@media(max-width:640px)" in rendered
     assert "http://" not in rendered.lower()
     assert "https://" not in rendered.lower()
-    assert "<script" not in rendered.lower()
+    assert rendered.lower().count("<script") == 1
+    assert '<script id="time-window-behavior">' in rendered
 
 
 def test_price_chart_has_no_action_point_or_index_dom():
@@ -612,7 +613,7 @@ def test_price_chart_uses_textures_labels_and_boundary_styles_not_color_alone():
     assert 'class="transition-boundary sell"' in rendered
 
 
-def test_state_timeline_expands_late_dense_transitions_without_hiding_full_history():
+def test_state_timeline_uses_the_same_full_bounds_as_the_price_chart_by_default():
     rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
     holdings = [
         {"date": row["date"], "position_after": int(index >= 80 and index % 2 == 0)}
@@ -621,14 +622,14 @@ def test_state_timeline_expands_late_dense_transitions_without_hiding_full_histo
 
     rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
 
-    assert 'class="state-timeline" data-focus-start-index="78" data-focus-end-index="99"' in rendered
+    assert 'class="state-timeline" data-focus-start-index="0" data-focus-end-index="99"' in rendered
     assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
     assert 'class="state-track"' in rendered
-    assert "day-078 → day-099" in rendered
+    assert "day-000 → day-099" in rendered
     assert 'class="position-interval cash-interval" data-state="CASH" data-start-index="0"' in rendered
 
 
-def test_state_timeline_focuses_late_dense_cluster_after_isolated_early_transition():
+def test_state_timeline_does_not_apply_an_independent_focus_window():
     rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
     holdings = [
         {
@@ -640,7 +641,7 @@ def test_state_timeline_focuses_late_dense_cluster_after_isolated_early_transiti
 
     rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
 
-    assert 'class="state-timeline" data-focus-start-index="78" data-focus-end-index="99"' in rendered
+    assert 'class="state-timeline" data-focus-start-index="0" data-focus-end-index="99"' in rendered
     assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
     assert (
         'class="position-interval holding-interval" data-state="HOLDING" '
@@ -715,6 +716,124 @@ def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_label
     assert ".action-index" not in css
 
 
+def test_visual_report_has_one_shared_accessible_time_window_control():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert '<section class="time-window-control" id="time-window-control"' in rendered
+    assert 'data-full-start-date="2026-09-10" data-full-end-date="2026-09-15"' in rendered
+    for preset, label in (
+        ("full", "全部 / Full"),
+        ("3y", "近3年 / 3Y"),
+        ("1y", "近1年 / 1Y"),
+        ("6m", "近6月 / 6M"),
+    ):
+        assert f'data-window-preset="{preset}"' in rendered
+        assert label in rendered
+    assert 'id="time-window-reset"' in rendered
+    assert 'id="time-window-start" type="range" min="0" max="3" value="0" step="1"' in rendered
+    assert 'id="time-window-end" type="range" min="0" max="3" value="3" step="1"' in rendered
+    assert rendered.count('aria-describedby="time-window-instructions time-window-feedback"') == 2
+    assert rendered.count('aria-valuetext="2026-09-10"') == 1
+    assert rendered.count('aria-valuetext="2026-09-15"') == 1
+    assert 'id="time-window-bounds"' in rendered
+    assert 'aria-live="polite"' in rendered
+    assert "2026-09-10 → 2026-09-15" in rendered
+    assert 'id="time-window-feedback" role="status"' in rendered
+    assert "同一个共享时间窗口" in rendered
+
+
+def test_time_window_payload_is_deterministic_escaped_and_has_no_remote_capability():
+    document = _visual_document()
+    fields = _document_fields(document)
+    hostile = '</script><img src=x onerror="alert(1)">'
+    fields["template_parameters"]["raw"]["current_action"]["reason"] = hostile
+    _reseal_document(document)
+
+    first = render_report_document(document)
+    second = render_report_document(document)
+    rendered = first.decode("utf-8")
+    script = re.search(
+        r'<script id="time-window-behavior">(?P<body>.*?)</script>',
+        rendered,
+        re.DOTALL,
+    )
+
+    assert first == second
+    assert script is not None
+    assert hostile not in rendered
+    assert hostile not in script.group("body")
+    for forbidden in ("fetch(", "XMLHttpRequest", "WebSocket", "eval(", "Function("):
+        assert forbidden not in script.group("body")
+    behavior = script.group("body")
+    assert "validatedRange" in behavior
+    assert "wheel" not in behavior.lower()
+    assert 'setAttribute("data-buy-count"' in behavior
+    assert 'setAttribute("data-sell-count"' in behavior
+    assert 'setAttribute("aria-valuetext"' in behavior
+    for description_id in ("price-desc", "equity-desc", "drawdown-desc"):
+        assert f'"#{description_id}"' in behavior
+    assert 'values.length===1?""' in behavior
+    assert "subtractMonthsClamped" in behavior
+    assert "Math.min(parts[2],lastDay)" in behavior
+    assert "Date.UTC(parts[0],parts[1]-1-months,parts[2])" not in behavior
+    assert behavior.index('resetButton.addEventListener("click",resetFull)') < behavior.index(
+        "if(rowCount===0"
+    )
+
+
+def test_all_time_charts_publish_identical_initial_inclusive_bounds():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    bounds = re.findall(
+        r'class="chart chart-(?:price|equity|drawdown)"[^>]*'
+        r'data-window-start-date="([^"]+)" data-window-end-date="([^"]+)"',
+        rendered,
+    )
+
+    assert bounds == [("2026-09-10", "2026-09-15")] * 3
+
+
+def test_time_axis_keeps_first_and_last_date_labels_inside_the_chart():
+    rendered = canonical_report_renderer_module._price_chart(
+        [
+            {"date": "2026-09-10", "close": 100.0},
+            {"date": "2026-09-11", "close": 101.0},
+            {"date": "2026-09-12", "close": 102.0},
+        ],
+        [],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-11", "position_after": 0},
+            {"date": "2026-09-12", "position_after": 0},
+        ],
+        False,
+    )
+
+    anchors = re.findall(r'class="axis-label date-label"[^>]+text-anchor="([^"]+)"', rendered)
+    assert anchors == ["start", "middle", "end"]
+    script = canonical_report_renderer_module._time_window_script()
+    assert 'index===0?"start":index===visibleRows.length-1?"end":"middle"' in script
+
+
+def test_time_window_control_truthfully_handles_empty_and_single_row_series():
+    empty = canonical_report_renderer_module._time_window_control([], False)
+    single = canonical_report_renderer_module._time_window_control(
+        [{"date": "2026-09-10", "close": 100.0, "equity": 1000.0}],
+        False,
+    )
+
+    assert "No time-series rows are available" in empty
+    assert empty.count(" disabled") >= 3
+    assert 'min="0" max="0" value="0" step="1"' in single
+    assert single.count(" disabled") == 2
+    assert "Only one row is available; chart detail is limited" in single
+    one_row_drawdown = canonical_report_renderer_module._drawdown_chart(
+        [{"date": "2026-09-10", "equity": 1000.0}],
+        False,
+    )
+    assert 'class="drawdown-area" d=""' in one_row_drawdown
+
+
 def test_visual_report_keeps_chart_navigation_targets_when_series_are_empty():
     document = _visual_document()
     fields = _document_fields(document)
@@ -749,7 +868,8 @@ def test_visual_report_escapes_hostile_human_text_in_headers_ledgers_and_evidenc
     rendered = render_report_document(document).decode("utf-8")
 
     assert hostile not in rendered
-    assert "<script" not in rendered.lower()
+    assert rendered.lower().count("<script") == 1
+    assert '<script id="time-window-behavior">' in rendered
     assert 'onmouseover="alert(1)' not in rendered
     assert "HOLD&quot; onmouseover=&quot;alert(1)" in rendered
     assert "Decision evidence report" in rendered
