@@ -183,6 +183,66 @@ def _holding_intervals(rows, holdings):
     return intervals
 
 
+def _event_side(event):
+    side = str(event.get("side", "")).strip().upper()
+    return side if side in {"BUY", "SELL"} else "UNAVAILABLE"
+
+
+def _marker_position_available(marker_x, marker_y, placed):
+    for other_x, other_y in placed:
+        if abs(marker_x - other_x) < 72.0 and abs(marker_y - other_y) < 72.0:
+            return False
+    return True
+
+
+def _event_marker_layout(points, left, top, width, height):
+    placed = []
+    result = []
+    spacing = 76.0
+    minimum_x = left + 36.0
+    maximum_x = left + width - 36.0
+    minimum_y = top + 36.0
+    maximum_y = top + height - 36.0
+    x_offsets = [0.0]
+    for step in range(1, 8):
+        x_offsets.extend([-spacing * step, spacing * step])
+    for point in points:
+        preferred = 1.0 if point["side"] == "BUY" else -1.0
+        y_offsets = []
+        for step in range(6):
+            distance = 42.0 + spacing * step
+            y_offsets.extend([preferred * distance, -preferred * distance])
+        candidates = []
+        for x_offset in x_offsets:
+            for y_offset in y_offsets:
+                marker_x = min(max(point["anchor_x"] + x_offset, minimum_x), maximum_x)
+                marker_y = min(max(point["anchor_y"] + y_offset, minimum_y), maximum_y)
+                candidate = (marker_x, marker_y)
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        selected = None
+        for marker_x, marker_y in candidates:
+            if _marker_position_available(marker_x, marker_y, placed):
+                selected = (marker_x, marker_y)
+                break
+        if selected is None:
+            for marker_y in range(int(minimum_y), int(maximum_y) + 1, int(spacing)):
+                for marker_x in range(int(minimum_x), int(maximum_x) + 1, int(spacing)):
+                    if _marker_position_available(marker_x, marker_y, placed):
+                        selected = (float(marker_x), float(marker_y))
+                        break
+                if selected is not None:
+                    break
+        if selected is None:
+            raise ValueError("no non-overlapping event marker position is available")
+        placed.append(selected)
+        item = dict(point)
+        item["marker_x"] = selected[0]
+        item["marker_y"] = selected[1]
+        result.append(item)
+    return result
+
+
 def _price_chart(rows, events, holdings, zh):
     title = _text(zh, "价格、买卖点与持仓区间", "Price, actions, and holding intervals")
     if not rows:
@@ -211,9 +271,10 @@ def _price_chart(rows, events, holdings, zh):
     buy_count = 0
     sell_count = 0
     for index in range(len(events)):
-        if events[index].get("side") == "BUY":
+        side = _event_side(events[index])
+        if side == "BUY":
             buy_count += 1
-        elif events[index].get("side") == "SELL":
+        elif side == "SELL":
             sell_count += 1
     parts = [
         '<section class="chart-card" id="price-history"><div class="chart-heading"><h2>'
@@ -278,9 +339,10 @@ def _price_chart(rows, events, holdings, zh):
         + _series_path(values, low, high, left, top, plot_width, plot_height)
         + '"/>'
     )
+    event_points = []
     for event_index in range(len(events)):
         event = events[event_index]
-        side = event.get("side")
+        side = _event_side(event)
         point_index = _date_index(rows, event.get("Date"))
         if point_index >= 0:
             placement = "mapped"
@@ -290,7 +352,55 @@ def _price_chart(rows, events, holdings, zh):
             placement = "unmapped"
             x_value = left + plot_width * float(event_index + 1) / float(len(events) + 1)
             y_value = top + plot_height
-        css_side = "buy" if side == "BUY" else "sell"
+        event_points.append(
+            {
+                "event": event,
+                "side": side,
+                "point_index": point_index,
+                "placement": placement,
+                "anchor_x": x_value,
+                "anchor_y": y_value,
+            }
+        )
+    event_points = _event_marker_layout(
+        event_points,
+        left,
+        top,
+        plot_width,
+        plot_height,
+    )
+    parts.append('<g class="event-connectors" aria-hidden="true">')
+    for event_index in range(len(event_points)):
+        point = event_points[event_index]
+        parts.append(
+            '<line class="event-connector" data-event-index="'
+            + str(event_index)
+            + '" x1="'
+            + _coord(point["marker_x"])
+            + '" y1="'
+            + _coord(point["marker_y"])
+            + '" x2="'
+            + _coord(point["anchor_x"])
+            + '" y2="'
+            + _coord(point["anchor_y"])
+            + '"/><circle class="event-anchor" data-event-index="'
+            + str(event_index)
+            + '" cx="'
+            + _coord(point["anchor_x"])
+            + '" cy="'
+            + _coord(point["anchor_y"])
+            + '" r="3"/>'
+        )
+    parts.append('</g><g class="event-glyphs">')
+    for event_index in range(len(event_points)):
+        point = event_points[event_index]
+        event = point["event"]
+        side = point["side"]
+        point_index = point["point_index"]
+        placement = point["placement"]
+        x_value = point["marker_x"]
+        y_value = point["marker_y"]
+        css_side = side.lower()
         parts.append(
             '<g class="event-marker '
             + css_side
@@ -304,6 +414,14 @@ def _price_chart(rows, events, holdings, zh):
             + _escape(side)
             + '" data-placement="'
             + placement
+            + '" data-marker-x="'
+            + _coord(x_value)
+            + '" data-marker-y="'
+            + _coord(y_value)
+            + '" data-anchor-x="'
+            + _coord(point["anchor_x"])
+            + '" data-anchor-y="'
+            + _coord(point["anchor_y"])
             + '" transform="translate('
             + _coord(x_value)
             + " "
@@ -319,9 +437,29 @@ def _price_chart(rows, events, holdings, zh):
             + "</title>"
         )
         if side == "BUY":
-            parts.append('<polygon points="0,-10 -8,7 8,7"/><text x="0" y="-14" text-anchor="middle">BUY ▲</text>')
+            parts.append(
+                '<g class="marker-glyph buy-glyph"><polygon class="marker-shape" '
+                'points="0,-17 -17,14 17,14"/><text class="marker-number" x="0" '
+                'y="5" text-anchor="middle">'
+                + str(event_index + 1)
+                + "</text></g>"
+            )
+        elif side == "SELL":
+            parts.append(
+                '<g class="marker-glyph sell-glyph"><rect class="marker-shape" x="-16" '
+                'y="-16" width="32" height="32" rx="2"/><text class="marker-number" '
+                'x="0" y="1" text-anchor="middle">'
+                + str(event_index + 1)
+                + "</text></g>"
+            )
         else:
-            parts.append('<rect x="-7" y="-7" width="14" height="14"/><text x="0" y="-13" text-anchor="middle">SELL ■</text>')
+            parts.append(
+                '<g class="marker-glyph unavailable-glyph"><circle class="marker-shape" '
+                'cx="0" cy="0" r="16"/><text class="marker-number" x="0" y="1" '
+                'text-anchor="middle">'
+                + str(event_index + 1)
+                + "</text></g>"
+            )
         if placement == "unmapped":
             parts.append(
                 '<text class="unmapped-label" x="0" y="22" text-anchor="middle">'
@@ -329,8 +467,56 @@ def _price_chart(rows, events, holdings, zh):
                 + "</text>"
             )
         parts.append("</g>")
+    parts.append("</g>")
     parts.append(_axis(rows, low, high, left, top, plot_width, plot_height, ""))
-    parts.append("</svg></section>")
+    parts.append("</svg>" + _action_index(events, zh) + "</section>")
+    return "".join(parts)
+
+
+def _action_index(events, zh):
+    parts = [
+        '<div class="action-index-wrap"><div class="action-index-heading"><strong>'
+        + _text(zh, "买卖点索引", "Action index")
+        + "</strong><span>"
+        + _text(
+            zh,
+            "编号对应上方价格路径；▲ BUY 买入，■ SELL 卖出。",
+            "Numbers map to the price path above; ▲ BUY, ■ SELL.",
+        )
+        + '</span></div><ol class="action-index" data-event-count="'
+        + str(len(events))
+        + '">'
+    ]
+    for index in range(len(events)):
+        event = events[index]
+        side = _event_side(event)
+        side_class = side.lower() if side in {"BUY", "SELL"} else "unavailable"
+        symbol = "▲" if side == "BUY" else "■" if side == "SELL" else "•"
+        date_value = event.get("Date")
+        parts.append(
+            '<li class="action-index-item '
+            + side_class
+            + '" data-event-index="'
+            + str(index)
+            + '" data-date="'
+            + _escape(date_value)
+            + '" data-side="'
+            + _escape(side)
+            + '"><span class="action-number">'
+            + str(index + 1)
+            + '</span><span class="action-side">'
+            + symbol
+            + " "
+            + _escape(side)
+            + '</span><time datetime="'
+            + _escape(date_value)
+            + '">'
+            + _escape(date_value)
+            + '</time><span class="action-price">'
+            + _number(event.get("price"))
+            + "</span></li>"
+        )
+    parts.append("</ol></div>")
     return "".join(parts)
 
 
@@ -837,7 +1023,7 @@ def _stylesheet():
 
 
 def _ledger_styles():
-    return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}"""
+    return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.event-connector{stroke:#46515d;stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}.event-anchor{fill:#fff;stroke:#151a20;stroke-width:2;vector-effect:non-scaling-stroke}.event-marker .marker-glyph{transform-box:fill-box;transform-origin:center}.event-marker .marker-shape{stroke:#fff;stroke-width:4;paint-order:stroke fill;vector-effect:non-scaling-stroke}.event-marker.buy .marker-shape{fill:var(--buy)}.event-marker.sell .marker-shape{fill:var(--sell)}.event-marker.unavailable .marker-shape{fill:var(--muted)}.event-marker .marker-number{display:block;fill:#fff;stroke:none;paint-order:normal;font-size:13px;font-weight:900;dominant-baseline:middle}.action-index-wrap{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}.action-index-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.action-index-heading strong{font-size:.86rem}.action-index-heading span{color:var(--muted);font-size:.75rem;text-align:right}.action-index{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:6px;margin:8px 0 0;padding:0;list-style:none}.action-index-item{min-width:0;min-height:52px;padding:6px 7px;display:grid;grid-template-columns:28px minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:6px;align-items:center;border:1px solid var(--line);border-radius:5px;background:var(--surface-alt)}.action-number{grid-row:1/3;display:grid;place-items:center;width:28px;height:28px;border:2px solid currentColor;background:var(--surface);font-weight:850;line-height:1}.action-index-item.buy .action-number{color:var(--buy);clip-path:polygon(50% 0,100% 100%,0 100%)}.action-index-item.sell .action-number{color:var(--sell)}.action-side{grid-column:2;grid-row:1;font-size:.78rem;font-weight:850;white-space:nowrap}.action-index-item time{grid-column:2/4;grid-row:2;color:var(--muted);font-size:.72rem}.action-price{grid-column:3;grid-row:1;font-size:.75rem;font-weight:750;text-align:right}@media(max-width:640px){.event-marker .marker-glyph{transform:scale(2)}.action-index-heading{display:block}.action-index-heading span{display:block;margin-top:2px;text-align:left}.action-index{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.action-index-item{min-height:58px;padding:6px}.action-side{font-size:.8rem}.action-index-item time,.action-price{font-size:.74rem}}"""
 
 
 def apply(payload, parameters):

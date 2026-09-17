@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import quant_platform.attempt_report as attempt_report_module
+import quant_platform.canonical_report_renderer as canonical_report_renderer_module
 import quant_platform.resolved_runner as resolved_runner_module
 from quant_platform.attempt_report import (
     AttemptReportError,
@@ -498,6 +499,111 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert "<script" not in rendered.lower()
 
 
+def test_price_chart_has_an_always_visible_numbered_action_index():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert '<ol class="action-index" data-event-count="2">' in rendered
+    assert (
+        '<li class="action-index-item buy" data-event-index="0" '
+        'data-date="2026-09-11" data-side="BUY">'
+    ) in rendered
+    assert (
+        '<span class="action-number">1</span><span class="action-side">▲ BUY</span>'
+        '<time datetime="2026-09-11">2026-09-11</time>'
+        '<span class="action-price">102.00</span>'
+    ) in rendered
+    assert (
+        '<li class="action-index-item sell" data-event-index="1" '
+        'data-date="2026-09-15" data-side="SELL">'
+    ) in rendered
+    assert (
+        '<span class="action-number">2</span><span class="action-side">■ SELL</span>'
+        '<time datetime="2026-09-15">2026-09-15</time>'
+        '<span class="action-price">106.00</span>'
+    ) in rendered
+
+
+def test_price_chart_normalizes_side_for_markers_and_action_index():
+    rows = [{"date": "2026-09-11", "close": 102.0}]
+    events = [{"Date": "2026-09-11", "side": "buy", "price": 102.0}]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, events, [], False)
+
+    assert 'data-buy-count="1" data-sell-count="0"' in rendered
+    assert 'class="event-marker buy" data-event-index="0"' in rendered
+    assert rendered.count('data-side="BUY"') == 2
+    assert '<span class="action-side">▲ BUY</span>' in rendered
+
+
+def test_price_chart_uses_unavailable_semantics_for_unknown_side():
+    rows = [{"date": "2026-09-11", "close": 102.0}]
+    events = [{"Date": "2026-09-11", "side": "WAIT", "price": 102.0}]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, events, [], False)
+
+    assert 'class="event-marker unavailable" data-event-index="0"' in rendered
+    assert rendered.count('data-side="UNAVAILABLE"') == 2
+    assert 'class="marker-glyph unavailable-glyph"' in rendered
+    assert '<span class="action-side">• UNAVAILABLE</span>' in rendered
+
+
+def test_price_chart_renders_all_connectors_and_anchors_before_glyphs():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    first_glyph = rendered.index('class="marker-glyph')
+    assert rendered.rindex('class="event-connector"') < first_glyph
+    assert rendered.rindex('class="event-anchor"') < first_glyph
+
+
+def test_price_chart_spreads_dense_numbered_markers_without_overlap():
+    rows = [
+        {"date": "2026-09-10", "close": 100.0},
+        {"date": "2026-09-11", "close": 102.0},
+        {"date": "2026-09-12", "close": 101.0},
+    ]
+    events = [
+        {"Date": "2026-09-11", "side": "BUY" if index % 2 == 0 else "SELL", "price": 102.0}
+        for index in range(8)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, events, [], True)
+
+    positions = [
+        tuple(float(value) for value in match)
+        for match in re.findall(
+            r'data-marker-x="([\d.]+)" data-marker-y="([\d.]+)" '
+            r'data-anchor-x="([\d.]+)" data-anchor-y="([\d.]+)"',
+            rendered,
+        )
+    ]
+    assert len(positions) == len(events)
+    assert all(anchor_x == positions[0][2] for _, _, anchor_x, _ in positions)
+    assert all(anchor_y == positions[0][3] for _, _, _, anchor_y in positions)
+    for index, (marker_x, marker_y, _, _) in enumerate(positions):
+        for other_x, other_y, _, _ in positions[index + 1 :]:
+            assert abs(marker_x - other_x) >= 72 or abs(marker_y - other_y) >= 72
+    assert rendered.count('class="event-connector"') == len(events)
+    assert rendered.count('class="marker-number"') == len(events)
+    assert 'class="marker-glyph buy-glyph"' in rendered
+    assert 'class="marker-glyph sell-glyph"' in rendered
+
+
+def test_event_marker_layout_fails_when_no_non_overlapping_position_exists():
+    points = [
+        {"side": "BUY", "anchor_x": 36.0, "anchor_y": 36.0},
+        {"side": "SELL", "anchor_x": 36.0, "anchor_y": 36.0},
+    ]
+
+    with pytest.raises(ValueError, match="non-overlapping event marker"):
+        canonical_report_renderer_module._event_marker_layout(
+            points,
+            left=0.0,
+            top=0.0,
+            width=72.0,
+            height=72.0,
+        )
+
+
 def test_visual_report_ledgers_keep_primary_fields_visible_and_disclose_complete_rows():
     rendered = render_report_document(_visual_document()).decode("utf-8")
 
@@ -540,6 +646,7 @@ def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_label
     assert ":focus-visible" in css
     assert "min-height:44px" in css
     assert "@media(prefers-reduced-motion:reduce)" in css
+    assert ".event-marker .marker-number{display:block" in css
 
 
 def test_visual_report_keeps_chart_navigation_targets_when_series_are_empty():
