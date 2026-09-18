@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import quant_platform.attempt_report as attempt_report_module
+import quant_platform.canonical_report_renderer as canonical_report_renderer_module
 import quant_platform.resolved_runner as resolved_runner_module
 from quant_platform.attempt_report import (
     AttemptReportError,
@@ -467,19 +468,13 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert 'data-event-count="2"' in rendered
     assert 'data-buy-count="1"' in rendered
     assert 'data-sell-count="1"' in rendered
-    assert len(re.findall(r'<g class="event-marker (?:buy|sell)"', rendered)) == 2
+    assert 'data-position-interval-count="3"' in rendered
+    assert 'data-transition-count="2"' in rendered
     assert 'data-closed-count="1"' in rendered
     assert 'data-open-count="1"' in rendered
     assert (
-        'class="event-marker buy" data-event-index="0" data-point-index="1" '
-        'data-date="2026-09-11" data-side="BUY"'
-    ) in rendered
-    assert (
-        'class="event-marker sell" data-event-index="1" data-point-index="3" '
-        'data-date="2026-09-15" data-side="SELL"'
-    ) in rendered
-    assert (
-        'class="holding-interval" data-start-index="1" data-end-index="2" '
+        'class="position-interval holding-interval" data-state="HOLDING" '
+        'data-start-index="1" data-end-index="2" '
         'data-start-date="2026-09-11" data-end-date="2026-09-12"'
     ) in rendered
     assert 'class="trade-bar closed positive" data-trade-index="0"' in rendered
@@ -495,7 +490,366 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert "@media(max-width:640px)" in rendered
     assert "http://" not in rendered.lower()
     assert "https://" not in rendered.lower()
-    assert "<script" not in rendered.lower()
+    assert rendered.lower().count("<script") == 1
+    assert '<script id="time-window-behavior">' in rendered
+
+
+def test_price_chart_has_no_action_point_or_index_dom():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    for forbidden in (
+        'class="event-marker',
+        'class="event-connector',
+        'class="event-anchor',
+        'class="marker-number',
+        'class="action-index',
+    ):
+        assert forbidden not in rendered
+
+
+def test_position_intervals_cover_every_row_and_express_event_transitions():
+    rows = [
+        {"date": "2026-09-10", "close": 100.0},
+        {"date": "2026-09-11", "close": 102.0},
+        {"date": "2026-09-12", "close": 104.0},
+        {"date": "2026-09-15", "close": 106.0},
+    ]
+    holdings = [
+        {"date": "2026-09-10", "position_after": 0},
+        {"date": "2026-09-11", "position_after": 1},
+        {"date": "2026-09-12", "position_after": 1},
+        {"date": "2026-09-15", "position_after": 0},
+    ]
+    events = [
+        {"Date": "2026-09-11", "side": "BUY", "price": 102.0},
+        {"Date": "2026-09-15", "side": "SELL", "price": 106.0},
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, events, holdings, False)
+
+    intervals = re.findall(
+        r'class="position-interval (?:holding|cash)-interval" data-state="(HOLDING|CASH)" '
+        r'data-start-index="(\d+)" data-end-index="(\d+)"',
+        rendered,
+    )
+    assert intervals == [("CASH", "0", "0"), ("HOLDING", "1", "2"), ("CASH", "3", "3")]
+    assert sum(int(end) - int(start) + 1 for _, start, end in intervals) == len(rows)
+    assert (
+        'class="transition-boundary buy" data-side="BUY" data-date="2026-09-11" '
+        'data-from-state="CASH" data-to-state="HOLDING"'
+    ) in rendered
+    assert (
+        'class="transition-boundary sell" data-side="SELL" data-date="2026-09-15" '
+        'data-from-state="HOLDING" data-to-state="CASH"'
+    ) in rendered
+
+
+@pytest.mark.parametrize(
+    "holdings",
+    [
+        [],
+        [{"date": "2026-09-10", "position_after": 0}],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-13", "position_after": 1},
+        ],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-11"},
+        ],
+    ],
+)
+def test_position_intervals_reject_missing_short_or_date_misaligned_holdings(holdings):
+    rows = [
+        {"date": "2026-09-10", "close": 100.0},
+        {"date": "2026-09-11", "close": 102.0},
+    ]
+
+    with pytest.raises(ValueError, match="holdings must align one-to-one with price rows by date"):
+        canonical_report_renderer_module._position_intervals(rows, holdings)
+
+
+def test_position_intervals_preserve_empty_price_series_path():
+    assert canonical_report_renderer_module._position_intervals([], []) == []
+    assert "Price series unavailable" in canonical_report_renderer_module._price_chart([], [], [], False)
+
+
+def test_one_row_position_interval_covers_full_chart_and_focus_track_width():
+    rows = [{"date": "2026-09-10", "close": 100.0}]
+    holdings = [{"date": "2026-09-10", "position_after": 1}]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    svg_interval = re.search(
+        r'class="position-interval holding-interval"[^>]+x="(?P<x>[\d.]+)"[^>]+'
+        r'width="(?P<width>[\d.]+)"',
+        rendered,
+    )
+    assert svg_interval is not None
+    assert float(svg_interval.group("x")) == 62.0
+    assert float(svg_interval.group("width")) == 838.0
+    track_interval = re.search(
+        r'class="state-track-segment holding"[^>]+style="left:(?P<left>[\d.]+)%'
+        r';width:(?P<width>[\d.]+)%"',
+        rendered,
+    )
+    assert track_interval is not None
+    assert float(track_interval.group("left")) == 0.0
+    assert float(track_interval.group("width")) == 100.0
+
+
+def test_price_chart_uses_textures_labels_and_boundary_styles_not_color_alone():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert 'id="price-holding-pattern"' in rendered
+    assert 'id="price-cash-pattern"' in rendered
+    assert 'class="state-legend-item holding"' in rendered
+    assert 'class="state-legend-item cash"' in rendered
+    assert "持仓 / HOLDING" in rendered
+    assert "空仓 / CASH" in rendered
+    assert "买入 BUY：CASH→HOLDING" in rendered
+    assert "卖出 SELL：HOLDING→CASH" in rendered
+    assert 'class="transition-boundary buy"' in rendered
+    assert 'class="transition-boundary sell"' in rendered
+
+
+def test_state_timeline_uses_the_same_full_bounds_as_the_price_chart_by_default():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
+    holdings = [
+        {"date": row["date"], "position_after": int(index >= 80 and index % 2 == 0)}
+        for index, row in enumerate(rows)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    assert 'class="state-timeline" data-focus-start-index="0" data-focus-end-index="99"' in rendered
+    assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
+    assert 'class="state-track"' in rendered
+    assert "day-000 → day-099" in rendered
+    assert 'class="position-interval cash-interval" data-state="CASH" data-start-index="0"' in rendered
+
+
+def test_state_timeline_does_not_apply_an_independent_focus_window():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(100)]
+    holdings = [
+        {
+            "date": row["date"],
+            "position_after": int(index < 10 or (index >= 80 and index % 2 == 0)),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    assert 'class="state-timeline" data-focus-start-index="0" data-focus-end-index="99"' in rendered
+    assert 'data-full-start-date="day-000" data-full-end-date="day-099"' in rendered
+    assert (
+        'class="position-interval holding-interval" data-state="HOLDING" '
+        'data-start-index="0" data-end-index="9"'
+    ) in rendered
+
+
+def test_state_timeline_segments_expose_state_and_visible_date_range_text():
+    rows = [{"date": f"day-{index:03d}", "close": 100.0 + index} for index in range(4)]
+    holdings = [
+        {"date": row["date"], "position_after": int(index in {1, 2})}
+        for index, row in enumerate(rows)
+    ]
+
+    rendered = canonical_report_renderer_module._price_chart(rows, [], holdings, False)
+
+    segment_labels = re.findall(r'class="state-track-segment [^"]+"[^>]+aria-label="([^"]+)"', rendered)
+    assert segment_labels == [
+        "CASH · day-000 — day-000",
+        "HOLDING · day-001 — day-002",
+        "CASH · day-003 — day-003",
+    ]
+
+
+def test_visual_report_ledgers_keep_primary_fields_visible_and_disclose_complete_rows():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert rendered.count('class="ledger-row event-row"') == 2
+    assert rendered.count('class="ledger-row trade-row"') == 2
+    assert 'data-primary-field="date">2026-09-11' in rendered
+    assert 'data-primary-field="action"><span class="status-label buy">BUY ▲</span>' in rendered
+    assert 'data-primary-field="transition">0 → 9' in rendered
+    assert 'data-primary-field="pnl">¥34.00' in rendered
+    assert "upward crossing" in rendered
+    assert rendered.count('class="ledger-details"') == 4
+    assert 'aria-label="事件 1 · 2026-09-11 · BUY"' in rendered
+    assert 'aria-label="交易 1 · 2026-09-11 · CLOSED"' in rendered
+    for value in (
+        "notional cny",
+        "commission cny",
+        "cash before cny",
+        "entry cost cny",
+        "gross pnl cny",
+        "return",
+    ):
+        assert value in rendered
+
+
+def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_labels():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+    style_match = re.search(r"<style>(?P<css>.*)</style>", rendered)
+    assert style_match is not None
+    css = style_match.group("css")
+
+    assert '<nav class="report-nav"' in rendered
+    assert 'href="#decision"' in rendered
+    assert 'href="#event-ledger"' in rendered
+    assert rendered.count('class="chart-range"') == 4
+    assert 'id="decision"' in rendered
+    assert 'id="price-history"' in rendered
+    assert css.count("{") == css.count("}")
+    assert ".chart{min-width" not in css
+    assert "font-variant-numeric:tabular-nums" in css
+    assert ":focus-visible" in css
+    assert "min-height:44px" in css
+    assert "@media(prefers-reduced-motion:reduce)" in css
+    assert ".position-interval.holding-interval" in css
+    assert ".position-interval.cash-interval" in css
+    assert ".transition-boundary.buy" in css
+    assert ".transition-boundary.sell" in css
+    assert ".event-marker" not in css
+    assert ".action-index" not in css
+
+
+def test_visual_report_has_one_shared_accessible_time_window_control():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert '<section class="time-window-control" id="time-window-control"' in rendered
+    assert 'data-full-start-date="2026-09-10" data-full-end-date="2026-09-15"' in rendered
+    for preset, label in (
+        ("full", "全部 / Full"),
+        ("3y", "近3年 / 3Y"),
+        ("1y", "近1年 / 1Y"),
+        ("6m", "近6月 / 6M"),
+    ):
+        assert f'data-window-preset="{preset}"' in rendered
+        assert label in rendered
+    assert 'id="time-window-reset"' in rendered
+    assert 'id="time-window-start" type="range" min="0" max="3" value="0" step="1"' in rendered
+    assert 'id="time-window-end" type="range" min="0" max="3" value="3" step="1"' in rendered
+    assert rendered.count('aria-describedby="time-window-instructions time-window-feedback"') == 2
+    assert rendered.count('aria-valuetext="2026-09-10"') == 1
+    assert rendered.count('aria-valuetext="2026-09-15"') == 1
+    assert 'id="time-window-bounds"' in rendered
+    assert 'aria-live="polite"' in rendered
+    assert "2026-09-10 → 2026-09-15" in rendered
+    assert 'id="time-window-feedback" role="status"' in rendered
+    assert "同一个共享时间窗口" in rendered
+
+
+def test_time_window_payload_is_deterministic_escaped_and_has_no_remote_capability():
+    document = _visual_document()
+    fields = _document_fields(document)
+    hostile = '</script><img src=x onerror="alert(1)">'
+    fields["template_parameters"]["raw"]["current_action"]["reason"] = hostile
+    _reseal_document(document)
+
+    first = render_report_document(document)
+    second = render_report_document(document)
+    rendered = first.decode("utf-8")
+    script = re.search(
+        r'<script id="time-window-behavior">(?P<body>.*?)</script>',
+        rendered,
+        re.DOTALL,
+    )
+
+    assert first == second
+    assert script is not None
+    assert hostile not in rendered
+    assert hostile not in script.group("body")
+    for forbidden in ("fetch(", "XMLHttpRequest", "WebSocket", "eval(", "Function("):
+        assert forbidden not in script.group("body")
+    behavior = script.group("body")
+    assert "validatedRange" in behavior
+    assert "wheel" not in behavior.lower()
+    assert 'setAttribute("data-buy-count"' in behavior
+    assert 'setAttribute("data-sell-count"' in behavior
+    assert 'setAttribute("aria-valuetext"' in behavior
+    for description_id in ("price-desc", "equity-desc", "drawdown-desc"):
+        assert f'"#{description_id}"' in behavior
+    assert 'values.length===1?""' in behavior
+    assert "subtractMonthsClamped" in behavior
+    assert "Math.min(parts[2],lastDay)" in behavior
+    assert "Date.UTC(parts[0],parts[1]-1-months,parts[2])" not in behavior
+    assert behavior.index('resetButton.addEventListener("click",resetFull)') < behavior.index(
+        "if(rowCount===0"
+    )
+
+
+def test_all_time_charts_publish_identical_initial_inclusive_bounds():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    bounds = re.findall(
+        r'class="chart chart-(?:price|equity|drawdown)"[^>]*'
+        r'data-window-start-date="([^"]+)" data-window-end-date="([^"]+)"',
+        rendered,
+    )
+
+    assert bounds == [("2026-09-10", "2026-09-15")] * 3
+
+
+def test_time_axis_keeps_first_and_last_date_labels_inside_the_chart():
+    rendered = canonical_report_renderer_module._price_chart(
+        [
+            {"date": "2026-09-10", "close": 100.0},
+            {"date": "2026-09-11", "close": 101.0},
+            {"date": "2026-09-12", "close": 102.0},
+        ],
+        [],
+        [
+            {"date": "2026-09-10", "position_after": 0},
+            {"date": "2026-09-11", "position_after": 0},
+            {"date": "2026-09-12", "position_after": 0},
+        ],
+        False,
+    )
+
+    anchors = re.findall(r'class="axis-label date-label"[^>]+text-anchor="([^"]+)"', rendered)
+    assert anchors == ["start", "middle", "end"]
+    script = canonical_report_renderer_module._time_window_script()
+    assert 'index===0?"start":index===visibleRows.length-1?"end":"middle"' in script
+
+
+def test_time_window_control_truthfully_handles_empty_and_single_row_series():
+    empty = canonical_report_renderer_module._time_window_control([], False)
+    single = canonical_report_renderer_module._time_window_control(
+        [{"date": "2026-09-10", "close": 100.0, "equity": 1000.0}],
+        False,
+    )
+
+    assert "No time-series rows are available" in empty
+    assert empty.count(" disabled") >= 3
+    assert 'min="0" max="0" value="0" step="1"' in single
+    assert single.count(" disabled") == 2
+    assert "Only one row is available; chart detail is limited" in single
+    one_row_drawdown = canonical_report_renderer_module._drawdown_chart(
+        [{"date": "2026-09-10", "equity": 1000.0}],
+        False,
+    )
+    assert 'class="drawdown-area" d=""' in one_row_drawdown
+
+
+def test_visual_report_keeps_chart_navigation_targets_when_series_are_empty():
+    document = _visual_document()
+    fields = _document_fields(document)
+    fields["price_equity_rows"]["raw"] = []
+    fields["holdings"]["raw"] = []
+    _reseal_document(document)
+
+    rendered = render_report_document(document).decode("utf-8")
+
+    for section_id in (
+        "price-history",
+        "equity-history",
+        "drawdown-history",
+        "trade-history",
+    ):
+        assert f'id="{section_id}"' in rendered
 
 
 def test_visual_report_escapes_hostile_human_text_in_headers_ledgers_and_evidence():
@@ -514,7 +868,8 @@ def test_visual_report_escapes_hostile_human_text_in_headers_ledgers_and_evidenc
     rendered = render_report_document(document).decode("utf-8")
 
     assert hostile not in rendered
-    assert "<script" not in rendered.lower()
+    assert rendered.lower().count("<script") == 1
+    assert '<script id="time-window-behavior">' in rendered
     assert 'onmouseover="alert(1)' not in rendered
     assert "HOLD&quot; onmouseover=&quot;alert(1)" in rendered
     assert "Decision evidence report" in rendered
@@ -613,7 +968,7 @@ def test_visual_report_marks_period_unavailable_when_exactly_one_endpoint_is_mis
     assert "None" not in rendered
 
 
-def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates():
+def test_price_chart_keeps_gap_prices_in_scale_and_unmatched_events_in_ledger():
     document = _visual_document()
     fields = _document_fields(document)
     fields["events"]["raw"][0]["price"] = 500.0
@@ -626,24 +981,21 @@ def test_price_chart_keeps_gap_prices_visible_and_labels_unmatched_event_dates()
 
     rendered = render_report_document(document).decode("utf-8")
 
-    matched = re.search(
-        r'data-event-index="0"[^>]+transform="translate\([^ ]+ (?P<y>-?[0-9.]+)\)"',
-        rendered,
-    )
-    assert matched is not None
-    assert 28.0 <= float(matched.group("y")) <= 270.0
-    assert (
-        'data-event-index="2" data-point-index="-1" data-date="2026-09-14" '
-        'data-side="BUY" data-placement="unmapped"'
-    ) in rendered
-    assert "Unmatched event date" in rendered
+    assert ">532.00</text>" in rendered
+    assert 'data-ledger="events" data-row-count="3"' in rendered
+    assert 'data-primary-field="date">2026-09-14' in rendered
+    assert 'data-primary-field="price">500.00' in rendered
+    assert "event date absent from price rows" in rendered
+    assert 'class="event-marker' not in rendered
 
 
 def test_visual_contract_advances_the_shared_operator_semantic_identity():
     bundle = canonical_report_operator_bundle()
 
-    assert REPORT_OPERATOR_VERSION == "1.1.1"
-    assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset({"1.0.0", "1.1.0", "1.1.1"})
+    assert REPORT_OPERATOR_VERSION == "1.2.0"
+    assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset(
+        {"1.0.0", "1.1.0", "1.1.1", "1.2.0"}
+    )
     assert bundle["manifest"]["semantic_version"] == REPORT_OPERATOR_VERSION
     assert b'class="chart chart-price"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-equity"' in bundle["content"]["operator.py"]

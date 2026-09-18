@@ -71,6 +71,13 @@ _HISTORICAL_REPORT_OPERATOR_KEYS = frozenset(
             "10d2bc268c30e570843e636ba3b8dd0cadd241f8593331f659b284ffd43c15b2",
             "1.1.0",
         ),
+        (
+            2,
+            "36e39e9f91a1b2e00c3a28190774ac27e7ececdc66975c8162d27805b12dc6e3",
+            "canonical_attempt_report",
+            "1f54d9823dacda46f0db44d9db6ce7aaf518dab66b1b0cd066b16747513fab9d",
+            "1.1.1",
+        ),
     }
 )
 _VERIFIABLE_REPORT_OPERATOR_KEYS = _HISTORICAL_REPORT_OPERATOR_KEYS | {
