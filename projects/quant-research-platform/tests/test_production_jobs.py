@@ -209,6 +209,195 @@ def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
     assert all(b'data-action="canonical"' not in item.report_html for item in computations)
 
 
+def test_bocom_packages_only_the_performance_date_domain_without_truncating_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+    payload = json.loads((FIXTURES / "bocom-yahoo-chart.json").read_bytes())
+    result = payload["chart"]["result"][0]
+    quote = result["indicators"]["quote"][0]
+    adjusted = result["indicators"]["adjclose"][0]["adjclose"]
+    original_timestamps = list(result["timestamp"])
+    history_dates = [date(2024, 12, 1) + timedelta(days=index) for index in range(32)]
+    history_dates.append(job.config.anchor_date)
+    history_timestamps = [
+        int(datetime(session.year, session.month, session.day, tzinfo=UTC).timestamp())
+        for session in history_dates
+    ]
+    result["timestamp"] = history_timestamps + original_timestamps
+    for name in ("open", "high", "low", "close", "volume"):
+        quote[name] = [quote[name][0]] * len(history_timestamps) + quote[name]
+    signal_tail = [5.4] * 3 + [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0] + [
+        12.0, 10.0, 8.0, 6.0, 5.0, 4.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
+    ]
+    adjusted[:] = [adjusted[0]] * len(history_timestamps) + signal_tail
+    dividend_timestamp = history_timestamps[14]
+    split_timestamp = original_timestamps[0]
+    result["events"] = {
+        "dividends": {
+            str(dividend_timestamp): {"amount": 1.0, "date": dividend_timestamp},
+        },
+        "splits": {
+            str(split_timestamp): {
+                "date": split_timestamp,
+                "numerator": 2.0,
+                "denominator": 1.0,
+            },
+        },
+    }
+    raw = canonical_json_bytes(payload)
+    full_rows = job._rows(raw)
+    captured: dict = {}
+    original_decision_points = production_bocom_module.decision_points
+    original_builder = production_bocom_module.build_canonical_production_report
+
+    def capture_decision_points(rows, config):
+        captured["decision_rows"] = rows
+        return original_decision_points(rows, config)
+
+    def capture_report(**kwargs):
+        captured["report_kwargs"] = kwargs
+        return original_builder(**kwargs)
+
+    monkeypatch.setattr(production_bocom_module, "decision_points", capture_decision_points)
+    monkeypatch.setattr(production_bocom_module, "build_canonical_production_report", capture_report)
+
+    computation = job.compute(raw, "fixture://bocom-full-history", SCHEDULED)
+    legacy_report = original_builder(
+        **{
+            **captured["report_kwargs"],
+            "rows": full_rows,
+            "normalized_bytes": production_jobs.normalized_rows(full_rows).value,
+        }
+    )
+
+    first_report_date = job.config.anchor_date.isoformat()
+    last_report_date = full_rows[-1]["date"].isoformat()
+    decision_rows = captured["decision_rows"]
+    assert decision_rows[0]["date"] == history_dates[0]
+    restored_dividend = decision_rows[14]["corporate_actions"][0]
+    assert restored_dividend["amount_per_share_cny"] == 2.0
+    assert restored_dividend["source_dividend_split_adjustment_factor"] == 2.0
+
+    daily = list(
+        csv.DictReader(io.StringIO(computation.report_evidence["daily_replay.csv"].decode()))
+    )
+    normalized = json.loads(computation.normalized_bytes)
+    document = json.loads(computation.report_evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    price_rows = fields["price_equity_rows"]["raw"]
+    holdings = fields["holdings"]["raw"]
+    runtime = fields["runtime"]["raw"]
+    expected_window = [first_report_date, last_report_date]
+
+    assert [daily[0]["Date"], daily[-1]["Date"]] == expected_window
+    assert [normalized[0]["date"], normalized[-1]["date"]] == expected_window
+    assert [price_rows[0]["date"], price_rows[-1]["date"]] == expected_window
+    assert [holdings[0]["date"], holdings[-1]["date"]] == expected_window
+    assert runtime["market_window"] == expected_window
+    assert runtime["performance_window"] == expected_window
+    assert all(row["Date"] >= first_report_date for row in daily)
+    html = computation.report_html.decode()
+    assert html.count(f'data-window-start-date="{first_report_date}"') >= 3
+    assert f'data-full-start-date="{first_report_date}"' in html
+    assert history_dates[0].isoformat() not in html
+
+    legacy_daily = list(
+        csv.DictReader(io.StringIO(legacy_report.evidence_files["daily_replay.csv"].decode()))
+    )
+    legacy_document = json.loads(legacy_report.evidence_files["report-document.json"])
+    legacy_fields = {
+        field["field_id"]: field
+        for section in legacy_document["sections"]
+        for field in section["fields"]
+    }
+    assert legacy_daily[0]["Date"] == history_dates[0].isoformat()
+    assert legacy_fields["runtime"]["raw"]["market_window"][0] == history_dates[0].isoformat()
+    assert computation.action == captured["report_kwargs"]["action"]
+    assert fields["events"]["raw"] == legacy_fields["events"]["raw"]
+    assert fields["trades"]["raw"] == legacy_fields["trades"]["raw"]
+    assert fields["events"]["raw"]
+    assert fields["trades"]["raw"]
+    assert json.loads(computation.report_evidence["metrics.json"]) == json.loads(
+        legacy_report.evidence_files["metrics.json"]
+    )
+    assert fields["template_parameters"]["raw"]["performance_summary"] == (
+        legacy_fields["template_parameters"]["raw"]["performance_summary"]
+    )
+    assert hashlib.sha256(computation.normalized_bytes).hexdigest() != hashlib.sha256(
+        production_jobs.normalized_rows(full_rows).value
+    ).hexdigest()
+    assert fields["core_result_digest"]["raw"] != legacy_fields["core_result_digest"]["raw"]
+
+    sample_directory = os.environ.get("QR_RANGE_REPORT_SAMPLE_DIR")
+    if sample_directory:
+        destination = Path(sample_directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        gold = GoldProductionJob(FIXTURES / "gold-model-manifest.json").compute(
+            (FIXTURES / "gold-au9999.tsv").read_bytes(),
+            "fixture://gold-au9999.tsv",
+            SCHEDULED,
+        )
+        (destination / "bocom-corrected-report.html").write_bytes(computation.report_html)
+        (destination / "bocom-legacy-report.html").write_bytes(legacy_report.html)
+        (destination / "gold-report.html").write_bytes(gold.report_html)
+        (destination / "range-comparison.json").write_bytes(
+            canonical_json_bytes(
+                {
+                    "bocom": {
+                        "action_equal": computation.action == captured["report_kwargs"]["action"],
+                        "corrected": {
+                            "attempt_id": computation.attempt_id,
+                            "core_result_digest": fields["core_result_digest"]["raw"],
+                            "daily_rows": len(daily),
+                            "event_count": len(fields["events"]["raw"]),
+                            "experiment_id": computation.experiment_id,
+                            "metrics": json.loads(computation.report_evidence["metrics.json"]),
+                            "normalized_sha256": hashlib.sha256(
+                                computation.normalized_bytes
+                            ).hexdigest(),
+                            "trade_count": len(fields["trades"]["raw"]),
+                            "window": expected_window,
+                        },
+                        "events_equal": fields["events"]["raw"]
+                        == legacy_fields["events"]["raw"],
+                        "legacy": {
+                            "core_result_digest": legacy_fields["core_result_digest"]["raw"],
+                            "daily_rows": len(legacy_daily),
+                            "event_count": len(legacy_fields["events"]["raw"]),
+                            "metrics": json.loads(legacy_report.evidence_files["metrics.json"]),
+                            "normalized_sha256": hashlib.sha256(
+                                production_jobs.normalized_rows(full_rows).value
+                            ).hexdigest(),
+                            "trade_count": len(legacy_fields["trades"]["raw"]),
+                            "window": [history_dates[0].isoformat(), last_report_date],
+                        },
+                        "metrics_equal": json.loads(
+                            computation.report_evidence["metrics.json"]
+                        )
+                        == json.loads(legacy_report.evidence_files["metrics.json"]),
+                        "trades_equal": fields["trades"]["raw"]
+                        == legacy_fields["trades"]["raw"],
+                    },
+                    "gold": {
+                        "action": gold.action,
+                        "operator": gold.report_operator,
+                        "report_html_sha256": hashlib.sha256(gold.report_html).hexdigest(),
+                        "report_evidence_sha256": {
+                            name: hashlib.sha256(value).hexdigest()
+                            for name, value in sorted(gold.report_evidence.items())
+                        },
+                    },
+                    "operator": computation.report_operator,
+                }
+            )
+        )
+
+
 def test_bocom_report_execution_and_pnl_are_not_revised_by_adjusted_close_scale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
