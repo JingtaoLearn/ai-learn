@@ -50,6 +50,7 @@ class ProductionWorker:
         self.owner = owner
         self.clock = clock
         self.crash = crash
+        self._stable_reports_reconciled = False
 
     @staticmethod
     def _scheduled(row: Mapping[str, Any]) -> datetime | None:
@@ -134,12 +135,14 @@ class ProductionWorker:
         )
 
     def run_once(self) -> dict[str, Any] | None:
-        for manifest in self.store.successful_result_manifests():
-            if (
-                manifest.get("schema") == "quantresearch-production-result/v1"
-                and "report_operator" in manifest
-            ):
-                self.results.complete_stable_report(manifest)
+        if not self._stable_reports_reconciled:
+            for manifest in self.store.successful_result_manifests():
+                if (
+                    manifest.get("schema") == "quantresearch-production-result/v1"
+                    and "report_operator" in manifest
+                ):
+                    self.results.complete_stable_report(manifest)
+            self._stable_reports_reconciled = True
         row = self.store.claim(self.owner, now=self.clock())
         if row is None:
             return None
@@ -177,9 +180,12 @@ class ProductionWorker:
                 result_manifest=manifest,
                 now=self.clock(),
             )
+            if isinstance(computation, JobComputation):
+                self._stable_reports_reconciled = False
             self.crash("after_terminal_before_stable_pointer")
             if isinstance(computation, JobComputation):
                 self.results.complete_stable_report(manifest)
+                self._stable_reports_reconciled = True
             self.crash("after_terminal_commit")
             return terminal
         except SimulatedWorkerCrash:
