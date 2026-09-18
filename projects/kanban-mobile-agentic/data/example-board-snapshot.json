@@ -1,0 +1,160 @@
+{
+  "schema": "kanban-mobile-snapshot/v1",
+  "generated_at": "2026-01-15T18:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "boards": [
+    {
+      "slug": "quant-research-platform",
+      "name": "Quant Research Platform",
+      "counts": {
+        "running": 1,
+        "review": 1,
+        "ready": 0,
+        "todo": 0,
+        "blocked": 0,
+        "done": 0,
+        "archived": 0
+      }
+    },
+    {
+      "slug": "agentic-workflow",
+      "name": "Agentic Workflow",
+      "counts": {
+        "running": 1,
+        "review": 0,
+        "ready": 1,
+        "todo": 0,
+        "blocked": 0,
+        "done": 0,
+        "archived": 0
+      }
+    },
+    {
+      "slug": "default",
+      "name": "Default",
+      "counts": {
+        "running": 0,
+        "review": 0,
+        "ready": 0,
+        "todo": 1,
+        "blocked": 1,
+        "done": 1,
+        "archived": 1
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "example-running-001",
+      "title": "Synthetic active research task",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "running",
+      "assignee": "example-researcher",
+      "priority": 80,
+      "created_at": "2026-01-15T08:00:00+08:00",
+      "started_at": "2026-01-15T09:00:00+08:00",
+      "completed_at": "",
+      "heartbeat_at": "2026-01-15T17:55:00+08:00",
+      "summary": "Synthetic summary for interface validation only."
+    },
+    {
+      "id": "example-review-001",
+      "title": "Synthetic research result awaiting review",
+      "board": "quant-research-platform",
+      "board_name": "Quant Research Platform",
+      "status": "review",
+      "assignee": "example-reviewer",
+      "priority": 70,
+      "created_at": "2026-01-14T08:00:00+08:00",
+      "started_at": "2026-01-14T09:00:00+08:00",
+      "completed_at": "",
+      "heartbeat_at": "2026-01-15T16:00:00+08:00",
+      "summary": "Synthetic review evidence with no private task content."
+    },
+    {
+      "id": "example-running-002",
+      "title": "Synthetic workflow task in progress",
+      "board": "agentic-workflow",
+      "board_name": "Agentic Workflow",
+      "status": "running",
+      "assignee": "example-implementer",
+      "priority": 90,
+      "created_at": "2026-01-15T10:00:00+08:00",
+      "started_at": "2026-01-15T10:30:00+08:00",
+      "completed_at": "",
+      "heartbeat_at": "2026-01-15T17:50:00+08:00",
+      "summary": "Synthetic implementation is being exercised."
+    },
+    {
+      "id": "example-ready-001",
+      "title": "Synthetic workflow task ready to start",
+      "board": "agentic-workflow",
+      "board_name": "Agentic Workflow",
+      "status": "ready",
+      "assignee": "example-implementer",
+      "priority": 60,
+      "created_at": "2026-01-15T11:00:00+08:00",
+      "started_at": "",
+      "completed_at": "",
+      "heartbeat_at": "",
+      "summary": "Synthetic task prepared for the next action."
+    },
+    {
+      "id": "example-todo-001",
+      "title": "Synthetic task waiting in the queue",
+      "board": "default",
+      "board_name": "Default",
+      "status": "todo",
+      "assignee": "example-owner",
+      "priority": 40,
+      "created_at": "2026-01-13T12:00:00+08:00",
+      "started_at": "",
+      "completed_at": "",
+      "heartbeat_at": "",
+      "summary": "Synthetic queued work for filter validation."
+    },
+    {
+      "id": "example-blocked-001",
+      "title": "Synthetic task needing attention",
+      "board": "default",
+      "board_name": "Default",
+      "status": "blocked",
+      "assignee": "example-owner",
+      "priority": 100,
+      "created_at": "2026-01-12T12:00:00+08:00",
+      "started_at": "2026-01-13T08:00:00+08:00",
+      "completed_at": "",
+      "heartbeat_at": "2026-01-15T12:00:00+08:00",
+      "summary": "Synthetic blocker visible without exposing operational details."
+    },
+    {
+      "id": "example-done-001",
+      "title": "Synthetic recently completed task",
+      "board": "default",
+      "board_name": "Default",
+      "status": "done",
+      "assignee": "example-owner",
+      "priority": 30,
+      "created_at": "2026-01-10T12:00:00+08:00",
+      "started_at": "2026-01-11T08:00:00+08:00",
+      "completed_at": "2026-01-15T14:00:00+08:00",
+      "heartbeat_at": "2026-01-15T14:00:00+08:00",
+      "summary": "Synthetic completion retained as recent history."
+    },
+    {
+      "id": "example-archived-001",
+      "title": "Synthetic archived task",
+      "board": "default",
+      "board_name": "Default",
+      "status": "archived",
+      "assignee": "example-owner",
+      "priority": 10,
+      "created_at": "2025-12-01T12:00:00+08:00",
+      "started_at": "2025-12-02T08:00:00+08:00",
+      "completed_at": "2025-12-03T14:00:00+08:00",
+      "heartbeat_at": "2025-12-03T14:00:00+08:00",
+      "summary": "Synthetic archived history for status coverage."
+    }
+  ]
+}
