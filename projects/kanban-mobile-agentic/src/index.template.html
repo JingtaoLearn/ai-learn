@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Work Pulse — Read-only Kanban snapshot</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f6f7f2;
+      --muted: #a9adad;
+      --quiet: #797f80;
+      --canvas: #0b0d0d;
+      --panel: #141717;
+      --panel-raised: #1a1e1d;
+      --line: #2b302f;
+      --accent: #d9ff5b;
+      --accent-ink: #162000;
+      --running: #69d6ff;
+      --review: #c4a6ff;
+      --ready: #78e7bc;
+      --todo: #b6bdc2;
+      --blocked: #ff9c83;
+      --done: #d9ff5b;
+      --archived: #8c9393;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .42);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--canvas);
+      overflow-x: hidden;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 90% -10%, rgba(217, 255, 91, .13), transparent 32rem),
+        radial-gradient(circle at -10% 16%, rgba(105, 214, 255, .08), transparent 24rem),
+        var(--canvas);
+    }
+
+    button,
+    input { font: inherit; }
+
+    button { color: inherit; }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
+    }
+
+    .shell {
+      width: 100%;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: max(20px, env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom));
+    }
+
+    .masthead {
+      display: grid;
+      gap: 18px;
+      padding: 10px 2px 28px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: .75rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 720px;
+      margin: 0;
+      font-size: clamp(2.35rem, 10vw, 5.3rem);
+      font-weight: 780;
+      letter-spacing: -.065em;
+      line-height: .92;
+    }
+
+    .intro {
+      max-width: 610px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 3vw, 1.15rem);
+      line-height: 1.55;
+    }
+
+    .snapshot-note {
+      align-self: end;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(20, 23, 23, .82);
+    }
+
+    .snapshot-note strong,
+    .snapshot-note span { display: block; }
+
+    .snapshot-note strong {
+      font-size: .84rem;
+      letter-spacing: .02em;
+    }
+
+    .snapshot-note span {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: .78rem;
+      line-height: 1.45;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 14px 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(145deg, rgba(26, 30, 29, .96), rgba(17, 20, 19, .96));
+    }
+
+    .metric-value {
+      display: block;
+      font-size: clamp(1.65rem, 8vw, 2.65rem);
+      font-weight: 760;
+      letter-spacing: -.05em;
+      line-height: 1;
+    }
+
+    .metric-label,
+    .metric-note {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .metric-label {
+      margin-top: 9px;
+      font-size: .72rem;
+      font-weight: 750;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .metric-note {
+      margin-top: 4px;
+      color: var(--quiet);
+      font-size: .68rem;
+      white-space: nowrap;
+    }
+
+    .metric[data-kind="active"] .metric-value { color: var(--running); }
+    .metric[data-kind="blocked"] .metric-value { color: var(--blocked); }
+    .metric[data-kind="done"] .metric-value { color: var(--done); }
+
+    .control-deck {
+      position: relative;
+      z-index: 3;
+      margin-bottom: 24px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(18, 21, 20, .92);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .18);
+      backdrop-filter: blur(16px);
+    }
+
+    .control-label {
+      margin: 0 0 9px;
+      color: var(--quiet);
+      font-size: .68rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .board-switcher,
+    .status-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .board-switcher { margin-bottom: 14px; }
+
+    .filter-button,
+    .status-button,
+    .reset-button,
+    .icon-button {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-raised);
+      cursor: pointer;
+      transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease;
+    }
+
+    .filter-button:hover,
+    .status-button:hover,
+    .reset-button:hover,
+    .icon-button:hover { border-color: #59605e; }
+
+    .filter-button:active,
+    .status-button:active,
+    .reset-button:active,
+    .icon-button:active { transform: translateY(1px); }
+
+    .filter-button {
+      padding: 0 13px;
+      color: var(--muted);
+      font-size: .8rem;
+      font-weight: 700;
+    }
+
+    .filter-button[aria-selected="true"] {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-self: start;
+      align-items: start;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .search-wrap { position: relative; }
+
+    .search-icon {
+      position: absolute;
+      top: 50%;
+      left: 14px;
+      color: var(--quiet);
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      min-height: 48px;
+      padding: 0 14px 0 41px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--ink);
+      background: #0e1110;
+    }
+
+    .search-input::placeholder { color: #737978; }
+
+    .reset-button {
+      padding: 0 14px;
+      color: var(--muted);
+      font-size: .8rem;
+      font-weight: 750;
+    }
+
+    .status-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 11px;
+      color: var(--muted);
+      font-size: .75rem;
+      font-weight: 700;
+    }
+
+    .status-button[aria-pressed="true"] {
+      border-color: currentColor;
+      background: #242927;
+      color: var(--ink);
+    }
+
+    .status-symbol {
+      color: var(--status-color, var(--muted));
+      font-size: .92rem;
+    }
+
+    .status-count {
+      min-width: 20px;
+      padding: 2px 5px;
+      border-radius: 99px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .06);
+      font-size: .65rem;
+      text-align: center;
+    }
+
+    .results-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 2px 14px;
+    }
+
+    .results-head h2 {
+      margin: 0;
+      font-size: 1.2rem;
+      letter-spacing: -.025em;
+    }
+
+    .results-meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: .78rem;
+      text-align: right;
+    }
+
+    .task-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .task-card {
+      position: relative;
+      display: grid;
+      gap: 12px;
+      width: 100%;
+      min-height: 154px;
+      padding: 17px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      background:
+        linear-gradient(140deg, rgba(29, 33, 32, .98), rgba(18, 21, 20, .98));
+      text-align: left;
+      cursor: pointer;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, .12);
+      transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }
+
+    .task-card::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--status-color, var(--line));
+      content: "";
+    }
+
+    .task-card:hover {
+      border-color: #4a504e;
+      transform: translateY(-2px);
+      box-shadow: 0 15px 34px rgba(0, 0, 0, .24);
+    }
+
+    .task-top,
+    .task-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .task-board {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 720;
+      letter-spacing: .025em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 0 9px;
+      border: 1px solid color-mix(in srgb, var(--status-color) 38%, transparent);
+      border-radius: 99px;
+      color: var(--status-color);
+      background: color-mix(in srgb, var(--status-color) 8%, transparent);
+      font-size: .68rem;
+      font-weight: 780;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+    }
+
+    .task-title {
+      display: -webkit-box;
+      margin: 0;
+      overflow: hidden;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: -.015em;
+      line-height: 1.38;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+
+    .task-id,
+    .task-time {
+      color: var(--quiet);
+      font-size: .7rem;
+    }
+
+    .task-id {
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .task-time { flex: 0 0 auto; }
+
+    .empty-state {
+      display: none;
+      padding: 48px 22px;
+      border: 1px dashed #3a403e;
+      border-radius: 20px;
+      color: var(--muted);
+      text-align: center;
+      background: rgba(20, 23, 23, .55);
+    }
+
+    .empty-state[aria-hidden="false"] { display: block; }
+
+    .empty-state strong {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--ink);
+      font-size: 1.05rem;
+    }
+
+    .loading-state {
+      padding: 32px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    dialog {
+      width: min(calc(100% - 28px), 620px);
+      max-height: min(82vh, 760px);
+      margin: auto;
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid #3d4441;
+      border-radius: 24px;
+      color: var(--ink);
+      background: #171a19;
+      box-shadow: var(--shadow);
+    }
+
+    dialog::backdrop {
+      background: rgba(0, 0, 0, .76);
+      backdrop-filter: blur(4px);
+    }
+
+    .detail-shell {
+      max-height: inherit;
+      overflow-y: auto;
+      padding: 22px 20px calc(24px + env(safe-area-inset-bottom));
+    }
+
+    .detail-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .detail-title {
+      margin: 14px 0 0;
+      font-size: clamp(1.45rem, 6vw, 2.05rem);
+      letter-spacing: -.04em;
+      line-height: 1.12;
+    }
+
+    .icon-button {
+      display: grid;
+      flex: 0 0 44px;
+      width: 44px;
+      padding: 0;
+      place-items: center;
+      color: var(--muted);
+      font-size: 1.25rem;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      margin: 22px 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--line);
+    }
+
+    .detail-item {
+      min-width: 0;
+      padding: 13px;
+      background: #121514;
+    }
+
+    .detail-item dt {
+      margin-bottom: 6px;
+      color: var(--quiet);
+      font-size: .67rem;
+      font-weight: 760;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .detail-item dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-size: .82rem;
+      line-height: 1.38;
+    }
+
+    .detail-summary-wrap {
+      padding-top: 2px;
+    }
+
+    .detail-summary-label {
+      margin: 0 0 8px;
+      color: var(--quiet);
+      font-size: .68rem;
+      font-weight: 780;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .detail-summary {
+      margin: 0;
+      color: #d8dcda;
+      font-size: .9rem;
+      line-height: 1.62;
+      white-space: pre-wrap;
+    }
+
+    .detail-summary.empty { color: var(--quiet); }
+
+    .footer-note {
+      margin: 30px 4px 0;
+      color: var(--quiet);
+      font-size: .72rem;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (min-width: 700px) {
+      .shell { padding-inline: 28px; }
+      .masthead {
+        grid-template-columns: minmax(0, 1fr) 260px;
+        align-items: end;
+        padding-top: 30px;
+        padding-bottom: 38px;
+      }
+      .overview { gap: 12px; }
+      .metric { padding: 19px; }
+      .control-deck { padding: 18px; }
+      .task-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail-shell { padding: 28px; }
+      .detail-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+
+    @media (min-width: 1040px) {
+      .task-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .control-deck {
+        display: grid;
+        grid-template-columns: 1.1fr .9fr;
+        column-gap: 20px;
+      }
+      .control-board { grid-column: 1 / -1; }
+      .search-row { margin: 0; }
+      .control-status .control-label { margin-top: 0; }
+    }
+
+    @media (max-width: 520px) {
+      dialog {
+        width: 100%;
+        max-width: none;
+        max-height: 86vh;
+        margin: auto 0 0;
+        border-right: 0;
+        border-bottom: 0;
+        border-left: 0;
+        border-radius: 24px 24px 0 0;
+      }
+      dialog[open] { animation: sheet-up .2s ease-out; }
+      .detail-shell::before {
+        display: block;
+        width: 42px;
+        height: 4px;
+        margin: -8px auto 17px;
+        border-radius: 99px;
+        background: #4a504e;
+        content: "";
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+
+    @keyframes sheet-up {
+      from { transform: translateY(20px); opacity: .6; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main id="app" class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Agentic Workflow · read-only</p>
+        <h1>Work, at a glance.</h1>
+        <p class="intro">See what is moving, what needs attention, and what recently landed—without terminal access or mutation controls.</p>
+      </div>
+      <aside class="snapshot-note" aria-label="Snapshot information">
+        <strong id="snapshot-time">Snapshot updated —</strong>
+        <span id="snapshot-disclosure">Frozen snapshot · no live connection</span>
+      </aside>
+    </header>
+
+    <section class="overview" aria-labelledby="overview-title">
+      <h2 id="overview-title" class="sr-only">Current overview</h2>
+      <article class="metric" data-kind="active">
+        <span id="metric-active" class="metric-value">—</span>
+        <span class="metric-label">Active</span>
+        <span class="metric-note">Running to ready</span>
+      </article>
+      <article class="metric" data-kind="blocked">
+        <span id="metric-blocked" class="metric-value">—</span>
+        <span class="metric-label">Blocked</span>
+        <span class="metric-note">Needs attention</span>
+      </article>
+      <article class="metric" data-kind="done">
+        <span id="metric-done" class="metric-value">—</span>
+        <span class="metric-label">Recent</span>
+        <span class="metric-note">Completed in snapshot</span>
+      </article>
+    </section>
+
+    <section class="control-deck" aria-label="Task filters">
+      <div class="control-board">
+        <p class="control-label">Board</p>
+        <div id="board-switcher" class="board-switcher" role="tablist" aria-label="Select a board"></div>
+      </div>
+      <div class="search-row">
+        <label class="search-wrap">
+          <span class="sr-only">Search tasks</span>
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="search-input" class="search-input" type="search" placeholder="Search title, ID, or assignee" autocomplete="off">
+        </label>
+        <button id="reset-filters" class="reset-button" type="button">Reset</button>
+      </div>
+      <div class="control-status">
+        <p class="control-label">Status</p>
+        <div id="status-filters" class="status-filters" aria-label="Filter by status"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="results-title">
+      <div class="results-head">
+        <h2 id="results-title">Snapshot tasks</h2>
+        <p id="results-meta" class="results-meta" aria-live="polite">Loading snapshot…</p>
+      </div>
+      <div id="task-list" class="task-list">
+        <p class="loading-state">Preparing the frozen snapshot…</p>
+      </div>
+      <div id="empty-state" class="empty-state" aria-hidden="true">
+        <strong>No matching tasks</strong>
+        <span>Try another board, status, or search term.</span>
+      </div>
+    </section>
+
+    <noscript>
+      <p class="empty-state" style="display:block">This self-contained preview needs JavaScript enabled to filter and inspect its embedded snapshot.</p>
+    </noscript>
+
+    <p id="footer-note" class="footer-note"></p>
+  </main>
+
+  <dialog id="task-detail" aria-labelledby="detail-title">
+    <div class="detail-shell">
+      <div class="detail-head">
+        <div>
+          <span id="detail-status" class="status-badge"></span>
+          <h2 id="detail-title" class="detail-title"></h2>
+        </div>
+        <button id="close-detail" class="icon-button" type="button" aria-label="Close task detail">×</button>
+      </div>
+      <dl id="detail-grid" class="detail-grid"></dl>
+      <div class="detail-summary-wrap">
+        <p class="detail-summary-label">Latest run summary</p>
+        <p id="detail-summary" class="detail-summary"></p>
+      </div>
+    </div>
+  </dialog>
+
+  <script id="snapshot-data" type="application/json">__SNAPSHOT_JSON__</script>
+  <script>
+    (() => {
+      "use strict";
+
+      const snapshot = JSON.parse(document.getElementById("snapshot-data").textContent);
+      const statuses = [
+        { id: "running", label: "Running", symbol: "◉", color: "var(--running)", rank: 0 },
+        { id: "review", label: "Review", symbol: "◫", color: "var(--review)", rank: 1 },
+        { id: "ready", label: "Ready", symbol: "◇", color: "var(--ready)", rank: 2 },
+        { id: "todo", label: "To do", symbol: "○", color: "var(--todo)", rank: 3 },
+        { id: "blocked", label: "Blocked", symbol: "⨯", color: "var(--blocked)", rank: 4 },
+        { id: "done", label: "Done", symbol: "✓", color: "var(--done)", rank: 5 },
+        { id: "archived", label: "Archived", symbol: "▢", color: "var(--archived)", rank: 6 }
+      ];
+      const statusMap = new Map(statuses.map((status) => [status.id, status]));
+      const boardMap = new Map(snapshot.boards.map((board) => [board.slug, board]));
+      const displayTimeZone = "Asia/Shanghai";
+      const state = { board: "all", statuses: new Set(), query: "" };
+      const elements = {
+        boards: document.getElementById("board-switcher"),
+        statuses: document.getElementById("status-filters"),
+        search: document.getElementById("search-input"),
+        reset: document.getElementById("reset-filters"),
+        list: document.getElementById("task-list"),
+        empty: document.getElementById("empty-state"),
+        results: document.getElementById("results-meta"),
+        dialog: document.getElementById("task-detail"),
+        detailStatus: document.getElementById("detail-status"),
+        detailTitle: document.getElementById("detail-title"),
+        detailGrid: document.getElementById("detail-grid"),
+        detailSummary: document.getElementById("detail-summary")
+      };
+
+      function createElement(tag, className, text) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (text !== undefined) element.textContent = text;
+        return element;
+      }
+
+      function boardTasks() {
+        return snapshot.tasks.filter((task) => state.board === "all" || task.board === state.board);
+      }
+
+      function visibleTasks() {
+        const query = state.query.trim().toLocaleLowerCase();
+        return boardTasks()
+          .filter((task) => state.statuses.size === 0 || state.statuses.has(task.status))
+          .filter((task) => {
+            if (!query) return true;
+            return [task.title, task.id, task.assignee, boardMap.get(task.board)?.name || task.board]
+              .some((value) => String(value).toLocaleLowerCase().includes(query));
+          })
+          .sort((left, right) => {
+            const rank = statusMap.get(left.status).rank - statusMap.get(right.status).rank;
+            if (rank !== 0) return rank;
+            const leftTime = left.completed_at || left.started_at || left.created_at || "";
+            const rightTime = right.completed_at || right.started_at || right.created_at || "";
+            return rightTime.localeCompare(leftTime) || right.priority - left.priority;
+          });
+      }
+
+      function boardRecordTotal() {
+        const selected = state.board === "all"
+          ? snapshot.boards
+          : snapshot.boards.filter((board) => board.slug === state.board);
+        return selected.reduce(
+          (total, board) => total + Object.values(board.counts).reduce((sum, count) => sum + count, 0),
+          0
+        );
+      }
+
+      function formatDate(value, includeTime = true) {
+        if (!value) return "Not recorded";
+        const date = new Date(value);
+        if (Number.isNaN(date.valueOf())) return value;
+        const formatted = new Intl.DateTimeFormat("en-US", includeTime ? {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: displayTimeZone
+        } : {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          timeZone: displayTimeZone
+        }).format(date);
+        return `${formatted} · ${displayTimeZone}`;
+      }
+
+      function relativeTime(value) {
+        if (!value) return "No activity time";
+        const then = new Date(value).valueOf();
+        const now = new Date(snapshot.generated_at).valueOf();
+        if (!Number.isFinite(then) || !Number.isFinite(now)) return formatDate(value, false);
+        const minutes = Math.max(0, Math.round((now - then) / 60000));
+        if (minutes < 60) return `${minutes}m ago`;
+        const hours = Math.round(minutes / 60);
+        if (hours < 48) return `${hours}h ago`;
+        return `${Math.round(hours / 24)}d ago`;
+      }
+
+      function statusBadge(statusId) {
+        const status = statusMap.get(statusId);
+        const badge = createElement("span", "status-badge");
+        badge.style.setProperty("--status-color", status.color);
+        const symbol = createElement("span", "", status.symbol);
+        symbol.setAttribute("aria-hidden", "true");
+        badge.append(symbol, document.createTextNode(status.label));
+        return badge;
+      }
+
+      function renderBoards() {
+        const options = [{ slug: "all", name: "All" }, ...snapshot.boards];
+        elements.boards.replaceChildren(...options.map((board) => {
+          const button = createElement("button", "filter-button", board.name);
+          button.type = "button";
+          button.role = "tab";
+          button.dataset.board = board.slug;
+          button.setAttribute("aria-selected", String(state.board === board.slug));
+          button.addEventListener("click", () => {
+            state.board = board.slug;
+            render();
+          });
+          return button;
+        }));
+      }
+
+      function renderStatuses() {
+        const counts = new Map(statuses.map((status) => [status.id, 0]));
+        boardTasks().forEach((task) => counts.set(task.status, counts.get(task.status) + 1));
+        elements.statuses.replaceChildren(...statuses.map((status) => {
+          const button = createElement("button", "status-button");
+          button.type = "button";
+          button.dataset.status = status.id;
+          button.style.setProperty("--status-color", status.color);
+          button.setAttribute("aria-pressed", String(state.statuses.has(status.id)));
+          button.setAttribute("aria-label", `${status.label}, ${counts.get(status.id)} tasks`);
+          const symbol = createElement("span", "status-symbol", status.symbol);
+          symbol.setAttribute("aria-hidden", "true");
+          const label = createElement("span", "", status.label);
+          const count = createElement("span", "status-count", String(counts.get(status.id)));
+          button.append(symbol, label, count);
+          button.addEventListener("click", () => {
+            if (state.statuses.has(status.id)) state.statuses.delete(status.id);
+            else state.statuses.add(status.id);
+            render();
+          });
+          return button;
+        }));
+      }
+
+      function renderOverview(tasks) {
+        const active = tasks.filter((task) => ["running", "review", "ready", "todo"].includes(task.status)).length;
+        const blocked = tasks.filter((task) => task.status === "blocked").length;
+        const done = tasks.filter((task) => task.status === "done").length;
+        document.getElementById("metric-active").textContent = String(active);
+        document.getElementById("metric-blocked").textContent = String(blocked);
+        document.getElementById("metric-done").textContent = String(done);
+      }
+
+      function latestTaskTime(task) {
+        return task.heartbeat_at || task.completed_at || task.started_at || task.created_at;
+      }
+
+      function renderTask(task) {
+        const button = createElement("button", "task-card");
+        const status = statusMap.get(task.status);
+        button.type = "button";
+        button.style.setProperty("--status-color", status.color);
+        button.setAttribute("aria-label", `${task.title}. ${status.label}. Open details.`);
+
+        const top = createElement("span", "task-top");
+        top.append(createElement("span", "task-board", boardMap.get(task.board)?.name || task.board), statusBadge(task.status));
+
+        const title = createElement("span", "task-title", task.title);
+        const foot = createElement("span", "task-foot");
+        foot.append(createElement("span", "task-id", task.id), createElement("span", "task-time", relativeTime(latestTaskTime(task))));
+        button.append(top, title, foot);
+        button.addEventListener("click", () => openDetail(task));
+        return button;
+      }
+
+      function detailItem(label, value) {
+        const wrapper = createElement("div", "detail-item");
+        wrapper.append(createElement("dt", "", label), createElement("dd", "", value));
+        return wrapper;
+      }
+
+      function openDetail(task) {
+        const status = statusMap.get(task.status);
+        elements.detailStatus.replaceChildren();
+        elements.detailStatus.style.setProperty("--status-color", status.color);
+        const symbol = createElement("span", "", status.symbol);
+        symbol.setAttribute("aria-hidden", "true");
+        elements.detailStatus.append(symbol, document.createTextNode(status.label));
+        elements.detailTitle.textContent = task.title;
+        elements.detailGrid.replaceChildren(
+          detailItem("Task ID", task.id),
+          detailItem("Board", boardMap.get(task.board)?.name || task.board),
+          detailItem("Assignee", task.assignee || "Unassigned"),
+          detailItem("Priority", String(task.priority)),
+          detailItem("Created", formatDate(task.created_at)),
+          detailItem("Started", formatDate(task.started_at)),
+          detailItem("Completed", formatDate(task.completed_at)),
+          detailItem("Heartbeat", formatDate(task.heartbeat_at))
+        );
+        elements.detailSummary.textContent = task.summary || "No run summary in this snapshot.";
+        elements.detailSummary.classList.toggle("empty", !task.summary);
+        elements.dialog.showModal();
+      }
+
+      function renderTasks() {
+        const allForBoard = boardTasks();
+        const tasks = visibleTasks();
+        renderOverview(allForBoard);
+        elements.list.replaceChildren(...tasks.map(renderTask));
+        elements.empty.setAttribute("aria-hidden", String(tasks.length !== 0));
+        const qualifier = tasks.length === allForBoard.length ? "shown" : `of ${allForBoard.length}`;
+        elements.results.textContent = `${tasks.length} ${qualifier} · ${boardRecordTotal()} board records`;
+      }
+
+      function render() {
+        renderBoards();
+        renderStatuses();
+        renderTasks();
+      }
+
+      elements.search.addEventListener("input", (event) => {
+        state.query = event.currentTarget.value;
+        renderTasks();
+      });
+
+      elements.reset.addEventListener("click", () => {
+        state.board = "all";
+        state.statuses.clear();
+        state.query = "";
+        elements.search.value = "";
+        render();
+        elements.search.focus();
+      });
+
+      document.getElementById("close-detail").addEventListener("click", () => elements.dialog.close());
+      elements.dialog.addEventListener("click", (event) => {
+        if (event.target === elements.dialog) elements.dialog.close();
+      });
+
+      document.getElementById("snapshot-time").textContent = `Snapshot updated ${formatDate(snapshot.generated_at)}`;
+      document.getElementById("snapshot-disclosure").textContent = `Frozen snapshot · ${snapshot.totals.listed_tasks} listed tasks · no live connection`;
+      document.getElementById("footer-note").textContent = `${snapshot.totals.listed_tasks} listed task cards from ${snapshot.totals.board_records} total board records. Times shown in ${displayTimeZone}. Read-only by design.`;
+      render();
+    })();
+  </script>
+</body>
+</html>
