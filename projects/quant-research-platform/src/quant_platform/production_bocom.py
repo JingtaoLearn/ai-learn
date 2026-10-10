@@ -298,7 +298,8 @@ class BocomProductionJob:
                 },
             }
         )
-        normalized = normalized_rows(rows)
+        report_rows = [row for row in rows if row["date"] >= self.config.anchor_date]
+        normalized = normalized_rows(report_rows)
         experiment_id = identity(
             b"quantresearch-production-experiment/v1\0",
             {
@@ -314,7 +315,7 @@ class BocomProductionJob:
             {"experiment_id": experiment_id, "scheduled_for": action["generated_at"]},
         )
         report = build_canonical_production_report(
-            rows=rows,
+            rows=report_rows,
             points=points,
             config=self.config,
             action=action,

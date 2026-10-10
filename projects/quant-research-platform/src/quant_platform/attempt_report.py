@@ -30,8 +30,10 @@ class _CapturedAuthorityAttachment(dict[str, Any]):
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPORT_OPERATOR_ID = "canonical_attempt_report"
-REPORT_OPERATOR_VERSION = "1.1.1"
-SUPPORTED_REPORT_OPERATOR_VERSIONS = frozenset({"1.0.0", "1.1.0", REPORT_OPERATOR_VERSION})
+REPORT_OPERATOR_VERSION = "1.2.0"
+SUPPORTED_REPORT_OPERATOR_VERSIONS = frozenset(
+    {"1.0.0", "1.1.0", "1.1.1", REPORT_OPERATOR_VERSION}
+)
 REPORT_OPERATOR_API_VERSION = 2
 REPORT_DOCUMENT_SCHEMA_ID = "quant-platform/report-document/v1"
 REPORT_MANIFEST_SCHEMA_ID = "quant-platform/report-manifest/v1"

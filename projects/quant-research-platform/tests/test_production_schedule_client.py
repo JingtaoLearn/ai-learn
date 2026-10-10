@@ -1097,6 +1097,13 @@ def test_historical_report_operator_identities_remain_exactly_verifiable() -> No
             "source_sha256": "10d2bc268c30e570843e636ba3b8dd0cadd241f8593331f659b284ffd43c15b2",
             "version": "1.1.0",
         },
+        {
+            "api_version": 2,
+            "content_digest": "36e39e9f91a1b2e00c3a28190774ac27e7ececdc66975c8162d27805b12dc6e3",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "1f54d9823dacda46f0db44d9db6ce7aaf518dab66b1b0cd066b16747513fab9d",
+            "version": "1.1.1",
+        },
     )
     for identity in historical:
         document_operator = {
