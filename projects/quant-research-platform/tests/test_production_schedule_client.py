@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import inspect
 import json
@@ -39,6 +40,113 @@ PACKAGE = PROJECT / "src" / "quant_platform"
 SCRIPTS = PROJECT / "scripts"
 FIXTURES = Path(__file__).parent / "fixtures" / "production"
 SCHEDULED = datetime.fromisoformat("2026-03-09T00:40:00+00:00")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "normalized-snapshot-hash",
+        "nonadjacent-decision-date",
+        "unexpected-null-slope",
+    ],
+)
+def test_causal_trend_source_binding_rejects_self_consistent_mismatch(
+    mutation: str,
+) -> None:
+    computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+        (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+        "fixture://bocom-yahoo-chart.json",
+        SCHEDULED,
+    )
+    normalized = json.loads(computation.normalized_bytes)
+    trend = json.loads(computation.report_evidence["causal-trend-series.json"])
+    if mutation == "normalized-snapshot-hash":
+        trend["source_ref"]["normalized_snapshot_sha256"] = "0" * 64
+    elif mutation == "nonadjacent-decision-date":
+        trend["rows"][0]["decision_date"] = trend["rows"][-1][
+            "information_cutoff_date"
+        ]
+    else:
+        trend["rows"][-1]["slope_pct_per_day"] = None
+
+    with pytest.raises(ProductionClientError, match="causal trend source binding"):
+        schedule_client._verify_causal_trend_source_binding(
+            trend,
+            normalized,
+            hashlib.sha256(computation.normalized_bytes).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize("field", ["previous_slope_pct", "next_slope_pct"])
+def test_causal_trend_action_binding_rejects_terminal_slope_mismatch(
+    field: str,
+) -> None:
+    computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+        (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+        "fixture://bocom-yahoo-chart.json",
+        SCHEDULED,
+    )
+    trend = json.loads(computation.report_evidence["causal-trend-series.json"])
+    action = copy.deepcopy(computation.action)
+    action[field] += 0.01
+
+    with pytest.raises(ProductionClientError, match="causal trend action slope"):
+        schedule_client._verify_causal_trend_action_binding(trend, action)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "drop",
+        "reorder",
+        "duplicate",
+        "status",
+        "decision-date",
+        "level",
+        "event-side",
+        "threshold",
+        "hash",
+        "extra-key",
+    ],
+)
+def test_causal_trend_evidence_tampering_fails_closed(mutation: str) -> None:
+    computation = BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
+        (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+        "fixture://bocom-yahoo-chart.json",
+        SCHEDULED,
+    )
+    evidence = {
+        **computation.report_evidence,
+        "normalized-snapshot.json": computation.normalized_bytes,
+    }
+    document = json.loads(evidence["report-document.json"])
+    _verify_report_document_sources(document, evidence)
+
+    changed = copy.deepcopy(json.loads(evidence["causal-trend-series.json"]))
+    if mutation == "drop":
+        changed["rows"].pop(0)
+    elif mutation == "reorder":
+        changed["rows"][0], changed["rows"][1] = changed["rows"][1], changed["rows"][0]
+    elif mutation == "duplicate":
+        changed["rows"].insert(1, copy.deepcopy(changed["rows"][0]))
+    elif mutation == "status":
+        changed["rows"][0]["status"] = "PENDING_NEXT_SESSION"
+    elif mutation == "decision-date":
+        changed["rows"][0]["decision_date"] = changed["rows"][0]["information_cutoff_date"]
+    elif mutation == "level":
+        changed["rows"][0]["smooth_curve_adjusted"] += 1.0
+    elif mutation == "event-side":
+        changed["rows"][0]["event_side"] = "BUY"
+    elif mutation == "threshold":
+        changed["thresholds_pct_per_day"]["buy"] = 0.3
+    elif mutation == "hash":
+        changed["rows_sha256"] = "0" * 64
+    else:
+        changed["unexpected"] = True
+    evidence["causal-trend-series.json"] = schedule_client.canonical_json_bytes(changed)
+
+    with pytest.raises(ProductionClientError):
+        _verify_report_document_sources(document, evidence)
 
 
 def jobs_file(tmp_path: Path, job_id: str) -> Path:
@@ -1103,6 +1211,13 @@ def test_historical_report_operator_identities_remain_exactly_verifiable() -> No
             "operator_id": "canonical_attempt_report",
             "source_sha256": "1f54d9823dacda46f0db44d9db6ce7aaf518dab66b1b0cd066b16747513fab9d",
             "version": "1.1.1",
+        },
+        {
+            "api_version": 2,
+            "content_digest": "3353bdf4be2de847cf77e631912c10f1eea57535428aed9a54ea2608f8245bfd",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "24a7b599fdcf5334b0a2870f15e4a71f70dfd7a8bcfe63ebaeedfd04e32a5cff",
+            "version": "1.2.0",
         },
     )
     for identity in historical:

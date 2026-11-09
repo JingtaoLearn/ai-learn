@@ -49,6 +49,10 @@ class SuccessTransport:
         }
         self.core = {
             "schema": "quantresearch-production-result/v1",
+            "report_operator": {
+                "operator_id": "canonical_attempt_report",
+                "version": "1.3.0",
+            },
             "request_id": value.request_id,
             "production_run_id": self.run,
             "production_release_id": self.release,
@@ -172,6 +176,17 @@ def test_client_rejects_tampered_result_identity() -> None:
     client = ProductionClient(transport, sleep=lambda _: None)
 
     with pytest.raises(Exception, match="identity"):
+        client.submit_and_wait(value)
+
+
+def test_client_rejects_daily_result_without_report_operator_topology() -> None:
+    value = request()
+    transport = SuccessTransport(value)
+    transport.core.pop("report_operator")
+    transport.result_id = hashlib.sha256(canonical_json_bytes(transport.core)).hexdigest()
+    client = ProductionClient(transport, sleep=lambda _: None)
+
+    with pytest.raises(ProductionClientError, match="file inventory"):
         client.submit_and_wait(value)
 
 

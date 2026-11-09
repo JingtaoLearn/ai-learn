@@ -453,6 +453,159 @@ def _price_chart(rows, events, holdings, zh):
     return "".join(parts)
 
 
+def _causal_trend_chart(evidence, zh):
+    rows = evidence.get("rows", []) if type(evidence) is dict else []
+    title = _text(zh, "复权信号收盘与因果平滑趋势", "Adjusted signal close and causal smoothed trend")
+    if not rows:
+        return '<section class="chart-card" id="causal-trend-history"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "因果趋势证据不可用", "Causal trend evidence unavailable") + "</div></section>"
+    left, top, width, height = 62.0, 28.0, 838.0, 242.0
+    close_values = [float(row["adjusted_signal_close"]) for row in rows]
+    smooth_values = [float(row["smooth_curve_adjusted"]) for row in rows]
+    domain = close_values + smooth_values
+    low, high = min(domain), max(domain)
+    padding = (high - low) * 0.08 if high > low else max(abs(high) * 0.02, 1.0)
+    low, high = low - padding, high + padding
+    axis_rows = [{"date": row["information_cutoff_date"]} for row in rows]
+    pending = [row for row in rows if row["status"] == "PENDING_NEXT_SESSION"]
+    parts = [
+        '<section class="chart-card" id="causal-trend-history"><div class="chart-heading"><h2>'
+        + title
+        + '</h2><div class="causal-legend"><span><i class="adjusted-close"></i>复权信号收盘 / adjusted signal close</span><span><i class="smoothed-trend"></i>因果平滑趋势 / causal smoothed trend</span><span><i class="pending"></i>空心点：待决策 / hollow pending</span></div></div><p class="chart-note">'
+        + _text(zh, "横轴为 information cutoff / curve date（该点最后已完成收盘）；历史 decision session 是下一已观察合格交易日。空心待决策点使用真实信息截止日，不表示已知未来市场日或已完成订单。", "The x-axis is the information cutoff / curve date (last completed close used). Historical decision session is the next observed eligible session. The hollow pending point uses its real cutoff and implies neither a known future market date nor a completed order.")
+        + "</p>"
+        + _chart_range(axis_rows[0]["date"], axis_rows[-1]["date"], _number(low), _number(high), zh)
+        + '<svg class="chart chart-causal-trend" data-window-start-date="'
+        + _escape(axis_rows[0]["date"])
+        + '" data-window-end-date="'
+        + _escape(axis_rows[-1]["date"])
+        + '" data-point-count="'
+        + str(len(rows))
+        + '" data-pending-count="'
+        + str(len(pending))
+        + '" viewBox="0 0 920 330" role="img" aria-labelledby="causal-trend-title causal-trend-desc"><title id="causal-trend-title">'
+        + title
+        + '</title><desc id="causal-trend-desc">'
+        + _text(zh, "封存的复权信号收盘和因果平滑趋势。", "Sealed adjusted signal close and causal smoothed trend. ")
+        + _escape(axis_rows[0]["date"])
+        + " — "
+        + _escape(axis_rows[-1]["date"])
+        + "</desc>"
+        + '<path class="series causal-adjusted-close-series" d="'
+        + _series_path(close_values, low, high, left, top, width, height)
+        + '"/><path class="series causal-smoothed-trend-series" d="'
+        + _series_path(smooth_values, low, high, left, top, width, height)
+        + '"/>'
+    ]
+    for index in range(len(rows)):
+        row = rows[index]
+        if row["status"] == "PENDING_NEXT_SESSION":
+            parts.append(
+                '<circle class="pending-point" data-date="'
+                + _escape(row["information_cutoff_date"])
+                + '" cx="'
+                + _coord(_x(index, len(rows), left, width))
+                + '" cy="'
+                + _coord(_y(row["smooth_curve_adjusted"], low, high, top, height))
+                + '" r="7"><title>PENDING_NEXT_SESSION · '
+                + _escape(row["information_cutoff_date"])
+                + " · no completed order</title></circle>"
+            )
+    parts.append(_axis(axis_rows, low, high, left, top, width, height, ""))
+    parts.append("</svg></section>")
+    return "".join(parts)
+
+
+def _causal_slope_chart(evidence, zh):
+    rows = evidence.get("rows", []) if type(evidence) is dict else []
+    thresholds = evidence.get("thresholds_pct_per_day", {}) if type(evidence) is dict else {}
+    title = _text(zh, "每日斜率买卖指数", "Daily slope index")
+    if not rows:
+        return '<section class="chart-card" id="causal-slope-history"><h2>' + title + '</h2><div class="chart-empty">' + _text(zh, "斜率证据不可用", "Slope evidence unavailable") + "</div></section>"
+    buy, sell = float(thresholds["buy"]), float(thresholds["sell"])
+    left, top, width, height = 62.0, 28.0, 838.0, 242.0
+    slopes = [row["slope_pct_per_day"] for row in rows]
+    finite = [float(value) for value in slopes if value is not None]
+    domain = finite + [buy, sell, 0.0]
+    low, high = min(domain), max(domain)
+    padding = (high - low) * 0.12 if high > low else 0.1
+    low, high = low - padding, high + padding
+    axis_rows = [{"date": row["information_cutoff_date"]} for row in rows]
+    commands = []
+    drawing = False
+    for index in range(len(slopes)):
+        value = slopes[index]
+        if value is None:
+            drawing = False
+            continue
+        commands.append(("L" if drawing else "M") + _coord(_x(index, len(rows), left, width)) + " " + _coord(_y(value, low, high, top, height)))
+        drawing = True
+    event_count = sum(row["event_side"] in {"BUY", "SELL"} for row in rows)
+    parts = [
+        '<section class="chart-card" id="causal-slope-history"><div class="chart-heading"><h2>'
+        + title
+        + '</h2><div class="causal-legend"><span><i class="slope"></i>slope_pct_per_day</span><span><i class="buy-rule"></i>'
+        + ("%+.2f%%/日" % buy)
+        + '</span><span><i class="sell-rule"></i>'
+        + ("%+.2f%%/日" % sell)
+        + '</span><span><i class="zero-rule"></i>0.00%/日</span><span>▲ BUY · ■ SELL</span></div></div>'
+        + _chart_range(axis_rows[0]["date"], axis_rows[-1]["date"], ("%+.2f%%/日" % low), ("%+.2f%%/日" % high), zh)
+        + '<svg class="chart chart-causal-slope" data-window-start-date="'
+        + _escape(axis_rows[0]["date"])
+        + '" data-window-end-date="'
+        + _escape(axis_rows[-1]["date"])
+        + '" data-point-count="'
+        + str(len(rows))
+        + '" data-causal-event-count="'
+        + str(event_count)
+        + '" data-buy-threshold="'
+        + str(buy)
+        + '" data-sell-threshold="'
+        + str(sell)
+        + '" viewBox="0 0 920 330" role="img" aria-labelledby="causal-slope-title causal-slope-desc"><title id="causal-slope-title">'
+        + title
+        + '</title><desc id="causal-slope-desc">'
+        + _text(zh, "封存的每日斜率与冻结阈值及零线。", "Sealed daily slope with frozen thresholds and zero line.")
+        + '</desc><line class="causal-rule buy-rule" x1="62" x2="900" y1="'
+        + _coord(_y(buy, low, high, top, height))
+        + '" y2="'
+        + _coord(_y(buy, low, high, top, height))
+        + '"/><line class="causal-rule sell-rule" x1="62" x2="900" y1="'
+        + _coord(_y(sell, low, high, top, height))
+        + '" y2="'
+        + _coord(_y(sell, low, high, top, height))
+        + '"/><line class="causal-rule zero-rule" x1="62" x2="900" y1="'
+        + _coord(_y(0.0, low, high, top, height))
+        + '" y2="'
+        + _coord(_y(0.0, low, high, top, height))
+        + '"/><text class="causal-rule-label buy-rule-label" x="894" y="'
+        + _coord(_y(buy, low, high, top, height) - 5)
+        + '" text-anchor="end">'
+        + ("%+.2f%%/日" % buy)
+        + '</text><text class="causal-rule-label sell-rule-label" x="306" y="'
+        + _coord(_y(sell, low, high, top, height) - 5)
+        + '" text-anchor="end">'
+        + ("%+.2f%%/日" % sell)
+        + '</text><text class="causal-rule-label zero-rule-label" x="600" y="'
+        + _coord(_y(0.0, low, high, top, height) - 5)
+        + '" text-anchor="end">0.00%/日</text><path class="series causal-slope-series" d="'
+        + " ".join(commands)
+        + '"/>'
+    ]
+    for index in range(len(rows)):
+        row = rows[index]
+        side = row["event_side"]
+        value = row["slope_pct_per_day"]
+        if side == "BUY" and value is not None:
+            cx, cy = _x(index, len(rows), left, width), _y(value, low, high, top, height)
+            parts.append('<path class="causal-event-mark buy" data-side="BUY" data-date="' + _escape(row["information_cutoff_date"]) + '" d="M' + _coord(cx) + " " + _coord(cy - 7) + " L" + _coord(cx - 7) + " " + _coord(cy + 6) + " L" + _coord(cx + 7) + " " + _coord(cy + 6) + ' Z"><title>BUY · ' + _escape(row["information_cutoff_date"]) + "</title></path>")
+        elif side == "SELL" and value is not None:
+            cx, cy = _x(index, len(rows), left, width), _y(value, low, high, top, height)
+            parts.append('<rect class="causal-event-mark sell" data-side="SELL" data-date="' + _escape(row["information_cutoff_date"]) + '" x="' + _coord(cx - 6) + '" y="' + _coord(cy - 6) + '" width="12" height="12"><title>SELL · ' + _escape(row["information_cutoff_date"]) + "</title></rect>")
+    parts.append(_axis(axis_rows, low, high, left, top, width, height, "%/日"))
+    parts.append("</svg></section>")
+    return "".join(parts)
+
+
 def _equity_chart(rows, performance, zh):
     title = _text(zh, "策略净值与可用参考", "Strategy equity and available reference")
     if not rows:
@@ -1018,8 +1171,8 @@ def _time_window_control(rows, zh):
         + '</output></div><p class="time-window-instructions" id="time-window-instructions">'
         + _text(
             zh,
-            "使用预设或两个滑块设置同一个共享时间窗口；价格/持仓状态、净值/参考和回撤将同步更新。方向键可精确调整，页面滚动不受鼠标滚轮控制。",
-            "Use presets or both sliders to set one shared time window; price/position state, equity/reference, and drawdown update together. Arrow keys adjust precisely and the mouse wheel remains available for page scrolling.",
+            "使用预设或两个滑块设置同一个共享时间窗口；价格/持仓状态、复权信号/因果趋势、每日斜率、净值/参考和回撤将同步更新。方向键可精确调整，页面滚动不受鼠标滚轮控制。",
+            "Use presets or both sliders to set one shared time window; price/position state, adjusted signal/causal trend, daily slope, equity/reference, and drawdown update together. Arrow keys adjust precisely and the mouse wheel remains available for page scrolling.",
         )
         + '</p><div class="time-window-presets" aria-label="'
         + _text(zh, "时间窗口预设", "Time-window presets")
@@ -1079,8 +1232,9 @@ var holdingElements=Array.from(document.querySelectorAll('[data-ledger="holdings
 var rows=rowElements.map(function(row){var cells=row.querySelectorAll("td");return{date:cells[0].textContent,close:Number(cells[2].textContent),equity:Number(cells[3].textContent)};});
 var holdings=holdingElements.map(function(row){var cells=row.querySelectorAll("td");return{date:cells[0].textContent,position:Number(cells[2].textContent)};});
 var eventRows=Array.from(document.querySelectorAll('[data-ledger="events"] tbody tr[data-row-index]')).map(function(row){var date=row.querySelector('[data-primary-field="date"]');var price=row.querySelector('[data-primary-field="price"]');var status=row.querySelector(".status-label");return{date:date?date.textContent:"",price:price?Number(price.textContent):NaN,side:status?status.textContent.trim().split(" ")[0]:"UNAVAILABLE"};});
-var sections={price:document.getElementById("price-history"),equity:document.getElementById("equity-history"),drawdown:document.getElementById("drawdown-history")};
-var initialHtml={price:sections.price?sections.price.innerHTML:"",equity:sections.equity?sections.equity.innerHTML:"",drawdown:sections.drawdown?sections.drawdown.innerHTML:""};
+var causalRows=Array.from(document.querySelectorAll('[data-ledger="causal-trend"] tbody tr[data-row-index]')).map(function(row){var cells=row.querySelectorAll("td");var slope=Number(cells[6].textContent);return{date:cells[0].textContent,decisionDate:cells[1].textContent,status:cells[2].textContent,close:Number(cells[3].textContent),raw:Number(cells[4].textContent),smooth:Number(cells[5].textContent),slope:Number.isFinite(slope)?slope:null,eventSide:/^(BUY|SELL)$/.test(cells[7].textContent)?cells[7].textContent:null};});
+var sections={price:document.getElementById("price-history"),causalTrend:document.getElementById("causal-trend-history"),causalSlope:document.getElementById("causal-slope-history"),equity:document.getElementById("equity-history"),drawdown:document.getElementById("drawdown-history")};
+var initialHtml={price:sections.price?sections.price.innerHTML:"",causalTrend:sections.causalTrend?sections.causalTrend.innerHTML:"",causalSlope:sections.causalSlope?sections.causalSlope.innerHTML:"",equity:sections.equity?sections.equity.innerHTML:"",drawdown:sections.drawdown?sections.drawdown.innerHTML:""};
 var rowCount=rows.length;
 var lastIndex=Math.max(rowCount-1,0);
 var zh=document.documentElement.lang==="zh-CN";
@@ -1097,6 +1251,7 @@ function coord(value){return Number(value).toFixed(2);}
 function x(index,count){return count<=1?481:62+838*index/(count-1);}
 function y(value,low,high){return high<=low?149:28+242*(high-value)/(high-low);}
 function seriesPath(values,low,high){return values.map(function(value,index){return(index===0?"M":"L")+coord(x(index,values.length))+" "+coord(y(value,low,high));}).join(" ");}
+function nullableSeriesPath(values,low,high){var drawing=false;var commands=[];values.forEach(function(value,index){if(value===null||!Number.isFinite(value)){drawing=false;return;}commands.push((drawing?"L":"M")+coord(x(index,values.length))+" "+coord(y(value,low,high)));drawing=true;});return commands.join(" ");}
 function paddedDomain(values,fallback){var low=Math.min.apply(null,values);var high=Math.max.apply(null,values);var padding=high>low?(high-low)*0.08:(fallback||Math.max(Math.abs(high)*0.02,1));return{low:low-padding,high:high+padding};}
 function svgElement(name,attributes,text){var node=document.createElementNS("http:"+String.fromCharCode(47)+String.fromCharCode(47)+"www.w3.org/2000/svg",name);Object.keys(attributes||{}).forEach(function(key){node.setAttribute(key,String(attributes[key]));});if(text!==undefined){node.textContent=text;}return node;}
 function htmlElement(name,className,text){var node=document.createElement(name);if(className){node.className=className;}if(text!==undefined){node.textContent=text;}return node;}
@@ -1132,13 +1287,16 @@ function renderPrice(start,end,visibleRows){
   var transitions=[];if(leadingState&&leadingState!==intervals[0].state){transitions.push({interval:intervals[0],previousState:leadingState});}intervals.slice(1).forEach(function(interval){transitions.push({interval:interval,previousState:intervals[intervals.indexOf(interval)-1].state});});transitions.forEach(function(transition){var interval=transition.interval;var side=interval.state==="HOLDING"?"BUY":"SELL";var boundaryX=Math.max(62,x(interval.start,visibleRows.length)-step/2);var line=svgElement("line",{class:"transition-boundary "+side.toLowerCase(),"data-side":side,"data-date":visibleRows[interval.start].date,"data-from-state":transition.previousState,"data-to-state":interval.state,x1:coord(boundaryX),y1:28,x2:coord(boundaryX),y2:270});line.appendChild(svgElement("title",{},side+" · "+visibleRows[interval.start].date+" · "+transition.previousState+" → "+interval.state));svg.appendChild(line);});
   var buyCount=visibleEvents.filter(function(event){return event.side==="BUY";}).length;var sellCount=visibleEvents.filter(function(event){return event.side==="SELL";}).length;appendAxis(svg,visibleRows,domain.low,domain.high,"",1);setChartWindow(svg,startDate,endDate,visibleRows.length);svg.setAttribute("data-event-count",String(visibleEvents.length));svg.setAttribute("data-buy-count",String(buyCount));svg.setAttribute("data-sell-count",String(sellCount));svg.setAttribute("data-position-interval-count",String(intervals.length));svg.setAttribute("data-transition-count",String(transitions.length));updateRange(section,startDate,endDate,coord(domain.low),coord(domain.high));updateDescription(section,"#price-desc",startDate,endDate,visibleRows.length,zh?"所选窗口的价格路径与持仓状态。":"Price path and position state for selected window.");renderTimeline(section,visibleRows,intervals,start,leadingState);
 }
+function causalWindow(startDate,endDate){return causalRows.filter(function(row){return row.date>=startDate&&row.date<=endDate;});}
+function renderCausalTrend(startDate,endDate){var section=sections.causalTrend;var svg=section?section.querySelector("svg"):null;if(!svg){return;}var visible=causalWindow(startDate,endDate);if(!visible.length){svg.querySelector(".causal-adjusted-close-series").setAttribute("d","");svg.querySelector(".causal-smoothed-trend-series").setAttribute("d","");Array.from(svg.querySelectorAll(".pending-point")).forEach(function(node){node.remove();});clearAxis(svg);setChartWindow(svg,startDate,endDate,0);svg.setAttribute("data-pending-count","0");updateRange(section,startDate,endDate,"—","—");updateDescription(section,"#causal-trend-desc",startDate,endDate,0,zh?"所选窗口没有封存因果趋势点。":"No sealed causal trend points in selected window.");return;}var closeValues=visible.map(function(row){return row.close;});var smoothValues=visible.map(function(row){return row.smooth;});var domain=paddedDomain(closeValues.concat(smoothValues));clearAxis(svg);svg.querySelector(".causal-adjusted-close-series").setAttribute("d",seriesPath(closeValues,domain.low,domain.high));svg.querySelector(".causal-smoothed-trend-series").setAttribute("d",seriesPath(smoothValues,domain.low,domain.high));Array.from(svg.querySelectorAll(".pending-point")).forEach(function(node){node.remove();});visible.forEach(function(row,index){if(row.status==="PENDING_NEXT_SESSION"){var point=svgElement("circle",{class:"pending-point","data-date":row.date,cx:coord(x(index,visible.length)),cy:coord(y(row.smooth,domain.low,domain.high)),r:7});point.appendChild(svgElement("title",{},"PENDING_NEXT_SESSION · "+row.date+" · no completed order"));svg.appendChild(point);}});appendAxis(svg,visible,domain.low,domain.high,"",1);setChartWindow(svg,startDate,endDate,visible.length);svg.setAttribute("data-pending-count",String(visible.filter(function(row){return row.status==="PENDING_NEXT_SESSION";}).length));updateRange(section,startDate,endDate,coord(domain.low),coord(domain.high));updateDescription(section,"#causal-trend-desc",startDate,endDate,visible.length,zh?"所选窗口的封存复权信号收盘与因果平滑趋势。":"Sealed adjusted signal close and causal smoothed trend for selected window.");}
+function renderCausalSlope(startDate,endDate){var section=sections.causalSlope;var svg=section?section.querySelector("svg"):null;if(!svg){return;}var visible=causalWindow(startDate,endDate);if(!visible.length){svg.querySelector(".causal-slope-series").setAttribute("d","");Array.from(svg.querySelectorAll(".causal-event-mark")).forEach(function(node){node.remove();});clearAxis(svg);setChartWindow(svg,startDate,endDate,0);svg.setAttribute("data-causal-event-count","0");updateRange(section,startDate,endDate,"—","—");updateDescription(section,"#causal-slope-desc",startDate,endDate,0,zh?"所选窗口没有封存斜率点。":"No sealed slope points in selected window.");return;}var buy=Number(svg.dataset.buyThreshold);var sell=Number(svg.dataset.sellThreshold);var values=visible.map(function(row){return row.slope;});var finite=values.filter(function(value){return value!==null&&Number.isFinite(value);});var domain=paddedDomain(finite.concat([buy,sell,0]),0.1);clearAxis(svg);svg.querySelector(".causal-slope-series").setAttribute("d",nullableSeriesPath(values,domain.low,domain.high));[[".buy-rule",buy],[".sell-rule",sell],[".zero-rule",0]].forEach(function(rule){var line=svg.querySelector(rule[0]);if(line){line.setAttribute("y1",coord(y(rule[1],domain.low,domain.high)));line.setAttribute("y2",coord(y(rule[1],domain.low,domain.high)));}});[[".buy-rule-label",buy],[".sell-rule-label",sell],[".zero-rule-label",0]].forEach(function(rule){var label=svg.querySelector(rule[0]);if(label){label.setAttribute("y",coord(y(rule[1],domain.low,domain.high)-5));}});Array.from(svg.querySelectorAll(".causal-event-mark")).forEach(function(node){node.remove();});visible.forEach(function(row,index){if(!row.eventSide||row.slope===null){return;}var cx=x(index,visible.length);var cy=y(row.slope,domain.low,domain.high);var mark;if(row.eventSide==="BUY"){mark=svgElement("path",{class:"causal-event-mark buy","data-side":"BUY","data-date":row.date,d:"M"+coord(cx)+" "+coord(cy-7)+" L"+coord(cx-7)+" "+coord(cy+6)+" L"+coord(cx+7)+" "+coord(cy+6)+" Z"});}else{mark=svgElement("rect",{class:"causal-event-mark sell","data-side":"SELL","data-date":row.date,x:coord(cx-6),y:coord(cy-6),width:12,height:12});}mark.appendChild(svgElement("title",{},row.eventSide+" · "+row.date));svg.appendChild(mark);});appendAxis(svg,visible,domain.low,domain.high,"%/日",1);setChartWindow(svg,startDate,endDate,visible.length);svg.setAttribute("data-causal-event-count",String(visible.filter(function(row){return row.eventSide!==null;}).length));updateRange(section,startDate,endDate,coord(domain.low)+"%/日",coord(domain.high)+"%/日");updateDescription(section,"#causal-slope-desc",startDate,endDate,visible.length,zh?"所选窗口的封存每日斜率、阈值与零线。":"Sealed daily slope, thresholds, and zero line for selected window.");}
 var firstEquity=rowCount?rows[0].equity:1;var firstClose=rowCount?rows[0].close:1;var strategy=rows.map(function(row){return row.equity/firstEquity;});var reference=rows.map(function(row){return row.close/firstClose;});var runningPeak=rowCount?rows[0].equity:0;var drawdowns=rows.map(function(row){runningPeak=Math.max(runningPeak,row.equity);return row.equity/runningPeak-1;});
 function renderEquity(start,end,visibleRows){var section=sections.equity;var svg=section.querySelector("svg");if(!svg){return;}var strategyValues=strategy.slice(start,end+1);var hasReference=svg.getAttribute("data-reference-count")==="1";var referenceValues=reference.slice(start,end+1);var allValues=hasReference?strategyValues.concat(referenceValues):strategyValues;var domain=paddedDomain(allValues,0.02);clearAxis(svg);svg.querySelector(".equity-series").setAttribute("d",seriesPath(strategyValues,domain.low,domain.high));var referencePath=svg.querySelector(".reference-series");if(hasReference&&referencePath){referencePath.setAttribute("d",seriesPath(referenceValues,domain.low,domain.high));}appendAxis(svg,visibleRows,domain.low,domain.high,"×",1);setChartWindow(svg,visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length);updateRange(section,visibleRows[0].date,visibleRows[visibleRows.length-1].date,coord(domain.low)+"×",coord(domain.high)+"×");updateDescription(section,"#equity-desc",visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length,zh?"所选窗口的归一化策略净值与可用参考。":"Normalized strategy equity and available reference for selected window.");}
 function renderDrawdown(start,end,visibleRows){var section=sections.drawdown;var svg=section.querySelector("svg");if(!svg){return;}var values=drawdowns.slice(start,end+1);var low=Math.min.apply(null,values);var high=0;if(low===high){low=-0.01;}clearAxis(svg);var baseline=y(0,low,high);var path=seriesPath(values,low,high);var area=values.length===1?"":path+" L900.00 "+coord(baseline)+" L62.00 "+coord(baseline)+" Z";svg.querySelector(".drawdown-area").setAttribute("d",area);svg.querySelector(".drawdown-series").setAttribute("d",path);appendAxis(svg,visibleRows,low,high,"%",100);setChartWindow(svg,visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length);updateRange(section,visibleRows[0].date,visibleRows[visibleRows.length-1].date,coord(low*100)+"%","0.00%");updateDescription(section,"#drawdown-desc",visibleRows[0].date,visibleRows[visibleRows.length-1].date,visibleRows.length,zh?"所选窗口的回撤路径。":"Drawdown path for selected window.");}
 function markPreset(active){presetButtons.forEach(function(button){var selected=button.dataset.windowPreset===active;button.classList.toggle("is-active",selected);button.setAttribute("aria-pressed",selected?"true":"false");});}
 function restoreCharts(){Object.keys(sections).forEach(function(key){if(sections[key]){sections[key].innerHTML=initialHtml[key];}});}
 function updateReadout(start,end){var count=end-start+1;var startDate=rows[start].date;var endDate=rows[end].date;setText(boundsOutput,startDate+" → "+endDate);setText(feedback,count===1?(zh?"仅显示一行；图表细节有限。":"Only one row is selected; chart detail is limited."):(zh?"同步显示 "+count+" 行（含首尾）。":"Showing "+count+" synchronized rows, inclusive."));startInput.setAttribute("aria-valuetext",startDate);endInput.setAttribute("aria-valuetext",endDate);control.dataset.windowStartIndex=String(start);control.dataset.windowEndIndex=String(end);control.dataset.windowStartDate=startDate;control.dataset.windowEndDate=endDate;}
-function renderWindow(start,end){var range=validatedRange(start,end,"end");start=range.start;end=range.end;if(start===0&&end===lastIndex){restoreCharts();}else{var visibleRows=rows.slice(start,end+1);renderPrice(start,end,visibleRows);renderEquity(start,end,visibleRows);renderDrawdown(start,end,visibleRows);}updateReadout(start,end);}
+function renderWindow(start,end){var range=validatedRange(start,end,"end");start=range.start;end=range.end;if(start===0&&end===lastIndex){restoreCharts();}else{var visibleRows=rows.slice(start,end+1);var startDate=visibleRows[0].date;var endDate=visibleRows[visibleRows.length-1].date;renderPrice(start,end,visibleRows);renderCausalTrend(startDate,endDate);renderCausalSlope(startDate,endDate);renderEquity(start,end,visibleRows);renderDrawdown(start,end,visibleRows);}updateReadout(start,end);}
 function resetFull(){startInput.value="0";endInput.value=String(lastIndex);startInput.setAttribute("aria-valuetext",control.dataset.fullStartDate);endInput.setAttribute("aria-valuetext",control.dataset.fullEndDate);restoreCharts();setText(boundsOutput,control.dataset.fullStartDate+" → "+control.dataset.fullEndDate);setText(feedback,control.dataset.fullFeedback);control.dataset.windowStartIndex="0";control.dataset.windowEndIndex=String(lastIndex);control.dataset.windowStartDate=control.dataset.fullStartDate;control.dataset.windowEndDate=control.dataset.fullEndDate;markPreset("full");}
 function subtractMonthsClamped(dateText,months){var parts=dateText.split("-").map(Number);var total=parts[0]*12+parts[1]-1-months;var year=Math.floor(total/12);var month=total-year*12;var lastDay=new Date(Date.UTC(year,month+1,0)).getUTCDate();var target=new Date(Date.UTC(year,month,Math.min(parts[2],lastDay)));return target.toISOString().slice(0,10);}
 function presetStart(months){var cutoff=subtractMonthsClamped(rows[lastIndex].date,months);var index=rows.findIndex(function(row){return row.date>=cutoff;});return index<0?lastIndex:index;}
@@ -1159,6 +1317,10 @@ def _ledger_styles():
     return """.compact-ledger .ledger-row>td{height:auto;padding:5px 8px}.ledger-reason{display:-webkit-box;max-height:2.7em;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.state-legend{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px 12px;color:var(--muted);font-size:.75rem}.state-legend-item,.boundary-legend{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.state-legend-item i{width:18px;height:12px;border:1px solid var(--line-strong)}.state-legend-item.holding i{background:repeating-linear-gradient(135deg,#e8f3ee 0,#e8f3ee 4px,#78988a 4px,#78988a 6px)}.state-legend-item.cash i{background-color:#f4f5f7;background-image:radial-gradient(#8b949e 1px,transparent 1px);background-size:5px 5px}.boundary-legend i{display:inline-block;width:2px;height:14px;border-left:2px solid var(--ink)}.boundary-legend i.sell{border-left-style:dashed}.position-interval{opacity:.55}.position-interval.holding-interval{stroke:#78988a;stroke-width:.5}.position-interval.cash-interval{stroke:#8b949e;stroke-width:.5}.state-timeline{margin-top:6px}.state-timeline-heading{display:flex;justify-content:space-between;gap:12px;margin-bottom:4px;color:var(--muted);font-size:.72rem}.state-timeline-heading strong{color:var(--ink)}.state-track{position:relative;height:38px;overflow:hidden;border:1px solid var(--line-strong);background:var(--surface-alt)}.state-track-segment{position:absolute;top:0;height:100%;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:inset -1px 0 #fff}.state-track-segment.holding{background:repeating-linear-gradient(135deg,#e8f3ee 0,#e8f3ee 5px,#78988a 5px,#78988a 7px)}.state-track-segment.cash{background-color:#f4f5f7;background-image:radial-gradient(#8b949e 1px,transparent 1px);background-size:6px 6px}.state-track-segment.transition-buy::before,.state-track-segment.transition-sell::before{content:"";position:absolute;inset:0 auto 0 0;width:0;border-left:2px solid var(--ink)}.state-track-segment.transition-sell::before{border-left-style:dashed}.state-track-label{padding:2px 4px;background:rgba(255,255,255,.82);color:var(--ink);font-size:.7rem;font-weight:850;white-space:nowrap}.state-timeline-axis{display:grid;grid-template-columns:repeat(3,1fr);margin-top:3px;color:var(--muted);font-size:.68rem}.state-timeline-axis time:nth-child(2){text-align:center}.state-timeline-axis time:last-child{text-align:right}.transition-boundary{stroke:var(--ink);stroke-width:2;vector-effect:non-scaling-stroke}.transition-boundary.buy{stroke-dasharray:none}.transition-boundary.sell{stroke-dasharray:6 4}@media(max-width:640px){.chart-heading .state-legend{justify-content:flex-start}.state-legend{gap:5px 9px;font-size:.72rem}.state-track-label{display:none}.chart-price .date-label{display:block;font-size:24px}}"""
 
 
+def _causal_styles():
+    return """.causal-legend{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px 12px;color:var(--muted);font-size:.75rem}.causal-legend span{display:inline-flex;align-items:center;gap:5px}.causal-legend i{display:inline-block;width:22px;height:0;border-top:3px solid var(--accent)}.causal-legend .smoothed-trend{border-top-color:#8b3dbb;border-top-style:dashed}.causal-legend .pending{width:12px;height:12px;border:2px solid #222;border-radius:50%;background:#fff}.causal-legend .slope{border-top-color:#6f42c1}.causal-legend .buy-rule{border-top-color:var(--buy);border-top-style:dashed}.causal-legend .sell-rule{border-top-color:var(--sell);border-top-style:dotted}.causal-legend .zero-rule{border-top-color:#3f4852;border-top-style:double}.chart-note{margin:4px 0 8px;color:var(--muted);font-size:.76rem}.causal-adjusted-close-series{stroke:var(--accent)}.causal-smoothed-trend-series{stroke:#8b3dbb;stroke-dasharray:8 4}.causal-slope-series{stroke:#6f42c1}.causal-rule{stroke-width:1.6;vector-effect:non-scaling-stroke}.causal-rule.buy-rule{stroke:var(--buy);stroke-dasharray:8 4}.causal-rule.sell-rule{stroke:var(--sell);stroke-dasharray:2 4}.causal-rule.zero-rule{stroke:#3f4852;stroke-dasharray:10 3 2 3}.causal-rule-label{font-size:15px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}.buy-rule-label{fill:var(--buy)}.sell-rule-label{fill:var(--sell)}.zero-rule-label{fill:#3f4852}.pending-point{fill:#fff;stroke:#111;stroke-width:3;vector-effect:non-scaling-stroke}.causal-event-mark.buy{fill:#fff;stroke:var(--buy);stroke-width:2}.causal-event-mark.sell{fill:#fff;stroke:var(--sell);stroke-width:2}@media(max-width:640px){.causal-legend{justify-content:flex-start}.chart-note{font-size:.72rem}}"""
+
+
 def apply(payload, parameters):
     if parameters != {}:
         raise ValueError("canonical report parameters must be empty")
@@ -1176,6 +1338,9 @@ def apply(payload, parameters):
     performance = configuration.get("performance_summary")
     if type(performance) is not dict:
         performance = {}
+    causal_trend = configuration.get("causal_trend_series")
+    if type(causal_trend) is not dict:
+        causal_trend = {}
     action_name = action.get("action")
     action_available = action_name is not None
     if action_name is None:
@@ -1202,7 +1367,7 @@ def apply(payload, parameters):
     holdings = _raw(fields, "holdings") or []
     lang = "zh-CN" if zh else "en"
     title = _text(zh, "决策证据报告", "Decision evidence report")
-    css = _stylesheet() + _ledger_styles() + _time_window_styles()
+    css = _stylesheet() + _ledger_styles() + _causal_styles() + _time_window_styles()
     parts = [
         '<!doctype html><html lang="'
         + lang
@@ -1242,6 +1407,10 @@ def apply(payload, parameters):
         + _text(zh, "摘要", "Summary")
         + '</a><a href="#price-history">'
         + _text(zh, "价格", "Price")
+        + '</a><a href="#causal-trend-history">'
+        + _text(zh, "趋势", "Trend")
+        + '</a><a href="#causal-slope-history">'
+        + _text(zh, "斜率", "Slope")
         + '</a><a href="#drawdown-history">'
         + _text(zh, "风险", "Risk")
         + '</a><a href="#event-ledger">'
@@ -1265,6 +1434,8 @@ def apply(payload, parameters):
     parts.append("</section>")
     parts.append(_time_window_control(rows, zh))
     parts.append(_price_chart(rows, events, holdings, zh))
+    parts.append(_causal_trend_chart(causal_trend, zh))
+    parts.append(_causal_slope_chart(causal_trend, zh))
     parts.append(_equity_chart(rows, performance, zh))
     parts.append(_drawdown_chart(rows, zh))
     parts.append(_trade_chart(trades, zh))
@@ -1272,9 +1443,14 @@ def apply(payload, parameters):
     trade_columns = ["entry_date", "entry_price", "quantity", "entry_cost_cny", "exit_date", "exit_price", "exit_cost_cny", "status", "gross_pnl_cny", "net_pnl_cny", "return"]
     price_columns = ["date", "price", "close", "equity"]
     holding_columns = ["date", "holdings", "position_after"]
+    causal_columns = [
+        "information_cutoff_date", "decision_date", "status", "adjusted_signal_close",
+        "raw_curve_adjusted", "smooth_curve_adjusted", "slope_pct_per_day", "event_side",
+    ]
     parts.append(_event_ledger(events, event_columns, _text(zh, "BUY / SELL 事件台账", "BUY / SELL event ledger"), zh))
     parts.append(_trade_ledger(trades, trade_columns, _text(zh, "交易台账", "Trade ledger"), zh))
-    parts.append('<details class="series-ledgers" id="raw-data"><summary>' + _text(zh, "展开完整价格、净值与每日持仓行", "Expand complete price, equity, and daily holding rows") + "</summary>")
+    parts.append('<details class="series-ledgers" id="raw-data"><summary>' + _text(zh, "展开完整趋势、价格、净值与每日持仓行", "Expand complete trend, price, equity, and daily holding rows") + "</summary>")
+    parts.append(_table(causal_trend.get("rows", []), causal_columns, {}, "causal-trend", _text(zh, "封存因果趋势行", "Sealed causal trend rows"), zh))
     parts.append(_table(rows, price_columns, {}, "price-equity", _text(zh, "完整价格与净值行", "Complete price and equity rows"), zh))
     parts.append(_table(holdings, holding_columns, {}, "holdings", _text(zh, "完整每日持仓行", "Complete daily holding rows"), zh))
     parts.append("</details>")

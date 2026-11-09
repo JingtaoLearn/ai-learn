@@ -6,6 +6,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import re
 import stat
@@ -77,6 +78,13 @@ _HISTORICAL_REPORT_OPERATOR_KEYS = frozenset(
             "canonical_attempt_report",
             "1f54d9823dacda46f0db44d9db6ce7aaf518dab66b1b0cd066b16747513fab9d",
             "1.1.1",
+        ),
+        (
+            2,
+            "3353bdf4be2de847cf77e631912c10f1eea57535428aed9a54ea2608f8245bfd",
+            "canonical_attempt_report",
+            "24a7b599fdcf5334b0a2870f15e4a71f70dfd7a8bcfe63ebaeedfd04e32a5cff",
+            "1.2.0",
         ),
     }
 )
@@ -482,6 +490,187 @@ def _verified_json_evidence(evidence: Mapping[str, bytes], name: str) -> Any:
     return value
 
 
+def _verified_causal_trend_series(evidence: Mapping[str, bytes]) -> dict[str, Any]:
+    value = _verified_json_evidence(evidence, "causal-trend-series.json")
+    expected_keys = {
+        "schema",
+        "source_ref",
+        "source_point_count",
+        "source_point_bounds",
+        "report_point_count",
+        "report_point_bounds",
+        "thresholds_pct_per_day",
+        "rows_sha256",
+        "rows",
+    }
+    row_keys = {
+        "information_cutoff_date",
+        "decision_date",
+        "status",
+        "adjusted_signal_close",
+        "raw_curve_adjusted",
+        "smooth_curve_adjusted",
+        "slope_pct_per_day",
+        "event_side",
+    }
+    source_keys = {
+        "provider_request_sha256",
+        "normalized_snapshot_sha256",
+        "source_rows_sha256",
+        "source_row_count",
+        "source_row_bounds",
+        "source_points_sha256",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_keys
+        or value["schema"] != "quantresearch-production-causal-trend-series/v1"
+        or not isinstance(value["source_ref"], dict)
+        or set(value["source_ref"]) != source_keys
+        or not isinstance(value["rows"], list)
+        or not value["rows"]
+        or not isinstance(value["thresholds_pct_per_day"], dict)
+        or set(value["thresholds_pct_per_day"]) != {"buy", "sell"}
+    ):
+        raise ProductionClientError("causal trend evidence contract is invalid")
+    rows = value["rows"]
+    dates: list[str] = []
+    pending_count = 0
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != row_keys:
+            raise ProductionClientError("causal trend row contract is invalid")
+        cutoff = row["information_cutoff_date"]
+        decision = row["decision_date"]
+        status = row["status"]
+        if (
+            not isinstance(cutoff, str)
+            or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", cutoff) is None
+            or status not in {"OBSERVED_DECISION_SESSION", "PENDING_NEXT_SESSION"}
+            or row["event_side"] not in {None, "BUY", "SELL"}
+        ):
+            raise ProductionClientError("causal trend date, status, or event side is invalid")
+        if status == "PENDING_NEXT_SESSION":
+            pending_count += 1
+            if index != len(rows) - 1 or decision is not None:
+                raise ProductionClientError("causal trend pending point is inconsistent")
+        elif (
+            not isinstance(decision, str)
+            or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", decision) is None
+            or decision <= cutoff
+        ):
+            raise ProductionClientError("causal trend observed decision date is inconsistent")
+        for name in (
+            "adjusted_signal_close",
+            "raw_curve_adjusted",
+            "smooth_curve_adjusted",
+        ):
+            number = row[name]
+            if type(number) not in {int, float} or not math.isfinite(float(number)):
+                raise ProductionClientError("causal trend level value is not finite")
+        slope = row["slope_pct_per_day"]
+        if slope is not None and (
+            type(slope) not in {int, float} or not math.isfinite(float(slope))
+        ):
+            raise ProductionClientError("causal trend slope value is not finite")
+        dates.append(cutoff)
+    source_ref = value["source_ref"]
+    thresholds = value["thresholds_pct_per_day"]
+    if (
+        dates != sorted(set(dates))
+        or pending_count != 1
+        or value["report_point_count"] != len(rows)
+        or value["report_point_bounds"] != [dates[0], dates[-1]]
+        or type(value["source_point_count"]) is not int
+        or value["source_point_count"] < len(rows)
+        or not isinstance(value["source_point_bounds"], list)
+        or len(value["source_point_bounds"]) != 2
+        or value["source_point_bounds"][0] > dates[0]
+        or value["source_point_bounds"][1] != dates[-1]
+        or value["rows_sha256"] != hashlib.sha256(canonical_json_bytes(rows)).hexdigest()
+        or type(source_ref["source_row_count"]) is not int
+        or source_ref["source_row_count"] < value["source_point_count"]
+        or not isinstance(source_ref["source_row_bounds"], list)
+        or len(source_ref["source_row_bounds"]) != 2
+        or any(
+            not isinstance(source_ref[name], str) or re.fullmatch(r"[0-9a-f]{64}", source_ref[name]) is None
+            for name in (
+                "provider_request_sha256",
+                "normalized_snapshot_sha256",
+                "source_rows_sha256",
+                "source_points_sha256",
+            )
+        )
+        or any(
+            type(thresholds[name]) not in {int, float}
+            or not math.isfinite(float(thresholds[name]))
+            for name in ("buy", "sell")
+        )
+    ):
+        raise ProductionClientError("causal trend inventory or identity is invalid")
+    return value
+
+
+def _verify_causal_trend_source_binding(
+    causal_trend: Mapping[str, Any],
+    normalized_rows: Sequence[Mapping[str, Any]],
+    normalized_snapshot_sha256: str,
+) -> None:
+    source_ref = causal_trend["source_ref"]
+    trend_rows = causal_trend["rows"]
+    source_date_values = [row.get("date") for row in normalized_rows]
+    source_point_bounds = causal_trend["source_point_bounds"]
+    if not source_date_values or not all(
+        isinstance(value, str) for value in source_date_values
+    ):
+        raise ProductionClientError("causal trend source binding differs")
+    source_dates = cast(list[str], source_date_values)
+    if (
+        source_dates != sorted(set(source_dates))
+        or source_ref["normalized_snapshot_sha256"] != normalized_snapshot_sha256
+        or source_ref["source_row_count"] < len(normalized_rows)
+        or source_ref["source_row_bounds"][0] > source_dates[0]
+        or source_ref["source_row_bounds"][-1] != source_dates[-1]
+        or source_point_bounds[0] > trend_rows[0]["information_cutoff_date"]
+        or source_point_bounds[-1] != source_dates[-1]
+    ):
+        raise ProductionClientError("causal trend source binding differs")
+    source_index = {value: index for index, value in enumerate(source_dates)}
+    for row in trend_rows:
+        cutoff = row["information_cutoff_date"]
+        index = source_index.get(cutoff)
+        if row["status"] == "PENDING_NEXT_SESSION":
+            consistent_date = cutoff == source_dates[-1] and row["decision_date"] is None
+        else:
+            consistent_date = (
+                index is not None
+                and index + 1 < len(source_dates)
+                and row["decision_date"] == source_dates[index + 1]
+            )
+        slope = row["slope_pct_per_day"]
+        if not consistent_date or (
+            slope is None and cutoff != source_point_bounds[0]
+        ):
+            raise ProductionClientError("causal trend source binding differs")
+
+
+def _verify_causal_trend_action_binding(
+    causal_trend: Mapping[str, Any], action: Mapping[str, Any]
+) -> None:
+    rows = causal_trend["rows"]
+    if (
+        len(rows) < 2
+        or rows[-2]["slope_pct_per_day"] is None
+        or rows[-1]["slope_pct_per_day"] is None
+        or type(action.get("previous_slope_pct")) not in {int, float}
+        or type(action.get("next_slope_pct")) not in {int, float}
+        or float(rows[-2]["slope_pct_per_day"])
+        != float(action["previous_slope_pct"])
+        or float(rows[-1]["slope_pct_per_day"])
+        != float(action["next_slope_pct"])
+    ):
+        raise ProductionClientError("causal trend action slope binding differs")
+
+
 def _csv_evidence(
     evidence: Mapping[str, bytes], name: str, expected_fields: Sequence[str]
 ) -> list[dict[str, str]]:
@@ -521,8 +710,13 @@ def _verify_report_document_sources(
     ):
         raise ProductionClientError("required production field availability is invalid")
 
+    document_operator_version = fields.get("operator_version", {}).get("raw")
+    requires_causal_trend = document_operator_version == "1.3.0"
     audit = _verified_json_evidence(evidence, "attempt-audit.json")
     descriptor = _verified_json_evidence(evidence, "bundle-descriptor.json")
+    causal_trend = (
+        _verified_causal_trend_series(evidence) if requires_causal_trend else None
+    )
     configuration = _verified_json_evidence(evidence, "config.json")
     contract = _verified_json_evidence(evidence, "contract.json")
     costs = _verified_json_evidence(evidence, "cost_breakdown.json")
@@ -569,6 +763,8 @@ def _verify_report_document_sources(
         "reporting_account", "event_ledger", "trade_ledger", "holding_spans",
         "corporate_action_ledger", "performance_summary",
     }
+    if requires_causal_trend:
+        expected_parameters.add("causal_trend_series")
     expected_metrics = {
         "initial_capital_cny", "final_equity_cny", "net_profit_cny", "cumulative_return",
         "max_drawdown", "exposure", "buy_and_hold_return", "gross_dividends_cny",
@@ -644,6 +840,8 @@ def _verify_report_document_sources(
         "execution_authority", "trigger_role", "local_compute", "feng_fallback",
         "corporate_action_source", "corporate_action_revision_policy",
     }
+    if requires_causal_trend:
+        expected_provenance.add("causal_trend_inventory")
     if (
         set(provenance) != expected_provenance
         or provenance["job_id"] != action.get("job_id")
@@ -813,22 +1011,91 @@ def _verify_report_document_sources(
     ):
         raise ProductionClientError("report trade and position metric counts differ")
 
+    if causal_trend is not None:
+        _verify_causal_trend_source_binding(
+            causal_trend,
+            normalized_value,
+            snapshot_sha256,
+        )
+        _verify_causal_trend_action_binding(causal_trend, action)
+        trend_rows = causal_trend["rows"]
+        trend_by_event = {
+            (row["information_cutoff_date"], row["decision_date"], row["event_side"]): row
+            for row in trend_rows
+            if row["event_side"] is not None
+        }
+        strategy_parameters = parameters["strategy_parameters"]
+        causal_inventory = {
+            "source_point_count": causal_trend["source_point_count"],
+            "source_point_bounds": causal_trend["source_point_bounds"],
+            "report_point_count": causal_trend["report_point_count"],
+            "report_point_bounds": causal_trend["report_point_bounds"],
+            "rows_sha256": causal_trend["rows_sha256"],
+        }
+        if (
+            parameters["causal_trend_series"] != causal_trend
+            or causal_trend["source_ref"]["normalized_snapshot_sha256"] != snapshot_sha256
+            or causal_trend["source_ref"]["provider_request_sha256"]
+            != provenance["provider_request_sha256"]
+            or causal_trend["source_ref"]["source_row_count"] < len(normalized_value)
+            or causal_trend["source_ref"]["source_row_bounds"][-1]
+            != normalized_value[-1]["date"]
+            or causal_trend["source_ref"]["source_row_bounds"][0]
+            > normalized_value[0]["date"]
+            or causal_trend["thresholds_pct_per_day"]
+            != {
+                "buy": float(strategy_parameters["buy_threshold_pct_per_day"]),
+                "sell": float(strategy_parameters["sell_threshold_pct_per_day"]),
+            }
+            or provenance["causal_trend_inventory"] != causal_inventory
+            or causal_trend["report_point_bounds"][0] < metrics["period_start"]
+            or causal_trend["report_point_bounds"][-1] != metrics["period_end"]
+            or len(trend_by_event) != len(event_ledger)
+        ):
+            raise ProductionClientError(
+                "causal trend source identity, threshold, or inventory binding differs"
+            )
+        trend_index = {
+            row["information_cutoff_date"]: index
+            for index, row in enumerate(trend_rows)
+        }
+        for event in event_ledger:
+            key = (event["signal_date"], event["action_date"], event["side"])
+            trend_row = trend_by_event.get(key)
+            index = trend_index.get(str(event["signal_date"]))
+            if (
+                trend_row is None
+                or index is None
+                or float(trend_row["slope_pct_per_day"])
+                != float(event["signal_slope_pct"])
+                or index == 0
+                or trend_rows[index - 1]["slope_pct_per_day"] is None
+                or float(trend_rows[index - 1]["slope_pct_per_day"])
+                != float(event["previous_slope_pct"])
+            ):
+                raise ProductionClientError("causal trend event slope parity differs")
+
     core_metrics = {
         key: value for key, value in metrics.items()
         if key not in {"net_return", "current_position", "closed_trades", "open_trades"}
     }
+    core_result_payload = {
+        "normalized_snapshot_sha256": snapshot_sha256,
+        "action": action,
+        "price_equity": price_equity,
+        "events": events,
+        "trades": trades,
+        "holdings": holdings,
+        "metrics": core_metrics,
+        "provenance": provenance,
+    }
+    if causal_trend is not None:
+        core_result_payload["causal_trend_series_sha256"] = hashlib.sha256(
+            canonical_json_bytes(causal_trend)
+        ).hexdigest()
     core_result_digest = hashlib.sha256(
         b"quantresearch-production-report-evidence/v1\0"
-        + canonical_json_bytes({
-            "normalized_snapshot_sha256": snapshot_sha256,
-            "action": action,
-            "price_equity": price_equity,
-            "events": events,
-            "trades": trades,
-            "holdings": holdings,
-            "metrics": core_metrics,
-            "provenance": provenance,
-        })
+        + canonical_json_bytes(core_result_payload)
     ).hexdigest()
     bundle_id = hashlib.sha256(
         b"quant-platform/attempt-result-bundle/v1\0"
@@ -838,19 +1105,40 @@ def _verify_report_document_sources(
             "core_result_digest": core_result_digest,
         })
     ).hexdigest()
+    semantic_payload = {
+        "core_result_digest": core_result_digest,
+        "cost_breakdown": costs,
+        "event_ledger": event_ledger,
+        "trade_ledger": trade_ledger,
+        "holding_spans": holding_spans,
+        "corporate_action_ledger": corporate_actions,
+        "performance_summary": parameters["performance_summary"],
+        "daily_replay_sha256": hashlib.sha256(evidence["daily_replay.csv"]).hexdigest(),
+    }
+    if causal_trend is not None:
+        semantic_payload["causal_trend_series_sha256"] = hashlib.sha256(
+            canonical_json_bytes(causal_trend)
+        ).hexdigest()
     semantic_subject_digest = hashlib.sha256(
         b"quantresearch-production-semantic-attestation-subject/v1\0"
-        + canonical_json_bytes({
-            "core_result_digest": core_result_digest,
-            "cost_breakdown": costs,
-            "event_ledger": event_ledger,
-            "trade_ledger": trade_ledger,
-            "holding_spans": holding_spans,
-            "corporate_action_ledger": corporate_actions,
-            "performance_summary": parameters["performance_summary"],
-            "daily_replay_sha256": hashlib.sha256(evidence["daily_replay.csv"]).hexdigest(),
-        })
+        + canonical_json_bytes(semantic_payload)
     ).hexdigest()
+    evidence_counts = {
+        "price_rows": len(price_equity),
+        "events": len(events),
+        "trades": len(trades),
+        "holding_rows": len(holdings),
+        "holding_spans": len(holding_spans),
+        "corporate_actions": len(corporate_actions),
+    }
+    checks = [
+        "action_matches_frozen_evaluation",
+        "next_open_event_timing",
+        "transaction_cost_accounting",
+        "corporate_action_quantity_and_receivable_accounting",
+        "trade_and_open_mark_pnl",
+        "equity_return_drawdown_exposure_and_comparator",
+    ]
     expected_attestation = {
         "schema": "quantresearch-production-semantic-attestation/v1",
         "authority": "zhlearn production report adapter",
@@ -858,17 +1146,27 @@ def _verify_report_document_sources(
         "subject_core_result_digest": core_result_digest,
         "subject_digest": semantic_subject_digest,
         "dataset_snapshot_sha256": snapshot_sha256,
-        "evidence_counts": {
-            "price_rows": len(price_equity), "events": len(events), "trades": len(trades),
-            "holding_rows": len(holdings), "holding_spans": len(holding_spans),
-            "corporate_actions": len(corporate_actions),
-        },
-        "checks": [
-            "action_matches_frozen_evaluation", "next_open_event_timing",
-            "transaction_cost_accounting", "corporate_action_quantity_and_receivable_accounting",
-            "trade_and_open_mark_pnl", "equity_return_drawdown_exposure_and_comparator",
-        ],
+        "evidence_counts": evidence_counts,
+        "checks": checks,
     }
+    if causal_trend is not None:
+        evidence_counts.update(
+            {
+                "causal_source_points": causal_trend["source_point_count"],
+                "causal_report_points": causal_trend["report_point_count"],
+            }
+        )
+        expected_attestation["causal_trend_bounds"] = {
+            "source": causal_trend["source_point_bounds"],
+            "report": causal_trend["report_point_bounds"],
+        }
+        checks.extend(
+            [
+                "causal_trend_series_matches_precomputed_points",
+                "causal_event_side_and_slope_parity",
+                "frozen_threshold_parity",
+            ]
+        )
     if (
         audit["result_digest"] != core_result_digest
         or descriptor["bundle_id"] != bundle_id

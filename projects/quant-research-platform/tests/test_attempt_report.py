@@ -98,6 +98,65 @@ def _visual_document() -> dict:
             "buy_and_hold_return": 0.2,
             "exposure": 0.5,
         },
+        "causal_trend_series": {
+            "schema": "quantresearch-production-causal-trend-series/v1",
+            "source_ref": {
+                "provider_request_sha256": "1" * 64,
+                "normalized_snapshot_sha256": "2" * 64,
+                "source_rows_sha256": "3" * 64,
+                "source_row_count": 4,
+                "source_row_bounds": ["2026-09-10", "2026-09-15"],
+                "source_points_sha256": "4" * 64,
+            },
+            "source_point_count": 4,
+            "source_point_bounds": ["2026-09-10", "2026-09-15"],
+            "report_point_count": 4,
+            "report_point_bounds": ["2026-09-10", "2026-09-15"],
+            "thresholds_pct_per_day": {"buy": 0.2, "sell": -0.2},
+            "rows_sha256": "5" * 64,
+            "rows": [
+                {
+                    "information_cutoff_date": "2026-09-10",
+                    "decision_date": "2026-09-11",
+                    "status": "OBSERVED_DECISION_SESSION",
+                    "adjusted_signal_close": 100.0,
+                    "raw_curve_adjusted": 100.5,
+                    "smooth_curve_adjusted": 100.4,
+                    "slope_pct_per_day": None,
+                    "event_side": None,
+                },
+                {
+                    "information_cutoff_date": "2026-09-11",
+                    "decision_date": "2026-09-12",
+                    "status": "OBSERVED_DECISION_SESSION",
+                    "adjusted_signal_close": 102.0,
+                    "raw_curve_adjusted": 101.5,
+                    "smooth_curve_adjusted": 101.2,
+                    "slope_pct_per_day": 0.8,
+                    "event_side": "BUY",
+                },
+                {
+                    "information_cutoff_date": "2026-09-12",
+                    "decision_date": "2026-09-15",
+                    "status": "OBSERVED_DECISION_SESSION",
+                    "adjusted_signal_close": 104.0,
+                    "raw_curve_adjusted": 103.0,
+                    "smooth_curve_adjusted": 102.5,
+                    "slope_pct_per_day": 0.3,
+                    "event_side": None,
+                },
+                {
+                    "information_cutoff_date": "2026-09-15",
+                    "decision_date": None,
+                    "status": "PENDING_NEXT_SESSION",
+                    "adjusted_signal_close": 106.0,
+                    "raw_curve_adjusted": 105.0,
+                    "smooth_curve_adjusted": 104.0,
+                    "slope_pct_per_day": -0.1,
+                    "event_side": None,
+                },
+            ],
+        },
     }
     fields["template_parameters"]["display"] = "visual fixture"
     fields["price_equity_rows"]["raw"] = [
@@ -494,6 +553,36 @@ def test_visual_report_is_decision_first_and_binds_all_chart_marks_to_canonical_
     assert '<script id="time-window-behavior">' in rendered
 
 
+def test_visual_report_renders_only_the_sealed_causal_trend_and_slope_series():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert 'class="chart chart-causal-trend"' in rendered
+    assert 'class="chart chart-causal-slope"' in rendered
+    assert 'data-point-count="4"' in rendered
+    assert 'data-pending-count="1"' in rendered
+    assert 'data-causal-event-count="1"' in rendered
+    assert "复权信号收盘 / adjusted signal close" in rendered
+    assert "因果平滑趋势 / causal smoothed trend" in rendered
+    assert "+0.20%/日" in rendered
+    assert "-0.20%/日" in rendered
+    assert 'class="causal-rule-label buy-rule-label" x="894"' in rendered
+    assert 'class="causal-rule-label zero-rule-label" x="600"' in rendered
+    assert 'class="causal-rule-label sell-rule-label" x="306"' in rendered
+    assert "information cutoff / curve date" in rendered
+    assert "PENDING_NEXT_SESSION" in rendered
+    assert 'class="pending-point"' in rendered
+    assert 'data-ledger="causal-trend" data-row-count="4"' in rendered
+
+
+def test_window_script_clears_causal_marks_when_selected_range_has_no_evidence():
+    rendered = render_report_document(_visual_document()).decode("utf-8")
+
+    assert 'if(!visible.length){svg.querySelector(".causal-adjusted-close-series").setAttribute("d","");' in rendered
+    assert 'svg.setAttribute("data-pending-count","0")' in rendered
+    assert 'if(!visible.length){svg.querySelector(".causal-slope-series").setAttribute("d","");' in rendered
+    assert 'svg.setAttribute("data-causal-event-count","0")' in rendered
+
+
 def test_price_chart_has_no_action_point_or_index_dom():
     rendered = render_report_document(_visual_document()).decode("utf-8")
 
@@ -699,7 +788,7 @@ def test_visual_report_has_compact_monitor_navigation_and_responsive_chart_label
     assert '<nav class="report-nav"' in rendered
     assert 'href="#decision"' in rendered
     assert 'href="#event-ledger"' in rendered
-    assert rendered.count('class="chart-range"') == 4
+    assert rendered.count('class="chart-range"') == 6
     assert 'id="decision"' in rendered
     assert 'id="price-history"' in rendered
     assert css.count("{") == css.count("}")
@@ -992,15 +1081,17 @@ def test_price_chart_keeps_gap_prices_in_scale_and_unmatched_events_in_ledger():
 def test_visual_contract_advances_the_shared_operator_semantic_identity():
     bundle = canonical_report_operator_bundle()
 
-    assert REPORT_OPERATOR_VERSION == "1.2.0"
+    assert REPORT_OPERATOR_VERSION == "1.3.0"
     assert SUPPORTED_REPORT_OPERATOR_VERSIONS == frozenset(
-        {"1.0.0", "1.1.0", "1.1.1", "1.2.0"}
+        {"1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.3.0"}
     )
     assert bundle["manifest"]["semantic_version"] == REPORT_OPERATOR_VERSION
     assert b'class="chart chart-price"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-equity"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-drawdown"' in bundle["content"]["operator.py"]
     assert b'class="chart chart-trade-pnl"' in bundle["content"]["operator.py"]
+    assert b'class="chart chart-causal-trend"' in bundle["content"]["operator.py"]
+    assert b'class="chart chart-causal-slope"' in bundle["content"]["operator.py"]
 
 
 def test_visual_operator_source_invocation_matches_the_native_renderer(tmp_path: Path):

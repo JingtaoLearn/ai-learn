@@ -316,6 +316,7 @@ class BocomProductionJob:
         )
         report = build_canonical_production_report(
             rows=report_rows,
+            source_rows=rows,
             points=points,
             config=self.config,
             action=action,

@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .production_contract import SHA256, canonical_json_bytes
-from .production_jobs import REPORT_EVIDENCE_FILE_NAMES, FormalComputation, JobComputation
+from .production_jobs import (
+    REPORT_EVIDENCE_FILE_NAMES,
+    FormalComputation,
+    JobComputation,
+)
 
 
 class ProductionResultError(RuntimeError):
@@ -29,6 +33,7 @@ DAILY_RESULT_FILES = frozenset(
         *REPORT_EVIDENCE_FILE_NAMES,
     }
 )
+LEGACY_DAILY_RESULT_FILES = DAILY_RESULT_FILES - {"causal-trend-series.json"}
 FORMAL_RESULT_FILES = frozenset(
     {
         "calibration.json",
@@ -50,6 +55,19 @@ STABLE_REPORT_JOB_IDS = {
     "f642b386-74c0-4e9f-92e6-563e7c6a5d69": "1cd5557264db",
     "8991e9a8-1caa-41f5-b76b-6368259db5b4": "297c11cad0dc",
 }
+
+
+def _result_files_for_manifest(manifest: Mapping[str, Any]) -> frozenset[str] | None:
+    schema = manifest.get("schema")
+    if schema != "quantresearch-production-result/v1":
+        return RESULT_FILES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+    report_operator = manifest.get("report_operator")
+    version = report_operator.get("version") if isinstance(report_operator, Mapping) else None
+    if version == "1.3.0":
+        return DAILY_RESULT_FILES
+    if version in {"1.0.0", "1.1.0", "1.1.1", "1.2.0"}:
+        return LEGACY_DAILY_RESULT_FILES
+    return None
 
 
 def _fsync_directory(path: Path) -> None:
@@ -137,7 +155,7 @@ def verify_production_result(
         raise ProductionResultError("production result is malformed")
     stored_manifest = dict(manifest)
     schema = stored_manifest.get("schema")
-    result_files = RESULT_FILES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+    result_files = _result_files_for_manifest(stored_manifest)
     if result_files is None or set(payloads) != result_files:
         raise ProductionResultError("immutable result member set is invalid")
     if stored_manifest.get("result_id") != result_id:
@@ -480,8 +498,7 @@ class ProductionResultStore:
         manifest = _strict_json(
             read_immutable(target / "result-manifest.json"), "result manifest"
         )
-        schema = manifest.get("schema")
-        result_files = RESULT_FILES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+        result_files = _result_files_for_manifest(manifest)
         if result_files is None or members != result_files | {"result-manifest.json"}:
             raise ProductionResultError("immutable result member set is invalid")
         payloads = {name: read_immutable(target / name) for name in result_files}

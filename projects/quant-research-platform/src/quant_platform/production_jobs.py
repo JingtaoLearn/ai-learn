@@ -39,6 +39,7 @@ REPORT_EVIDENCE_FILE_NAMES = frozenset(
     {
         "attempt-audit.json",
         "bundle-descriptor.json",
+        "causal-trend-series.json",
         "config.json",
         "contract.json",
         "cost_breakdown.json",
@@ -52,6 +53,9 @@ REPORT_EVIDENCE_FILE_NAMES = frozenset(
         "trades.csv",
     }
 )
+LEGACY_REPORT_EVIDENCE_FILE_NAMES = REPORT_EVIDENCE_FILE_NAMES - {
+    "causal-trend-series.json"
+}
 
 
 @dataclass(frozen=True)
@@ -216,6 +220,143 @@ def _historical_events(
             )
         prior_slope = slope
     return events
+
+
+def _causal_trend_series(
+    *,
+    source_rows: Sequence[Mapping[str, Any]],
+    report_rows: Sequence[Mapping[str, Any]],
+    points: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    config: TrendConfig,
+    provider_url: str,
+    normalized_bytes: bytes,
+) -> dict[str, Any]:
+    if not source_rows or not report_rows or not points:
+        raise ProductionJobError("causal trend evidence inventory is empty")
+    source_dates = [row["date"] for row in source_rows]
+    if source_dates != sorted(set(source_dates)):
+        raise ProductionJobError("causal trend source dates are not unique and ordered")
+    source_by_date = {row["date"]: row for row in source_rows}
+    event_by_key: dict[tuple[str, str], str] = {}
+    for event in events:
+        key = (str(event["signal_date"]), str(event["action_date"]))
+        if key in event_by_key or event["side"] not in {"BUY", "SELL"}:
+            raise ProductionJobError("causal trend event binding is duplicated or invalid")
+        event_by_key[key] = str(event["side"])
+
+    source_point_rows: list[dict[str, Any]] = []
+    for index, point in enumerate(points):
+        cutoff = point.get("information_cutoff_date")
+        if not isinstance(cutoff, date):
+            decision_date = point.get("decision_date")
+            if point.get("is_next_session") is True:
+                cutoff = source_dates[-1]
+            elif isinstance(decision_date, date) and decision_date in source_by_date:
+                decision_index = source_dates.index(decision_date)
+                if decision_index == 0:
+                    # Hand-built compatibility fixtures may include a non-causal seed point.
+                    # It is computation warm-up, never report evidence.
+                    continue
+                cutoff = source_dates[decision_index - 1]
+        if not isinstance(cutoff, date) or cutoff not in source_by_date:
+            raise ProductionJobError("causal trend point has no source information cutoff")
+        pending = point.get("is_next_session") is True
+        decision_date = point.get("decision_date")
+        if pending:
+            if index != len(points) - 1 or decision_date is not None or cutoff != source_dates[-1]:
+                raise ProductionJobError("causal trend pending point is inconsistent")
+            status = "PENDING_NEXT_SESSION"
+            decision_value = None
+        else:
+            if not isinstance(decision_date, date):
+                raise ProductionJobError("causal trend observed decision date is absent")
+            cutoff_index = source_dates.index(cutoff)
+            if cutoff_index + 1 >= len(source_dates) or source_dates[cutoff_index + 1] != decision_date:
+                raise ProductionJobError("causal trend observed decision date is not the next session")
+            status = "OBSERVED_DECISION_SESSION"
+            decision_value = decision_date.isoformat()
+        adjusted_close = point.get(
+            "adjusted_signal_close", source_by_date[cutoff].get("signal_close")
+        )
+        numeric = {
+            "adjusted_signal_close": adjusted_close,
+            "raw_curve_adjusted": point.get("raw_curve", adjusted_close),
+            "smooth_curve_adjusted": point.get("smooth_curve", adjusted_close),
+        }
+        if any(
+            type(value) not in {int, float} or not math.isfinite(float(value))
+            for value in numeric.values()
+        ):
+            raise ProductionJobError("causal trend level evidence is not finite")
+        slope = point.get("slope_pct")
+        if slope is not None and (
+            type(slope) not in {int, float} or not math.isfinite(float(slope))
+        ):
+            raise ProductionJobError("causal trend slope evidence is not finite")
+        event_side = event_by_key.get((cutoff.isoformat(), decision_value or ""))
+        source_point_rows.append(
+            {
+                "information_cutoff_date": cutoff.isoformat(),
+                "decision_date": decision_value,
+                "status": status,
+                "adjusted_signal_close": float(numeric["adjusted_signal_close"]),
+                "raw_curve_adjusted": float(numeric["raw_curve_adjusted"]),
+                "smooth_curve_adjusted": float(numeric["smooth_curve_adjusted"]),
+                "slope_pct_per_day": None if slope is None else float(slope),
+                "event_side": event_side,
+            }
+        )
+    cutoff_dates = [row["information_cutoff_date"] for row in source_point_rows]
+    if cutoff_dates != sorted(set(cutoff_dates)):
+        raise ProductionJobError("causal trend point dates are not unique and ordered")
+    report_start = report_rows[0]["date"].isoformat()
+    report_end = report_rows[-1]["date"].isoformat()
+    rows = [
+        row
+        for row in source_point_rows
+        if report_start <= row["information_cutoff_date"] <= report_end
+    ]
+    if not rows or rows[-1]["status"] != "PENDING_NEXT_SESSION":
+        raise ProductionJobError("causal trend report domain lacks its pending point")
+    sealed_events = [
+        (row["information_cutoff_date"], row["decision_date"], row["event_side"])
+        for row in rows
+        if row["event_side"] is not None
+    ]
+    expected_events = [
+        (str(event["signal_date"]), str(event["action_date"]), str(event["side"]))
+        for event in events
+    ]
+    if sealed_events != expected_events:
+        raise ProductionJobError("causal trend event slope evidence differs from the event ledger")
+    source_rows_bytes = normalized_rows(source_rows).value
+    return {
+        "schema": "quantresearch-production-causal-trend-series/v1",
+        "source_ref": {
+            "provider_request_sha256": hashlib.sha256(provider_url.encode("utf-8")).hexdigest(),
+            "normalized_snapshot_sha256": hashlib.sha256(normalized_bytes).hexdigest(),
+            "source_rows_sha256": hashlib.sha256(source_rows_bytes).hexdigest(),
+            "source_row_count": len(source_rows),
+            "source_row_bounds": [source_dates[0].isoformat(), source_dates[-1].isoformat()],
+            "source_points_sha256": hashlib.sha256(
+                canonical_json_bytes(source_point_rows)
+            ).hexdigest(),
+        },
+        "source_point_count": len(source_point_rows),
+        "source_point_bounds": [cutoff_dates[0], cutoff_dates[-1]],
+        "report_point_count": len(rows),
+        "report_point_bounds": [
+            rows[0]["information_cutoff_date"],
+            rows[-1]["information_cutoff_date"],
+        ],
+        "thresholds_pct_per_day": {
+            "buy": float(config.buy_threshold_pct_per_day),
+            "sell": float(config.sell_threshold_pct_per_day),
+        },
+        "rows_sha256": hashlib.sha256(canonical_json_bytes(rows)).hexdigest(),
+        "rows": rows,
+    }
 
 
 def _account_events(
@@ -769,6 +910,7 @@ def build_canonical_production_report(
     provider_url: str,
     normalized_bytes: bytes,
     spec: ProductionReportSpec,
+    source_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> CanonicalProductionReport:
     """Adapt one frozen daily computation to the existing canonical Report operator."""
 
@@ -780,6 +922,15 @@ def build_canonical_production_report(
     if (signal_events[-1]["position_after"] if signal_events else 0) != action["state_before_next"]:
         raise ProductionJobError("historical report position differs from current action")
     events, corporate_actions = _account_events(signal_events, rows)
+    causal_trend_series = _causal_trend_series(
+        source_rows=rows if source_rows is None else source_rows,
+        report_rows=rows,
+        points=points,
+        events=events,
+        config=config,
+        provider_url=provider_url,
+        normalized_bytes=normalized_bytes,
+    )
     trades, holdings = _trade_and_holding_ledgers(events, rows, spec, corporate_actions)
     price_equity, metrics = _equity_path(rows, events, config, spec)
     _validate_report_semantics(
@@ -818,6 +969,7 @@ def build_canonical_production_report(
             {"date": row["date"].isoformat(), "signal_price": float(row["signal_close"])}
             for row in rows
         ],
+        "causal_trend_series": causal_trend_series,
         "reporting_account": {
             "initial_capital_cny": REPORT_INITIAL_CAPITAL_CNY,
             "quantity_rule": "integer units purchased with available cash at each BUY",
@@ -861,6 +1013,13 @@ def build_canonical_production_report(
         "provider_request_sha256": hashlib.sha256(provider_url.encode("utf-8")).hexdigest(),
         "market_window": [rows[0]["date"].isoformat(), rows[-1]["date"].isoformat()],
         "performance_window": [metrics["period_start"], metrics["period_end"]],
+        "causal_trend_inventory": {
+            "source_point_count": causal_trend_series["source_point_count"],
+            "source_point_bounds": causal_trend_series["source_point_bounds"],
+            "report_point_count": causal_trend_series["report_point_count"],
+            "report_point_bounds": causal_trend_series["report_point_bounds"],
+            "rows_sha256": causal_trend_series["rows_sha256"],
+        },
         "execution_authority": "zhlearn production API",
         "trigger_role": "ailearn trigger/read-back/delivery only",
         "local_compute": False,
@@ -952,6 +1111,9 @@ def build_canonical_production_report(
                 "holdings": canonical_holdings,
                 "metrics": metrics,
                 "provenance": provenance,
+                "causal_trend_series_sha256": hashlib.sha256(
+                    canonical_json_bytes(causal_trend_series)
+                ).hexdigest(),
             }
         )
     ).hexdigest()
@@ -1134,6 +1296,9 @@ def build_canonical_production_report(
                 "corporate_action_ledger": corporate_actions,
                 "performance_summary": configuration["performance_summary"],
                 "daily_replay_sha256": hashlib.sha256(daily_replay_bytes).hexdigest(),
+                "causal_trend_series_sha256": hashlib.sha256(
+                    canonical_json_bytes(causal_trend_series)
+                ).hexdigest(),
             }
         )
     ).hexdigest()
@@ -1151,6 +1316,12 @@ def build_canonical_production_report(
             "holding_rows": len(canonical_holdings),
             "holding_spans": len(holdings),
             "corporate_actions": len(corporate_actions),
+            "causal_source_points": causal_trend_series["source_point_count"],
+            "causal_report_points": causal_trend_series["report_point_count"],
+        },
+        "causal_trend_bounds": {
+            "source": causal_trend_series["source_point_bounds"],
+            "report": causal_trend_series["report_point_bounds"],
         },
         "checks": [
             "action_matches_frozen_evaluation",
@@ -1159,6 +1330,9 @@ def build_canonical_production_report(
             "corporate_action_quantity_and_receivable_accounting",
             "trade_and_open_mark_pnl",
             "equity_return_drawdown_exposure_and_comparator",
+            "causal_trend_series_matches_precomputed_points",
+            "causal_event_side_and_slope_parity",
+            "frozen_threshold_parity",
         ],
     }
     evidence_files = {
@@ -1181,6 +1355,7 @@ def build_canonical_production_report(
                 "verification": {"status": "VERIFIED"},
             }
         ),
+        "causal-trend-series.json": canonical_json_bytes(causal_trend_series),
         "config.json": canonical_json_bytes({"template": {"parameters": configuration}}),
         "contract.json": canonical_json_bytes(
             {
@@ -1296,6 +1471,9 @@ _DAILY_COMPUTATION_MEMBERS = frozenset(
         "notification.txt",
         *REPORT_EVIDENCE_FILE_NAMES,
     }
+)
+_LEGACY_DAILY_COMPUTATION_MEMBERS = (
+    _DAILY_COMPUTATION_MEMBERS - {"causal-trend-series.json"}
 )
 _FORMAL_RESULT_MEMBERS = frozenset(
     {
@@ -1482,7 +1660,13 @@ def inspect_staged_package(target: Path, *, label: str) -> str:
     if label == "production input":
         allowed_shapes = frozenset({_INPUT_MEMBERS})
     elif label == "production computation":
-        allowed_shapes = frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS})
+        allowed_shapes = frozenset(
+            {
+                _DAILY_COMPUTATION_MEMBERS,
+                _LEGACY_DAILY_COMPUTATION_MEMBERS,
+                _FORMAL_COMPUTATION_MEMBERS,
+            }
+        )
     else:
         raise ProductionJobError("staged package label is invalid")
     return staged_package_identity(_read_staged_members(target, allowed_shapes, label, None))
@@ -1570,8 +1754,10 @@ def decision_points(rows: Sequence[Mapping[str, Any]], config: TrendConfig) -> l
         slope = None if previous is None else 100.0 * math.expm1(smoothed - previous)
         points.append(
             {
+                "information_cutoff_date": rows[position - 1]["date"],
                 "decision_date": rows[position]["date"] if position < len(rows) else None,
                 "is_next_session": position == len(rows),
+                "adjusted_signal_close": values[position - 1],
                 "raw_curve": math.exp(raw),
                 "smooth_curve": math.exp(smoothed),
                 "slope_pct": slope,
@@ -1839,7 +2025,13 @@ class ProductionJobs:
     ) -> ProductionComputation:
         payloads = _read_staged_members(
             target,
-            frozenset({_DAILY_COMPUTATION_MEMBERS, _FORMAL_COMPUTATION_MEMBERS}),
+            frozenset(
+                {
+                    _DAILY_COMPUTATION_MEMBERS,
+                    _LEGACY_DAILY_COMPUTATION_MEMBERS,
+                    _FORMAL_COMPUTATION_MEMBERS,
+                }
+            ),
             "production computation",
             expected_package_identity,
         )
@@ -1864,7 +2056,8 @@ class ProductionJobs:
         else:
             if (
                 identity.get("kind") != "daily"
-                or frozenset(payloads) != _DAILY_COMPUTATION_MEMBERS
+                or frozenset(payloads)
+                not in {_DAILY_COMPUTATION_MEMBERS, _LEGACY_DAILY_COMPUTATION_MEMBERS}
             ):
                 raise ProductionJobError(
                     "staged production computation member set is invalid"

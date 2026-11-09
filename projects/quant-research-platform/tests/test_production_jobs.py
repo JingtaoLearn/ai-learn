@@ -97,6 +97,27 @@ def _one_entry_points(rows, _config):
     return points
 
 
+def test_decision_points_seal_the_causal_information_cutoff_and_adjusted_close() -> None:
+    rows = [
+        {"date": date(2026, 1, 2), "signal_close": 10.0},
+        {"date": date(2026, 1, 5), "signal_close": 11.0},
+        {"date": date(2026, 1, 6), "signal_close": 12.0},
+    ]
+    config = production_jobs.TrendConfig(2, 1, 0.2, -0.2, date(2026, 1, 2))
+
+    points = production_jobs.decision_points(rows, config)
+
+    assert [point["information_cutoff_date"] for point in points] == [
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+    ]
+    assert [point["adjusted_signal_close"] for point in points] == [11.0, 12.0]
+    assert points[0]["decision_date"] == date(2026, 1, 6)
+    assert points[0]["is_next_session"] is False
+    assert points[-1]["decision_date"] is None
+    assert points[-1]["is_next_session"] is True
+
+
 def formal_computation() -> FormalComputation:
     return FormalComputation(
         job_id="focus-job",
@@ -158,6 +179,69 @@ def test_synthetic_jobs_preserve_frozen_action_cost_and_route(job, raw_name, exp
     assert len(first.experiment_id) == len(first.attempt_id) == 64
 
 
+def test_bocom_seals_report_domain_causal_trend_series_from_precomputed_points() -> None:
+    job = BocomProductionJob(FIXTURES / "bocom-model-manifest.json")
+
+    computation = job.compute(
+        (FIXTURES / "bocom-yahoo-chart.json").read_bytes(),
+        "fixture://bocom-yahoo-chart.json",
+        SCHEDULED,
+    )
+
+    evidence = json.loads(computation.report_evidence["causal-trend-series.json"])
+    assert set(evidence) == {
+        "schema",
+        "source_ref",
+        "source_point_count",
+        "source_point_bounds",
+        "report_point_count",
+        "report_point_bounds",
+        "thresholds_pct_per_day",
+        "rows_sha256",
+        "rows",
+    }
+    assert evidence["schema"] == "quantresearch-production-causal-trend-series/v1"
+    assert evidence["source_point_count"] == 3
+    assert evidence["report_point_count"] == 3
+    assert evidence["source_point_bounds"] == ["2026-01-20", "2026-01-22"]
+    assert evidence["report_point_bounds"] == ["2026-01-20", "2026-01-22"]
+    assert evidence["thresholds_pct_per_day"] == {"buy": 0.2, "sell": -0.2}
+    assert evidence["rows_sha256"] == hashlib.sha256(
+        canonical_json_bytes(evidence["rows"])
+    ).hexdigest()
+    assert [set(row) for row in evidence["rows"]] == [
+        {
+            "information_cutoff_date",
+            "decision_date",
+            "status",
+            "adjusted_signal_close",
+            "raw_curve_adjusted",
+            "smooth_curve_adjusted",
+            "slope_pct_per_day",
+            "event_side",
+        }
+    ] * 3
+    assert evidence["rows"][-1]["status"] == "PENDING_NEXT_SESSION"
+    assert evidence["rows"][-1]["decision_date"] is None
+    assert evidence["rows"][-1]["information_cutoff_date"] == "2026-01-22"
+    assert all(
+        row["status"] == "OBSERVED_DECISION_SESSION"
+        and row["decision_date"] is not None
+        for row in evidence["rows"][:-1]
+    )
+    configuration = json.loads(computation.report_evidence["config.json"])["template"][
+        "parameters"
+    ]
+    document = json.loads(computation.report_evidence["report-document.json"])
+    fields = {
+        field["field_id"]: field
+        for section in document["sections"]
+        for field in section["fields"]
+    }
+    assert configuration["causal_trend_series"] == evidence
+    assert fields["template_parameters"]["raw"]["causal_trend_series"] == evidence
+
+
 def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
     computations = [
         BocomProductionJob(FIXTURES / "bocom-model-manifest.json").compute(
@@ -197,7 +281,7 @@ def test_both_daily_jobs_use_the_exact_same_canonical_report_operator() -> None:
         events = fields["events"]["raw"]
         trades = fields["trades"]["raw"]
         html = item.report_html.decode("utf-8")
-        assert html.count('<svg class="chart ') == 4
+        assert html.count('<svg class="chart ') == 6
         assert f'data-event-count="{len(events)}"' in html
         assert f'data-trade-count="{len(trades)}"' in html
         assert html.count('<g class="event-marker ') == len(events)
@@ -304,7 +388,9 @@ def test_bocom_packages_only_the_performance_date_domain_without_truncating_hist
     html = computation.report_html.decode()
     assert html.count(f'data-window-start-date="{first_report_date}"') >= 3
     assert f'data-full-start-date="{first_report_date}"' in html
-    assert history_dates[0].isoformat() not in html
+    trend = fields["template_parameters"]["raw"]["causal_trend_series"]
+    assert trend["source_ref"]["source_row_bounds"][0] == history_dates[0].isoformat()
+    assert trend["report_point_bounds"][0] == first_report_date
 
     legacy_daily = list(
         csv.DictReader(io.StringIO(legacy_report.evidence_files["daily_replay.csv"].decode()))

@@ -17,12 +17,16 @@ from .production_contract import ProductionRequest, canonical_json_bytes, produc
 
 REPORT_EVIDENCE_FILE_NAMES = frozenset(
     {
-        "attempt-audit.json", "bundle-descriptor.json", "config.json", "contract.json",
+        "attempt-audit.json", "bundle-descriptor.json", "causal-trend-series.json",
+        "config.json", "contract.json",
         "cost_breakdown.json", "daily_replay.csv", "events.csv", "metrics.json",
         "operator-manifest.json", "report-document.json", "run_manifest.json",
         "semantic-attestation.json", "trades.csv",
     }
 )
+LEGACY_REPORT_EVIDENCE_FILE_NAMES = REPORT_EVIDENCE_FILE_NAMES - {
+    "causal-trend-series.json"
+}
 
 
 DAILY_RESULT_FILE_NAMES = frozenset(
@@ -35,6 +39,9 @@ DAILY_RESULT_FILE_NAMES = frozenset(
         *REPORT_EVIDENCE_FILE_NAMES,
     }
 )
+LEGACY_DAILY_RESULT_FILE_NAMES = (
+    DAILY_RESULT_FILE_NAMES - {"causal-trend-series.json"}
+)
 FORMAL_RESULT_FILE_NAMES = frozenset(
     {
         "calibration.json",
@@ -46,7 +53,9 @@ RESULT_FILE_NAMES_BY_SCHEMA = {
     "quantresearch-production-result/v1": DAILY_RESULT_FILE_NAMES,
     "quantresearch-production-formal-result/v1": FORMAL_RESULT_FILE_NAMES,
 }
-RESULT_FILE_NAMES = DAILY_RESULT_FILE_NAMES | FORMAL_RESULT_FILE_NAMES
+RESULT_FILE_NAMES = (
+    DAILY_RESULT_FILE_NAMES | LEGACY_DAILY_RESULT_FILE_NAMES | FORMAL_RESULT_FILE_NAMES
+)
 MAX_API_RESPONSE_BYTES = 1_048_576
 MAX_RESULT_FILE_BYTES = 16 * 1024 * 1024
 
@@ -281,9 +290,23 @@ class ProductionClient:
             raise ProductionClientError("result manifest bindings do not verify")
         files = manifest.get("files")
         schema = manifest.get("schema")
-        expected_files = (
-            RESULT_FILE_NAMES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
-        )
+        if schema == "quantresearch-production-result/v1":
+            report_operator = manifest.get("report_operator")
+            version = (
+                report_operator.get("version")
+                if isinstance(report_operator, Mapping)
+                else None
+            )
+            if version == "1.3.0":
+                expected_files = DAILY_RESULT_FILE_NAMES
+            elif version in {"1.0.0", "1.1.0", "1.1.1", "1.2.0"}:
+                expected_files = LEGACY_DAILY_RESULT_FILE_NAMES
+            else:
+                expected_files = None
+        else:
+            expected_files = (
+                RESULT_FILE_NAMES_BY_SCHEMA.get(schema) if isinstance(schema, str) else None
+            )
         if expected_files is None or not isinstance(files, dict) or set(files) != expected_files:
             raise ProductionClientError("result manifest file inventory is absent")
         for name, item in files.items():

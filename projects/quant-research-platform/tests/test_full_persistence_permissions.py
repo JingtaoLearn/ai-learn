@@ -168,23 +168,54 @@ def test_postgres_production_result_accepts_complete_verified_inventory(
     }
 
 
+@pytest.mark.parametrize(
+    "historical",
+    (
+        {
+            "api_version": 2,
+            "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
+            "version": "1.0.0",
+        },
+        {
+            "api_version": 2,
+            "content_digest": "905ec81f4957680c605515c9e9aecc674fb152586823023854a99fe64d8e5f42",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "10d2bc268c30e570843e636ba3b8dd0cadd241f8593331f659b284ffd43c15b2",
+            "version": "1.1.0",
+        },
+        {
+            "api_version": 2,
+            "content_digest": "36e39e9f91a1b2e00c3a28190774ac27e7ececdc66975c8162d27805b12dc6e3",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "1f54d9823dacda46f0db44d9db6ce7aaf518dab66b1b0cd066b16747513fab9d",
+            "version": "1.1.1",
+        },
+        {
+            "api_version": 2,
+            "content_digest": "3353bdf4be2de847cf77e631912c10f1eea57535428aed9a54ea2608f8245bfd",
+            "operator_id": "canonical_attempt_report",
+            "source_sha256": "24a7b599fdcf5334b0a2870f15e4a71f70dfd7a8bcfe63ebaeedfd04e32a5cff",
+            "version": "1.2.0",
+        },
+    ),
+)
 def test_production_result_binds_to_exact_verified_historical_operator(
     monkeypatch: pytest.MonkeyPatch,
+    historical: dict[str, object],
 ) -> None:
     manifest, members = _production_result()
-    historical = {
-        "api_version": 2,
-        "content_digest": "275a68f011fe9b45fadc8e1960966f5e7a94809df975507c15f92025b696932f",
-        "operator_id": "canonical_attempt_report",
-        "source_sha256": "11943915981fd7e50856cc10e12ac9e3c844ea3eebf677d894026618c01c63b8",
-        "version": "1.0.0",
-    }
+    document = json.loads(members["report-document.json"])
+    verified = schedule_client._verify_report_document_sources(document, members)
+
+    members.pop("causal-trend-series.json")
+    manifest["files"].pop("causal-trend-series.json")
     manifest["report_operator"] = historical
     _replace_result_id(manifest)
-    original = schedule_client._verify_report_document_sources
 
-    def verify_sources(document, evidence):
-        return {**original(document, evidence), "report_operator": historical}
+    def verify_sources(_document, _evidence):
+        return {**verified, "report_operator": historical}
 
     monkeypatch.setattr(schedule_client, "_verify_report_document_sources", verify_sources)
 
