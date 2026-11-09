@@ -167,8 +167,8 @@ services:
     security_opt: [no-new-privileges:true]
     pids_limit: 64
     cpus: 0.25
-    mem_limit: 128m
-    memswap_limit: 128m
+    mem_limit: 256m
+    memswap_limit: 256m
     restart: on-failure:5
     environment:
       MPLCONFIGDIR: /tmp/matplotlib

@@ -448,6 +448,29 @@ def test_crash_after_terminal_is_reconciled_from_durable_success_manifest(tmp_pa
     assert client.get(url).status_code == 200
 
 
+def test_idle_worker_reconciles_historical_reports_only_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, results, _, _, worker, _ = runtime(tmp_path)
+    manifest = {
+        "schema": "quantresearch-production-result/v1",
+        "result_id": "historical-result",
+        "report_operator": {"operator_id": "canonical_attempt_report"},
+    }
+    monkeypatch.setattr(store, "successful_result_manifests", lambda: [manifest])
+    reconciled: list[str] = []
+    monkeypatch.setattr(
+        results,
+        "complete_stable_report",
+        lambda value: reconciled.append(value["result_id"]),
+    )
+
+    assert worker.run_once() is None
+    assert worker.run_once() is None
+
+    assert reconciled == ["historical-result"]
+
+
 def test_legacy_success_does_not_block_new_canonical_result(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

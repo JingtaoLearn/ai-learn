@@ -135,6 +135,9 @@ def test_compose_places_authority_under_a_distinct_uid_and_private_mount() -> No
     assert authority["cap_drop"] == ["ALL"]
     assert authority["security_opt"] == ["no-new-privileges:true"]
     assert authority["networks"] == ["package_identity_internal"]
+    assert authority["mem_limit"] == "256m"
+    assert authority["memswap_limit"] == "256m"
+    assert authority["restart"] == "on-failure:5"
     assert "package_identity_internal" in api["networks"]
 
     api_mounts = {item["target"]: item for item in api["volumes"]}
