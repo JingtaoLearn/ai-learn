@@ -55,6 +55,8 @@ function spark(values, held) {
     <path d="${d}L${w},${h}L0,${h}Z" fill="url(#g${held}${c.slice(1)})"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6"/></svg>`;
 }
 
+const dock = (items) => `<nav class="dock">${items.map(([id, label]) => `<a data-goto="${id}">${label}</a>`).join("")}</nav>`;
+
 /* the user's real position once they have confirmed anything; until then follow the model */
 const myHeld = (item) => (item.me?.tracked ? item.me.held : !!item.signal?.position);
 
@@ -118,13 +120,13 @@ function holdingsTable(items) {
   if (!rows.length) return '<div class="empty">当前没有持仓</div>';
   return `<table class="metrics hold"><thead><tr><th>标的</th><th>现价</th><th>成本</th><th>浮盈</th><th>持有</th><th>模型</th><th>卖出触发</th></tr></thead><tbody>
     ${rows.map(({ instrument: i, signal: s, me }) => {
-      const days = me.entry_date ? Math.round((Date.parse(s.date) - Date.parse(me.entry_date)) / 864e5) : null;
+      const days = me.entry_date ? Math.max(0, Math.round((Date.parse(s.date) - Date.parse(me.entry_date)) / 864e5)) : null;
       const trig = s.sell_trigger;
-      return `<tr data-href="#/s/${encodeURIComponent(i.symbol)}"><td>${esc(i.name)}${me.tracked ? "" : ' <span class="chip">按模型</span>'}</td>
-        <td>${px(s.close)}</td><td>${me.entry_price ? px(me.entry_price) : "—"}</td>
-        <td class="${cls(me.pnl)}">${me.pnl != null ? pct(me.pnl) : "—"}</td><td>${days != null ? days + " 天" : "—"}</td>
-        <td>${s.position ? '<span class="up">持有</span>' : '<span class="down">已离场</span>'}</td>
-        <td>${trig ? `${px(trig)} <span class="faint">${pct(trig / s.close - 1)}</span>` : "—"}</td></tr>`;
+      return `<tr data-href="#/s/${encodeURIComponent(i.symbol)}"><td class="h-name">${esc(i.name)}${me.tracked ? "" : ' <span class="chip">按模型</span>'}</td>
+        <td class="h-px" data-label="现价">${px(s.close)}</td><td class="h-cost" data-label="成本">${me.entry_price ? px(me.entry_price) : "—"}</td>
+        <td class="h-pnl ${cls(me.pnl)}">${me.pnl != null ? pct(me.pnl) : "—"}</td><td class="h-days" data-label="持有">${days != null ? days + " 天" : "—"}</td>
+        <td class="h-model" data-label="模型">${s.position ? '<span class="up">持有</span>' : '<span class="down">已离场</span>'}</td>
+        <td class="h-trig" data-label="卖出触发">${trig ? `${px(trig)} <span class="faint">${pct(trig / s.close - 1)}</span>` : "—"}</td></tr>`;
     }).join("")}</tbody></table>`;
 }
 
@@ -148,7 +150,7 @@ async function overview() {
   const tracked = ready.some((x) => x.me.tracked);
   const held = ready.filter(myHeld);
   view.innerHTML = `
-    <section class="verdict">
+    <section class="verdict" id="sec-todo">
       <div><div class="eyebrow">${latest} 收盘 · ${tracked ? "按你的真实持仓" : "按模型仓位"}</div>
         <h1>${list.length ? `你有 <em>${list.length}</em> 件事要处理` : "今天不用操作"}</h1>
         <p>${list.length ? "执行了就点确认、没执行就点「没买 / 没卖」，之后的提醒都按你的真实仓位来。"
@@ -158,14 +160,15 @@ async function overview() {
       <div class="todo-text" data-href="#/s/${encodeURIComponent(t.sym)}"><b>${esc(t.title)}</b><div class="small dim">${esc(t.sub)}</div></div>
       <div class="todo-btns">${t.btns}</div></div>`).join("")}</section>` : ""}
     ${tracked ? "" : `<p class="note onboard">💡 还没登记你的真实持仓，下面暂按模型仓位展示。进入标的点「登记交易」，或在信号出现后点确认，之后所有提醒都按你的实际仓位。</p>`}
-    <div class="section-title"><h3>我的持仓</h3><span class="small faint">点行进入详情</span></div>
+    <div class="section-title" id="sec-hold"><h3>我的持仓</h3><span class="small faint">点行进入详情</span></div>
     <section class="panel">${holdingsTable(items)}</section>
-    <div class="section-title"><h3>观察列表</h3><span class="small faint">卡片底部是距触发价的涨跌幅</span></div>
+    <div class="section-title" id="sec-watch"><h3>观察列表</h3><span class="small faint">卡片底部是距触发价的涨跌幅</span></div>
     <section class="grid">${items.map(card).join("")}</section>
-    <div class="section-title"><h3>我的交易</h3><span class="small faint">你确认过的真实买卖</span></div>
+    <div class="section-title" id="sec-trades"><h3>我的交易</h3><span class="small faint">你确认过的真实买卖</span></div>
     <section class="panel">${myTrades(items)}</section>
-    <div class="section-title"><h3>信号日志</h3><span class="small faint">收盘信号 · 盘中预警 · 参数变更</span></div>
-    <section class="feed">${events.length ? events.map((e) => feedRow(e, names)).join("") : '<div class="empty">暂无记录，首次收盘任务运行后出现</div>'}</section>`;
+    <div class="section-title" id="sec-log"><h3>信号日志</h3><span class="small faint">收盘信号 · 盘中预警 · 参数变更</span></div>
+    <section class="feed">${events.length ? events.map((e) => feedRow(e, names)).join("") : '<div class="empty">暂无记录，首次收盘任务运行后出现</div>'}</section>
+    ${dock([["sec-todo", list.length ? `待办 ${list.length}` : "今日"], ["sec-hold", "持仓"], ["sec-watch", "观察"], ["sec-trades", "交易"], ["sec-log", "日志"]])}`;
   if (items.some((x) => !x.ready && !x.instrument.refresh_error)) setTimeout(() => route(), 4000);
 }
 
@@ -190,9 +193,10 @@ async function saveTrade() {
   catch (e) { toast(e.message); }
 }
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-trade],[data-skip],[data-del-trade],[data-href]");
+  const t = e.target.closest("[data-trade],[data-skip],[data-del-trade],[data-href],[data-goto]");
   if (!t) return;
   e.stopPropagation();
+  if (t.dataset.goto) return $("#" + t.dataset.goto)?.scrollIntoView({ behavior: "smooth", block: "start" });
   if (t.dataset.trade) return tradeDialog(JSON.parse(t.dataset.trade));
   if (t.dataset.skip) {
     const s = JSON.parse(t.dataset.skip);
@@ -284,8 +288,9 @@ function renderBacktest(v) {
     `<p class="note">自 <b>${v.backtest.dates[0]}</b> 起回测 · 完成 <b>${st.trades}</b> 笔交易 · 胜率 <b>${st.win_rate == null ? "—" : pct(st.win_rate, 0)}</b> · 持仓时间占比 <b>${pct(st.exposure, 0)}</b>。收盘出信号、次日开盘成交，已扣除买卖成本。</p>`;
   $("#periods").innerHTML = periodsTable(v.backtest.periods);
   const tr = v.backtest.trades.slice().reverse();
-  $("#trades").innerHTML = tr.length ? `<table class="metrics"><thead><tr><th>买入</th><th>价格</th><th>卖出</th><th>价格</th><th>收益</th></tr></thead><tbody>
-    ${tr.map((t) => `<tr><td>${t.entry_date}</td><td>${px(t.entry)}</td><td>${t.open ? '<span class="gold">持有中</span>' : t.exit_date}</td><td>${px(t.exit)}</td><td class="${cls(t.return)}">${pct(t.return)}</td></tr>`).join("")}</tbody></table>`
+  const leg = (d, p) => `${d}<div class="faint small">@ ${px(p)}</div>`;
+  $("#trades").innerHTML = tr.length ? `<table class="metrics"><thead><tr><th>买入</th><th>卖出</th><th>收益</th></tr></thead><tbody>
+    ${tr.map((t) => `<tr><td>${leg(t.entry_date, t.entry)}</td><td>${t.open ? `<span class="gold">持有中</span><div class="faint small">现价 ${px(t.exit)}</div>` : leg(t.exit_date, t.exit)}</td><td class="${cls(t.return)}">${pct(t.return)}</td></tr>`).join("")}</tbody></table>`
     : '<div class="empty">回测期内无交易</div>';
 }
 
@@ -403,10 +408,10 @@ function myPanel(v) {
     <div class="todo-btns">${tradeBtn(i, p.action, p.fill?.date, p.fill?.price, p.action === "BUY" ? "我已买入" : "我已卖出", p.date)}
     <button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${p.action === "BUY" ? "没买" : "没卖"}</button></div></div>`).join("");
   const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "买入" : "卖出"}</td><td>${px(t.price)}</td><td>${t.qty ?? "—"}</td><td>${t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
-  return `<section class="panel"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;text-transform:none;letter-spacing:0">
+  return `<section class="panel" id="sec-me"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;text-transform:none;letter-spacing:0">
       ${tradeBtn(i, "BUY", s.date, s.close, "登记买入", null, true)}${tradeBtn(i, "SELL", s.date, s.close, "登记卖出", null, true)}</span></h4>
     <p class="note">${status}</p>${div}${pend}
-    ${rows ? `<div class="tbl-wrap"><table class="metrics"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>来源</th><th>备注</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+    ${rows ? `<div class="tbl-wrap xscroll"><table class="metrics"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>来源</th><th>备注</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
   </section>`;
 }
 
@@ -434,9 +439,9 @@ async function detail(sym) {
       </div>
     </section>
     ${myPanel(v)}
-    <section class="panel"><h4><span>价格 · 趋势线 · 买卖点</span><span class="small faint" style="text-transform:none;letter-spacing:0">金线＝平滑趋势　浅红底＝模型持仓　金方块＝你的真实交易</span></h4>
+    <section class="panel" id="sec-chart"><h4><span>价格 · 趋势线 · 买卖点</span><span class="small faint" style="text-transform:none;letter-spacing:0">金线＝平滑趋势　浅红底＝模型持仓　金方块＝你的真实交易</span></h4>
       <div id="c-price" class="chart"></div><div id="c-slope" class="chart slope"></div></section>
-    <section class="panel"><h4><span>策略参数</span><span id="p-state" class="chip">当前生效参数</span></h4>
+    <section class="panel" id="sec-params"><h4><span>策略参数</span><span id="p-state" class="chip">当前生效参数</span></h4>
       <div class="params">
         <div><label>回归窗口（日）</label><input id="p-window" type="number" min="2" max="500" value="${inst.window}"></div>
         <div><label>EMA 平滑</label><input id="p-ema" type="number" min="1" max="100" value="${inst.ema}"></div>
@@ -448,10 +453,10 @@ async function detail(sym) {
         <span class="small faint">修改参数后图表和回测会实时预览，点保存后才影响每日信号</span></div>
     </section>
     <div class="cols">
-      <section class="panel"><h4>策略 vs 买入持有</h4><div id="c-eq" class="chart eq"></div><div id="bt"></div><div id="periods"></div></section>
-      <section class="panel"><h4>交易记录</h4><div class="tbl-wrap" id="trades"></div></section>
+      <section class="panel" id="sec-bt"><h4>策略 vs 买入持有</h4><div id="c-eq" class="chart eq"></div><div id="bt"></div><div id="periods"></div></section>
+      <section class="panel"><h4>交易记录</h4><div class="tbl-wrap xscroll" id="trades"></div></section>
     </div>
-    <section class="panel"><h4><span>参数优化 · 训练机</span><span style="display:flex;gap:8px;text-transform:none;letter-spacing:0">
+    <section class="panel" id="sec-opt"><h4><span>参数优化 · 训练机</span><span style="display:flex;gap:8px;text-transform:none;letter-spacing:0">
       <select id="o-obj" style="width:auto">${Object.entries(OBJ).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
       <button class="sm" id="o-run">开始优化</button></span></h4><div id="opt"></div></section>
     <section class="panel"><h4><span>标的设置</span></h4>
@@ -462,7 +467,8 @@ async function detail(sym) {
         <div><label>每日推送</label><select id="s-en"><option value="1" ${inst.enabled ? "selected" : ""}>开启</option><option value="0" ${inst.enabled ? "" : "selected"}>暂停</option></select></div>
         <div><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="sm" id="s-save">保存</button><button class="sm ghost" id="s-refresh">刷新数据</button><button class="sm ghost" id="s-del">删除</button></div></div>
       </div>
-      <p class="note">数据源 ${esc(inst.provider)}:${esc(inst.code)} · 更新于 ${esc((inst.refreshed_at || "").replace("T", " ").slice(0, 16))} UTC</p></section>`;
+      <p class="note">数据源 ${esc(inst.provider)}:${esc(inst.code)} · 更新于 ${esc((inst.refreshed_at || "").replace("T", " ").slice(0, 16))} UTC</p></section>
+    ${dock([["sec-me", "仓位"], ["sec-chart", "图表"], ["sec-params", "参数"], ["sec-bt", "回测"], ["sec-opt", "优化"]])}`;
 
   const pc = chartBase($("#c-price"), 420), sc = chartBase($("#c-slope"), 150), eq = chartBase($("#c-eq"), 240);
   pc.applyOptions({ timeScale: { visible: false } });
