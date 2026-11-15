@@ -161,6 +161,12 @@ input:focus, select:focus { border-color: var(--gold); }
 .metrics thead th { font: 600 11.5px var(--sans); color: var(--faint); letter-spacing: .08em; }
 .metrics td { font-family: var(--mono); }
 .metrics tr.win td { color: var(--gold); }
+.metrics td.win { background: var(--gold-soft); }
+.periods td { white-space: nowrap; }
+.xscroll { overflow-x: auto; }
+.bar { display: inline-block; width: 54px; height: 6px; margin-right: 8px; vertical-align: middle; background: rgba(255, 255, 255, .04); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 3px; }
+.bar i.pos { background: var(--up); } .bar i.neg { background: var(--down); }
 .params { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .params label { font-size: 11.5px; color: var(--faint); display: block; margin-bottom: 4px; }
 .param-actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }

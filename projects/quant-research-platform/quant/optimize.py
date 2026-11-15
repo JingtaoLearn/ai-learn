@@ -98,13 +98,16 @@ def run(dates: list[str], open_: list[float], close: list[float], start_index: i
     for f in range(folds):
         a, b = edges[f], edges[f + 1]
         chosen = _argbest(grid, smoothed[..., f])
-        seg = returns_for(chosen)[a:b]
+        _, pos = engine.single_positions(c, chosen, start_index)
+        seg = backtest.daily_returns(o, c, pos, buy_bps, sell_bps)[start_index:][a:b]
+        flips = int(np.abs(np.diff(pos[start_index:][a:b].astype(int))).sum())
         oos.append(seg)
         fold_rows.append({
             "test_start": dates[start_index + a], "test_end": dates[start_index + b - 1],
             "params": chosen.as_dict(),
             "strategy": backtest.metrics(seg), "buy_hold": backtest.metrics(bh[a:b]),
             "current": backtest.metrics(cur_r[a:b]) if cur else None,
+            "trades": flips,  # buy + sell executions within the block
         })
     oos_r = np.concatenate(oos)
     best = _argbest(grid, smoothed[..., -1])

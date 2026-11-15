@@ -88,6 +88,28 @@ def trades(dates: list[str], open_: np.ndarray, pos: np.ndarray,
     return out
 
 
+def _mdd(r: np.ndarray) -> float:
+    eq = np.cumprod(1 + r)
+    return float((eq / np.maximum.accumulate(np.maximum(eq, 1.0)) - 1).min())
+
+
+def periods(dates: list[str], r: np.ndarray, bh: np.ndarray, pos: np.ndarray, trade_list: list[dict]) -> list[dict]:
+    """Calendar-year breakdown; drawdowns are measured from each year's opening value."""
+    out = []
+    years = sorted({d[:4] for d in dates})
+    for y in years:
+        idx = [i for i, d in enumerate(dates) if d.startswith(y)]
+        a, b = idx[0], idx[-1] + 1
+        out.append({
+            "period": y, "start": dates[a], "end": dates[b - 1],
+            "strategy": float(np.prod(1 + r[a:b]) - 1), "buy_hold": float(np.prod(1 + bh[a:b]) - 1),
+            "strategy_mdd": _mdd(r[a:b]), "buy_hold_mdd": _mdd(bh[a:b]),
+            "exposure": float(pos[a:b].mean()),
+            "trades": sum(1 for t in trade_list if not t["open"] and t["exit_date"].startswith(y)),
+        })
+    return out
+
+
 def run(dates: list[str], open_: np.ndarray, close: np.ndarray, pos: np.ndarray,
         buy_bps: float, sell_bps: float, start_index: int = 0) -> dict:
     """Full single-strategy report from start_index onward, with buy & hold baseline."""
@@ -107,4 +129,5 @@ def run(dates: list[str], open_: np.ndarray, close: np.ndarray, pos: np.ndarray,
         "buy_hold_equity": np.cumprod(1 + bh).round(5).tolist(),
         "dates": d,
         "trades": all_trades,
+        "periods": periods(d, r, bh, p, all_trades),
     }

@@ -261,10 +261,28 @@ function metricsTable(rows) {
     }).join("")}</tbody></table>`;
 }
 
+/* inline diverging bar: red up / green down, scaled to the column's largest move */
+const bar = (v, max) => v == null ? "—" : `<span class="bar"><i class="${v >= 0 ? "pos" : "neg"}" style="width:${Math.min(100, Math.abs(v) / (max || 1) * 100)}%"></i></span><span class="${cls(v)}">${pct(v)}</span>`;
+
+function periodsTable(rows) {
+  if (!rows?.length) return "";
+  const max = Math.max(...rows.flatMap((r) => [Math.abs(r.strategy), Math.abs(r.buy_hold)]));
+  const beat = rows.filter((r) => r.strategy > r.buy_hold).length;
+  const safer = rows.filter((r) => r.strategy_mdd > r.buy_hold_mdd).length;
+  return `<h4 style="margin-top:6px">分年度表现</h4>
+    <p class="note">${rows.length} 个年度中，策略收益跑赢持有 <b>${beat}</b> 年，回撤小于持有 <b>${safer}</b> 年。首尾年份不是完整年度。</p>
+    <div class="xscroll"><table class="metrics periods"><thead><tr><th>年份</th><th>策略</th><th>买入持有</th><th>超额</th><th>策略回撤</th><th>持有回撤</th><th>交易</th><th>持仓</th></tr></thead><tbody>
+    ${rows.slice().reverse().map((r) => `<tr><td>${r.period}</td><td>${bar(r.strategy, max)}</td><td>${bar(r.buy_hold, max)}</td>
+      <td class="${cls(r.strategy - r.buy_hold)}">${pct(r.strategy - r.buy_hold)}</td>
+      <td class="${r.strategy_mdd > r.buy_hold_mdd ? "gold" : ""}">${pct(r.strategy_mdd)}</td><td>${pct(r.buy_hold_mdd)}</td>
+      <td>${r.trades}</td><td>${(r.exposure * 100).toFixed(0)}%</td></tr>`).join("")}</tbody></table></div>`;
+}
+
 function renderBacktest(v) {
   const st = v.backtest.strategy;
   $("#bt").innerHTML = metricsTable([["趋势策略", st], ["买入持有", v.backtest.buy_hold]]) +
     `<p class="note">自 <b>${v.backtest.dates[0]}</b> 起回测 · 完成 <b>${st.trades}</b> 笔交易 · 胜率 <b>${st.win_rate == null ? "—" : pct(st.win_rate, 0)}</b> · 持仓时间占比 <b>${pct(st.exposure, 0)}</b>。收盘出信号、次日开盘成交，已扣除买卖成本。</p>`;
+  $("#periods").innerHTML = periodsTable(v.backtest.periods);
   const tr = v.backtest.trades.slice().reverse();
   $("#trades").innerHTML = tr.length ? `<table class="metrics"><thead><tr><th>买入</th><th>价格</th><th>卖出</th><th>价格</th><th>收益</th></tr></thead><tbody>
     ${tr.map((t) => `<tr><td>${t.entry_date}</td><td>${px(t.entry)}</td><td>${t.open ? '<span class="gold">持有中</span>' : t.exit_date}</td><td>${px(t.exit)}</td><td class="${cls(t.return)}">${pct(t.return)}</td></tr>`).join("")}</tbody></table>`
@@ -314,6 +332,32 @@ function heatmap(h) {
     ${h.window.map((w, i) => `<div class="hd">${w}</div>${h.score[i].map((v) => `<div style="background:${color(v)}" title="${v}">${v == null ? "" : v.toFixed(2)}</div>`).join("")}`).join("")}</div>`;
 }
 
+function stagesTable(folds) {
+  const max = Math.max(...folds.flatMap((f) => [f.strategy, f.current, f.buy_hold].filter(Boolean).map((m) => Math.abs(m.total_return))));
+  const best = (f) => { const c = [["s", f.strategy.total_return], ["c", f.current?.total_return], ["b", f.buy_hold.total_return]].filter((x) => x[1] != null); return c.sort((a, b) => b[1] - a[1])[0][0]; };
+  return `<div class="xscroll"><table class="metrics periods"><thead><tr><th>阶段</th><th>检验区间</th><th>所选参数</th><th>滚动优化</th><th>当前参数</th><th>买入持有</th><th>优化回撤</th><th>持有回撤</th><th>买卖次数</th></tr></thead><tbody>
+    ${folds.map((f, k) => { const w = best(f); return `<tr><td>${k + 1}</td><td>${f.test_start}<br><span class="faint">~ ${f.test_end}</span></td>
+      <td>${f.params.window}/${f.params.ema}/${f.params.buy}/${f.params.sell}</td>
+      <td class="${w === "s" ? "win" : ""}">${bar(f.strategy.total_return, max)}</td>
+      <td class="${w === "c" ? "win" : ""}">${f.current ? bar(f.current.total_return, max) : "—"}</td>
+      <td class="${w === "b" ? "win" : ""}">${bar(f.buy_hold.total_return, max)}</td>
+      <td>${pct(f.strategy.max_drawdown)}</td><td>${pct(f.buy_hold.max_drawdown)}</td><td>${f.trades ?? "—"}</td></tr>`; }).join("")}
+    </tbody></table></div><p class="note">金色底＝该阶段收益最高的一方。所选参数格式：窗口/EMA/买线/卖线。</p>`;
+}
+
+function drawWalkForward(wf) {
+  const el = $("#c-wf");
+  if (!el || !wf.equity) return;
+  const ch = chartBase(el, 240);
+  const line = (vals, opts) => { const s = ch.addLineSeries({ priceLineVisible: false, lastValueVisible: true, ...opts }); s.setData(wf.dates.map((t, i) => ({ time: t, value: vals[i] }))); return s; };
+  const strat = line(wf.equity, { color: GOLD, lineWidth: 2, title: "优化" });
+  if (wf.current_equity) line(wf.current_equity, { color: "#e9e6df", lineWidth: 1, lineStyle: 2, title: "当前" });
+  line(wf.buy_hold_equity, { color: DIM, lineWidth: 1, title: "持有" });
+  const known = new Set(wf.dates);
+  strat.setMarkers(wf.folds.filter((f) => known.has(f.test_start)).map((f, k) => ({ time: f.test_start, position: "aboveBar", color: GOLD, shape: "arrowDown", text: `阶段${k + 1}` })));
+  ch.timeScale().fitContent();
+}
+
 function renderOpt(runs) {
   const el = $("#opt");
   const run = runs[0];
@@ -337,12 +381,12 @@ function renderOpt(runs) {
     <h4>样本外检验（滚动前推，${wf.dates[0]} 起）</h4>
     ${metricsTable([["滚动优化", wf.strategy], ["当前参数", wf.current], ["买入持有", wf.buy_hold]])}
     <p class="note">${verdict}「当前参数」通常是用全部历史数据挑出来的，含事后偏差，样本外表现可能被高估。</p>
-    <div class="cols" style="margin-top:12px">
-      <div><h4>各阶段所选参数</h4><table class="metrics"><thead><tr><th>检验区间</th><th>参数</th><th>策略</th><th>持有</th></tr></thead><tbody>
-        ${wf.folds.map((f) => `<tr><td>${f.test_start.slice(0, 7)}~${f.test_end.slice(0, 7)}</td><td>${f.params.window}/${f.params.ema}/${f.params.buy}/${f.params.sell}</td><td class="${cls(f.strategy.total_return)}">${pct(f.strategy.total_return)}</td><td class="${cls(f.buy_hold.total_return)}">${pct(f.buy_hold.total_return)}</td></tr>`).join("")}
-      </tbody></table></div>
-      <div><h4>参数稳定性（窗口 × EMA）</h4>${heatmap(r.heatmap)}</div>
-    </div>`;
+    <h4 style="margin-top:14px">样本外净值（金＝滚动优化　白虚线＝当前参数　灰＝买入持有　竖标＝阶段起点）</h4>
+    <div id="c-wf" class="chart eq"></div>
+    <h4 style="margin-top:14px">各阶段表现（每段只用之前的数据选参数）</h4>
+    ${stagesTable(wf.folds)}
+    <h4 style="margin-top:14px">参数稳定性（窗口 × EMA）</h4>${heatmap(r.heatmap)}`;
+  drawWalkForward(wf);
   $("#opt-try").onclick = () => { setParams(rec); window.scrollTo({ top: 0, behavior: "smooth" }); toast("已载入推荐参数，图表为预览效果"); };
   $("#opt-apply").onclick = async () => { if (!confirm("采用推荐参数？之后的每日信号将按新参数计算。")) return; await api(`/api/instruments/${D.sym}/apply`, { method: "POST", body: rec }); toast("已采用"); route(); };
 }
@@ -404,7 +448,7 @@ async function detail(sym) {
         <span class="small faint">修改参数后图表和回测会实时预览，点保存后才影响每日信号</span></div>
     </section>
     <div class="cols">
-      <section class="panel"><h4>策略 vs 买入持有</h4><div id="c-eq" class="chart eq"></div><div id="bt"></div></section>
+      <section class="panel"><h4>策略 vs 买入持有</h4><div id="c-eq" class="chart eq"></div><div id="bt"></div><div id="periods"></div></section>
       <section class="panel"><h4>交易记录</h4><div class="tbl-wrap" id="trades"></div></section>
     </div>
     <section class="panel"><h4><span>参数优化 · 训练机</span><span style="display:flex;gap:8px;text-transform:none;letter-spacing:0">
