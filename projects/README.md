@@ -38,10 +38,6 @@ projects/
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
 | [quant-research-platform](quant-research-platform/) | `quant.ai.jingtao.fun` | Trend Sentinel: trend-following buy/sell signals for stocks, indices and gold, with backtest, walk-forward optimization on Feng, and Feishu close/intraday alerts |
 
-## Agent Workflows
-
-- [agentic-workflow](agentic-workflow/) — principle-aware native Hermes product-Agent suites: Goal, layered Principles, Role-specific judgment, and observable Validation around one persistent Product Owner Session.
-
 ## Adding a New Project
 
 1. Create project directory: `projects/<project-name>/`
