@@ -230,6 +230,41 @@ def apply(symbol: str, body: ApplyIn):
     return {"ok": True}
 
 
+class TradeIn(BaseModel):
+    side: str = Field(pattern="^(BUY|SELL)$")
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    price: float = Field(gt=0)
+    qty: float | None = Field(None, gt=0)
+    note: str | None = Field(None, max_length=200)
+    signal_date: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.post("/api/instruments/{symbol}/trades")
+def add_trade(symbol: str, body: TradeIn):
+    """Record what the user actually did (optionally answering a model signal)."""
+    _inst(symbol)
+    return {"id": svc.store.add_trade(symbol, **body.model_dump())}
+
+
+@app.delete("/api/trades/{trade_id}")
+def delete_trade(trade_id: int):
+    svc.store.delete_trade(trade_id)
+    return {"ok": True}
+
+
+class SkipIn(BaseModel):
+    signal_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    action: str = Field(pattern="^(BUY|SELL)$")
+
+
+@app.post("/api/instruments/{symbol}/skip")
+def skip(symbol: str, body: SkipIn):
+    """The user saw the signal and did not act on it."""
+    _inst(symbol)
+    svc.store.answer(symbol, body.signal_date, body.action, "SKIPPED")
+    return {"ok": True}
+
+
 # ---- automation (Hermes cron on ailearn, bearer token)
 @app.post("/api/jobs/daily")
 def job_daily(markets: str = "cn,sge"):

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 import httpx
 import numpy as np
 
-from . import backtest, data, engine, optimize
+from . import backtest, data, engine, optimize, portfolio
 from .engine import Params
 from .store import Store
 
@@ -68,7 +68,7 @@ class Service:
         snap = engine.snapshot(c, p, si)
         snap.update(date=dates[-1], close=float(c[-1]), change=float(c[-1] / c[-2] - 1),
                     provisional=bool(bars[-1]["provisional"]))
-        out = {"instrument": inst, "ready": True, "signal": snap}
+        out = {"instrument": inst, "ready": True, "signal": snap, "me": self.me(inst, snap, bars)}
         if with_backtest:
             slope, pos = engine.single_positions(c, p, si)
             smooth = np.exp(engine.smooth_curve(c, p.window, p.ema))
@@ -83,6 +83,13 @@ class Service:
                 backtest=bt,
             )
         return out
+
+    def me(self, inst: dict, snap: dict, bars: list[dict]) -> dict:
+        m = portfolio.me(self.store, inst, snap)
+        for p in m["pending"]:  # suggest the next-open fill the model assumed
+            nxt = next((b for b in bars if b["date"] > p["date"]), None)
+            p["fill"] = {"date": nxt["date"], "price": nxt["open"]} if nxt else None
+        return m
 
     def overview(self) -> list[dict]:
         out = []

@@ -37,6 +37,20 @@
       <menu><button value="cancel" class="ghost">取消</button><button type="button" id="add-confirm" disabled>添加</button></menu>
     </form>
   </dialog>
+  <dialog id="dlg-trade">
+    <form method="dialog" class="dlg">
+      <h3 id="t-title">登记交易</h3>
+      <p class="dim small" id="t-hint"></p>
+      <div class="params" style="grid-template-columns:1fr 1fr">
+        <div><label>方向</label><select id="t-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select></div>
+        <div><label>成交日期</label><input id="t-date" type="date"></div>
+        <div><label>成交价</label><input id="t-price" type="number" step="any" min="0"></div>
+        <div><label>数量（可选）</label><input id="t-qty" type="number" step="any" min="0"></div>
+      </div>
+      <div style="margin-top:10px"><label class="small faint">备注（可选）</label><input id="t-note" maxlength="200"></div>
+      <menu><button value="cancel" class="ghost">取消</button><button type="button" onclick="saveTrade()">保存</button></menu>
+    </form>
+  </dialog>
   <div id="toast"></div>
   <script src="/static/lightweight-charts.js"></script>
   <script src="/static/app.js"></script>

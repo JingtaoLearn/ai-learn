@@ -114,6 +114,22 @@ input:focus, select:focus { border-color: var(--gold); }
 .trigger b { font: 600 14px var(--mono); }
 .dist { font: 600 12px var(--mono); padding: 2px 7px; border-radius: 6px; background: var(--ink-3); }
 
+/* to-do list: the first thing the user sees */
+.todo { display: grid; gap: 10px; margin-bottom: 8px; }
+.todo-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: 12px; background: var(--ink-2); border: 1px solid var(--line); border-left: 4px solid var(--line-2);
+  animation: rise .5s cubic-bezier(.2, .8, .2, 1) both; margin: 0 0 10px; }
+.todo-item.up { border-left-color: var(--up); background: linear-gradient(90deg, var(--up-soft), var(--ink-2) 40%); }
+.todo-item.down { border-left-color: var(--down); background: linear-gradient(90deg, var(--down-soft), var(--ink-2) 40%); }
+.todo-item.warn { border-left-color: var(--gold); background: linear-gradient(90deg, var(--gold-soft), var(--ink-2) 40%); }
+.todo-item b { font-size: 15.5px; }
+.todo-text { cursor: pointer; flex: 1 1 260px; }
+.todo-btns { display: flex; gap: 8px; }
+.onboard { padding: 12px 14px; border: 1px dashed var(--line-2); border-radius: 12px; }
+.hold tbody tr { cursor: pointer; } .hold tbody tr:hover td { background: rgba(255, 255, 255, .025); }
+.hold td:first-child { color: var(--text) !important; font-family: var(--sans); }
+.dlg label { font-size: 11.5px; color: var(--faint); display: block; margin-bottom: 4px; }
+
 /* feed */
 .section-title { display: flex; align-items: baseline; justify-content: space-between; margin: 40px 0 14px; }
 .section-title h3 { font: 900 20px var(--serif); margin: 0; letter-spacing: .04em; }

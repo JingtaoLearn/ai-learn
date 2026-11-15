@@ -21,7 +21,8 @@ Because the slope is monotonic in the next close, the app solves in closed form 
 
 | Area | What it does |
 |---|---|
-| Overview | One card per instrument: action, model position, slope gauge (sell line / slope / buy line), distance to trigger, 6-month sparkline; signal/alert/param log |
+| Overview | Written from your real position: to-do list (signals to execute or confirm, model/you divergences), your holdings with cost, P&L, days held and sell trigger, watchlist cards (slope gauge, distance to trigger), your realized trades, signal log |
+| Feedback | Every BUY/SELL signal asks "did you do it?": confirm with your actual date/price, or mark it skipped. Your confirmed trades define your real position; until you record anything the model position is used |
 | Detail | Candles + trend curve + buy/sell markers + holding shading, slope pane with threshold lines, strategy-vs-buy&hold equity and metrics, trade list |
 | What-if | Edit parameters → charts and backtest re-run live; save to make them the signal parameters |
 | Optimization | ~9.5k-combo grid on the Feng training VM, neighbour-smoothed scores (stable region, not a lucky peak), 5-fold expanding walk-forward vs current params vs buy&hold, window×EMA heatmap, one-click apply |
@@ -80,5 +81,6 @@ QUANT_AUTH=none QUANT_DB=/tmp/quant.db uvicorn quant.app:app --port 8000
 | `quant/optimize.py` | grid + smoothing + walk-forward |
 | `quant/data.py` | history providers, live quotes, market sessions |
 | `quant/service.py` | refresh, views, daily signals, alerts, optimization dispatch |
+| `quant/portfolio.py` | your real position from confirmed trades, pending confirmations, divergence |
 | `quant/app.py` / `quant/worker.py` | serving app / training worker |
 | `quant/static/` | dashboard (vanilla JS + vendored TradingView Lightweight Charts) |

@@ -55,17 +55,21 @@ function spark(values, held) {
     <path d="${d}L${w},${h}L0,${h}Z" fill="url(#g${held}${c.slice(1)})"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6"/></svg>`;
 }
 
+/* the user's real position once they have confirmed anything; until then follow the model */
+const myHeld = (item) => (item.me?.tracked ? item.me.held : !!item.signal?.position);
+
 function card(item, i) {
   const inst = item.instrument;
   if (!item.ready) return `<article class="card" style="animation-delay:${i * 60}ms"><h2>${esc(inst.name)}</h2><p class="dim">${inst.refresh_error ? "数据获取失败：" + esc(inst.refresh_error) : "正在获取历史数据…"}</p></article>`;
-  const s = item.signal;
-  return `<article class="card ${s.position ? "held" : ""} act-${s.action}" style="animation-delay:${i * 60}ms" onclick="location.hash='#/s/${encodeURIComponent(inst.symbol)}'">
+  const s = item.signal, me = item.me;
+  const mine = me.tracked ? (me.held ? '<span class="up">● 你持有</span>' : '<span class="dim">○ 你空仓</span>') : '<span class="faint">模型' + (s.position ? "持有" : "空仓") + "</span>";
+  return `<article class="card ${myHeld(item) ? "held" : ""} act-${s.action}" style="animation-delay:${i * 60}ms" data-href="#/s/${encodeURIComponent(inst.symbol)}">
     <div class="card-head">
       <div><h2>${esc(inst.name)}</h2><div class="code">${esc(inst.symbol)} · ${s.date}${s.provisional ? " · 临时收盘" : ""}</div></div>
-      <span class="badge ${s.action}">${s.action === "BUY" || s.action === "SELL" ? "明日开盘" : ""}${ACT[s.action]}</span>
+      <span class="badge ${s.action}">${s.action === "BUY" || s.action === "SELL" ? "明日开盘" : "模型"}${ACT[s.action]}</span>
     </div>
     <div class="price-row"><span class="price">${px(s.close)}</span><span class="chg ${cls(s.change)}">${pct(s.change, 2)}</span>
-      <span class="small faint" style="margin-left:auto">${s.position ? '<span class="up">● 持有中</span>' : "○ 空仓"}</span></div>
+      <span class="small" style="margin-left:auto">${mine}${me.held && me.pnl != null ? ` <span class="${cls(me.pnl)}">${pct(me.pnl)}</span>` : ""}</span></div>
     ${spark(item.spark, s.position)}
     ${gauge(s, inst)}
     ${trigger(s, inst.unit)}
@@ -81,30 +85,126 @@ function feedRow(e, names) {
   return `<div class="feed-row"><span class="mono faint small">${e.date.slice(0, 10)}</span><span>${esc(names[e.symbol] || e.symbol)}</span><span>${what}</span></div>`;
 }
 
+/* to-do items, written from the user's position; each carries its own buttons */
+const tradeBtn = (i, side, date, price, label, signal_date, ghost) =>
+  `<button class="sm${ghost ? " ghost" : ""}" data-trade='${esc(JSON.stringify({ sym: i.symbol, name: i.name, side, date, price, signal_date }))}'>${label}</button>`;
+
+function todos(items) {
+  const out = [];
+  for (const it of items.filter((x) => x.ready)) {
+    const { instrument: i, signal: s, me } = it;
+    for (const p of me.pending) {
+      const buy = p.action === "BUY", today = p.date === s.date;
+      const ctx = buy ? (me.held ? "你已持有，可忽略" : "")
+        : me.tracked && !me.held ? "你已空仓，可忽略" : me.pnl != null ? `你持有，浮盈 ${pct(me.pnl)}` : "";
+      out.push({ tone: buy ? "up" : "down", sym: i.symbol,
+        title: `${i.name}：${today ? "下一交易日开盘" : p.date.slice(5) + " 信号 · "}${buy ? "买入" : "卖出"}`,
+        sub: (today ? `收盘斜率已穿越${buy ? "买线" : "卖线"}，执行后点确认` : "这个信号你执行了吗？") + (ctx ? " · " + ctx : ""),
+        btns: tradeBtn(i, p.action, p.fill?.date, p.fill?.price, buy ? "我已买入" : "我已卖出", p.date) +
+          `<button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${buy ? "没买" : "没卖"}</button>` });
+    }
+    if (me.divergence === "MODEL_FLAT")
+      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型已离场，你仍持有`,
+        sub: `浮盈 ${pct(me.pnl)} · 模型空仓期间，下跌风险由你承担`, btns: tradeBtn(i, "SELL", s.date, s.close, "登记卖出") });
+    if (me.divergence === "MODEL_LONG")
+      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型持有中，你空仓`,
+        sub: "可以等下一个买点，或自行买入后登记", btns: tradeBtn(i, "BUY", s.date, s.close, "登记买入", null, true) });
+  }
+  return out;
+}
+
+function holdingsTable(items) {
+  const rows = items.filter((x) => x.ready && myHeld(x));
+  if (!rows.length) return '<div class="empty">当前没有持仓</div>';
+  return `<table class="metrics hold"><thead><tr><th>标的</th><th>现价</th><th>成本</th><th>浮盈</th><th>持有</th><th>模型</th><th>卖出触发</th></tr></thead><tbody>
+    ${rows.map(({ instrument: i, signal: s, me }) => {
+      const days = me.entry_date ? Math.round((Date.parse(s.date) - Date.parse(me.entry_date)) / 864e5) : null;
+      const trig = s.sell_trigger;
+      return `<tr data-href="#/s/${encodeURIComponent(i.symbol)}"><td>${esc(i.name)}${me.tracked ? "" : ' <span class="chip">按模型</span>'}</td>
+        <td>${px(s.close)}</td><td>${me.entry_price ? px(me.entry_price) : "—"}</td>
+        <td class="${cls(me.pnl)}">${me.pnl != null ? pct(me.pnl) : "—"}</td><td>${days != null ? days + " 天" : "—"}</td>
+        <td>${s.position ? '<span class="up">持有</span>' : '<span class="down">已离场</span>'}</td>
+        <td>${trig ? `${px(trig)} <span class="faint">${pct(trig / s.close - 1)}</span>` : "—"}</td></tr>`;
+    }).join("")}</tbody></table>`;
+}
+
+function myTrades(items) {
+  const done = items.filter((x) => x.ready).flatMap((x) => x.me.realized.map((t) => ({ ...t, name: x.instrument.name })))
+    .sort((a, b) => b.exit_date.localeCompare(a.exit_date));
+  if (!done.length) return '<div class="empty">还没有完成的交易。按信号买卖后点「我已买入 / 我已卖出」，这里会记录你的真实收益。</div>';
+  const wins = done.filter((t) => t.return > 0).length, total = done.reduce((a, t) => a * (1 + t.return), 1) - 1;
+  return `<p class="note">共 <b>${done.length}</b> 笔 · 胜率 <b>${pct(wins / done.length, 0)}</b> · 复利合计 <b class="${cls(total)}">${pct(total)}</b></p>
+    <table class="metrics"><thead><tr><th>标的</th><th>买入</th><th>卖出</th><th>收益</th></tr></thead><tbody>
+    ${done.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.entry_date} @ ${px(t.entry)}</td><td>${t.exit_date} @ ${px(t.exit)}</td><td class="${cls(t.return)}">${pct(t.return)}</td></tr>`).join("")}</tbody></table>`;
+}
+
 async function overview() {
   const view = $("#view");
   const { items, events } = await api("/api/overview");
   const ready = items.filter((x) => x.ready);
-  const acts = ready.filter((x) => ["BUY", "SELL"].includes(x.signal.action));
-  const held = ready.filter((x) => x.signal.position);
   const names = Object.fromEntries(items.map((x) => [x.instrument.symbol, x.instrument.name]));
   const latest = ready.map((x) => x.signal.date).sort().at(-1) || "";
-  const headline = acts.length
-    ? `今日 <em>${acts.length}</em> 个标的需操作`
-    : `今日无需操作`;
-  const sub = acts.length
-    ? acts.map((x) => `${x.instrument.name}：下一交易日开盘${ACT[x.signal.action]}`).join("；")
-    : `持有 ${held.length} 个 · 空仓 ${ready.length - held.length} 个。卡片下方是距离触发价的涨跌幅，越接近 0 越可能在下个收盘出信号。`;
+  const list = todos(items);
+  const tracked = ready.some((x) => x.me.tracked);
+  const held = ready.filter(myHeld);
   view.innerHTML = `
     <section class="verdict">
-      <div><div class="eyebrow">收盘信号 · ${latest}</div><h1>${headline}</h1><p>${esc(sub)}</p></div>
-      <div class="legend"><span><i style="background:${UP}"></i>买入 / 持有</span><span><i style="background:${DOWN}"></i>卖出</span><span><i style="background:${GOLD}"></i>触发线</span></div>
+      <div><div class="eyebrow">${latest} 收盘 · ${tracked ? "按你的真实持仓" : "按模型仓位"}</div>
+        <h1>${list.length ? `你有 <em>${list.length}</em> 件事要处理` : "今天不用操作"}</h1>
+        <p>${list.length ? "执行了就点确认、没执行就点「没买 / 没卖」，之后的提醒都按你的真实仓位来。"
+          : `持有 ${held.length} 个 · 观察 ${ready.length - held.length} 个。离触发价越近，下个收盘越可能出信号。`}</p></div>
     </section>
+    ${list.length ? `<section class="todo">${list.map((t, k) => `<div class="todo-item ${t.tone}" style="animation-delay:${k * 70}ms">
+      <div class="todo-text" data-href="#/s/${encodeURIComponent(t.sym)}"><b>${esc(t.title)}</b><div class="small dim">${esc(t.sub)}</div></div>
+      <div class="todo-btns">${t.btns}</div></div>`).join("")}</section>` : ""}
+    ${tracked ? "" : `<p class="note onboard">💡 还没登记你的真实持仓，下面暂按模型仓位展示。进入标的点「登记交易」，或在信号出现后点确认，之后所有提醒都按你的实际仓位。</p>`}
+    <div class="section-title"><h3>我的持仓</h3><span class="small faint">点行进入详情</span></div>
+    <section class="panel">${holdingsTable(items)}</section>
+    <div class="section-title"><h3>观察列表</h3><span class="small faint">卡片底部是距触发价的涨跌幅</span></div>
     <section class="grid">${items.map(card).join("")}</section>
+    <div class="section-title"><h3>我的交易</h3><span class="small faint">你确认过的真实买卖</span></div>
+    <section class="panel">${myTrades(items)}</section>
     <div class="section-title"><h3>信号日志</h3><span class="small faint">收盘信号 · 盘中预警 · 参数变更</span></div>
     <section class="feed">${events.length ? events.map((e) => feedRow(e, names)).join("") : '<div class="empty">暂无记录，首次收盘任务运行后出现</div>'}</section>`;
   if (items.some((x) => !x.ready && !x.instrument.refresh_error)) setTimeout(() => route(), 4000);
 }
+
+/* ---------- record a real trade / skip a signal ---------- */
+function tradeDialog(o) {
+  const d = $("#dlg-trade");
+  d.dataset.sym = o.sym; d.dataset.signal = o.signal_date || "";
+  $("#t-title").textContent = `${o.name} · ${o.side === "BUY" ? "登记买入" : "登记卖出"}`;
+  $("#t-side").value = o.side;
+  $("#t-date").value = o.date || new Date().toISOString().slice(0, 10);
+  $("#t-price").value = o.price ? +(+o.price).toFixed(4) : "";
+  $("#t-qty").value = ""; $("#t-note").value = "";
+  $("#t-hint").textContent = o.signal_date ? `对应 ${o.signal_date} 收盘信号。预填的是模型假设的次日开盘价，请改成你的实际成交价。` : "填你的实际成交日期和价格。";
+  d.showModal();
+}
+async function saveTrade() {
+  const d = $("#dlg-trade");
+  const body = { side: $("#t-side").value, date: $("#t-date").value, price: +$("#t-price").value,
+    qty: $("#t-qty").value ? +$("#t-qty").value : null, note: $("#t-note").value || null, signal_date: d.dataset.signal || null };
+  if (!(body.price > 0)) return toast("请填写成交价");
+  try { await api(`/api/instruments/${encodeURIComponent(d.dataset.sym)}/trades`, { method: "POST", body }); d.close(); toast("已记录"); route(); }
+  catch (e) { toast(e.message); }
+}
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-trade],[data-skip],[data-del-trade],[data-href]");
+  if (!t) return;
+  e.stopPropagation();
+  if (t.dataset.trade) return tradeDialog(JSON.parse(t.dataset.trade));
+  if (t.dataset.skip) {
+    const s = JSON.parse(t.dataset.skip);
+    await api(`/api/instruments/${encodeURIComponent(s.sym)}/skip`, { method: "POST", body: { signal_date: s.signal_date, action: s.action } });
+    toast(s.action === "BUY" ? "已记为没买，按空仓继续提醒" : "已记为没卖，按持有继续提醒"); return route();
+  }
+  if (t.dataset.delTrade) {
+    if (!confirm("删除这条交易记录？")) return;
+    await api(`/api/trades/${t.dataset.delTrade}`, { method: "DELETE" }); toast("已删除"); return route();
+  }
+  location.hash = t.dataset.href;
+});
 
 /* ---------- detail ---------- */
 const chartBase = (el, h) => LightweightCharts.createChart(el, {
@@ -134,7 +234,11 @@ function drawCharts(v, p) {
   s.candle.setData(v.bars.map((b) => ({ time: b[0], open: b[1], high: b[2], low: b[3], close: b[4] })));
   s.trend.setData(dates.map((t, i) => v.trend[i] == null ? { time: t } : { time: t, value: v.trend[i] }));
   s.hold.setData(dates.map((t, i) => ({ time: t, value: i >= v.start_index && v.position[i - 1] ? 1 : 0 })));
-  s.candle.setMarkers(markers(dates, v.position).filter((m) => m.time >= dates[v.start_index]));
+  const known = new Set(dates);
+  const mine = (D.v.me ? D.v.me.trades : []).filter((t) => known.has(t.date)).map((t) => ({ time: t.date, position: t.side === "BUY" ? "belowBar" : "aboveBar",
+    color: GOLD, shape: "square", text: t.side === "BUY" ? "我买" : "我卖" }));
+  s.candle.setMarkers([...markers(dates, v.position).filter((m) => m.time >= dates[v.start_index]), ...mine]
+    .sort((a, b) => a.time.localeCompare(b.time)));
   s.slope.setData(dates.map((t, i) => v.slope[i] == null ? { time: t } : { time: t, value: v.slope[i], color: v.slope[i] >= 0 ? "rgba(240,82,79,.6)" : "rgba(31,181,127,.6)" }));
   (D.lines || []).forEach((l) => s.slope.removePriceLine(l));
   D.lines = [
@@ -243,6 +347,25 @@ function renderOpt(runs) {
   $("#opt-apply").onclick = async () => { if (!confirm("采用推荐参数？之后的每日信号将按新参数计算。")) return; await api(`/api/instruments/${D.sym}/apply`, { method: "POST", body: rec }); toast("已采用"); route(); };
 }
 
+function myPanel(v) {
+  const { instrument: i, signal: s, me } = v;
+  const status = !me.tracked ? "还没有登记你在这个标的上的交易，提醒暂按模型仓位。"
+    : me.held ? `你持有，${me.entry_date} 以 ${px(me.entry_price)} 买入，浮盈 <b class="${cls(me.pnl)}">${pct(me.pnl)}</b>${me.qty ? `，数量 ${me.qty}` : ""}。`
+    : "你目前空仓。";
+  const warn = (t, d) => `<div class="todo-item warn"><div><b>${t}</b><div class="small dim">${d}</div></div></div>`;
+  const div = me.divergence === "MODEL_FLAT" ? warn("模型已离场，你仍持有", "模型空仓期间的下跌风险由你承担")
+    : me.divergence === "MODEL_LONG" ? warn("模型持有中，你空仓", "可等下一个买点，或自行买入后登记") : "";
+  const pend = me.pending.map((p) => `<div class="todo-item ${p.action === "BUY" ? "up" : "down"}"><div class="todo-text"><b>${p.date} ${p.action === "BUY" ? "买入" : "卖出"}信号</b><div class="small dim">执行了吗？</div></div>
+    <div class="todo-btns">${tradeBtn(i, p.action, p.fill?.date, p.fill?.price, p.action === "BUY" ? "我已买入" : "我已卖出", p.date)}
+    <button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${p.action === "BUY" ? "没买" : "没卖"}</button></div></div>`).join("");
+  const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "买入" : "卖出"}</td><td>${px(t.price)}</td><td>${t.qty ?? "—"}</td><td>${t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
+  return `<section class="panel"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;text-transform:none;letter-spacing:0">
+      ${tradeBtn(i, "BUY", s.date, s.close, "登记买入", null, true)}${tradeBtn(i, "SELL", s.date, s.close, "登记卖出", null, true)}</span></h4>
+    <p class="note">${status}</p>${div}${pend}
+    ${rows ? `<div class="tbl-wrap"><table class="metrics"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>来源</th><th>备注</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+  </section>`;
+}
+
 async function detail(sym) {
   const view = $("#view");
   view.innerHTML = `<p class="dim"><span class="spinner"></span> 加载中…</p>`;
@@ -258,13 +381,16 @@ async function detail(sym) {
         <h1>${esc(inst.name)} <span class="badge ${s.action}" style="vertical-align:middle;font-size:14px">${ACT[s.action]}</span></h1>
         <div class="price-row"><span class="price">${px(s.close)}</span><span class="chg ${cls(s.change)}">${pct(s.change, 2)}</span><span class="small dim">${esc(inst.unit)}</span></div></div>
       <div class="d-stats">
+        <div class="stat"><label>你的仓位</label><b class="${v.me.held ? "up" : ""}">${v.me.tracked ? (v.me.held ? "持有" : "空仓") : "未登记"}</b></div>
+        ${v.me.held && v.me.pnl != null ? `<div class="stat"><label>浮盈</label><b class="${cls(v.me.pnl)}">${pct(v.me.pnl)}</b></div>` : ""}
         <div class="stat"><label>模型仓位</label><b class="${s.position ? "up" : ""}">${s.position ? "持有" : "空仓"}</b></div>
         <div class="stat"><label>趋势斜率</label><b class="${cls(s.slope)}">${sgn(s.slope)}%</b></div>
         <div class="stat"><label>${s.buy_trigger ? "买入触发" : "卖出触发"}</label><b class="${s.buy_trigger ? "up" : "down"}">${px(s.buy_trigger || s.sell_trigger)}</b></div>
         <div class="stat"><label>距触发</label><b>${s.buy_trigger || s.sell_trigger ? pct((s.buy_trigger || s.sell_trigger) / s.close - 1, 2) : "—"}</b></div>
       </div>
     </section>
-    <section class="panel"><h4><span>价格 · 趋势线 · 买卖点</span><span class="small faint" style="text-transform:none;letter-spacing:0">金线＝平滑趋势　浅红底＝持仓区间</span></h4>
+    ${myPanel(v)}
+    <section class="panel"><h4><span>价格 · 趋势线 · 买卖点</span><span class="small faint" style="text-transform:none;letter-spacing:0">金线＝平滑趋势　浅红底＝模型持仓　金方块＝你的真实交易</span></h4>
       <div id="c-price" class="chart"></div><div id="c-slope" class="chart slope"></div></section>
     <section class="panel"><h4><span>策略参数</span><span id="p-state" class="chip">当前生效参数</span></h4>
       <div class="params">

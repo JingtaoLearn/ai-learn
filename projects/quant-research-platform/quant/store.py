@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS events (
   date TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL,
   UNIQUE (symbol, kind, date, action)
 );
+CREATE TABLE IF NOT EXISTS trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, date TEXT NOT NULL, side TEXT NOT NULL,
+  price REAL NOT NULL, qty REAL, note TEXT, signal_date TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback (
+  symbol TEXT NOT NULL, signal_date TEXT NOT NULL, action TEXT NOT NULL, response TEXT NOT NULL,
+  trade_id INTEGER, created_at TEXT NOT NULL, PRIMARY KEY (symbol, signal_date, action)
+);
 CREATE TABLE IF NOT EXISTS optimizations (
   id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, status TEXT NOT NULL,
   runner TEXT, objective TEXT NOT NULL, created_at TEXT NOT NULL, finished_at TEXT,
@@ -106,7 +114,7 @@ class Store:
 
     def delete_instrument(self, symbol: str) -> None:
         with self.tx() as db:
-            for table in ("instruments", "bars", "events", "optimizations"):
+            for table in ("instruments", "bars", "events", "optimizations", "trades", "feedback"):
                 db.execute(f"DELETE FROM {table} WHERE symbol=?", (symbol,))
 
     # bars
@@ -139,6 +147,35 @@ class Store:
         for r in rows:
             r["detail"] = json.loads(r["detail"])
         return rows
+
+    # the user's real trades and answers to model signals
+    def add_trade(self, symbol: str, date: str, side: str, price: float, qty: float | None,
+                  note: str | None, signal_date: str | None) -> int:
+        with self.tx() as db:
+            tid = db.execute("INSERT INTO trades (symbol, date, side, price, qty, note, signal_date, created_at) "
+                             "VALUES (?,?,?,?,?,?,?,?)",
+                             (symbol, date, side, price, qty, note, signal_date, now_iso())).lastrowid
+            if signal_date:
+                db.execute("INSERT OR REPLACE INTO feedback VALUES (?,?,?,?,?,?)",
+                           (symbol, signal_date, side, "DONE", tid, now_iso()))
+            return tid
+
+    def delete_trade(self, trade_id: int) -> None:
+        with self.tx() as db:
+            db.execute("DELETE FROM feedback WHERE trade_id=?", (trade_id,))
+            db.execute("DELETE FROM trades WHERE id=?", (trade_id,))
+
+    def trades(self, symbol: str | None = None) -> list[dict]:
+        where, args = ("WHERE symbol=?", (symbol,)) if symbol else ("", ())
+        return self.q(f"SELECT * FROM trades {where} ORDER BY date, id", args)
+
+    def answer(self, symbol: str, signal_date: str, action: str, response: str) -> None:
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO feedback VALUES (?,?,?,?,NULL,?)",
+                       (symbol, signal_date, action, response, now_iso()))
+
+    def feedback(self, symbol: str) -> list[dict]:
+        return self.q("SELECT * FROM feedback WHERE symbol=?", (symbol,))
 
     # optimizations
     def create_optimization(self, symbol: str, objective: str) -> int:
