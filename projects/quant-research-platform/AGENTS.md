@@ -1,10 +1,10 @@
-# AGENTS.md
+# CLAUDE.md
 
-## Rules
-- Research only; no broker and no live trading.
-- Evidence first: prove an unvalidated research or product idea with the cheapest valid Spike using existing code/data before production implementation.
-- Define the observable pass/fail threshold before the Spike. `INVALIDATED` is a successful result and stops implementation; `PARTIAL` must state the accepted constraint.
-- After a validated idea, implement the smallest useful vertical slice, then add focused contract/regression tests for the selected behavior. Do not build broad test scaffolds for unproven ideas.
-- Every signal must use information available before execution (`shift(1)`).
-- Preserve run reproducibility: config, data hashes, git state, stable run ID.
-- Do not read, log, or commit `.env`, tokens, or SSH keys.
+Trend Sentinel — see README.md for the signal definition, topology and deploy.
+
+- Signals only: never add broker connectivity or order placement.
+- Signals must use only data up to the decision close; trades execute at the next open.
+- Keep it small. Add a test only for behaviour that matters (engine math, signal dedupe, alerts); no governance/audit scaffolding.
+- Unit tests never hit the network; mock `quant.data`.
+- Services bind to 127.0.0.1; never print `.env` contents or tokens.
+- Changing `engine.py` semantics changes live signals: keep `tests/test_engine.py` (v1 equivalence) green or state the intended change.

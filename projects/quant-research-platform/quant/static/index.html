@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0f12">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="趋势哨兵">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <title>趋势哨兵 · Trend Sentinel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M3 24 L12 15 L18 19 L29 6' stroke='%23e8b04b' stroke-width='4' fill='none' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <div class="grain"></div>
+  <header class="top">
+    <a class="brand" href="#/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 24 L12 15 L18 19 L29 6"/></svg>
+      <span class="brand-cn">趋势哨兵</span><span class="brand-en">TREND SENTINEL</span>
+    </a>
+    <nav class="top-actions">
+      <span id="clock" class="mono dim"></span>
+      <button class="ghost" id="btn-add" title="添加标的">＋ 标的</button>
+    </nav>
+  </header>
+  <main id="view"></main>
+
+  <dialog id="dlg-add">
+    <form method="dialog" class="dlg">
+      <h3>添加标的</h3>
+      <p class="dim small">A股代码（600519）、指数（sh000300）、黄金（AU9999）或美股（AAPL）</p>
+      <div class="row">
+        <input id="add-code" placeholder="代码" autocomplete="off">
+        <button type="button" id="add-lookup">查询</button>
+      </div>
+      <div id="add-result"></div>
+      <menu><button value="cancel" class="ghost">取消</button><button type="button" id="add-confirm" disabled>添加</button></menu>
+    </form>
+  </dialog>
+  <dialog id="dlg-trade">
+    <form method="dialog" class="dlg">
+      <h3 id="t-title">登记交易</h3>
+      <p class="dim small" id="t-hint"></p>
+      <div class="params" style="grid-template-columns:1fr 1fr">
+        <div><label>方向</label><select id="t-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select></div>
+        <div><label>成交日期</label><input id="t-date" type="date"></div>
+        <div><label>成交价</label><input id="t-price" type="number" step="any" min="0"></div>
+        <div><label>数量（可选）</label><input id="t-qty" type="number" step="any" min="0"></div>
+      </div>
+      <div style="margin-top:10px"><label class="small faint">备注（可选）</label><input id="t-note" maxlength="200"></div>
+      <menu><button value="cancel" class="ghost">取消</button><button type="button" onclick="saveTrade()">保存</button></menu>
+    </form>
+  </dialog>
+  <div id="toast"></div>
+  <script src="/static/lightweight-charts.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

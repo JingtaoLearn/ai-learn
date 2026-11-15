@@ -36,11 +36,7 @@ projects/
 | [finance](finance/) | `finance.${S_DOMAIN}` | Legacy read-only investment-report archive retained for historical URL compatibility |
 | [content-hub](content-hub/) | `hub.${S_DOMAIN}` | Generic two-level content registry: category directory → searchable category dashboards → canonical artifact links |
 | [share-hosting](share-hosting/) | `share.${S_DOMAIN}` | UUID-only static file share for ad-hoc HTML/PDF/MD/TXT — unguessable paths, scan-resistant |
-| [quant-research-platform](quant-research-platform/) | `quant.ai.jingtao.fun` plus loopback research ports on Feng | Reproducible strategy research with immutable operator/experiment governance, isolated execution, FastAPI UI, JupyterLab, MLflow, and Prefect |
-
-## Agent Workflows
-
-- [agentic-workflow](agentic-workflow/) — principle-aware native Hermes product-Agent suites: Goal, layered Principles, Role-specific judgment, and observable Validation around one persistent Product Owner Session.
+| [quant-research-platform](quant-research-platform/) | `quant.ai.jingtao.fun` | Trend Sentinel: trend-following buy/sell signals for stocks, indices and gold, with backtest, walk-forward optimization on Feng, and Feishu close/intraday alerts |
 
 ## Adding a New Project
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Quant training tunnel (zhlearn -> ailearn -> Feng :18095)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/libexec/quant-train-tunnel.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

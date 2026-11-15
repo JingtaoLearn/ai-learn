@@ -4,14 +4,4 @@ __pycache__/
 *.egg-info/
 .venv/
 .env
-.ipynb_checkpoints/
-data/raw/*
-!data/raw/.gitkeep
-data/cmb/*
-!data/cmb/.gitkeep
-runs/*
-!runs/.gitkeep
-state/*
-!state/.gitkeep
-analysis/
-deploy/quant-research-ui.env
+data/
