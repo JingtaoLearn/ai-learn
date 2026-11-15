@@ -1,40 +1,30 @@
-[build-system]
-requires = ["setuptools==80.9.0", "wheel==0.45.1"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "gold-quant-research"
-version = "0.1.0"
-description = "Reproducible gold strategy research vertical slice"
-requires-python = ">=3.12,<3.14"
+name = "quant-signal"
+version = "2.0.0"
+description = "Trend-following buy/sell signals with backtest, walk-forward optimization and Feishu alerts"
+requires-python = ">=3.12"
 dependencies = [
-  "pandas==2.3.1", "numpy==2.3.2", "pyarrow==21.0.0",
-  "exchange-calendars==4.13.2",
-  "requests==2.32.4", "matplotlib==3.10.5", "mlflow==3.15.1",
-  "prefect==3.8.2", "optuna==4.9.0",
-  "jupyterlab==4.6.3", "jupyter-server-proxy==4.4.0",
-  "fastapi==0.141.1", "jinja2==3.1.6", "uvicorn==0.52.3",
-  "markdown==3.10.3", "bleach==6.4.0", "psycopg[binary]==3.3.5"
+  "numpy>=2.1",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "httpx>=0.27",
+  "pyjwt>=2.9",
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==8.4.1", "ruff==0.12.8"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
-[project.scripts]
-gold-research = "gold_research.flow:main"
-research = "quant_platform.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["quant"]
 
 [tool.setuptools.package-data]
-quant_platform = ["*.json", "templates/*.html", "static/*"]
+quant = ["static/*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-filterwarnings = ["ignore::pyparsing.warnings.PyparsingDeprecationWarning"]
 
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py312"

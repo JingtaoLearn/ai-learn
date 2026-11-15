@@ -1,0 +1,13 @@
+# Training worker on Feng; zhlearn reaches it via the ailearn SSH tunnel.
+services:
+  worker:
+    build: {context: ., network: host}
+    image: quant-signal:latest
+    container_name: quant-train-worker
+    network_mode: host
+    command: ["uvicorn", "quant.worker:app", "--host", "127.0.0.1", "--port", "18095", "--workers", "2"]
+    environment:
+      QUANT_WORKER_TOKEN: ${QUANT_WORKER_TOKEN:?set in .env}
+    restart: unless-stopped
+    mem_limit: 4g
+    logging: {driver: local, options: {max-size: 10m, max-file: "3"}}
