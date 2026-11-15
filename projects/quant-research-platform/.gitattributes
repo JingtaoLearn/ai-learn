@@ -1,0 +1,3 @@
+# Shipped to Linux hosts as-is: keep LF so scripts and shebangs run.
+* text=auto eol=lf
+*.png binary
