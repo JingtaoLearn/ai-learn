@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import httpx
 import numpy as np
 
-from . import backtest, data, engine, optimize, portfolio
+from . import backtest, compare, data, engine, optimize, portfolio
 from .engine import Params
 from .store import Store
 
@@ -66,6 +66,8 @@ class Service:
         except Exception as exc:  # keep the previous bars; surface the error in the UI
             self.store.update_instrument(inst["symbol"], refresh_error=str(exc)[:300])
             raise
+        if bars and bars[-1]["date"] == data.unfinished_session(inst["market"]):
+            bars = bars[:-1]  # today's bar is unfinished while the market is open: close signals wait for the close
         self.store.replace_bars(inst["symbol"], bars)
         return len(bars)
 
@@ -96,8 +98,15 @@ class Service:
         si = start_index(dates, inst["start_date"])
         snap = engine.snapshot(c, p, si)
         snap.update(date=dates[-1], close=float(c[-1]), change=float(c[-1] / c[-2] - 1),
-                    provisional=bool(bars[-1]["provisional"]))
+                    provisional=bool(bars[-1]["provisional"]),
+                    buy_cross=dates[snap["buy_cross_index"]] if snap["buy_cross_index"] is not None else None,
+                    sell_cross=dates[snap["sell_cross_index"]] if snap["sell_cross_index"] is not None else None)
         out = {"instrument": inst, "ready": True, "signal": snap, "me": self.me(inst, snap, bars)}
+        _, model_pos = engine.single_positions(c, p, si)
+        out["score"] = self.score(inst, o, c, model_pos, si, out["me"])
+        out["me"]["since"] = compare.since_start(
+            dates, o, c, model_pos, out["me"]["trades"], out["me"]["vehicle_ratio"],
+            inst["buy_bps"], inst["sell_bps"], out["me"]["full_amount"])
         if with_backtest:
             slope, pos = engine.single_positions(c, p, si)
             smooth = np.exp(engine.smooth_curve(c, p.window, p.ema))
@@ -118,15 +127,28 @@ class Service:
         # Scale signal-instrument prices (index points) to the traded vehicle (ETF price).
         k = inst["hold_price"] / snap["close"] if inst["hold_code"] and inst["hold_price"] else 1.0
         m["vehicle_ratio"] = k
-        for p in m["pending"]:  # suggest the next-open fill the model assumed
-            nxt = next((b for b in bars if b["date"] > p["date"]), None)
-            p["fill"] = {"date": nxt["date"], "price": nxt["open"] * k} if nxt else None
-            if p["action"] == "BUY" and m.get("full_amount") and m.get("price"):
-                lot = inst["lot"] or 1
-                p["qty"] = max(0, math.floor((m["full_amount"] - (m["value"] or 0)) / m["price"] / lot) * lot)
-            elif p["action"] == "SELL":
-                p["qty"] = m["qty"] or None
         return m
+
+    def score(self, inst: dict, o, c, pos, si: int, me: dict) -> dict:
+        """Strategy report card: last year and whole backtest vs buy & hold, plus the OOS verdict."""
+        r = backtest.daily_returns(o[si:], c[si:], pos[si:], inst["buy_bps"], inst["sell_bps"])
+        bh = np.zeros(len(r))
+        bh[1:] = c[si + 1:] / c[si:-1] - 1
+        y = slice(max(len(r) - 252, 0), None)
+        out = {"y1": {"strategy": float(np.prod(1 + r[y]) - 1), "hold": float(np.prod(1 + bh[y]) - 1),
+                      "strategy_mdd": backtest._mdd(r[y]), "hold_mdd": backtest._mdd(bh[y])},
+               "all": {"strategy": backtest.metrics(r), "hold": backtest.metrics(bh), "since": inst["start_date"]}}
+        if me.get("full_amount"):  # the same percentages in your money
+            out["y1"]["strategy_amount"] = out["y1"]["strategy"] * me["full_amount"]
+            out["y1"]["hold_amount"] = out["y1"]["hold"] * me["full_amount"]
+        done = next((x for x in self.store.optimizations(inst["symbol"], 5) if x["status"] == "done"), None)
+        if done:
+            wf = done["result"]["walk_forward"]
+            st, bhm = wf["strategy"], wf["buy_hold"]
+            verdict = ("EDGE" if st["sharpe"] > bhm["sharpe"]
+                       else "SAFER" if st["max_drawdown"] > bhm["max_drawdown"] else "NONE")
+            out["oos"] = {"verdict": verdict, "strategy": st, "hold": bhm, "from": wf["dates"][0]}
+        return out
 
     def declare_state(self, symbol: str, qty: float, cost: float | None, position_pct: float | None,
                       date: str | None) -> None:
@@ -138,9 +160,6 @@ class Service:
             raise ValueError("no current price; enter a cost price")
         date = date or v["signal"]["date"]
         self.store.add_trade(symbol, date, "INIT", float(price), float(qty), "登记现状", None)
-        for p in portfolio.pending(self.store, symbol):  # the declared state answers older signals
-            if p["date"] <= date:
-                self.store.answer(symbol, p["date"], p["action"], "SUPERSEDED")
         if qty > 0 and position_pct:  # "200 g is 100%" defines the full position
             self.store.update_instrument(symbol, full_mode="qty", full_value=qty * 100 / position_pct)
 
@@ -235,12 +254,19 @@ class Service:
                 continue
             snap = engine.snapshot(c, p, start_index(dates, inst["start_date"]))
             price = q["price"]
-            for side, trigger, hit in (("BUY", snap["buy_trigger"], lambda t: price >= t),
-                                       ("SELL", snap["sell_trigger"], lambda t: price <= t)):
+            # Known holdings: watch only the line on your side (holders: sell line, flat: buy line).
+            led = portfolio.ledger(self.store.trades(inst["symbol"]))
+            tracked = led["changed"] is not None
+            held = led["qty"] > 0
+            buy_t = (snap["buy_line_price"] if not held else None) if tracked else snap["buy_trigger"]
+            sell_t = (snap["sell_line_price"] if held else None) if tracked else snap["sell_trigger"]
+            for side, trigger, hit in (("BUY", buy_t, lambda t: price >= t),
+                                       ("SELL", sell_t, lambda t: price <= t)):
                 if trigger and hit(trigger):
                     detail = {"price": price, "trigger": trigger, "prev_close": float(c[-1]),
                               "slope_if_close": engine.projected_slope(c, p, price),
-                              "threshold": p.buy if side == "BUY" else p.sell}
+                              "threshold": p.buy if side == "BUY" else p.sell,
+                              "held_qty": led["qty"] if tracked else None}
                     if self.store.add_event(inst["symbol"], "alert", session, side, detail):
                         alerts.append({"instrument": inst, "side": side, **detail})
         return alerts
