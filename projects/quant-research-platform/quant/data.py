@@ -96,6 +96,11 @@ def sina_code(provider: str, code: str) -> str:
     return "gb_" + code.lower().replace("-", "")
 
 
+def vehicle_code(inst: dict) -> str:
+    """Sina code of what the user actually trades (e.g. an ETF for an index signal)."""
+    return inst.get("hold_code") or sina_code(inst["provider"], inst["code"])
+
+
 def quotes(codes: list[str]) -> dict[str, dict]:
     """Live quotes keyed by sina code: {name, price, prev_close, open, high, low, time}."""
     if not codes:
@@ -108,7 +113,9 @@ def quotes(codes: list[str]) -> dict[str, dict]:
         key = line.split("=")[0].replace("var hq_str_", "").strip()
         f = line.split('"')[1].split(",")
         try:
-            if key.startswith("gb_"):  # US: name,price,chg%,time,chg,open,high,low,...,prev at 26
+            if key.startswith("fx_"):  # time,bid,ask,prev,...,latest(8)
+                out[key] = {"name": key, "price": float(f[8]) or float(f[1]), "time": f[0]}
+            elif key.startswith("gb_"):  # US: name,price,chg%,time,chg,open,high,low,...,prev at 26
                 out[key] = {"name": f[0], "price": float(f[1]), "open": float(f[5]), "high": float(f[6]),
                             "low": float(f[7]), "prev_close": float(f[26]), "time": f[3]}
             elif key.startswith("SGE_"):  # code,name,contract,price,...,high,_,low,prev,open

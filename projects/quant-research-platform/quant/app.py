@@ -90,7 +90,18 @@ def _inst(symbol: str) -> dict:
 
 @app.get("/api/overview")
 def overview():
-    return {"items": svc.overview(), "events": svc.store.events(limit=30)}
+    items = svc.overview()
+    return {"items": items, "summary": svc.summary(items), "events": svc.store.events(limit=30)}
+
+
+class SettingsIn(BaseModel):
+    total_capital: float | None = Field(None, ge=0)
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn):
+    svc.store.set_setting("total_capital", str(body.total_capital) if body.total_capital else None)
+    return {"ok": True}
 
 
 @app.get("/api/instruments/{symbol}")
@@ -171,6 +182,11 @@ def add(body: InstrumentIn):
 
 class PatchIn(BaseModel):
     name: str | None = None
+    full_mode: str | None = Field(None, pattern="^(amount|qty|weight)$")
+    full_value: float | None = Field(None, ge=0)
+    hold_code: str | None = Field(None, pattern=r"^[A-Za-z0-9_]{0,20}$")
+    hold_unit: str | None = Field(None, max_length=8)
+    lot: float | None = Field(None, gt=0)
     start_date: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     buy_bps: float | None = Field(None, ge=0, le=500)
     sell_bps: float | None = Field(None, ge=0, le=500)
@@ -181,8 +197,13 @@ class PatchIn(BaseModel):
 def patch(symbol: str, body: PatchIn):
     _inst(symbol)
     fields = body.model_dump(exclude_none=True)
+    if "hold_code" in fields:  # "" = hold the signal instrument itself
+        fields["hold_code"] = fields["hold_code"].lower() or None
+        fields["hold_price"] = None
     if fields:
         svc.store.update_instrument(symbol, **fields)
+    if "hold_code" in fields:
+        svc.update_vehicle_prices(force=True)
     return {"ok": True}
 
 
@@ -243,6 +264,8 @@ class TradeIn(BaseModel):
 def add_trade(symbol: str, body: TradeIn):
     """Record what the user actually did (optionally answering a model signal)."""
     _inst(symbol)
+    if body.side == "BUY" and not body.qty:
+        raise HTTPException(400, "买入需要填写数量")
     return {"id": svc.store.add_trade(symbol, **body.model_dump())}
 
 

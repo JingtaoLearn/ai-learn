@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -30,6 +32,32 @@ class Service:
         self.store = store
         self.worker_url = worker_url
         self.worker_token = worker_token
+        self._prices_at = 0.0
+
+    # live prices of what the user actually holds (ETFs etc.) and USD/CNY, throttled
+    def update_vehicle_prices(self, force: bool = False) -> None:
+        if not force and time.time() - self._prices_at < 120:
+            return
+        self._prices_at = time.time()
+        insts = [i for i in self.store.instruments() if i["hold_code"]]
+        try:
+            q = data.quotes([data.vehicle_code(i) for i in insts] + ["fx_susdcny"])
+        except Exception as exc:
+            log.warning("vehicle quotes failed: %s", exc)
+            return
+        for i in insts:
+            v = q.get(data.vehicle_code(i))
+            if v and v["price"] > 0:
+                self.store.update_instrument(i["symbol"], hold_price=v["price"], hold_price_at=v.get("time"))
+        if q.get("fx_susdcny", {}).get("price"):
+            self.store.set_setting("fx_usdcny", str(q["fx_susdcny"]["price"]))
+
+    def fx(self, inst: dict) -> float:
+        return float(self.store.setting("fx_usdcny", "7.1")) if inst["currency"] == "USD" else 1.0
+
+    def total_capital(self) -> float | None:
+        v = self.store.setting("total_capital")
+        return float(v) if v else None
 
     # data
     def refresh(self, inst: dict) -> int:
@@ -49,6 +77,7 @@ class Service:
             except Exception as exc:
                 log.warning("refresh %s failed: %s", inst["symbol"], exc)
                 out[inst["symbol"]] = f"error: {exc}"
+        self.update_vehicle_prices(force=True)
         return out
 
     def _arrays(self, symbol: str, upto: str | None = None):
@@ -85,13 +114,44 @@ class Service:
         return out
 
     def me(self, inst: dict, snap: dict, bars: list[dict]) -> dict:
-        m = portfolio.me(self.store, inst, snap)
+        m = portfolio.me(self.store, inst, snap, self.fx(inst), self.total_capital())
+        # Scale signal-instrument prices (index points) to the traded vehicle (ETF price).
+        k = inst["hold_price"] / snap["close"] if inst["hold_code"] and inst["hold_price"] else 1.0
+        m["vehicle_ratio"] = k
         for p in m["pending"]:  # suggest the next-open fill the model assumed
             nxt = next((b for b in bars if b["date"] > p["date"]), None)
-            p["fill"] = {"date": nxt["date"], "price": nxt["open"]} if nxt else None
+            p["fill"] = {"date": nxt["date"], "price": nxt["open"] * k} if nxt else None
+            if p["action"] == "BUY" and m.get("full_amount") and m.get("price"):
+                lot = inst["lot"] or 1
+                p["qty"] = max(0, math.floor((m["full_amount"] - (m["value"] or 0)) / m["price"] / lot) * lot)
+            elif p["action"] == "SELL":
+                p["qty"] = m["qty"] or None
         return m
 
+    def summary(self, items: list[dict]) -> dict:
+        """Whole-portfolio numbers in CNY."""
+        cap = self.total_capital()
+        tot = {"value": 0.0, "cost": 0.0, "realized": 0.0, "full": 0.0, "defined": 0}
+        for it in items:
+            if not it.get("ready"):
+                continue
+            m, fx = it["me"], it["me"]["fx"]
+            tot["value"] += (m["value"] or 0) * fx
+            tot["cost"] += (m["cost"] or 0) * fx
+            tot["realized"] += sum(r["pnl"] for r in m["realized"]) * fx
+            if m.get("full_amount"):
+                tot["full"] += m["full_amount"] * fx
+                tot["defined"] += 1
+        tot["pnl"] = tot["value"] - tot["cost"]
+        tot["pnl_pct"] = tot["pnl"] / tot["cost"] if tot["cost"] else None
+        tot["total_capital"] = cap
+        tot["invested"] = tot["value"] / cap if cap else None
+        tot["cash"] = cap - tot["value"] if cap else None
+        tot["fx_usdcny"] = float(self.store.setting("fx_usdcny", "7.1"))
+        return tot
+
     def overview(self) -> list[dict]:
+        self.update_vehicle_prices()
         out = []
         for inst in self.store.instruments():
             v = self.view(inst, with_backtest=False)
@@ -104,6 +164,8 @@ class Service:
     # daily signal after the close
     def daily(self, markets: list[str], refresh: bool = True) -> list[dict]:
         today_cn = datetime.now(data.CN).date().isoformat()
+        if refresh:
+            self.update_vehicle_prices(force=True)
         results = []
         for inst in self.store.instruments(enabled_only=True):
             if inst["market"] not in markets:
@@ -115,7 +177,7 @@ class Service:
                 except Exception as exc:
                     results.append({"instrument": inst, "error": str(exc)})
                     continue
-            v = self.view(inst, with_backtest=False)
+            v = self.view(self.store.instrument(inst["symbol"]), with_backtest=False)
             if not v["ready"]:
                 continue
             s = v["signal"]

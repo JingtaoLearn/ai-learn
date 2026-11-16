@@ -8,21 +8,42 @@ def _px(v: float | None) -> str:
     return "—" if v is None else (f"{v:,.2f}" if v >= 100 else f"{v:.3f}")
 
 
+def _qty(q: float | None, unit: str) -> str:
+    if q is None:
+        return ""
+    return f"{q:,.0f} {unit}" if abs(q - round(q)) < 1e-9 else f"{q:,.2f} {unit}"
+
+
+def _money(v: float | None, cur: str) -> str:
+    return "" if v is None else f"≈{'$' if cur == 'USD' else '¥'}{v:,.0f}"
+
+
+def _pos(me: dict) -> str:
+    return f"仓位 {me['ratio']:.0%}" if me.get("ratio") is not None else ""
+
+
 def _todo(r: dict) -> list[str]:
-    """Things the user should act on for one instrument, written from their position."""
+    """Things the user should act on for one instrument, sized from their real holdings."""
     i, s, me = r["instrument"], r["signal"], r.get("me") or {}
-    name, out = i["name"], []
+    name, unit, cur, out = i["name"], i.get("hold_unit") or "", i["currency"], []
+    sug = me.get("suggest") or {}
     if s["action"] == "BUY":
-        mine = "（你已持有，可不动）" if me.get("held") else ""
-        out.append(f"🔴 {name}：下一交易日开盘买入{mine}")
+        size = f"，补到满仓约 {_qty(sug['qty'], unit)}{_money(sug.get('amount'), cur)}" if sug.get("side") == "BUY" and sug.get("qty") else ""
+        mine = "（你已满仓，可不动）" if me.get("tracked") and not sug and me.get("held") else ""
+        out.append(f"🔴 {name}：下一交易日开盘买入{size}{mine}")
     elif s["action"] == "SELL":
-        pnl = f"，浮盈 {me['pnl']:+.1%}" if me.get("held") and me.get("pnl") is not None else ""
-        mine = f"（你持有{pnl}）" if me.get("held") else ("（你已空仓，可不动）" if me.get("tracked") else "")
-        out.append(f"🟢 {name}：下一交易日开盘卖出{mine}")
+        if me.get("held"):
+            pnl = f"，浮盈 {me['pnl']:+.1%}" if me.get("pnl") is not None else ""
+            out.append(f"🟢 {name}：下一交易日开盘卖出 {_qty(me['qty'], unit)}（你持有{pnl}）")
+        else:
+            out.append(f"🟢 {name}：下一交易日开盘卖出" + ("（你已空仓，可不动）" if me.get("tracked") else ""))
     if me.get("divergence") == "MODEL_FLAT":
-        out.append(f"⚠️ {name}：模型已离场，你仍持有（浮盈 {me.get('pnl', 0):+.1%}），考虑卖出")
+        out.append(f"⚠️ {name}：模型已离场，你仍持有 {_qty(me['qty'], unit)}"
+                   f"{'（' + _pos(me) + '）' if _pos(me) else ''}，考虑卖出")
     elif me.get("divergence") == "MODEL_LONG":
-        out.append(f"⚠️ {name}：模型持有中，你空仓；等下一个买点或自行决定")
+        size = f"，可补约 {_qty(sug['qty'], unit)}{_money(sug.get('amount'), cur)}" if sug.get("qty") else ""
+        cur_pos = _pos(me) or ("空仓" if not me.get("held") else "未满仓")
+        out.append(f"⚠️ {name}：模型满仓，你{cur_pos}{size}")
     for p in me.get("pending", []):
         if p["date"] != s["date"]:  # today's signal is listed above
             verb = "买" if p["action"] == "BUY" else "卖"
@@ -35,11 +56,12 @@ def _line(r: dict) -> str:
     head = f"{i['name']} {_px(s['close'])}（{s['change']:+.2%}）"
     held = me["held"] if me.get("tracked") else bool(s["position"])
     if held:
+        size = " ".join(x for x in (_qty(me.get("qty"), i.get("hold_unit") or "") if me.get("qty") else "", _pos(me)) if x)
         pnl = f" 浮盈 {me['pnl']:+.1%}" if me.get("pnl") is not None else ""
         trig = s["sell_trigger"]
         tail = (f"｜收盘 ≤ {_px(trig)}（{trig / s['close'] - 1:+.1%}）卖出" if trig
                 else "｜模型已离场" if not s["position"] else "")
-        return f"  {head}{pnl}{tail}"
+        return f"  {head}{' ' + size if size else ''}{pnl}{tail}"
     trig = s["buy_trigger"]
     tail = f"｜收盘 ≥ {_px(trig)}（{trig / s['close'] - 1:+.1%}）买入" if trig else ""
     return f"  {head}{tail}"
