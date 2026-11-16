@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS feedback (
   symbol TEXT NOT NULL, signal_date TEXT NOT NULL, action TEXT NOT NULL, response TEXT NOT NULL,
   trade_id INTEGER, created_at TEXT NOT NULL, PRIMARY KEY (symbol, signal_date, action)
 );
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS optimizations (
   id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, status TEXT NOT NULL,
   runner TEXT, objective TEXT NOT NULL, created_at TEXT NOT NULL, finished_at TEXT,
@@ -51,6 +52,13 @@ SEED = [
 ]
 COLUMNS = ("symbol", "name", "provider", "code", "market", "currency", "unit", "window", "ema",
            "buy", "sell", "start_date", "buy_bps", "sell_bps")
+# What the user actually holds: hold_code is the traded vehicle (an ETF for an index; NULL = the
+# signal instrument itself); full_mode/full_value define 100% (amount | qty | weight of total capital).
+HOLDING_COLUMNS = {"hold_code": "TEXT", "hold_unit": "TEXT NOT NULL DEFAULT '股'", "lot": "REAL NOT NULL DEFAULT 1",
+                   "full_mode": "TEXT NOT NULL DEFAULT 'amount'", "full_value": "REAL",
+                   "hold_price": "REAL", "hold_price_at": "TEXT"}
+HOLDING_DEFAULTS = {"AU9999": (None, "克", 1), "601328": (None, "股", 100), "000300": ("sh510300", "份", 100),
+                    "000905": ("sh510500", "份", 100), "MSFT": (None, "股", 1)}
 
 
 def now_iso() -> str:
@@ -65,9 +73,21 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
         self._db.executescript(SCHEMA)
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(instruments)")}
+        for col, decl in HOLDING_COLUMNS.items():
+            if col not in have:
+                self._db.execute(f"ALTER TABLE instruments ADD COLUMN {col} {decl}")
+                if col == "hold_code":  # first migration: seed vehicles for the default watchlist
+                    for sym, (code, unit, lot) in HOLDING_DEFAULTS.items():
+                        self._db.execute("UPDATE instruments SET hold_code=? WHERE symbol=?", (code, sym))
         if not self._db.execute("SELECT 1 FROM instruments LIMIT 1").fetchone():
             for i, row in enumerate(SEED):
                 self.upsert_instrument(dict(zip(COLUMNS, row)), sort=i)
+                code, unit, lot = HOLDING_DEFAULTS[row[0]]
+                self.update_instrument(row[0], hold_code=code, hold_unit=unit, lot=lot)
+        if "hold_unit" not in have:
+            for sym, (code, unit, lot) in HOLDING_DEFAULTS.items():
+                self._db.execute("UPDATE instruments SET hold_unit=?, lot=? WHERE symbol=?", (unit, lot, sym))
         # Runs interrupted by a restart can never finish.
         self._db.execute("UPDATE optimizations SET status='failed', error='interrupted' "
                          "WHERE status IN ('queued','running')")
@@ -147,6 +167,18 @@ class Store:
         for r in rows:
             r["detail"] = json.loads(r["detail"])
         return rows
+
+    # settings
+    def setting(self, key: str, default: str | None = None) -> str | None:
+        rows = self.q("SELECT value FROM settings WHERE key=?", (key,))
+        return rows[0]["value"] if rows else default
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        with self.tx() as db:
+            if value is None:
+                db.execute("DELETE FROM settings WHERE key=?", (key,))
+            else:
+                db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
 
     # the user's real trades and answers to model signals
     def add_trade(self, symbol: str, date: str, side: str, price: float, qty: float | None,

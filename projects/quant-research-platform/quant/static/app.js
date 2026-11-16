@@ -88,61 +88,92 @@ function feedRow(e, names) {
 }
 
 /* to-do items, written from the user's position; each carries its own buttons */
-const tradeBtn = (i, side, date, price, label, signal_date, ghost) =>
-  `<button class="sm${ghost ? " ghost" : ""}" data-trade='${esc(JSON.stringify({ sym: i.symbol, name: i.name, side, date, price, signal_date }))}'>${label}</button>`;
+const tradeBtn = (i, side, date, price, label, signal_date, ghost, qty) =>
+  `<button class="sm${ghost ? " ghost" : ""}" data-trade='${esc(JSON.stringify({ sym: i.symbol, name: i.name, unit: i.hold_unit, side, date, price, signal_date, qty }))}'>${label}</button>`;
+const fq = (q, unit) => q == null ? "" : `${Number.isInteger(+q) ? (+q).toLocaleString() : (+q).toFixed(2)} ${unit || ""}`.trim();
+const money = (v, cur) => v == null ? "—" : `${cur === "USD" ? "$" : "¥"}${Math.round(v).toLocaleString()}`;
+const posTxt = (me) => me.ratio != null ? `仓位 ${(me.ratio * 100).toFixed(0)}%` : "";
 
 function todos(items) {
   const out = [];
   for (const it of items.filter((x) => x.ready)) {
-    const { instrument: i, signal: s, me } = it;
+    const { instrument: i, signal: s, me } = it, u = i.hold_unit, sug = me.suggest;
     for (const p of me.pending) {
       const buy = p.action === "BUY", today = p.date === s.date;
-      const ctx = buy ? (me.held ? "你已持有，可忽略" : "")
-        : me.tracked && !me.held ? "你已空仓，可忽略" : me.pnl != null ? `你持有，浮盈 ${pct(me.pnl)}` : "";
+      const size = buy ? (p.qty ? `补到满仓约 ${fq(p.qty, u)}（${money(p.qty * me.price, i.currency)}）` : me.full_amount ? "你已满仓，可忽略" : "")
+        : me.held ? `卖出 ${fq(me.qty, u)}${me.pnl != null ? `，浮盈 ${pct(me.pnl)}` : ""}` : me.tracked ? "你已空仓，可忽略" : "";
       out.push({ tone: buy ? "up" : "down", sym: i.symbol,
         title: `${i.name}：${today ? "下一交易日开盘" : p.date.slice(5) + " 信号 · "}${buy ? "买入" : "卖出"}`,
-        sub: (today ? `收盘斜率已穿越${buy ? "买线" : "卖线"}，执行后点确认` : "这个信号你执行了吗？") + (ctx ? " · " + ctx : ""),
-        btns: tradeBtn(i, p.action, p.fill?.date, p.fill?.price, buy ? "我已买入" : "我已卖出", p.date) +
+        sub: [today ? `收盘斜率已穿越${buy ? "买线" : "卖线"}，执行后点确认` : "这个信号你执行了吗？", size].filter(Boolean).join(" · "),
+        btns: tradeBtn(i, p.action, p.fill?.date, p.fill?.price, buy ? "我已买入" : "我已卖出", p.date, false, p.qty) +
           `<button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${buy ? "没买" : "没卖"}</button>` });
     }
     if (me.divergence === "MODEL_FLAT")
-      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型已离场，你仍持有`,
-        sub: `浮盈 ${pct(me.pnl)} · 模型空仓期间，下跌风险由你承担`, btns: tradeBtn(i, "SELL", s.date, s.close, "登记卖出") });
+      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型已离场，你仍持有 ${fq(me.qty, u)}`,
+        sub: [posTxt(me), me.pnl != null ? `浮盈 ${pct(me.pnl)}` : "", "模型空仓期间，下跌风险由你承担"].filter(Boolean).join(" · "),
+        btns: tradeBtn(i, "SELL", s.date, me.price, "登记卖出", null, false, me.qty) });
     if (me.divergence === "MODEL_LONG")
-      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型持有中，你空仓`,
-        sub: "可以等下一个买点，或自行买入后登记", btns: tradeBtn(i, "BUY", s.date, s.close, "登记买入", null, true) });
+      out.push({ tone: "warn", sym: i.symbol, title: `${i.name}：模型满仓，你${posTxt(me) || (me.held ? "未满仓" : "空仓")}`,
+        sub: sug?.qty ? `可补约 ${fq(sug.qty, u)}（${money(sug.amount, i.currency)}），或等下一个买点` : "设置满仓额度后会给出具体补仓数量",
+        btns: tradeBtn(i, "BUY", s.date, me.price, "登记买入", null, true, sug?.qty) });
   }
   return out;
+}
+
+/* whole portfolio in CNY + per-instrument position bars (actual vs model target) */
+function portfolioPanel(sum, items) {
+  const rows = items.filter((x) => x.ready && (x.me.held || x.me.full_amount));
+  const cap = sum.total_capital;
+  const stat = (label, val, c = "") => `<div class="pstat"><label>${label}</label><b class="${c}">${val}</b></div>`;
+  return `<div class="pstats">
+      ${stat("持仓市值", money(sum.value))}
+      ${stat("浮动盈亏", sum.cost ? `${money(sum.pnl)} <small>${pct(sum.pnl_pct)}</small>` : "—", cls(sum.pnl))}
+      ${stat("已实现盈亏", sum.realized ? money(sum.realized) : "—", cls(sum.realized))}
+      ${cap ? stat("总资金 / 已投入", `${money(cap)} <small>${pct(sum.invested, 0).replace("+", "")}</small>`) : ""}
+    </div>
+    <div class="alloc">${rows.length ? rows.map(({ instrument: i, signal: s, me }) => {
+      const r = me.ratio, tgt = s.position ? 100 : 0;
+      const w = r == null ? (me.held ? 100 : 0) : Math.min(r * 100, 130);
+      return `<div class="alloc-row" data-href="#/s/${encodeURIComponent(i.symbol)}">
+        <span class="alloc-name">${esc(i.name)}</span>
+        <span class="alloc-bar"><i class="${me.divergence ? "warn" : ""}" style="width:${w / 1.3}%"></i><em style="left:${tgt / 1.3}%" title="模型目标 ${tgt}%"></em></span>
+        <span class="alloc-num">${r == null ? (me.held ? "未设满仓" : "—") : (r * 100).toFixed(0) + "%"}<small>${me.value ? money(me.value * me.fx) : ""}</small></span></div>`;
+    }).join("") : '<div class="empty">登记持仓并设置满仓额度后，这里显示每个标的的实际仓位和模型目标</div>'}</div>
+    <p class="note">条＝你的实际仓位，竖线＝模型目标（满仓 100% / 空仓 0%）。美元资产按 1 USD = ${sum.fx_usdcny.toFixed(4)} CNY 折算。
+      <button class="sm ghost" id="set-capital">${cap ? "修改总资金" : "设置总资金"}</button></p>`;
 }
 
 function holdingsTable(items) {
   const rows = items.filter((x) => x.ready && myHeld(x));
   if (!rows.length) return '<div class="empty">当前没有持仓</div>';
-  return `<table class="metrics hold"><thead><tr><th>标的</th><th>现价</th><th>成本</th><th>浮盈</th><th>持有</th><th>模型</th><th>卖出触发</th></tr></thead><tbody>
+  return `<table class="metrics hold"><thead><tr><th>标的</th><th>数量</th><th>仓位</th><th>市值</th><th>成本价</th><th>浮盈</th><th>模型</th><th>卖出触发</th></tr></thead><tbody>
     ${rows.map(({ instrument: i, signal: s, me }) => {
-      const days = me.entry_date ? Math.max(0, Math.round((Date.parse(s.date) - Date.parse(me.entry_date)) / 864e5)) : null;
-      const trig = s.sell_trigger;
+      const trig = s.sell_trigger, k = me.vehicle_ratio || 1;
       return `<tr data-href="#/s/${encodeURIComponent(i.symbol)}"><td class="h-name">${esc(i.name)}${me.tracked ? "" : ' <span class="chip">按模型</span>'}</td>
-        <td class="h-px" data-label="现价">${px(s.close)}</td><td class="h-cost" data-label="成本">${me.entry_price ? px(me.entry_price) : "—"}</td>
-        <td class="h-pnl ${cls(me.pnl)}">${me.pnl != null ? pct(me.pnl) : "—"}</td><td class="h-days" data-label="持有">${days != null ? days + " 天" : "—"}</td>
+        <td class="h-qty" data-label="数量">${me.qty ? fq(me.qty, i.hold_unit) : "—"}</td>
+        <td class="h-ratio" data-label="仓位">${me.ratio != null ? (me.ratio * 100).toFixed(0) + "%" : "—"}</td>
+        <td class="h-val" data-label="市值">${me.value ? money(me.value, i.currency) : "—"}</td>
+        <td class="h-cost" data-label="成本价">${me.avg_cost ? px(me.avg_cost) : "—"}</td>
+        <td class="h-pnl ${cls(me.pnl)}">${me.pnl != null ? pct(me.pnl) : "—"}</td>
         <td class="h-model" data-label="模型">${s.position ? '<span class="up">持有</span>' : '<span class="down">已离场</span>'}</td>
-        <td class="h-trig" data-label="卖出触发">${trig ? `${px(trig)} <span class="faint">${pct(trig / s.close - 1)}</span>` : "—"}</td></tr>`;
+        <td class="h-trig" data-label="卖出触发">${trig ? `${px(trig * k)} <span class="faint">${pct(trig / s.close - 1)}</span>` : "—"}</td></tr>`;
     }).join("")}</tbody></table>`;
 }
 
 function myTrades(items) {
-  const done = items.filter((x) => x.ready).flatMap((x) => x.me.realized.map((t) => ({ ...t, name: x.instrument.name })))
-    .sort((a, b) => b.exit_date.localeCompare(a.exit_date));
-  if (!done.length) return '<div class="empty">还没有完成的交易。按信号买卖后点「我已买入 / 我已卖出」，这里会记录你的真实收益。</div>';
-  const wins = done.filter((t) => t.return > 0).length, total = done.reduce((a, t) => a * (1 + t.return), 1) - 1;
-  return `<p class="note">共 <b>${done.length}</b> 笔 · 胜率 <b>${pct(wins / done.length, 0)}</b> · 复利合计 <b class="${cls(total)}">${pct(total)}</b></p>
-    <table class="metrics"><thead><tr><th>标的</th><th>买入</th><th>卖出</th><th>收益</th></tr></thead><tbody>
-    ${done.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.entry_date} @ ${px(t.entry)}</td><td>${t.exit_date} @ ${px(t.exit)}</td><td class="${cls(t.return)}">${pct(t.return)}</td></tr>`).join("")}</tbody></table>`;
+  const done = items.filter((x) => x.ready).flatMap((x) => x.me.realized.map((t) => ({ ...t, name: x.instrument.name, unit: x.instrument.hold_unit, cur: x.instrument.currency, fx: x.me.fx })))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  if (!done.length) return '<div class="empty">还没有卖出记录。按信号买卖后点「我已买入 / 我已卖出」，这里会记录你的真实收益。</div>';
+  const wins = done.filter((t) => t.return > 0).length, total = done.reduce((a, t) => a + t.pnl * t.fx, 0);
+  return `<p class="note">共卖出 <b>${done.length}</b> 次 · 盈利 <b>${wins}</b> 次 · 已实现合计 <b class="${cls(total)}">${money(total)}</b></p>
+    <div class="xscroll"><table class="metrics"><thead><tr><th>标的</th><th>卖出</th><th>数量</th><th>成本→卖价</th><th>收益</th></tr></thead><tbody>
+    ${done.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.date}</td><td>${fq(t.qty, t.unit)}</td><td>${px(t.avg_cost)} → ${px(t.price)}</td>
+      <td class="${cls(t.return)}">${pct(t.return)}<div class="small">${money(t.pnl, t.cur)}</div></td></tr>`).join("")}</tbody></table></div>`;
 }
 
 async function overview() {
   const view = $("#view");
-  const { items, events } = await api("/api/overview");
+  const { items, events, summary } = await api("/api/overview");
   const ready = items.filter((x) => x.ready);
   const names = Object.fromEntries(items.map((x) => [x.instrument.symbol, x.instrument.name]));
   const latest = ready.map((x) => x.signal.date).sort().at(-1) || "";
@@ -160,6 +191,8 @@ async function overview() {
       <div class="todo-text" data-href="#/s/${encodeURIComponent(t.sym)}"><b>${esc(t.title)}</b><div class="small dim">${esc(t.sub)}</div></div>
       <div class="todo-btns">${t.btns}</div></div>`).join("")}</section>` : ""}
     ${tracked ? "" : `<p class="note onboard">💡 还没登记你的真实持仓，下面暂按模型仓位展示。进入标的点「登记交易」，或在信号出现后点确认，之后所有提醒都按你的实际仓位。</p>`}
+    <div class="section-title" id="sec-pf"><h3>我的组合</h3><span class="small faint">实际仓位 vs 模型目标</span></div>
+    <section class="panel">${portfolioPanel(summary, items)}</section>
     <div class="section-title" id="sec-hold"><h3>我的持仓</h3><span class="small faint">点行进入详情</span></div>
     <section class="panel">${holdingsTable(items)}</section>
     <div class="section-title" id="sec-watch"><h3>观察列表</h3><span class="small faint">卡片底部是距触发价的涨跌幅</span></div>
@@ -168,7 +201,12 @@ async function overview() {
     <section class="panel">${myTrades(items)}</section>
     <div class="section-title" id="sec-log"><h3>信号日志</h3><span class="small faint">收盘信号 · 盘中预警 · 参数变更</span></div>
     <section class="feed">${events.length ? events.map((e) => feedRow(e, names)).join("") : '<div class="empty">暂无记录，首次收盘任务运行后出现</div>'}</section>
-    ${dock([["sec-todo", list.length ? `待办 ${list.length}` : "今日"], ["sec-hold", "持仓"], ["sec-watch", "观察"], ["sec-trades", "交易"], ["sec-log", "日志"]])}`;
+    ${dock([["sec-todo", list.length ? `待办 ${list.length}` : "今日"], ["sec-pf", "组合"], ["sec-hold", "持仓"], ["sec-watch", "观察"], ["sec-trades", "交易"]])}`;
+  $("#set-capital").onclick = async () => {
+    const v = prompt("总投资资金（人民币，元）。按比例定义满仓的标的会用它计算满仓额度；留空表示不设置。", summary.total_capital || "");
+    if (v === null) return;
+    await api("/api/settings", { method: "PUT", body: { total_capital: v.trim() ? +v : null } }); toast("已保存"); route();
+  };
   if (items.some((x) => !x.ready && !x.instrument.refresh_error)) setTimeout(() => route(), 4000);
 }
 
@@ -180,8 +218,10 @@ function tradeDialog(o) {
   $("#t-side").value = o.side;
   $("#t-date").value = o.date || new Date().toISOString().slice(0, 10);
   $("#t-price").value = o.price ? +(+o.price).toFixed(4) : "";
-  $("#t-qty").value = ""; $("#t-note").value = "";
-  $("#t-hint").textContent = o.signal_date ? `对应 ${o.signal_date} 收盘信号。预填的是模型假设的次日开盘价，请改成你的实际成交价。` : "填你的实际成交日期和价格。";
+  $("#t-qty").value = o.qty ? +o.qty : ""; $("#t-note").value = "";
+  $("#t-unit").textContent = o.unit ? `（${o.unit}）` : "";
+  $("#t-hint").textContent = (o.signal_date ? `对应 ${o.signal_date} 收盘信号。预填的是建议数量和模型假设的次日开盘价，请改成你的实际成交。` : "填你的实际成交日期、价格和数量。")
+    + (o.side === "SELL" ? "卖出数量留空＝全部卖出。" : "");
   d.showModal();
 }
 async function saveTrade() {
@@ -397,20 +437,33 @@ function renderOpt(runs) {
 }
 
 function myPanel(v) {
-  const { instrument: i, signal: s, me } = v;
+  const { instrument: i, signal: s, me } = v, u = i.hold_unit, sug = me.suggest;
+  const vehicle = i.hold_code ? `持有品种 ${esc(i.hold_code)}（现价 ${px(me.price)}）` : `持有品种即 ${esc(i.name)}`;
   const status = !me.tracked ? "还没有登记你在这个标的上的交易，提醒暂按模型仓位。"
-    : me.held ? `你持有，${me.entry_date} 以 ${px(me.entry_price)} 买入，浮盈 <b class="${cls(me.pnl)}">${pct(me.pnl)}</b>${me.qty ? `，数量 ${me.qty}` : ""}。`
+    : me.held ? `持有 <b>${fq(me.qty, u)}</b>，成本价 ${px(me.avg_cost)}，市值 <b>${money(me.value, i.currency)}</b>，浮盈 <b class="${cls(me.pnl)}">${pct(me.pnl)}</b>，${me.opened} 起持有。`
     : "你目前空仓。";
-  const warn = (t, d) => `<div class="todo-item warn"><div><b>${t}</b><div class="small dim">${d}</div></div></div>`;
-  const div = me.divergence === "MODEL_FLAT" ? warn("模型已离场，你仍持有", "模型空仓期间的下跌风险由你承担")
-    : me.divergence === "MODEL_LONG" ? warn("模型持有中，你空仓", "可等下一个买点，或自行买入后登记") : "";
-  const pend = me.pending.map((p) => `<div class="todo-item ${p.action === "BUY" ? "up" : "down"}"><div class="todo-text"><b>${p.date} ${p.action === "BUY" ? "买入" : "卖出"}信号</b><div class="small dim">执行了吗？</div></div>
-    <div class="todo-btns">${tradeBtn(i, p.action, p.fill?.date, p.fill?.price, p.action === "BUY" ? "我已买入" : "我已卖出", p.date)}
+  const r = me.ratio, tgt = s.position ? 100 : 0;
+  const gauge = me.full_amount ? `<div class="alloc-row big"><span class="alloc-name">实际仓位</span>
+      <span class="alloc-bar"><i class="${me.divergence ? "warn" : ""}" style="width:${Math.min((r || 0) * 100, 130) / 1.3}%"></i><em style="left:${tgt / 1.3}%"></em></span>
+      <span class="alloc-num">${((r || 0) * 100).toFixed(0)}%<small>满仓 ${money(me.full_amount, i.currency)}</small></span></div>` : "";
+  const advice = sug ? `<p class="note">模型目标 <b>${tgt}%</b>，建议${sug.side === "BUY" ? "买入" : "卖出"} <b>${sug.qty != null ? fq(sug.qty, u) : "（先设置满仓额度）"}</b>${sug.amount ? `（${money(sug.amount, i.currency)}）` : ""}。</p>`
+    : me.tracked && me.full_amount ? `<p class="note">与模型目标 ${tgt}% 一致，不用调整。</p>` : "";
+  const pend = me.pending.map((p) => `<div class="todo-item ${p.action === "BUY" ? "up" : "down"}"><div class="todo-text"><b>${p.date} ${p.action === "BUY" ? "买入" : "卖出"}信号</b><div class="small dim">执行了吗？${p.qty ? "建议数量 " + fq(p.qty, u) : ""}</div></div>
+    <div class="todo-btns">${tradeBtn(i, p.action, p.fill?.date, p.fill?.price, p.action === "BUY" ? "我已买入" : "我已卖出", p.date, false, p.qty)}
     <button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${p.action === "BUY" ? "没买" : "没卖"}</button></div></div>`).join("");
-  const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "买入" : "卖出"}</td><td>${px(t.price)}</td><td>${t.qty ?? "—"}</td><td>${t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
+  const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "买入" : "卖出"}</td><td>${px(t.price)}</td><td>${t.qty != null ? fq(t.qty, u) : "全部"}</td><td>${t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
+  const fm = i.full_mode || "amount";
   return `<section class="panel" id="sec-me"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;text-transform:none;letter-spacing:0">
-      ${tradeBtn(i, "BUY", s.date, s.close, "登记买入", null, true)}${tradeBtn(i, "SELL", s.date, s.close, "登记卖出", null, true)}</span></h4>
-    <p class="note">${status}</p>${div}${pend}
+      ${tradeBtn(i, "BUY", s.date, me.price, "登记买入", null, true, sug?.side === "BUY" ? sug.qty : null)}${tradeBtn(i, "SELL", s.date, me.price, "登记卖出", null, true, me.qty || null)}</span></h4>
+    <p class="note">${status}</p>${gauge}${advice}${pend}
+    <div class="fulldef">
+      <label>满仓定义</label>
+      <select id="f-mode"><option value="amount" ${fm === "amount" ? "selected" : ""}>按金额（${i.currency === "USD" ? "美元" : "元"}）</option>
+        <option value="qty" ${fm === "qty" ? "selected" : ""}>按数量（${esc(u)}）</option><option value="weight" ${fm === "weight" ? "selected" : ""}>按总资金比例（%）</option></select>
+      <input id="f-value" type="number" step="any" min="0" placeholder="例如 100000" value="${i.full_value ?? ""}">
+      <button class="sm" id="f-save">保存</button>
+    </div>
+    <p class="small faint">${vehicle}；每手 ${i.lot} ${esc(u)}。按总资金比例需要先在首页「我的组合」设置总资金。</p>
     ${rows ? `<div class="tbl-wrap xscroll"><table class="metrics"><thead><tr><th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>来源</th><th>备注</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
   </section>`;
 }
@@ -464,10 +517,13 @@ async function detail(sym) {
         <div><label>名称</label><input id="s-name" value="${esc(inst.name)}"></div>
         <div><label>买入成本 bps</label><input id="s-bbps" type="number" value="${inst.buy_bps}"></div>
         <div><label>卖出成本 bps</label><input id="s-sbps" type="number" value="${inst.sell_bps}"></div>
+        <div><label>持有品种代码</label><input id="s-hold" placeholder="同信号标的" value="${esc(inst.hold_code || "")}"></div>
+        <div><label>持仓单位</label><input id="s-unit" value="${esc(inst.hold_unit || "")}"></div>
+        <div><label>每手数量</label><input id="s-lot" type="number" step="any" min="0" value="${inst.lot}"></div>
         <div><label>每日推送</label><select id="s-en"><option value="1" ${inst.enabled ? "selected" : ""}>开启</option><option value="0" ${inst.enabled ? "" : "selected"}>暂停</option></select></div>
         <div><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="sm" id="s-save">保存</button><button class="sm ghost" id="s-refresh">刷新数据</button><button class="sm ghost" id="s-del">删除</button></div></div>
       </div>
-      <p class="note">数据源 ${esc(inst.provider)}:${esc(inst.code)} · 更新于 ${esc((inst.refreshed_at || "").replace("T", " ").slice(0, 16))} UTC</p></section>
+      <p class="note">持有品种代码填你实际交易的场内代码（新浪格式，如 sh510300、sz159915）；留空表示直接持有信号标的本身。<br>数据源 ${esc(inst.provider)}:${esc(inst.code)} · 更新于 ${esc((inst.refreshed_at || "").replace("T", " ").slice(0, 16))} UTC</p></section>
     ${dock([["sec-me", "仓位"], ["sec-chart", "图表"], ["sec-params", "参数"], ["sec-bt", "回测"], ["sec-opt", "优化"]])}`;
 
   const pc = chartBase($("#c-price"), 420), sc = chartBase($("#c-slope"), 150), eq = chartBase($("#c-eq"), 240);
@@ -497,8 +553,13 @@ async function detail(sym) {
     try { await api(`/api/instruments/${sym}/optimize`, { method: "POST", body: { objective: $("#o-obj").value } }); const d = await api(`/api/instruments/${sym}`); renderOpt(d.optimizations); }
     catch (e) { toast(e.message); }
   };
+  $("#f-save").onclick = async () => {
+    await api(`/api/instruments/${sym}`, { method: "PATCH", body: { full_mode: $("#f-mode").value, full_value: +$("#f-value").value || 0 } });
+    toast("满仓定义已保存"); route();
+  };
   $("#s-save").onclick = async () => {
-    await api(`/api/instruments/${sym}`, { method: "PATCH", body: { name: $("#s-name").value, buy_bps: +$("#s-bbps").value, sell_bps: +$("#s-sbps").value, enabled: $("#s-en").value === "1" } });
+    await api(`/api/instruments/${sym}`, { method: "PATCH", body: { name: $("#s-name").value, buy_bps: +$("#s-bbps").value, sell_bps: +$("#s-sbps").value, enabled: $("#s-en").value === "1",
+      hold_code: $("#s-hold").value.trim(), hold_unit: $("#s-unit").value.trim() || "股", lot: +$("#s-lot").value || 1 } });
     toast("已保存"); route();
   };
   $("#s-refresh").onclick = async () => { $("#s-refresh").disabled = true; try { const r = await api(`/api/instruments/${sym}/refresh`, { method: "POST" }); toast(`已刷新 ${r.bars} 根日线`); route(); } catch (e) { toast(e.message); $("#s-refresh").disabled = false; } };

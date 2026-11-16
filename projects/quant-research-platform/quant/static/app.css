@@ -130,6 +130,22 @@ input:focus, select:focus { border-color: var(--gold); }
 .hold td:first-child { color: var(--text) !important; font-family: var(--sans); }
 .dlg label { font-size: 11.5px; color: var(--faint); display: block; margin-bottom: 4px; }
 
+/* portfolio */
+.pstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.pstat label { display: block; font-size: 11.5px; color: var(--faint); letter-spacing: .08em; }
+.pstat b { font: 600 20px var(--mono); } .pstat small { font-size: 12px; margin-left: 4px; }
+.alloc { display: grid; gap: 8px; }
+.alloc-row { display: grid; grid-template-columns: 96px 1fr 92px; gap: 10px; align-items: center; cursor: pointer; }
+.alloc-row.big { cursor: default; margin: 6px 0 4px; }
+.alloc-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.alloc-bar { position: relative; height: 10px; border-radius: 6px; background: rgba(255, 255, 255, .05); }
+.alloc-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--up); }
+.alloc-bar i.warn { background: var(--gold); }
+.alloc-bar em { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 2px; }
+.alloc-num { font: 600 13px var(--mono); text-align: right; } .alloc-num small { display: block; font-size: 11px; color: var(--faint); font-weight: 400; }
+.fulldef { display: grid; grid-template-columns: auto 1.3fr 1fr auto; gap: 8px; align-items: center; margin: 12px 0 6px; }
+.fulldef label { font-size: 12px; color: var(--faint); }
+
 /* feed */
 .section-title { display: flex; align-items: baseline; justify-content: space-between; margin: 40px 0 14px; }
 .section-title h3 { font: 900 20px var(--serif); margin: 0; letter-spacing: .04em; }
@@ -229,13 +245,15 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(4px); }
   /* holdings: one card per position */
   .hold thead { display: none; }
   .hold tbody tr { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; padding: 12px 2px; border-bottom: 1px solid var(--line);
-    grid-template-areas: "name name pnl" "px cost days" "model trig trig"; }
+    grid-template-areas: "name name pnl" "qty ratio val" "cost model trig"; }
   .hold td { border: 0; padding: 0; text-align: left !important; font-size: 13px; }
   .hold td[data-label]::before { content: attr(data-label); display: block; font: 11px var(--sans); color: var(--faint); }
   .hold td.h-name { grid-area: name; font-size: 15px; font-weight: 700; align-self: center; }
   .hold td.h-pnl { grid-area: pnl; text-align: right !important; font-size: 19px; font-weight: 600; }
-  .hold .h-px { grid-area: px; } .hold .h-cost { grid-area: cost; } .hold .h-days { grid-area: days; }
-  .hold .h-model { grid-area: model; } .hold .h-trig { grid-area: trig; }
+  .hold .h-qty { grid-area: qty; } .hold .h-ratio { grid-area: ratio; } .hold .h-val { grid-area: val; }
+  .hold .h-cost { grid-area: cost; } .hold .h-model { grid-area: model; } .hold .h-trig { grid-area: trig; }
+  .alloc-row { grid-template-columns: 76px 1fr 78px; }
+  .fulldef { grid-template-columns: 1fr 1fr; } .fulldef label { grid-column: 1 / -1; }
 
   /* dense tables scroll sideways with the first column pinned */
   .metrics { font-size: 12.5px; } .metrics th, .metrics td { padding: 7px 5px; }
