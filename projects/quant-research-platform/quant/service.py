@@ -128,6 +128,22 @@ class Service:
                 p["qty"] = m["qty"] or None
         return m
 
+    def declare_state(self, symbol: str, qty: float, cost: float | None, position_pct: float | None,
+                      date: str | None) -> None:
+        """Record what the user holds right now, without inventing buy/sell history."""
+        self.update_vehicle_prices(force=True)
+        v = self.view(self.store.instrument(symbol), with_backtest=False)
+        price = cost or (v.get("me") or {}).get("price")
+        if not price:
+            raise ValueError("no current price; enter a cost price")
+        date = date or v["signal"]["date"]
+        self.store.add_trade(symbol, date, "INIT", float(price), float(qty), "登记现状", None)
+        for p in portfolio.pending(self.store, symbol):  # the declared state answers older signals
+            if p["date"] <= date:
+                self.store.answer(symbol, p["date"], p["action"], "SUPERSEDED")
+        if qty > 0 and position_pct:  # "200 g is 100%" defines the full position
+            self.store.update_instrument(symbol, full_mode="qty", full_value=qty * 100 / position_pct)
+
     def summary(self, items: list[dict]) -> dict:
         """Whole-portfolio numbers in CNY."""
         cap = self.total_capital()

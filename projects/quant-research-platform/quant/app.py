@@ -1,6 +1,7 @@
 """Serving app (zhlearn): dashboard, JSON API, automation endpoints for Hermes cron."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import jwt
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -75,9 +76,21 @@ def callback(token: str = Form(...)):
     return resp
 
 
+def _versioned_index() -> str:
+    """index.html with content-hashed asset URLs so phones never mix old JS with new HTML."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.js", "app.css", "lightweight-charts.js"):
+        digest = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:10]
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={digest}")
+    return html
+
+
+INDEX_HTML = _versioned_index()
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-cache"})
 
 
 # ---- dashboard API
@@ -272,6 +285,24 @@ def add_trade(symbol: str, body: TradeIn):
 @app.delete("/api/trades/{trade_id}")
 def delete_trade(trade_id: int):
     svc.store.delete_trade(trade_id)
+    return {"ok": True}
+
+
+class StateIn(BaseModel):
+    qty: float = Field(ge=0)
+    cost: float | None = Field(None, gt=0)
+    position_pct: float | None = Field(None, gt=0, le=1000)
+    date: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.post("/api/instruments/{symbol}/state")
+def declare_state(symbol: str, body: StateIn):
+    """Declare the current holding directly (opening balance)."""
+    _inst(symbol)
+    try:
+        svc.declare_state(symbol, body.qty, body.cost, body.position_pct, body.date)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return {"ok": True}
 
 
