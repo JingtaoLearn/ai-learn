@@ -137,6 +137,17 @@ input:focus, select:focus { border-color: var(--gold); }
 .seg button:hover:not(.on) { color: var(--text); filter: none; }
 .dlg .seg, .params .seg { display: flex; } .dlg .seg button, .params .seg button { flex: 1; }
 
+/* strategy report card */
+.sc-row { padding: 12px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.sc-row:last-of-type { border-bottom: 0; }
+.sc-name { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.sc-v { font-size: 12.5px; color: var(--dim); text-align: right; }
+.sc-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; font: 13px var(--mono); }
+.sc-cols label { display: block; font: 11px var(--sans); color: var(--faint); margin-bottom: 2px; }
+.since { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 12px; margin-bottom: 14px; border-radius: 10px; background: var(--gold-soft); }
+.since label { grid-column: 1 / -1; font-size: 12px; color: var(--gold); letter-spacing: .08em; }
+.since span { display: block; font-size: 11.5px; color: var(--dim); } .since b { font: 600 17px var(--mono); }
+
 /* portfolio */
 .pstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .pstat label { display: block; font-size: 11.5px; color: var(--faint); letter-spacing: .08em; }
@@ -260,6 +271,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(4px); }
   .hold .h-qty { grid-area: qty; } .hold .h-ratio { grid-area: ratio; } .hold .h-val { grid-area: val; }
   .hold .h-cost { grid-area: cost; } .hold .h-model { grid-area: model; } .hold .h-trig { grid-area: trig; }
   .alloc-row { grid-template-columns: 76px 1fr 78px; }
+  .sc-cols { font-size: 12px; gap: 6px; } .since b { font-size: 15px; }
   .fulldef { grid-template-columns: 1fr auto; } .fulldef label, .fulldef .seg { grid-column: 1 / -1; }
   .seg button { min-height: 34px; }
 

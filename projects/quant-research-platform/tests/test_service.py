@@ -41,31 +41,34 @@ def test_intraday_alert_fires_once_when_price_crosses_trigger(tmp_path, monkeypa
     assert svc.check_alerts(datetime.now(UTC)) == []
 
 
-def test_user_feedback_drives_position_pending_and_divergence(tmp_path, monkeypatch):
+def test_advice_follows_real_holdings_and_respects_didnt_do_it(tmp_path, monkeypatch):
     svc, dates, close = setup(tmp_path, monkeypatch)
-    inst = svc.store.instrument("601328")
-    sig = svc.view(inst, with_backtest=False)["signal"]
-    other = "SELL" if sig["position"] else "BUY"
-    svc.store.add_event("601328", "signal", "2020-03-02", other, {})
-    svc.store.add_event("601328", "signal", "2020-04-01", "BUY", {})
+    monkeypatch.setattr(svc, "update_vehicle_prices", lambda force=False: None)
+    sym = "601328"
+    view = lambda: svc.view(svc.store.instrument(sym), with_backtest=False)
+    sig = view()["signal"]
+    assert view()["me"]["advice"]["basis"] == "model"           # nothing declared yet
 
-    me = svc.view(inst, with_backtest=False)["me"]
-    assert [p["date"] for p in me["pending"]] == ["2020-04-01", "2020-03-02"] and not me["tracked"]
-    assert me["pending"][0]["fill"]["date"] == "2020-04-02"  # next session's open is the suggested fill
+    # Declare the opposite of the model: holding while it is flat (or flat while it is long).
+    against = "SELL" if not sig["position"] else "BUY"
+    svc.declare_state(sym, 1000 if against == "SELL" else 0, 10.0, 100 if against == "SELL" else None, sig["date"])
+    adv = view()["me"]["advice"]
+    assert adv["basis"] == "you" and adv["action"] == against
+    if against == "SELL":
+        assert adv["qty"] == 1000
 
-    svc.store.answer("601328", "2020-03-02", other, "SKIPPED")
-    svc.store.add_trade("601328", "2020-04-02", "BUY", 10.0, 1000, None, "2020-04-01")
-    me = svc.view(inst, with_backtest=False)["me"]
-    assert me["pending"] == [] and me["held"] and me["avg_cost"] == 10.0 and me["qty"] == 1000
-    assert me["pnl"] == close[-1] / 10.0 - 1
-    if sig["action"] not in ("BUY", "SELL"):
-        assert me.get("divergence") == (None if sig["position"] else "MODEL_FLAT")
+    # "Didn't do it": the advice turns into HOLD/WAIT and stays quiet.
+    svc.store.answer(sym, sig["date"], against, "SKIPPED")
+    adv = view()["me"]["advice"]
+    assert adv["dismissed"] and adv["action"] == ("HOLD" if against == "SELL" else "WAIT")
 
-    tid = svc.store.add_trade("601328", "2020-05-06", "SELL", 11.0, None, None, None)  # no qty = sell all
-    me = svc.view(inst, with_backtest=False)["me"]
-    assert not me["held"] and abs(me["realized"][0]["return"] - 0.1) < 1e-12 and me["realized"][0]["pnl"] == 1000
-    svc.store.delete_trade(tid)
-    assert svc.view(inst, with_backtest=False)["me"]["held"]
+    # A trade changes the state, so the old answer stops applying.
+    if against == "SELL":
+        svc.store.add_trade(sym, sig["date"], "SELL", 11.0, None, None, None)
+        assert view()["me"]["advice"]["action"] == "WAIT"
+    else:
+        svc.store.add_trade(sym, sig["date"], "BUY", 11.0, 100, None, None)
+        assert view()["me"]["advice"]["action"] == "HOLD"
 
 
 def test_partial_trades_average_cost_and_position_size(tmp_path, monkeypatch):
@@ -81,10 +84,11 @@ def test_partial_trades_average_cost_and_position_size(tmp_path, monkeypatch):
     assert me["qty"] == 900 and abs(me["avg_cost"] - 11.0) < 1e-9          # (10000 + 6500) / 1500
     assert abs(me["realized"][0]["pnl"] - 600 * (12 - 11)) < 1e-9
     assert abs(me["ratio"] - 0.45) < 1e-9
+    adv = me["advice"]
     if me["target"] == 1:
-        assert me["suggest"] == {"side": "BUY", "qty": 1100, "amount": 1100 * price}  # 100-share lots
+        assert adv["action"] == "BUY" and adv["topup"] and adv["qty"] == 1100  # 100-share lots
     else:
-        assert me["suggest"]["side"] == "SELL" and me["suggest"]["qty"] == 900
+        assert adv["action"] == "SELL" and adv["qty"] == 900
 
     svc.store.update_instrument(sym, full_mode="qty", full_value=1800)
     assert abs(svc.view(svc.store.instrument(sym), with_backtest=False)["me"]["ratio"] - 0.5) < 1e-9
@@ -107,12 +111,11 @@ def test_declared_state_is_the_starting_point(tmp_path, monkeypatch):
     svc, _, close = setup(tmp_path, monkeypatch)
     sym = "AU9999"
     monkeypatch.setattr(svc, "update_vehicle_prices", lambda force=False: None)
-    svc.store.add_event(sym, "signal", "2020-03-02", "BUY", {})
     svc.store.add_trade(sym, "2020-01-02", "BUY", 5.0, 999, None, None)  # superseded history
     svc.declare_state(sym, 200, 800.0, 100, "2021-01-04")
     me = svc.view(svc.store.instrument(sym), with_backtest=False)["me"]
     assert me["qty"] == 200 and me["avg_cost"] == 800.0 and me["ratio"] == 1.0
-    assert me["pending"] == [] and me["opened"] == "2021-01-04"
+    assert me["opened"] == "2021-01-04"
     svc.store.add_trade(sym, "2021-02-01", "SELL", 900.0, 50, None, None)
     me = svc.view(svc.store.instrument(sym), with_backtest=False)["me"]
     assert me["qty"] == 150 and me["ratio"] == 0.75 and me["realized"][-1]["pnl"] == 50 * 100

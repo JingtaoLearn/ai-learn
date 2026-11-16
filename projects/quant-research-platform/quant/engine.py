@@ -126,15 +126,24 @@ def snapshot(close: np.ndarray, params: Params, start_index: int = 0) -> dict:
         action = "SELL"
     else:
         action = "HOLD" if held else "WAIT"
-    # Next-close crossing only fires from the side the state machine is on.
     s = float(slope[-1])
-    buy_px = trigger_close(close, params, params.buy) if not held and s < params.buy else None
-    sell_px = trigger_close(close, params, params.sell) if held and s > params.sell else None
+    # Line prices ignore the model's state: a user who holds against the model still needs a sell line.
+    buy_line = trigger_close(close, params, params.buy) if s < params.buy else None
+    sell_line = trigger_close(close, params, params.sell) if s > params.sell else None
+    t0 = first_eligible(slope, start_index)
+    prev, cur = slope[t0:-1], slope[t0 + 1:]
+    ups = np.nonzero((prev < params.buy) & (params.buy <= cur))[0]
+    downs = np.nonzero((prev > params.sell) & (params.sell >= cur))[0]
     return {
         "action": action,
         "position": int(held),
         "slope": s,
         "prev_slope": float(slope[-2]),
-        "buy_trigger": buy_px,
-        "sell_trigger": sell_px,
+        # the model's own next trigger only exists on the side its state machine is on
+        "buy_trigger": buy_line if not held else None,
+        "sell_trigger": sell_line if held else None,
+        "buy_line_price": buy_line,
+        "sell_line_price": sell_line,
+        "buy_cross_index": int(t0 + 1 + ups[-1]) if len(ups) else None,
+        "sell_cross_index": int(t0 + 1 + downs[-1]) if len(downs) else None,
     }

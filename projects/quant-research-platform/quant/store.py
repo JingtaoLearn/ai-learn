@@ -206,6 +206,10 @@ class Store:
             db.execute("INSERT OR REPLACE INTO feedback VALUES (?,?,?,?,NULL,?)",
                        (symbol, signal_date, action, response, now_iso()))
 
+    def unanswer(self, symbol: str, signal_date: str, action: str) -> None:
+        with self.tx() as db:
+            db.execute("DELETE FROM feedback WHERE symbol=? AND signal_date=? AND action=?", (symbol, signal_date, action))
+
     def feedback(self, symbol: str) -> list[dict]:
         return self.q("SELECT * FROM feedback WHERE symbol=?", (symbol,))
 

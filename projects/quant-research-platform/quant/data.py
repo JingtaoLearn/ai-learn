@@ -154,6 +154,15 @@ def market_now(market: str, now: datetime | None = None) -> tuple[bool, str]:
     return False, t.date().isoformat()
 
 
+def unfinished_session(market: str, now: datetime | None = None) -> str | None:
+    """Today's date while that market's day session has opened but not closed (lunch included)."""
+    now = now or datetime.now(UTC)
+    t = now.astimezone(NY if market == "us" else CN)
+    opens, closes = {"us": (time(9, 30), time(16, 0)), "sge": (time(9, 0), time(15, 30))}.get(
+        market, (time(9, 15), time(15, 0)))
+    return t.date().isoformat() if t.weekday() < 5 and opens <= t.time() < closes else None
+
+
 def is_cn_trading_day(today: str) -> bool:
     """SSE and SGE share the holiday calendar; the CSI 300 quote date tells us."""
     q = _get("https://hq.sinajs.cn/list=sh000300", SINA_HQ).content.decode("gb18030")

@@ -319,6 +319,14 @@ def skip(symbol: str, body: SkipIn):
     return {"ok": True}
 
 
+@app.delete("/api/instruments/{symbol}/skip")
+def unskip(symbol: str, signal_date: str, action: str):
+    """Undo a "didn't do it" answer."""
+    _inst(symbol)
+    svc.store.unanswer(symbol, signal_date, action)
+    return {"ok": True}
+
+
 # ---- automation (Hermes cron on ailearn, bearer token)
 @app.post("/api/jobs/daily")
 def job_daily(markets: str = "cn,sge"):
