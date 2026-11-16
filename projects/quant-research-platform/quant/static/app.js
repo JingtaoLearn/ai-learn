@@ -55,6 +55,12 @@ function spark(values, held) {
     <path d="${d}L${w},${h}L0,${h}Z" fill="url(#g${held}${c.slice(1)})"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6"/></svg>`;
 }
 
+const seg = (id, opts, cur) => `<input type="hidden" id="${id}" value="${esc(cur)}"><div class="seg" data-for="${id}">${
+  opts.map(([v, label]) => `<button type="button" data-v="${esc(v)}" class="${String(v) === String(cur) ? "on" : ""}">${label}</button>`).join("")}</div>`;
+function setSeg(id, v) {
+  $("#" + id).value = v;
+  document.querySelectorAll(`.seg[data-for="${id}"] button`).forEach((b) => b.classList.toggle("on", b.dataset.v === String(v)));
+}
 const dock = (items) => `<nav class="dock">${items.map(([id, label]) => `<a data-goto="${id}">${label}</a>`).join("")}</nav>`;
 
 /* the user's real position once they have confirmed anything; until then follow the model */
@@ -190,7 +196,7 @@ async function overview() {
     ${list.length ? `<section class="todo">${list.map((t, k) => `<div class="todo-item ${t.tone}" style="animation-delay:${k * 70}ms">
       <div class="todo-text" data-href="#/s/${encodeURIComponent(t.sym)}"><b>${esc(t.title)}</b><div class="small dim">${esc(t.sub)}</div></div>
       <div class="todo-btns">${t.btns}</div></div>`).join("")}</section>` : ""}
-    ${tracked ? "" : `<p class="note onboard">💡 还没登记你的真实持仓，下面暂按模型仓位展示。进入标的点「登记交易」，或在信号出现后点确认，之后所有提醒都按你的实际仓位。</p>`}
+    ${tracked ? "" : `<p class="note onboard">💡 还没登记你的真实持仓，下面暂按模型仓位展示。进入每个标的点「登记现状」，直接填你现在持有多少、相当于几成仓位，之后所有提醒都按你的实际仓位。</p>`}
     <div class="section-title" id="sec-pf"><h3>我的组合</h3><span class="small faint">实际仓位 vs 模型目标</span></div>
     <section class="panel">${portfolioPanel(summary, items)}</section>
     <div class="section-title" id="sec-hold"><h3>我的持仓</h3><span class="small faint">点行进入详情</span></div>
@@ -215,7 +221,7 @@ function tradeDialog(o) {
   const d = $("#dlg-trade");
   d.dataset.sym = o.sym; d.dataset.signal = o.signal_date || "";
   $("#t-title").textContent = `${o.name} · ${o.side === "BUY" ? "登记买入" : "登记卖出"}`;
-  $("#t-side").value = o.side;
+  setSeg("t-side", o.side);
   $("#t-date").value = o.date || new Date().toISOString().slice(0, 10);
   $("#t-price").value = o.price ? +(+o.price).toFixed(4) : "";
   $("#t-qty").value = o.qty ? +o.qty : ""; $("#t-note").value = "";
@@ -223,6 +229,24 @@ function tradeDialog(o) {
   $("#t-hint").textContent = (o.signal_date ? `对应 ${o.signal_date} 收盘信号。预填的是建议数量和模型假设的次日开盘价，请改成你的实际成交。` : "填你的实际成交日期、价格和数量。")
     + (o.side === "SELL" ? "卖出数量留空＝全部卖出。" : "");
   d.showModal();
+}
+function stateDialog(o) {
+  const d = $("#dlg-state");
+  d.dataset.sym = o.sym;
+  $("#st-title").textContent = `${o.name} · 登记现状`;
+  $("#st-unit").textContent = o.unit ? `（${o.unit}）` : "";
+  $("#st-qty").value = o.qty ? +o.qty : ""; $("#st-cost").value = ""; $("#st-pct").value = 100;
+  $("#st-date").value = new Date().toISOString().slice(0, 10);
+  $("#st-hint").textContent = `成本价不填则按现价 ${px(o.price)} 计，浮盈从今天开始算。仓位填 100 表示这些就是满仓，系统会据此设定满仓额度；留空则不改满仓定义。`;
+  d.showModal();
+}
+async function saveState() {
+  const d = $("#dlg-state"), qty = $("#st-qty").value;
+  if (qty === "") return toast("请填写当前持有数量（空仓填 0）");
+  const body = { qty: +qty, cost: $("#st-cost").value ? +$("#st-cost").value : null,
+    position_pct: $("#st-pct").value ? +$("#st-pct").value : null, date: $("#st-date").value || null };
+  try { await api(`/api/instruments/${encodeURIComponent(d.dataset.sym)}/state`, { method: "POST", body }); d.close(); toast("现状已登记"); route(); }
+  catch (e) { toast(e.message); }
 }
 async function saveTrade() {
   const d = $("#dlg-trade");
@@ -233,11 +257,14 @@ async function saveTrade() {
   catch (e) { toast(e.message); }
 }
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-trade],[data-skip],[data-del-trade],[data-href],[data-goto]");
+  const sb = e.target.closest(".seg button");
+  if (sb) return setSeg(sb.parentElement.dataset.for, sb.dataset.v);
+  const t = e.target.closest("[data-trade],[data-state],[data-skip],[data-del-trade],[data-href],[data-goto]");
   if (!t) return;
   e.stopPropagation();
   if (t.dataset.goto) return $("#" + t.dataset.goto)?.scrollIntoView({ behavior: "smooth", block: "start" });
   if (t.dataset.trade) return tradeDialog(JSON.parse(t.dataset.trade));
+  if (t.dataset.state) return stateDialog(JSON.parse(t.dataset.state));
   if (t.dataset.skip) {
     const s = JSON.parse(t.dataset.skip);
     await api(`/api/instruments/${encodeURIComponent(s.sym)}/skip`, { method: "POST", body: { signal_date: s.signal_date, action: s.action } });
@@ -279,8 +306,8 @@ function drawCharts(v, p) {
   s.trend.setData(dates.map((t, i) => v.trend[i] == null ? { time: t } : { time: t, value: v.trend[i] }));
   s.hold.setData(dates.map((t, i) => ({ time: t, value: i >= v.start_index && v.position[i - 1] ? 1 : 0 })));
   const known = new Set(dates);
-  const mine = (D.v.me ? D.v.me.trades : []).filter((t) => known.has(t.date)).map((t) => ({ time: t.date, position: t.side === "BUY" ? "belowBar" : "aboveBar",
-    color: GOLD, shape: "square", text: t.side === "BUY" ? "我买" : "我卖" }));
+  const mine = (D.v.me ? D.v.me.trades : []).filter((t) => known.has(t.date)).map((t) => ({ time: t.date, position: t.side === "SELL" ? "aboveBar" : "belowBar",
+    color: GOLD, shape: t.side === "INIT" ? "circle" : "square", text: { BUY: "我买", SELL: "我卖", INIT: "现状" }[t.side] }));
   s.candle.setMarkers([...markers(dates, v.position).filter((m) => m.time >= dates[v.start_index]), ...mine]
     .sort((a, b) => a.time.localeCompare(b.time)));
   s.slope.setData(dates.map((t, i) => v.slope[i] == null ? { time: t } : { time: t, value: v.slope[i], color: v.slope[i] >= 0 ? "rgba(240,82,79,.6)" : "rgba(31,181,127,.6)" }));
@@ -439,7 +466,7 @@ function renderOpt(runs) {
 function myPanel(v) {
   const { instrument: i, signal: s, me } = v, u = i.hold_unit, sug = me.suggest;
   const vehicle = i.hold_code ? `持有品种 ${esc(i.hold_code)}（现价 ${px(me.price)}）` : `持有品种即 ${esc(i.name)}`;
-  const status = !me.tracked ? "还没有登记你在这个标的上的交易，提醒暂按模型仓位。"
+  const status = !me.tracked ? "还没有登记你在这个标的上的持仓，提醒暂按模型仓位。点「登记现状」直接填你现在持有多少。"
     : me.held ? `持有 <b>${fq(me.qty, u)}</b>，成本价 ${px(me.avg_cost)}，市值 <b>${money(me.value, i.currency)}</b>，浮盈 <b class="${cls(me.pnl)}">${pct(me.pnl)}</b>，${me.opened} 起持有。`
     : "你目前空仓。";
   const r = me.ratio, tgt = s.position ? 100 : 0;
@@ -451,15 +478,15 @@ function myPanel(v) {
   const pend = me.pending.map((p) => `<div class="todo-item ${p.action === "BUY" ? "up" : "down"}"><div class="todo-text"><b>${p.date} ${p.action === "BUY" ? "买入" : "卖出"}信号</b><div class="small dim">执行了吗？${p.qty ? "建议数量 " + fq(p.qty, u) : ""}</div></div>
     <div class="todo-btns">${tradeBtn(i, p.action, p.fill?.date, p.fill?.price, p.action === "BUY" ? "我已买入" : "我已卖出", p.date, false, p.qty)}
     <button class="sm ghost" data-skip='${esc(JSON.stringify({ sym: i.symbol, signal_date: p.date, action: p.action }))}'>${p.action === "BUY" ? "没买" : "没卖"}</button></div></div>`).join("");
-  const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : "down"}">${t.side === "BUY" ? "买入" : "卖出"}</td><td>${px(t.price)}</td><td>${t.qty != null ? fq(t.qty, u) : "全部"}</td><td>${t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
+  const rows = me.trades.slice().reverse().map((t) => `<tr><td>${t.date}</td><td class="${t.side === "BUY" ? "up" : t.side === "SELL" ? "down" : "gold"}">${{ BUY: "买入", SELL: "卖出", INIT: "现状" }[t.side]}</td><td>${px(t.price)}</td><td>${t.qty != null ? fq(t.qty, u) : "全部"}</td><td>${t.side === "INIT" ? "登记" : t.signal_date ? "按信号" : "自主"}</td><td>${esc(t.note || "")}</td><td><button class="sm ghost" data-del-trade="${t.id}">删除</button></td></tr>`).join("");
   const fm = i.full_mode || "amount";
-  return `<section class="panel" id="sec-me"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;text-transform:none;letter-spacing:0">
-      ${tradeBtn(i, "BUY", s.date, me.price, "登记买入", null, true, sug?.side === "BUY" ? sug.qty : null)}${tradeBtn(i, "SELL", s.date, me.price, "登记卖出", null, true, me.qty || null)}</span></h4>
+  const stateBtn = `<button class="sm${me.tracked ? " ghost" : ""}" data-state='${esc(JSON.stringify({ sym: i.symbol, name: i.name, unit: u, qty: me.qty, price: me.price }))}'>登记现状</button>`;
+  return `<section class="panel" id="sec-me"><h4><span>我的仓位与交易</span><span style="display:flex;gap:6px;flex-wrap:wrap;text-transform:none;letter-spacing:0">
+      ${stateBtn}${tradeBtn(i, "BUY", s.date, me.price, "登记买入", null, true, sug?.side === "BUY" ? sug.qty : null)}${tradeBtn(i, "SELL", s.date, me.price, "登记卖出", null, true, me.qty || null)}</span></h4>
     <p class="note">${status}</p>${gauge}${advice}${pend}
     <div class="fulldef">
       <label>满仓定义</label>
-      <select id="f-mode"><option value="amount" ${fm === "amount" ? "selected" : ""}>按金额（${i.currency === "USD" ? "美元" : "元"}）</option>
-        <option value="qty" ${fm === "qty" ? "selected" : ""}>按数量（${esc(u)}）</option><option value="weight" ${fm === "weight" ? "selected" : ""}>按总资金比例（%）</option></select>
+      ${seg("f-mode", [["amount", `按金额（${i.currency === "USD" ? "美元" : "元"}）`], ["qty", `按数量（${esc(u)}）`], ["weight", "按总资金比例（%）"]], fm)}
       <input id="f-value" type="number" step="any" min="0" placeholder="例如 100000" value="${i.full_value ?? ""}">
       <button class="sm" id="f-save">保存</button>
     </div>
@@ -510,7 +537,7 @@ async function detail(sym) {
       <section class="panel"><h4>交易记录</h4><div class="tbl-wrap xscroll" id="trades"></div></section>
     </div>
     <section class="panel" id="sec-opt"><h4><span>参数优化 · 训练机</span><span style="display:flex;gap:8px;text-transform:none;letter-spacing:0">
-      <select id="o-obj" style="width:auto">${Object.entries(OBJ).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
+      ${seg("o-obj", Object.entries(OBJ), "sharpe")}
       <button class="sm" id="o-run">开始优化</button></span></h4><div id="opt"></div></section>
     <section class="panel"><h4><span>标的设置</span></h4>
       <div class="params">
@@ -520,7 +547,7 @@ async function detail(sym) {
         <div><label>持有品种代码</label><input id="s-hold" placeholder="同信号标的" value="${esc(inst.hold_code || "")}"></div>
         <div><label>持仓单位</label><input id="s-unit" value="${esc(inst.hold_unit || "")}"></div>
         <div><label>每手数量</label><input id="s-lot" type="number" step="any" min="0" value="${inst.lot}"></div>
-        <div><label>每日推送</label><select id="s-en"><option value="1" ${inst.enabled ? "selected" : ""}>开启</option><option value="0" ${inst.enabled ? "" : "selected"}>暂停</option></select></div>
+        <div><label>每日推送</label>${seg("s-en", [["1", "开启"], ["0", "暂停"]], inst.enabled ? "1" : "0")}</div>
         <div><label>&nbsp;</label><div style="display:flex;gap:6px"><button class="sm" id="s-save">保存</button><button class="sm ghost" id="s-refresh">刷新数据</button><button class="sm ghost" id="s-del">删除</button></div></div>
       </div>
       <p class="note">持有品种代码填你实际交易的场内代码（新浪格式，如 sh510300、sz159915）；留空表示直接持有信号标的本身。<br>数据源 ${esc(inst.provider)}:${esc(inst.code)} · 更新于 ${esc((inst.refreshed_at || "").replace("T", " ").slice(0, 16))} UTC</p></section>

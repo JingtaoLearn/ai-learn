@@ -101,3 +101,22 @@ def test_daily_message_is_written_from_the_users_position(tmp_path, monkeypatch)
     held = text.split("【持仓】")[1]
     assert "交通银行" in held and "1,000 股" in held and "仓位 100%" in held
     assert f"浮盈 {close[-1] / 10.0 - 1:+.1%}" in held
+
+
+def test_declared_state_is_the_starting_point(tmp_path, monkeypatch):
+    svc, _, close = setup(tmp_path, monkeypatch)
+    sym = "AU9999"
+    monkeypatch.setattr(svc, "update_vehicle_prices", lambda force=False: None)
+    svc.store.add_event(sym, "signal", "2020-03-02", "BUY", {})
+    svc.store.add_trade(sym, "2020-01-02", "BUY", 5.0, 999, None, None)  # superseded history
+    svc.declare_state(sym, 200, 800.0, 100, "2021-01-04")
+    me = svc.view(svc.store.instrument(sym), with_backtest=False)["me"]
+    assert me["qty"] == 200 and me["avg_cost"] == 800.0 and me["ratio"] == 1.0
+    assert me["pending"] == [] and me["opened"] == "2021-01-04"
+    svc.store.add_trade(sym, "2021-02-01", "SELL", 900.0, 50, None, None)
+    me = svc.view(svc.store.instrument(sym), with_backtest=False)["me"]
+    assert me["qty"] == 150 and me["ratio"] == 0.75 and me["realized"][-1]["pnl"] == 50 * 100
+
+    svc.declare_state("601328", 3000, None, 50, None)  # no cost: today's price is the basis
+    me = svc.view(svc.store.instrument("601328"), with_backtest=False)["me"]
+    assert me["avg_cost"] == float(close[-1]) and me["pnl"] == 0 and abs(me["ratio"] - 0.5) < 1e-12

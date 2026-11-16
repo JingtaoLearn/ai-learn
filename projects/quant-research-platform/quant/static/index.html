@@ -48,13 +48,27 @@
       <h3 id="t-title">登记交易</h3>
       <p class="dim small" id="t-hint"></p>
       <div class="params" style="grid-template-columns:1fr 1fr">
-        <div><label>方向</label><select id="t-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select></div>
+        <div><label>方向</label><input type="hidden" id="t-side" value="BUY"><div class="seg" data-for="t-side"><button type="button" data-v="BUY" class="on">买入</button><button type="button" data-v="SELL">卖出</button></div></div>
         <div><label>成交日期</label><input id="t-date" type="date"></div>
         <div><label>成交价</label><input id="t-price" type="number" step="any" min="0"></div>
         <div><label>数量<span id="t-unit"></span></label><input id="t-qty" type="number" step="any" min="0"></div>
       </div>
       <div style="margin-top:10px"><label class="small faint">备注（可选）</label><input id="t-note" maxlength="200"></div>
       <menu><button value="cancel" class="ghost">取消</button><button type="button" onclick="saveTrade()">保存</button></menu>
+    </form>
+  </dialog>
+  <dialog id="dlg-state">
+    <form method="dialog" class="dlg">
+      <h3 id="st-title">登记现状</h3>
+      <p class="dim small">直接告诉系统你现在持有多少，不需要补录历史买卖。之后的买卖在此基础上累加；再次登记会以新的现状为准。</p>
+      <div class="params" style="grid-template-columns:1fr 1fr">
+        <div><label>当前持有数量<span id="st-unit"></span></label><input id="st-qty" type="number" step="any" min="0" placeholder="0 = 空仓"></div>
+        <div><label>成本价（可不填）</label><input id="st-cost" type="number" step="any" min="0" placeholder="不填按现价"></div>
+        <div><label>相当于几成仓位（%）</label><input id="st-pct" type="number" step="any" min="0" value="100"></div>
+        <div><label>日期</label><input id="st-date" type="date"></div>
+      </div>
+      <p class="small faint" id="st-hint"></p>
+      <menu><button value="cancel" class="ghost">取消</button><button type="button" onclick="saveState()">保存</button></menu>
     </form>
   </dialog>
   <div id="toast"></div>

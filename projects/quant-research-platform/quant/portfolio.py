@@ -10,12 +10,16 @@ REBALANCE_GAP = 0.10  # ignore position gaps smaller than 10% of a full position
 
 
 def ledger(trades: list[dict]) -> dict:
-    """Average-cost ledger. A SELL without qty closes the whole position."""
+    """Average-cost ledger. INIT declares the holding outright; a SELL without qty closes it all."""
     qty = cost = 0.0
     opened = None
     realized = []
     for t in sorted(trades, key=lambda x: (x["date"], x["id"])):
-        if t["side"] == "BUY":
+        if t["side"] == "INIT":  # declared current holding: restart the ledger from it
+            qty = t["qty"] or 0.0
+            cost = qty * t["price"]
+            opened = t["date"] if qty else None
+        elif t["side"] == "BUY":
             q = t["qty"] or 0.0
             if qty < 1e-9:
                 opened = t["date"]
